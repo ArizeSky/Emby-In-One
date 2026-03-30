@@ -60,7 +60,7 @@ Only the latest version on the `main` branch receives security fixes. Please upd
 ### 日志
 
 - 运行日志可能包含请求 URL、部分请求头等信息，请妥善保管日志文件，避免泄露上游地址或 Token 信息。
-- 日志文件位于 `log/` 目录，Docker 部署时对应挂载路径。
+- 日志文件位于 `data/emby-in-one.log`（Release 部署在 `/opt/emby-in-one/data/`），Docker 部署时挂载到 `/app/data/`。
 
 ---
 
