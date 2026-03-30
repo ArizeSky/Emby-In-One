@@ -18,6 +18,19 @@ BOLD='\033[1m'
 DIM='\033[2m'
 NC='\033[0m'
 
+SERVICE_NAME="emby-in-one"
+
+# ── 检测部署方式：binary（systemd）或 docker ──
+detect_deploy_mode() {
+  if [[ -x "${PROJECT_DIR}/emby-in-one" ]] && systemctl list-unit-files "${SERVICE_NAME}.service" &>/dev/null 2>&1; then
+    echo "binary"
+  else
+    echo "docker"
+  fi
+}
+
+DEPLOY_MODE=$(detect_deploy_mode)
+
 # ── 检测 compose 命令 ──
 compose_cmd() {
   if docker compose version &>/dev/null; then
@@ -53,7 +66,9 @@ is_hashed_password() {
 
 reset_password_via_cli() {
   local new_password="$1"
-  if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'emby-in-one'; then
+  if [[ "$DEPLOY_MODE" == "binary" ]]; then
+    cd "${PROJECT_DIR}" && ./emby-in-one --reset-password "$new_password"
+  elif docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'emby-in-one'; then
     docker exec -i emby-in-one /app/emby-in-one --reset-password "$new_password"
   else
     cd "${PROJECT_DIR}" && compose_cmd run --rm --no-deps emby-in-one /app/emby-in-one --reset-password "$new_password"
@@ -96,7 +111,11 @@ format_duration() {
 do_start() {
   echo -e "${GREEN}▶ 正在启动服务...${NC}"
   echo ""
-  cd "${PROJECT_DIR}" && compose_cmd up -d
+  if [[ "$DEPLOY_MODE" == "binary" ]]; then
+    systemctl start "${SERVICE_NAME}"
+  else
+    cd "${PROJECT_DIR}" && compose_cmd up -d
+  fi
   echo ""
   echo -e "${GREEN}✔ 服务已启动${NC}"
 }
@@ -104,7 +123,11 @@ do_start() {
 do_restart() {
   echo -e "${YELLOW}▶ 正在重启服务...${NC}"
   echo ""
-  cd "${PROJECT_DIR}" && compose_cmd restart
+  if [[ "$DEPLOY_MODE" == "binary" ]]; then
+    systemctl restart "${SERVICE_NAME}"
+  else
+    cd "${PROJECT_DIR}" && compose_cmd restart
+  fi
   echo ""
   echo -e "${GREEN}✔ 服务已重启${NC}"
 }
@@ -112,16 +135,33 @@ do_restart() {
 do_stop() {
   echo -e "${RED}▶ 正在关闭服务...${NC}"
   echo ""
-  cd "${PROJECT_DIR}" && compose_cmd down
+  if [[ "$DEPLOY_MODE" == "binary" ]]; then
+    systemctl stop "${SERVICE_NAME}"
+  else
+    cd "${PROJECT_DIR}" && compose_cmd down
+  fi
   echo ""
   echo -e "${GREEN}✔ 服务已关闭${NC}"
 }
 
 do_update() {
-  echo -e "${CYAN}▶ 正在重新构建并更新服务...${NC}"
-  echo ""
-  cd "${PROJECT_DIR}" && compose_cmd build --no-cache
-  compose_cmd up -d
+  if [[ "$DEPLOY_MODE" == "binary" ]]; then
+    echo -e "${CYAN}▶ 正在通过 release-install.sh 更新服务...${NC}"
+    echo ""
+    local tmp_script="/tmp/emby-in-one-release-install-$$.sh"
+    if curl -fsSL --max-time 30 -o "${tmp_script}" "https://raw.githubusercontent.com/ArizeSky/Emby-In-One/main/release-install.sh"; then
+      bash "${tmp_script}"
+      rm -f "${tmp_script}"
+    else
+      echo -e "${RED}✘ 下载更新脚本失败，请检查网络${NC}"
+      return 1
+    fi
+  else
+    echo -e "${CYAN}▶ 正在重新构建并更新服务...${NC}"
+    echo ""
+    cd "${PROJECT_DIR}" && compose_cmd build --no-cache
+    compose_cmd up -d
+  fi
   echo ""
   echo -e "${GREEN}✔ 服务已更新${NC}"
 }
@@ -130,6 +170,53 @@ do_status() {
   echo -e "${CYAN}▶ 正在获取服务状态...${NC}"
   echo ""
 
+  if [[ "$DEPLOY_MODE" == "binary" ]]; then
+    local active_state sub_state pid mem uptime_display="N/A"
+    active_state=$(systemctl show -p ActiveState --value "${SERVICE_NAME}" 2>/dev/null)
+    sub_state=$(systemctl show -p SubState --value "${SERVICE_NAME}" 2>/dev/null)
+    pid=$(systemctl show -p MainPID --value "${SERVICE_NAME}" 2>/dev/null)
+
+    local status_text
+    if [[ "$active_state" == "active" ]]; then
+      status_text="${GREEN}● 运行中 (${sub_state})${NC}"
+      local started_at
+      started_at=$(systemctl show -p ActiveEnterTimestamp --value "${SERVICE_NAME}" 2>/dev/null)
+      if [[ -n "$started_at" ]]; then
+        local start_epoch now_epoch diff
+        start_epoch=$(date -d "$started_at" +%s 2>/dev/null)
+        now_epoch=$(date +%s)
+        if [[ -n "$start_epoch" ]]; then
+          diff=$((now_epoch - start_epoch))
+          uptime_display=$(format_duration "$diff")
+        fi
+      fi
+      if [[ -n "$pid" && "$pid" != "0" ]]; then
+        mem=$(ps -o rss= -p "$pid" 2>/dev/null | awk '{printf "%.1f MB", $1/1024}')
+      fi
+    elif [[ "$active_state" == "inactive" || "$active_state" == "failed" ]]; then
+      status_text="${RED}● 未运行 (${active_state})${NC}"
+    else
+      status_text="${YELLOW}● ${active_state}${NC}"
+    fi
+
+    local port
+    port=$(get_port)
+    port=${port:-8096}
+
+    print_line
+    echo -e "  ${BOLD}Emby In One 服务状态${NC}  ${DIM}(Binary 部署)${NC}"
+    print_line
+    echo -e "  服务状态     ${status_text}"
+    print_kv "运行时长" "$uptime_display"
+    print_kv "监听端口" "$port"
+    [[ -n "$pid" && "$pid" != "0" ]] && print_kv "PID" "$pid"
+    [[ -n "$mem" ]] && print_kv "内存占用" "$mem"
+    print_kv "安装目录" "${PROJECT_DIR}"
+    print_line
+    return
+  fi
+
+  # Docker 部署
   local container
   container=$(cd "${PROJECT_DIR}" && compose_cmd ps -q 2>/dev/null | head -1)
 
@@ -178,7 +265,7 @@ do_status() {
   fi
 
   print_line
-  echo -e "  ${BOLD}Emby In One 服务状态${NC}"
+  echo -e "  ${BOLD}Emby In One 服务状态${NC}  ${DIM}(Docker 部署)${NC}"
   print_line
   echo -e "  容器状态     ${status_text}"
   print_kv "运行时长" "$uptime_display"
@@ -264,7 +351,11 @@ do_change_username() {
   echo ""
   echo -e "${GREEN}✔ 用户名已修改为: ${new_username}${NC}"
   echo -e "${YELLOW}▶ 正在重启服务使配置生效...${NC}"
-  cd "${PROJECT_DIR}" && compose_cmd restart
+  if [[ "$DEPLOY_MODE" == "binary" ]]; then
+    systemctl restart "${SERVICE_NAME}"
+  else
+    cd "${PROJECT_DIR}" && compose_cmd restart
+  fi
   echo -e "${GREEN}✔ 完成${NC}"
 }
 
@@ -282,20 +373,32 @@ do_change_password() {
   echo ""
   echo -e "${GREEN}✔ 密码已修改${NC}"
   echo -e "${YELLOW}▶ 正在重启服务使配置生效...${NC}"
-  cd "${PROJECT_DIR}" && compose_cmd restart >/dev/null 2>&1 || true
+  if [[ "$DEPLOY_MODE" == "binary" ]]; then
+    systemctl restart "${SERVICE_NAME}" >/dev/null 2>&1 || true
+  else
+    cd "${PROJECT_DIR}" && compose_cmd restart >/dev/null 2>&1 || true
+  fi
   echo -e "${GREEN}✔ 完成${NC}"
 }
 
 do_logs() {
   echo -e "${CYAN}显示最近 50 条日志 (Ctrl+C 退出):${NC}"
   echo ""
-  cd "${PROJECT_DIR}" && compose_cmd logs -f --tail 50
+  if [[ "$DEPLOY_MODE" == "binary" ]]; then
+    journalctl -u "${SERVICE_NAME}" -f -n 50
+  else
+    cd "${PROJECT_DIR}" && compose_cmd logs -f --tail 50
+  fi
 }
 
 do_uninstall() {
   echo -e "${RED}${BOLD}⚠  即将卸载 Emby In One${NC}"
   echo ""
-  echo -e "  此操作将停止并删除容器和镜像。"
+  if [[ "$DEPLOY_MODE" == "binary" ]]; then
+    echo -e "  此操作将停止 systemd 服务并删除二进制文件。"
+  else
+    echo -e "  此操作将停止并删除容器和镜像。"
+  fi
   echo ""
 
   read -rp "  确认卸载？(输入 yes 继续): " confirm
@@ -309,15 +412,23 @@ do_uninstall() {
   read -rp "  是否删除配置和数据？(y/N): " del_data
 
   echo ""
-  echo -e "${YELLOW}▶ 正在停止并删除容器和镜像...${NC}"
-  cd "${PROJECT_DIR}" && compose_cmd down --rmi all 2>/dev/null
+  if [[ "$DEPLOY_MODE" == "binary" ]]; then
+    echo -e "${YELLOW}▶ 正在停止并禁用 systemd 服务...${NC}"
+    systemctl stop "${SERVICE_NAME}" 2>/dev/null || true
+    systemctl disable "${SERVICE_NAME}" 2>/dev/null || true
+    rm -f "/etc/systemd/system/${SERVICE_NAME}.service"
+    systemctl daemon-reload 2>/dev/null || true
+  else
+    echo -e "${YELLOW}▶ 正在停止并删除容器和镜像...${NC}"
+    cd "${PROJECT_DIR}" && compose_cmd down --rmi all 2>/dev/null
+  fi
 
   if [[ "$del_data" =~ ^[yY] ]]; then
     echo -e "${YELLOW}▶ 正在删除所有数据和配置...${NC}"
     rm -rf "${PROJECT_DIR}"
   else
     echo -e "${YELLOW}▶ 保留 config/ 和 data/ 目录，删除其他文件...${NC}"
-    find "${PROJECT_DIR}" -maxdepth 1 ! -name config ! -name data ! -name . -exec rm -rf {} +
+    find "${PROJECT_DIR}" -maxdepth 1 ! -name config ! -name data ! -name log ! -name . -exec rm -rf {} +
   fi
 
   echo -e "${YELLOW}▶ 正在删除 CLI 工具...${NC}"
