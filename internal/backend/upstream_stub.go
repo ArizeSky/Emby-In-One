@@ -25,6 +25,14 @@ var sharedTransport = &http.Transport{
 	DisableCompression: true,
 }
 
+const recoveryDebounce = 30 * time.Second
+
+// isUpstreamLoginPath returns true for paths used during upstream login,
+// to avoid triggering recovery loops when login itself returns 401.
+func isUpstreamLoginPath(path string) bool {
+	return path == "/Users/AuthenticateByName" || path == "/Users/Me"
+}
+
 var embyClientHeaders = map[string]string{
 	"User-Agent":            "Emby Aggregator/1.0",
 	"X-Emby-Client":         "Emby Aggregator",
@@ -65,6 +73,9 @@ type UpstreamClient struct {
 	transport     http.RoundTripper // per-client transport (shared or proxy-specific)
 	logger        *Logger
 	timeouts      TimeoutsConfig
+	recoveryMu    sync.Mutex
+	lastRecovery  time.Time
+	onAuthError   func(c *UpstreamClient) // set by pool for auto-recovery
 }
 
 type UpstreamPool struct {
@@ -119,6 +130,7 @@ func (p *UpstreamPool) Reload(cfg Config) {
 	clients := make([]*UpstreamClient, 0, len(cfg.Upstream))
 	for i, upstream := range cfg.Upstream {
 		newClient := newUpstreamClient(cfg, upstream, i, p.logger)
+		newClient.onAuthError = p.handleUpstreamAuthError
 		if old, ok := oldByKey[newClient.serverKey]; ok {
 			old.mu.RLock()
 			newClient.AccessToken = old.AccessToken
@@ -307,6 +319,27 @@ func (p *UpstreamPool) retryOfflinePassthrough(token string, headers http.Header
 			continue
 		}
 		client.loginWithHeaders(context.Background(), nil, identity, cloneHeader(headers))
+	}
+}
+
+// handleUpstreamAuthError is called (in a goroutine) when a non-login upstream
+// request receives 401/403 — it marks the client offline and triggers re-login.
+func (p *UpstreamPool) handleUpstreamAuthError(c *UpstreamClient) {
+	c.recoveryMu.Lock()
+	if time.Since(c.lastRecovery) < recoveryDebounce {
+		c.recoveryMu.Unlock()
+		return
+	}
+	c.lastRecovery = time.Now()
+	c.recoveryMu.Unlock()
+
+	if p.logger != nil {
+		p.logger.Warnf("[%s] Upstream auth error on normal request, triggering recovery re-login", c.Name)
+	}
+	c.setOffline("upstream auth expired")
+	c.Login(context.Background(), nil, p.identityService())
+	if c.IsOnline() && p.logger != nil {
+		p.logger.Infof("[%s] Recovery re-login succeeded", c.Name)
 	}
 }
 
@@ -596,6 +629,11 @@ func (c *UpstreamClient) doRequest(ctx context.Context, method, path string, par
 	}
 	if c.logger != nil {
 		c.logger.Debugf("[%s] ← %s %s %d", c.Name, method, path, resp.StatusCode)
+	}
+	// Auto-recovery: if upstream returns 401/403 on a non-login request,
+	// trigger async re-login to restore the session.
+	if (resp.StatusCode == 401 || resp.StatusCode == 403) && !isUpstreamLoginPath(path) && c.onAuthError != nil {
+		go c.onAuthError(c)
 	}
 	return resp, nil
 }

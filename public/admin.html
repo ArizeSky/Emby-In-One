@@ -4,8 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Emby-in-One 管理面板</title>
-<script src="https://cdn.tailwindcss.com/3.4.1"></script>
-<script src="https://unpkg.com/lucide@0.344.0"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/lucide@latest"></script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
 body { font-family: 'Inter', sans-serif; background-color: #f8fafc; color: #1e293b; }
@@ -150,7 +150,7 @@ body { font-family: 'Inter', sans-serif; background-color: #f8fafc; color: #1e29
             <td class="px-6 py-4 text-slate-500 text-sm max-w-xs truncate">{{ s.url }}</td>
             <td class="px-6 py-4 text-sm">{{ getProxyName(s.proxyId) }}</td>
             <td class="px-6 py-4"><span v-if="s.priorityMetadata" class="px-2 py-0.5 bg-purple-100 text-purple-700 rounded text-xs font-bold">元数据优先</span></td>
-            <td class="px-6 py-4"><span :class="s.online ? 'bg-green-50 text-green-600' : 'bg-red-50 text-red-600'" class="px-2 py-1 rounded-full text-xs font-bold uppercase border">{{ s.online ? 'ONLINE' : 'OFFLINE' }}</span></td>
+            <td class="px-6 py-4"><span :class="s.online ? 'bg-green-50 text-green-600' : 'bg-red-50 text-red-600'" class="px-2 py-1 rounded-full text-xs font-bold border">{{ s.online ? '在线' : '离线' }}</span></td>
             <td class="px-6 py-4"><div class="flex space-x-2"><button @click="editServer(s)" class="p-2 text-slate-400 hover:text-blue-600"><i data-lucide="edit-3" class="w-4 h-4"></i></button><button @click="reconnectServer(s.index)" class="p-2 text-slate-400 hover:text-green-600"><i data-lucide="refresh-cw" class="w-4 h-4"></i></button><button @click="deleteServer(s.index)" class="p-2 text-slate-400 hover:text-red-600"><i data-lucide="trash-2" class="w-4 h-4"></i></button></div></td>
           </tr>
         </tbody>
@@ -163,7 +163,10 @@ body { font-family: 'Inter', sans-serif; background-color: #f8fafc; color: #1e29
       <div v-else class="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6">
         <div v-for="p in proxyList" :key="p.id" class="card p-4 md:p-6 flex justify-between items-center">
           <div class="min-w-0 flex-1 mr-3"><h4 class="font-bold text-lg">{{ p.name }}</h4><p class="text-sm text-slate-500 font-mono truncate">{{ p.url }}</p></div>
-          <button @click="deleteProxy(p.id)" class="p-3 text-red-400 hover:bg-red-50 rounded-xl transition-all shrink-0"><i data-lucide="trash-2" class="w-5 h-5"></i></button>
+          <div class="flex items-center space-x-2 shrink-0">
+            <button @click="testProxyCard(p)" :disabled="p.testing" class="p-3 text-blue-400 hover:bg-blue-50 rounded-xl transition-all" title="测试连通性"><i data-lucide="zap" class="w-5 h-5"></i></button>
+            <button @click="deleteProxy(p.id)" class="p-3 text-red-400 hover:bg-red-50 rounded-xl transition-all"><i data-lucide="trash-2" class="w-5 h-5"></i></button>
+          </div>
         </div>
       </div>
     </div>
@@ -219,10 +222,18 @@ body { font-family: 'Inter', sans-serif; background-color: #f8fafc; color: #1e29
           <div class="sm:col-span-2"><label class="text-sm font-medium">推流域名 (留空=与地址相同)</label><input type="text" v-model="serverForm.streamingUrl" placeholder="https://stream.example.com" class="w-full px-4 py-2 border rounded-lg outline-none"></div>
           <div><label class="text-sm font-medium">认证方式</label><select v-model="serverForm.authType" class="w-full px-4 py-2 border rounded-lg outline-none"><option value="password">用户名/密码</option><option value="apiKey">API Key</option></select></div>
           <div><label class="text-sm font-medium">播放模式</label><select v-model="serverForm.playbackMode" class="w-full px-4 py-2 border rounded-lg outline-none"><option value="proxy">代理模式</option><option value="redirect">直连模式</option></select><p v-if="serverForm.playbackMode === 'redirect'" class="mt-1 text-xs text-amber-600">⚠ 直连模式会暴露上游 Token</p></div>
-          <div><label class="text-sm font-medium">UA 伪装</label><select v-model="serverForm.spoofClient" class="w-full px-4 py-2 border rounded-lg outline-none"><option value="none">无</option><option value="passthrough">透传客户端</option><option value="infuse">Infuse</option><option value="official">官方 Web</option></select></div>
+          <div><label class="text-sm font-medium">UA 伪装</label><select v-model="serverForm.spoofClient" class="w-full px-4 py-2 border rounded-lg outline-none"><option value="none">无</option><option value="passthrough">透传客户端</option><option value="infuse">Infuse</option><option value="custom">自定义</option></select></div>
           <div><label class="text-sm font-medium">自动 302</label><select v-model="serverForm.followRedirects" class="w-full px-4 py-2 border rounded-lg outline-none"><option :value="true">开启</option><option :value="false">关闭</option></select></div>
           <div><label class="text-sm font-medium">使用网络代理</label><select v-model="serverForm.proxyId" class="w-full px-4 py-2 border rounded-lg outline-none"><option :value="null">不使用</option><option v-for="p in proxyList" :key="p.id" :value="p.id">{{ p.name }}</option></select></div>
           <div class="flex items-center space-x-2 sm:pt-6"><input type="checkbox" v-model="serverForm.priorityMetadata" class="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"><label class="text-sm font-bold text-purple-600">元数据优先</label></div>
+        </div>
+        <div v-if="serverForm.spoofClient === 'custom'" class="grid grid-cols-1 sm:grid-cols-2 gap-4 border border-blue-100 rounded-xl p-4 bg-blue-50/40">
+          <div class="sm:col-span-2"><p class="text-xs font-semibold text-blue-600 mb-2">自定义客户端标识</p></div>
+          <div class="sm:col-span-2"><label class="text-sm font-medium">User-Agent</label><input type="text" v-model="serverForm.customUserAgent" placeholder="Infuse/7.7.1 (iPhone; iOS 17.4.1)" class="w-full px-4 py-2 border rounded-lg outline-none"></div>
+          <div><label class="text-sm font-medium">X-Emby-Client</label><input type="text" v-model="serverForm.customClient" placeholder="Infuse" class="w-full px-4 py-2 border rounded-lg outline-none"></div>
+          <div><label class="text-sm font-medium">X-Emby-Client-Version</label><input type="text" v-model="serverForm.customClientVersion" placeholder="7.7.1" class="w-full px-4 py-2 border rounded-lg outline-none"></div>
+          <div><label class="text-sm font-medium">X-Emby-Device-Name</label><input type="text" v-model="serverForm.customDeviceName" placeholder="iPhone" class="w-full px-4 py-2 border rounded-lg outline-none"></div>
+          <div><label class="text-sm font-medium">X-Emby-Device-Id</label><input type="text" v-model="serverForm.customDeviceId" placeholder="my-device-001" class="w-full px-4 py-2 border rounded-lg outline-none"></div>
         </div>
         <div v-if="serverForm.authType === 'password'" class="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div><label class="text-sm font-medium">用户名</label><input type="text" v-model="serverForm.username" class="w-full px-4 py-2 border rounded-lg outline-none"></div>
@@ -242,13 +253,17 @@ body { font-family: 'Inter', sans-serif; background-color: #f8fafc; color: #1e29
         <div><label class="text-sm font-medium">代理显示名称</label><input type="text" v-model="proxyForm.name" placeholder="例如：日本代理" class="w-full px-4 py-2 border rounded-lg outline-none"></div>
         <div><label class="text-sm font-medium">代理 URL</label><input type="text" v-model="proxyForm.url" placeholder="http://user:pass@ip:port" class="w-full px-4 py-2 border rounded-lg outline-none"></div>
         <p class="text-xs text-slate-400">目前仅支持 http/https 协议。格式: http://[user:pass@]ip:port</p>
+        <div v-if="proxyTestState.result !== null" class="text-sm rounded-lg p-3" :class="proxyTestState.result.success ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'">
+          <span v-if="proxyTestState.result.success">✓ 连通成功 ({{ proxyTestState.result.latency }}ms, HTTP {{ proxyTestState.result.statusCode }})</span>
+          <span v-else>✗ 连通失败 — {{ proxyTestState.result.error }}</span>
+        </div>
       </div>
-      <div class="flex justify-end space-x-3 pt-4"><button @click="showProxyModal = false" class="px-6 py-2.5 rounded-xl text-slate-600 hover:bg-slate-100">取消</button><button @click="saveProxy" class="btn-primary px-8 py-2.5 rounded-xl font-bold shadow-lg shadow-blue-500/20">添加代理</button></div>
+      <div class="flex justify-end space-x-3 pt-4"><button @click="showProxyModal = false" class="px-6 py-2.5 rounded-xl text-slate-600 hover:bg-slate-100">取消</button><button @click="testProxyModal" :disabled="proxyTestState.loading" class="px-6 py-2.5 rounded-xl border border-blue-300 text-blue-600 hover:bg-blue-50">测试连接</button><button @click="saveProxy" class="btn-primary px-8 py-2.5 rounded-xl font-bold shadow-lg shadow-blue-500/20">添加代理</button></div>
     </div>
   </div>
 </div>
 
-<script src="https://unpkg.com/vue@3.4.21/dist/vue.global.prod.js"></script>
+<script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
 <script>
 const { createApp } = Vue;
 createApp({
@@ -270,7 +285,8 @@ createApp({
       logs: [], isLoadingLogs: false, saveSuccess: false,
       logLevelFilter: 'ALL', logSearch: '',
       showModal: false, editIndex: null, serverForm: {},
-      showProxyModal: false, proxyForm: { name: '', url: '' }
+      showProxyModal: false, proxyForm: { name: '', url: '' },
+      proxyTestState: { loading: false, result: null }
     };
   },
   computed: { pageTitle() { return this.pages.find(p => p.id === this.currentPage)?.name || '管理面板'; },
@@ -325,7 +341,7 @@ createApp({
     async refreshServers() { this.upstreamList = await this.api('/admin/api/upstream'); this.refreshProxies(); this.$nextTick(()=>lucide.createIcons()); },
     async refreshProxies() { this.proxyList = await this.api('/admin/api/proxies'); this.$nextTick(()=>lucide.createIcons()); },
     async refreshSettings() { const s = await this.api('/admin/api/settings'); this.settings = { ...s, adminPassword: '', currentPassword: '', timeouts: s.timeouts || { api: 30000, global: 15000, login: 10000, healthCheck: 10000, healthInterval: 60000 } }; },
-    async saveSettings() { const res = await this.api('/admin/api/settings', { method:'PUT', body:JSON.stringify(this.settings) }); if (res.error) { alert(res.error); return; } this.saveSuccess = true; this.settings.adminPassword = ''; this.settings.currentPassword = ''; setTimeout(()=>this.saveSuccess=false,3000); },
+    async saveSettings() { const res = await this.api('/admin/api/settings', { method:'PUT', body:JSON.stringify(this.settings) }); if (res.error) { alert('保存失败：' + res.error); return; } this.saveSuccess = true; this.settings.adminPassword = ''; this.settings.currentPassword = ''; setTimeout(()=>this.saveSuccess=false,3000); },
     async refreshLogs() { this.isLoadingLogs = true; try { this.logs = await this.api('/admin/api/logs?limit=500'); this.$nextTick(() => { const b=this.$refs.logBox; if(b) b.scrollTop=b.scrollHeight; lucide.createIcons(); }); } finally { this.isLoadingLogs=false; } },
     downloadLogs() {
       const t = localStorage.getItem('eio_token');
@@ -335,13 +351,64 @@ createApp({
     },
     async clearLogs() { if(!confirm('确认清空所有日志？')) return; await this.api('/admin/api/logs', { method:'DELETE' }); this.logs = []; },
     getProxyName(id) { const p = this.proxyList.find(x => x.id === id); return p ? p.name : '不使用'; },
-    openAddServer() { this.editIndex = null; this.serverForm = { name:'', url:'', streamingUrl:'', authType:'password', spoofClient:'none', followRedirects:true, proxyId:null, priorityMetadata:false }; this.showModal = true; },
+    openAddServer() { this.editIndex = null; this.serverForm = { name:'', url:'', streamingUrl:'', authType:'password', spoofClient:'none', followRedirects:true, proxyId:null, priorityMetadata:false, customUserAgent:'', customClient:'', customClientVersion:'', customDeviceName:'', customDeviceId:'' }; this.showModal = true; },
     editServer(s) { this.editIndex = s.index; this.serverForm = { ...s, password:'', apiKey:'' }; this.showModal = true; },
-    async saveServer() { const m = this.editIndex === null ? 'POST' : 'PUT'; await this.api('/admin/api/upstream' + (this.editIndex===null?'':'/'+this.editIndex), { method:m, body:JSON.stringify(this.serverForm) }); this.showModal = false; this.refreshServers(); },
+    async saveServer() {
+      const m = this.editIndex === null ? 'POST' : 'PUT';
+      try {
+        const res = await this.api('/admin/api/upstream' + (this.editIndex===null?'':'/'+this.editIndex), { method:m, body:JSON.stringify(this.serverForm) });
+        if (res.error) { alert('保存失败：' + res.error); return; }
+        if (res.warning) { alert('提示：' + res.warning); }
+        this.showModal = false;
+        await this.refreshServers();
+        await this.refreshDashboard();
+      } catch (e) {
+        alert((e && e.message) ? e.message : '保存上游服务器失败');
+      }
+    },
     async deleteServer(idx) { if(confirm('删除服务器？')) { await this.api('/admin/api/upstream/'+idx, { method:'DELETE' }); this.refreshServers(); } },
     async reconnectServer(idx) { await this.api('/admin/api/upstream/'+idx+'/reconnect', { method:'POST' }); this.refreshServers(); },
     async reorder(from, to) { await this.api('/admin/api/upstream/reorder', { method:'POST', body:JSON.stringify({fromIndex:from, toIndex:to}) }); this.refreshServers(); },
-    openAddProxy() { this.proxyForm = { name:'', url:'' }; this.showProxyModal = true; },
+    openAddProxy() { this.proxyForm = { name:'', url:'' }; this.proxyTestState = { loading: false, result: null }; this.showProxyModal = true; },
+    async testProxy(proxyUrl, targetUrl) {
+      try {
+        const res = await this.api('/admin/api/proxies/test', { method:'POST', body:JSON.stringify({ proxyUrl, targetUrl }) });
+        return res;
+      } catch(e) {
+        return { success: false, latency: 0, error: (e && e.message) ? e.message : '请求失败' };
+      }
+    },
+    async testProxyById(proxyId, targetUrl) {
+      try {
+        const res = await this.api('/admin/api/proxies/test', { method:'POST', body:JSON.stringify({ proxyId, targetUrl }) });
+        return res;
+      } catch(e) {
+        return { success: false, latency: 0, error: (e && e.message) ? e.message : '请求失败' };
+      }
+    },
+    async testProxyModal() {
+      if (!this.proxyForm.url) { alert('请先填写代理 URL'); return; }
+      this.proxyTestState.loading = true;
+      this.proxyTestState.result = null;
+      const r = await this.testProxy(this.proxyForm.url, 'https://www.google.com');
+      this.proxyTestState.loading = false;
+      this.proxyTestState.result = r;
+    },
+    async testProxyCard(p) {
+      p.testing = true;
+      // 从 proxyList 的原始配置取真实代理 URL（含认证信息）
+      // p.url 已被脱敏，需用 proxyForm 或重新从配置取。
+      // 改为调用后端时直接传 proxyId，让后端自己查真实 URL。
+      const r1 = await this.testProxyById(p.id, 'https://www.google.com');
+      const bound = this.upstreamList.find(s => s.proxyId === p.id);
+      let msg = r1.success ? `谷歌连通: ✓ ${r1.latency}ms` : `谷歌连通: ✗ ${r1.error}`;
+      if (bound) {
+        const r2 = await this.testProxyById(p.id, bound.url);
+        msg += '\n' + (r2.success ? `${bound.name}: ✓ ${r2.latency}ms` : `${bound.name}: ✗ ${r2.error}`);
+      }
+      p.testing = false;
+      alert(msg);
+    },
     async saveProxy() { await this.api('/admin/api/proxies', { method:'POST', body:JSON.stringify(this.proxyForm) }); this.showProxyModal = false; this.refreshProxies(); },
     async deleteProxy(id) { if(confirm('删除代理？')) { await this.api('/admin/api/proxies/'+id, { method:'DELETE' }); this.refreshProxies(); } }
   }

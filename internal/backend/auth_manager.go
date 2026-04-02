@@ -9,7 +9,8 @@ import (
 	"time"
 )
 
-const tokenTTL = 48 * time.Hour
+// Tokens never expire — they are only removed by explicit logout,
+// admin password reset, or manual revocation.
 
 type tokenInfo struct {
 	UserID    string `json:"userId"`
@@ -105,7 +106,8 @@ func (m *AuthManager) load() error {
 	return nil
 }
 
-func tokenFileMode() os.FileMode {
+// TokenFileMode returns the appropriate file permission for token storage.
+func TokenFileMode() os.FileMode {
 	if runtime.GOOS == "windows" {
 		return 0o644
 	}
@@ -115,11 +117,8 @@ func tokenFileMode() os.FileMode {
 func (m *AuthManager) save() error {
 	m.mu.RLock()
 	payload := map[string]any{"_proxyUserId": m.proxyUserID}
-	now := time.Now().UnixMilli()
 	for token, info := range m.tokens {
-		if now-info.CreatedAt < tokenTTL.Milliseconds() {
-			payload[token] = info
-		}
+		payload[token] = info
 	}
 	m.mu.RUnlock()
 
@@ -127,7 +126,7 @@ func (m *AuthManager) save() error {
 	if err != nil {
 		return err
 	}
-	return writeFileAtomically(m.tokenFile, encoded, tokenFileMode())
+	return writeFileAtomically(m.tokenFile, encoded, TokenFileMode())
 }
 
 func (m *AuthManager) Authenticate(username, password string) (map[string]any, bool, error) {
@@ -167,10 +166,10 @@ func (m *AuthManager) ValidateToken(token string) *tokenInfo {
 	if token == "" {
 		return nil
 	}
-	m.mu.Lock()
+	m.mu.RLock()
 	info, ok := m.tokens[token]
+	m.mu.RUnlock()
 	if !ok {
-		m.mu.Unlock()
 		if m.logger != nil {
 			short := token
 			if len(short) > 8 {
@@ -178,19 +177,6 @@ func (m *AuthManager) ValidateToken(token string) *tokenInfo {
 			}
 			m.logger.Debugf("Token rejected (not found): %s, known tokens=%d", short, len(m.tokens))
 		}
-		return nil
-	}
-	expired := time.Now().UnixMilli()-info.CreatedAt >= tokenTTL.Milliseconds()
-	if expired {
-		delete(m.tokens, token)
-	}
-	m.mu.Unlock()
-	if expired {
-		if m.logger != nil {
-			m.logger.Warnf("Token expired and removed: %s...", token[:8])
-		}
-		m.identity.DeleteCaptured(token)
-		_ = m.save()
 		return nil
 	}
 	infoCopy := info
@@ -212,6 +198,22 @@ func (m *AuthManager) RevokeToken(token string) bool {
 		_ = m.save()
 	}
 	return ok
+}
+
+// RevokeAllTokens invalidates every active token — used when admin
+// password is changed so all existing sessions must re-authenticate.
+func (m *AuthManager) RevokeAllTokens() {
+	m.mu.Lock()
+	old := m.tokens
+	m.tokens = make(map[string]tokenInfo)
+	m.mu.Unlock()
+	for token := range old {
+		m.identity.DeleteCaptured(token)
+	}
+	_ = m.save()
+	if m.logger != nil {
+		m.logger.Infof("All %d token(s) revoked (password changed)", len(old))
+	}
 }
 
 func (m *AuthManager) ProxyUserID() string {

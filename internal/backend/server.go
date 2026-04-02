@@ -1064,6 +1064,9 @@ func (a *App) handleAdminSettingsUpdate(w http.ResponseWriter, r *http.Request) 
 		}
 		nextCfg.Admin.Password = hashed
 	}
+
+	passwordChanged := nextCfg.Admin.Password != cfg.Admin.Password
+
 	for _, key := range []string{"api", "global", "login", "healthCheck", "healthInterval"} {
 		if raw, ok := body.Timeouts[key]; ok {
 			if parsed, ok := toPositiveInt(raw); ok {
@@ -1086,6 +1089,10 @@ func (a *App) handleAdminSettingsUpdate(w http.ResponseWriter, r *http.Request) 
 	if err := a.commitConfigSettingsOnly(nextCfg); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
+	}
+	// Revoke all tokens when password changes so old sessions must re-authenticate
+	if passwordChanged {
+		a.Auth.RevokeAllTokens()
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"success": true})
 }

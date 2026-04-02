@@ -1,7 +1,7 @@
 package backend
 
 /*
-#cgo CFLAGS: -I${SRCDIR}/../../third_party/sqlite -DSQLITE_THREADSAFE=1
+#cgo CFLAGS: -I${SRCDIR}/../../third_party/sqlite -DSQLITE_THREADSAFE=1 -DSQLITE_OMIT_LOAD_EXTENSION=1
 #cgo linux CFLAGS: -D_GNU_SOURCE
 #include <stdlib.h>
 #include "../../third_party/sqlite/sqlite3.c"

@@ -8,7 +8,8 @@ import (
 )
 
 func repoRootPath() string {
-	return filepath.Clean(filepath.Join("..", "..", ".."))
+	// cmd/emby-in-one → project root is two levels up
+	return filepath.Clean(filepath.Join("..", ".."))
 }
 
 func existingPaths(paths ...string) []string {
@@ -147,9 +148,9 @@ func TestAdminHTMLSaveServerHandlesUpstreamErrors(t *testing.T) {
 			"const res = await this.api(",
 			"'/admin/api/upstream'",
 			"res.error",
-			"alert(res.error)",
+			"alert('保存失败：' + res.error)",
 			"res.warning",
-			"alert(res.warning)",
+			"alert('提示：' + res.warning)",
 			"await this.refreshServers();",
 		} {
 			if !strings.Contains(text, fragment) {
