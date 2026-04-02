@@ -1,5 +1,30 @@
 # Emby-In-One 更新日志
 
+## V1.3.1
+发布日期：2026-04-02
+
+> V1.3.1 针对部分客户端（Yamby TV、SenPlayer 等）出现间歇性断线/401 的问题，对代理 Token 策略和上游认证恢复机制进行了改进。
+
+### Token 永不过期
+- 代理 Token 不再有 48 小时硬性过期限制，改为**永不过期**
+- Token 仅在以下场景被撤销：用户主动登出、管理员修改密码、CLI `--reset-password`
+- 修复 Yamby TV 等长时间后台挂起的客户端每 48 小时被强制 401 的问题
+
+### 上游认证自动恢复
+- 当上游服务器返回 401/403（非登录路径）时，代理自动触发异步重新登录
+- 30 秒防抖：短时间内大量 401 不会导致登录风暴
+- 登录路径本身的 401 不会触发恢复（避免死循环）
+- 修复上游 Token 过期后需要手动重连的问题
+
+### 密码修改安全增强
+- 管理面板修改密码后，自动撤销所有已签发的代理 Token（要求所有客户端重新登录）
+- CLI `--reset-password` 同步清除 tokens.json 中的所有会话
+
+### 测试与维护
+- 修复 `distribution_test.go` 中 `repoRootPath()` 路径层级错误
+- 修复 `TestAdminHTMLSaveServerHandlesUpstreamErrors` 测试断言与实际 HTML 不匹配
+- 导出 `TokenFileMode()` 确保 CLI 与核心模块使用一致的文件权限策略
+
 ## V1.3 (Pre-release)
 发布日期：2026-03-30
 
