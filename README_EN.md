@@ -63,7 +63,7 @@ sudo bash release-install.sh V1.3.0
 This script will automatically:
 - Download the matching Release binary based on your CPU architecture (no local Go compilation needed)
 - Initialize `/opt/emby-in-one/{config,data,log}` and generate a random admin password on the first run
-- Fetch companion resources `admin.html` and `emby-in-one-cli.sh`
+- Fetch companion resources `admin.html`, `admin.js` and `emby-in-one-cli.sh` (the binary already embeds the admin panel; external files are optional override updates)
 - Install and start the `systemd` service (`emby-in-one`), supporting auto-start on boot
 - Auto-backup and perform a rollback-safe upgrade if an older version is detected
 
@@ -378,6 +378,28 @@ Each upstream Item ID is mapped globally to a lone virtual ID (UUID layout). Any
 
 ---
 
+## Security Hardening
+
+- **Admin plaintext password auto-hashed on startup**: The Go backend automatically migrates plaintext `admin.password` to scrypt hash format on service startup, without waiting for the first login
+- **CLI password reset support**:
+
+```bash
+emby-in-one --reset-password <new-password>
+# Or use the SSH menu option "Change Admin Password"
+```
+
+- **Stricter `data/tokens.json` permissions**: Written with `0600` permissions on Unix/Linux
+- **Secure `config.yaml` writes**: Atomic replacement + `0600` permissions, reducing corruption risk and preventing other users from reading passwords
+- **Request body size limit**: All API request bodies limited to 2MB (`http.MaxBytesReader`), preventing malicious large requests from consuming memory
+- **Login rate limiting**: After 5 consecutive login failures from the same IP, locked for 15 minutes with `429 Too Many Requests`; atomic operations prevent TOCTOU race conditions; supports real IP detection behind reverse proxies (`X-Real-IP` / `X-Forwarded-For` / IPv6)
+- **Graceful shutdown**: On receiving `SIGINT` / `SIGTERM`, drains active connections (up to 10 seconds) before closing the HTTP server and health check timers
+- **Admin panel CSP**: Admin panel returns `Content-Security-Policy` headers, restricting script and style sources to reduce XSS risk
+- **Stream URL cache auto-eviction**: `IDStore` stream URL cache entries expire after 4 hours, cleaned every 30 minutes, preventing unbounded memory growth during long-running operation
+- **Proxy connectivity test SSRF protection**: The admin panel's proxy test endpoint includes DNS rebinding protection, blocking connections to private/reserved IP addresses (`127.x`, `10.x`, `172.16-31.x`, `192.168.x`, etc.)
+- **YAML comment-safe parsing**: Config file parsing correctly handles `#` characters inside quotes, no longer incorrectly truncating values containing `#`
+
+---
+
 ## Logging System
 
 ### Log Levels
@@ -396,6 +418,22 @@ Each upstream Item ID is mapped globally to a lone virtual ID (UUID layout). Any
 - Up to 5MB per file, retaining 1 rotated backup (auto-rotation)
 - Capable of being downloaded and cleared inside the admin panel
 
+### Log Configuration
+
+Default log level is `info`. Enable full debug logging via environment variables when troubleshooting:
+
+```bash
+LOG_LEVEL=debug FILE_LOG_LEVEL=debug
+```
+
+In Docker Compose:
+
+```yaml
+environment:
+  - LOG_LEVEL=debug
+  - FILE_LOG_LEVEL=debug
+```
+
 ---
 
 ## Admin Panel
@@ -410,6 +448,8 @@ Access `http://your-ip:8096/admin`, logging in with the admin credentials from t
 | **Network Proxies** | HTTP/HTTPS proxy pool management, supports one-click connectivity testing |
 | **Global Settings** | System name, default playback mode, admin account, timeout & grace period configuration |
 | **Runtime Logs** | Real-time log viewing, supports level filtering (ERROR/WARN/INFO/DEBUG), keyword search, downloading raw log files, and clearing logs |
+
+> The admin panel sidebar displays the current running version number. For adding/editing `spoofClient: passthrough` upstreams, if there is no captured client identity available, the admin API will still save the configuration but return a warning, keeping the upstream as offline until a real client logs in and triggers automatic retry.
 
 ### Admin API
 
@@ -484,6 +524,17 @@ If no client identities have been logged upon the first installation, passthroug
 4. Monitor logs mapping `source` fields to verify which header source was used (`last-success` = last cleared traits, `captured-override` = retry overrides matching fully tracked headers, `infuse-fallback` = defaulting maneuvers completely devoid of captured targets)
 5. If the naturally captured client UA itself is also rejected by the upstream, explicitly log in using an allowed client to capture appropriate identities safely
 
+### Only Admin Login Can Capture Client UA
+
+In passthrough mode, the proxy needs to capture the real client's UA / Device and other Emby identity headers. **Only when logging in with the admin account will the proxy capture and store these client header information**. Regular user logins do not trigger UA capture.
+
+Reason: The admin is the only role that maps directly to the upstream Emby account. Only the admin's login session needs to maintain a real client identity to pass through to upstream servers. Regular users' requests are sent by the proxy using the admin's previously captured client identity.
+
+If your passthrough upstream consistently fails to auto-login, please verify:
+1. You have logged into Emby-in-One using a real Emby client (Infuse, Emby iOS, etc.) with the **admin** account
+2. Check the admin panel "Captured Client Info" page to confirm records exist
+3. To change the captured client identity, log in once with the desired client using the admin account
+
 ### Playback 403 / 401
 
 Possible causes:
@@ -543,7 +594,7 @@ Emby-In-One/
 │   ├── config.go                   # YAML config load/save/validate/atomic write
 │   ├── server.go                   # HTTP server startup & graceful shutdown
 │   ├── routes.go                   # Route registry (URL → Handler mapping)
-│   ├── middleware.go               # HTTP middleware (CORS, logging, status capture)
+│   ├── middleware.go               # HTTP middleware (CORS, logging, status capture, SSRF protection, CSP)
 │   ├── auth.go                     # Proxy token issuance & validation
 │   ├── auth_context.go             # Per-request auth context injection & extraction
 │   ├── auth_manager.go             # Upstream auth management (login/session/API Key)
@@ -578,6 +629,7 @@ Emby-In-One/
 │   └── upstream_stub.go            # Upstream connection pool & concurrent request orchestration
 ├── third_party/sqlite/             # SQLite CGO source dependency
 ├── public/
+│   ├── embed.go                    # go:embed directive (compiles admin.html and admin.js into binary)
 │   ├── admin.html                  # Vue 3 + Tailwind CSS admin panel template
 │   └── admin.js                    # Vue 3 application logic (extracted from admin.html)
 ├── Dockerfile                      # Go runtime container build
