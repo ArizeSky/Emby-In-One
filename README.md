@@ -24,23 +24,6 @@ Emby连接地址：https://emby.cothx.eu.cc/
 
 ---
 
-## 功能概览
-
-- **多用户管理** — 支持创建普通用户，每个用户可独立配置可访问的上游服务器集合；管理面板、REST API 和 SSH 面板均支持用户增删改查。
-- **独立观看历史** — 普通用户拥有独立的观看进度、已播放状态、收藏和"继续观看 / 接下来观看"，与其他用户和上游服务器的共享账户完全隔离；管理员保持上游原始行为。
-- **并发播放数限制** — 每台上游服务器可配置最大并发播放数（`maxConcurrent`），超出限制的播放请求返回 429；基于心跳超时自动释放。
-- **角色权限隔离** — 管理员拥有全部服务器和管理面板访问权；普通用户仅可访问被分配的服务器，不可进入管理 API。
-- **多服务器聚合** — 将多台服务器的影视库、搜索结果合并展示。采用 Goroutine 并发请求 + 可配置宽恕期，快速服务器优先返回，慢速服务器在宽恕期内继续汇入；后台静默补全超时数据，实际延迟取决于最快服务器加宽恕期而非最慢服务器。单台上游离线时，已聚合的内容通过 OtherInstances 自动回退到其他在线服务器，继续观看和接下来观看不受影响。
-- **智能去重与优选** — 相同影片自动合并，保留多版本源可选；支持 4 级元数据优先级（指定标记 > 中文 > 长度 > 顺序）智能摘取最佳展示信息。
-- **高阶 UA 伪装** — 支持 Infuse 伪装、客户端透传UA特征，亦可通过 `custom` 模式为每台上游独立自定义全部 5 个 Emby 客户端标识字段，绕过Emby普遍的UA限制。
-- **网络代理池** — 各个上游服务器可独立配置专属 HTTP/HTTPS 代理，内置一键连通性测试。
-- **双播放模式** — 代理模式（流量中转，隐藏上游，支持 HLS/分段）或 直连模式（302 跳转上游，不耗费代理机流量）。
-- **Passthrough 延迟登录** — passthrough 模式的上游不再在启动时使用 Infuse 身份登录，等待真实客户端连接后再认证，避免产生虚假设备记录。
-- **Token 管理与会话稳定** — 代理 Token 永不过期（仅在登出/密码修改/手动吊销时撤销），避免长时间待机客户端被迫 401；上游 Token 过期时自动异步重登录（30 秒防抖），无需手动重连；管理员修改密码后自动吊销全部已签发 Token。
-- **完全管控与运维** — 内置现代化 SSH 命令行管理菜单及 Web 管理面板；自带持久化日志与 SQLite ID 映射。SSH 菜单自动检测 Binary/Docker 部署模式，分发到 systemd 或 Docker Compose 管理命令。
-
----
-
 ## 快速安装
 
 > **旧版 Node.js 部署说明**：如果您希望部署基于 Node.js 的 V1.2.1 稳定版，请前往本仓库的 [Releases 页面](https://github.com/ArizeSky/Emby-In-One/releases) 下载 V1.2.1 的 Source code 源码压缩包，解压后同样运行 `bash install.sh` 即可。
@@ -63,7 +46,7 @@ sudo bash release-install.sh V1.3.0
 该脚本会自动完成：
 - 按 CPU 架构下载对应 Release 二进制（无需本地编译 Go）
 - 初始化 `/opt/emby-in-one/{config,data,log}` 并首次生成随机管理员密码
-- 拉取 `admin.html` 与 `emby-in-one-cli.sh` 配套资源
+- 拉取 `admin.html`、`admin.js` 与 `emby-in-one-cli.sh` 配套资源（二进制已内嵌管理面板，外部文件为可选覆盖更新）
 - 安装并启动 `systemd` 服务（`emby-in-one`），支持开机自启
 - 若检测到旧版本，自动备份并执行可回滚升级
 
@@ -378,6 +361,28 @@ Passthrough 使用五级 header 解析，确保在任何状态下都能向上游
 
 ---
 
+## 安全加固
+
+- **管理员明文密码启动即哈希化**：Go 后端在服务启动时自动把明文 `admin.password` 迁移为 scrypt 哈希格式，无需等待首次登录
+- **支持 CLI 重置密码**：
+
+```bash
+emby-in-one --reset-password <new-password>
+# 或通过 SSH 菜单选择「修改管理员密码」
+```
+
+- **`data/tokens.json` 权限更严格**：Unix/Linux 上按 `0600` 写入
+- **`config.yaml` 安全写入**：原子替换方式保存 + `0600` 权限，减少配置损坏风险并防止其他用户读取密码
+- **请求体大小限制**：所有 API 请求体限制 2MB（`http.MaxBytesReader`），防止恶意大请求消耗内存
+- **登录速率限制**：同一 IP 连续登录失败 5 次后锁定 15 分钟，返回 `429 Too Many Requests`；原子操作避免 TOCTOU 竞态条件；支持反向代理场景下的真实 IP 识别（`X-Real-IP` / `X-Forwarded-For` / IPv6）
+- **优雅关机**：收到 `SIGINT` / `SIGTERM` 信号后，先排空当前活动连接（最多等待 10 秒），再关闭 HTTP 服务器和健康检查定时器
+- **管理面板 CSP**：Admin 面板返回 `Content-Security-Policy` 头，限制脚本和样式来源，降低 XSS 风险
+- **流媒体 URL 缓存自动淘汰**：`IDStore` 中的 `streamURLs` 缓存条目 4 小时后自动过期，每 30 分钟清理一次，防止长期运行后内存无限增长
+- **代理连通性测试 SSRF 防护**：管理面板的代理测试接口内置 DNS 重绑定防护，阻止请求连接到私有/保留 IP 地址（`127.x`、`10.x`、`172.16-31.x`、`192.168.x` 等）
+- **YAML 注释安全解析**：配置文件解析时正确处理引号内的 `#` 字符，不再错误截断含 `#` 的值
+
+---
+
 ## 日志系统
 
 ### 日志级别
@@ -396,6 +401,22 @@ Passthrough 使用五级 header 解析，确保在任何状态下都能向上游
 - 单文件最大 5MB，保留 1 个旧文件（自动轮转）
 - 管理面板可下载和清空
 
+### 日志配置
+
+默认日志级别为 `info`。排查故障时通过环境变量开启完整调试日志：
+
+```bash
+LOG_LEVEL=debug FILE_LOG_LEVEL=debug
+```
+
+Docker Compose 中设置：
+
+```yaml
+environment:
+  - LOG_LEVEL=debug
+  - FILE_LOG_LEVEL=debug
+```
+
 ---
 
 ## 管理面板
@@ -410,6 +431,8 @@ Passthrough 使用五级 header 解析，确保在任何状态下都能向上游
 | **网络代理** | HTTP/HTTPS 代理池管理，支持一键连通性测试 |
 | **全局设置** | 系统名称、默认播放模式、管理员账户、超时与宽恕期配置 |
 | **运行日志** | 实时日志查看，支持级别筛选（ERROR/WARN/INFO/DEBUG）、关键词搜索、下载原始日志文件、清空日志 |
+
+> 管理面板侧边栏底部显示当前运行版本号。对于 `spoofClient: passthrough` 的新增/编辑，如果当前没有已捕获的客户端身份，管理 API 仍会保存配置，但会返回 warning，并把该上游保留为 offline，等待真实客户端登录后自动重试。
 
 ### 管理 API
 
@@ -484,6 +507,17 @@ emby-in-one
 4. 查看日志中 `source` 字段确认使用了哪个头源（`last-success` = 使用上次成功的 headers，`captured-override` = 登录重试使用已捕获头，`infuse-fallback` = 无捕获头时兜底）
 5. 如果捕获的客户端 UA 本身也被上游拒绝，需从上游允许的客户端登录一次以捕获合适的身份
 
+### 只有 Admin 登录能录入客户端 UA
+
+Passthrough 模式下，代理需要捕获真实客户端的 UA / Device 等 Emby 标识头。**只有通过管理员（admin）账户登录时，代理才会捕获并存储这些客户端头信息**。普通用户登录不会触发 UA 捕获。
+
+原因：管理员是唯一直接映射到上游 Emby 账户的角色，只有管理员的登录会话需要与上游保持真实的客户端身份传递。普通用户的请求由代理使用已捕获的管理员客户端身份代为发送。
+
+如果您的 passthrough 上游始终未能自动登录，请确认：
+1. 您已使用真实 Emby 客户端（Infuse、Emby iOS 等）以 **admin** 身份登录过 Emby-in-One
+2. 查看管理面板「已捕获的客户端信息」确认是否有记录
+3. 如需更换客户端身份，以 admin 身份使用目标客户端登录一次即可
+
 ### 播放 403 / 401
 
 可能的原因：
@@ -543,7 +577,7 @@ Emby-In-One/
 │   ├── config.go                   # YAML 配置加载/保存/校验/原子写入
 │   ├── server.go                   # HTTP 服务器启动与优雅关机
 │   ├── routes.go                   # 路由注册总表（URL → Handler 映射）
-│   ├── middleware.go               # HTTP 中间件（CORS、日志、状态码捕获）
+│   ├── middleware.go               # HTTP 中间件（CORS、日志、状态码捕获、SSRF 防护、CSP）
 │   ├── auth.go                     # 代理 Token 签发与校验
 │   ├── auth_context.go             # 请求级认证上下文注入与提取
 │   ├── auth_manager.go             # 上游认证管理（登录/Session/API Key）
@@ -558,7 +592,7 @@ Emby-In-One/
 │   ├── id_rewriter.go              # 递归 ID 虚拟化/反虚拟化重写
 │   ├── query_ids.go                # 批量查询 ID 解析
 │   ├── media.go                    # 媒体聚合、去重、元数据优先级选择
-│   ├── aggregation.go              # 通用聚合框架（宽恕期 + 后台补全）
+│   ├── aggregation.go              # 通用聚合框架（宽恕期 + 后台静默补全）
 │   ├── media_items.go              # 媒体条目查询（多上游扇出合并）
 │   ├── media_resume.go             # "继续观看"接口代理与多上游合并
 │   ├── media_nextup.go             # "接下来观看"接口代理与多上游合并
@@ -578,6 +612,7 @@ Emby-In-One/
 │   └── upstream_stub.go            # 上游连接池 & 并发请求编排
 ├── third_party/sqlite/             # SQLite CGO 源码依赖
 ├── public/
+│   ├── embed.go                    # go:embed 指令（将 admin.html 和 admin.js 编译进二进制）
 │   ├── admin.html                  # Vue 3 + Tailwind CSS 管理面板模板
 │   └── admin.js                    # Vue 3 应用逻辑（从 admin.html 拆分）
 ├── Dockerfile                      # Go 环境容器构建
