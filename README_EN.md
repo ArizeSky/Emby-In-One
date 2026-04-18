@@ -13,6 +13,28 @@
 
 Based on Go language, it implements a multi-server Emby aggregation proxy — merges media libraries from multiple upstream Emby servers into a single unified endpoint accessible by any standard Emby client. Supports multi-user management, independent watch history, UA spoofing, concurrent playback limits, and role-based access control.
 
+## Table of Contents
+
+- [Demo Site](#demo-site)
+- [Preview](#preview)
+- [Features Overview](#features-overview)
+- [Quick Installation](#quick-installation)
+- [System Requirements](#system-requirements)
+- [Configuration Reference](#configuration-reference)
+- [Multi-User Management](#multi-user-management)
+- [Advanced Config & Core Principles](#advanced-config--core-principles)
+- [Health Check](#health-check)
+- [Security Hardening](#security-hardening)
+- [Logging System](#logging-system)
+- [Admin Panel](#admin-panel)
+- [SSH Management Menu](#ssh-management-menu)
+- [Data Directory Description](#data-directory-description)
+- [FAQ](#faq)
+- [Disclaimer](#disclaimer)
+- [Project Architecture](#project-architecture-developer-reference)
+- [Star History](#star-history)
+- [License](#license)
+
 ## Demo Site
 
 [Demo Site](https://emby.cothx.eu.cc/)
