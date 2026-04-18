@@ -171,6 +171,7 @@ COPY go.mod ./
 COPY third_party ./third_party
 COPY cmd ./cmd
 COPY internal ./internal
+COPY public ./public
 RUN CGO_ENABLED=1 go build -ldflags="-s -w -X main.Version=${VERSION}" -o /out/emby-in-one ./cmd/emby-in-one
 
 FROM debian:bookworm-slim
