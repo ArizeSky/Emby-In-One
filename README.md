@@ -2,6 +2,13 @@
 
 > **Version: V1.4.0**
 
+[![License: GPL v3](https://img.shields.io/github/license/ArizeSky/Emby-In-One?color=blue)](LICENSE)
+[![Go](https://img.shields.io/badge/Go-1.23+-00ADD8?logo=go&logoColor=white)](https://go.dev/)
+[![SQLite](https://img.shields.io/badge/SQLite-3-003B57?logo=sqlite&logoColor=white)](https://www.sqlite.org/)
+[![Docker](https://img.shields.io/badge/Docker-20.10+-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
+[![GitHub Release](https://img.shields.io/github/v/release/ArizeSky/Emby-In-One?color=green)](https://github.com/ArizeSky/Emby-In-One/releases)
+[![GitHub Stars](https://img.shields.io/github/stars/ArizeSky/Emby-In-One?style=social)](https://github.com/ArizeSky/Emby-In-One)
+
 [更新日志](Update.md) | [English README](README_EN.md) | [安全策略](SECURITY.md) | [更新计划](Update%20Plan.md) | [V1.2.1 旧版文档](README_V1.2.1.md) | [GitHub](https://github.com/ArizeSky/Emby-In-One)
 
 基于Go语言实现的多台 Emby 服务器聚合代理，将多个上游 Emby 服务器的媒体库合并为一个统一入口，支持任何标准 Emby 客户端访问。支持多用户管理、独立观看历史、UA伪装、并发播放数限制和角色权限隔离。
@@ -21,6 +28,23 @@ Emby连接地址：https://emby.cothx.eu.cc/
 ![预览图4](https://cdn.nodeimage.com/i/jCilzHTw7vzRJYaQFtbvd8ZOEaTxZvk6.webp)
 
 > 图床服务由 [NodeImage](https://www.nodeimage.com) 提供，感谢支持。
+
+---
+
+## 功能概览
+
+- **多用户管理** — 支持创建多个普通用户，每个用户可独立配置可访问的上游服务器；管理员可通过管理面板、REST API 和 SSH 菜单管理用户。
+- **独立用户账户** — 普通用户拥有独立的观看进度、已播放状态、收藏和"继续观看 / 接下来观看"，与其他用户及上游共享账户完全隔离；管理员保持原有上游行为。
+- **并发播放数限制** — 每台上游服务器可独立配置最大并发播放数（`maxConcurrent`），超出限制时返回 429；基于心跳超时自动释放占用。
+- **角色权限隔离** — 管理员拥有所有服务器和管理面板的完整访问权限；普通用户只能访问被分配的服务器，无法访问管理 API。
+- **多服务器聚合** — 合并并展示多台服务器的媒体库与搜索结果。使用 Goroutine 并发请求配合可配置宽恕期——快速服务器优先返回，慢速服务器在宽恕期窗口内继续汇入；超时数据在后台静默补全，聚合延迟取决于最快服务器加宽恕期而非最慢服务器。当某台上游离线时，已聚合内容自动通过 OtherInstances 回退到其他在线服务器——继续观看和接下来观看不受影响。
+- **智能去重与优先级** — 相同影片自动合并，保留多版本片源；支持 4 级元数据优先级逻辑（指定标记 > 中文 > 长度 > 顺序）智能选择最佳展示信息。
+- **高级 UA 伪装** — 支持 Infuse 伪装和客户端 UA 透传。还可使用 `custom` 模式为每台上游独立定义全部 5 个 Emby 客户端身份头，绕过常见 Emby UA 限制。
+- **网络代理池** — 可为每台上游服务器单独配置 HTTP/HTTPS 代理，内置一键连通性测试。
+- **双播放模式** — 代理模式（流量转发、隐藏上游、支持 HLS/分片）或直连模式（302 重定向至上游，节省代理带宽）。
+- **Token 管理与会话稳定** — 代理 Token 永不过期（仅在登出、改密或手动撤销时移除），防止长时间空闲设备频繁 401；上游 Token 过期时通过 30 秒防抖的异步重登录自动恢复；管理员改密后自动撤销所有已签发 Token。
+- **Passthrough 延迟登录** — passthrough 模式的上游不再在启动时使用 Infuse 身份尝试登录；而是等待真实客户端连接后再认证，避免在上游 Emby 产生虚假设备记录。
+- **全面管控与运维** — 内置现代化 SSH CLI 菜单和 Web 管理面板；配备持久化日志和 SQLite ID 映射。SSH 菜单自动检测 Binary/Docker 部署模式，所有操作自动分发到 systemd 或 Docker Compose 对应命令。
 
 ---
 
@@ -492,6 +516,10 @@ emby-in-one
 | GET | `/admin/api/logs/download` | 下载持久化日志文件 |
 | DELETE | `/admin/api/logs` | 清空日志 |
 | GET | `/admin/api/client-info` | 获取已捕获的客户端信息 |
+| GET | `/admin/api/users` | 列出所有普通用户 |
+| POST | `/admin/api/users` | 创建普通用户 |
+| PUT | `/admin/api/users/:id` | 修改普通用户 |
+| DELETE | `/admin/api/users/:id` | 删除普通用户（自动清除观看数据） |
 | POST | `/admin/api/logout` | 管理员登出 |
 
 ---
@@ -619,9 +647,14 @@ Emby-In-One/
 ├── docker-compose.yml
 ├── install.sh                      # 源码仓库一键部署脚本（Docker）
 ├── release-install.sh              # Release 二进制一键部署脚本（systemd）
-├── go_install.sh                   # Go 环境安装辅助脚本
 └── emby-in-one-cli.sh              # SSH 终端管理面板脚本
 ```
+
+---
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=ArizeSky/Emby-In-One&type=Date)](https://star-history.com/#ArizeSky/Emby-In-One&Date)
 
 ---
 

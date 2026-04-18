@@ -2,6 +2,13 @@
 
 > **Version: V1.4.0**
 
+[![License: GPL v3](https://img.shields.io/github/license/ArizeSky/Emby-In-One?color=blue)](LICENSE)
+[![Go](https://img.shields.io/badge/Go-1.23+-00ADD8?logo=go&logoColor=white)](https://go.dev/)
+[![SQLite](https://img.shields.io/badge/SQLite-3-003B57?logo=sqlite&logoColor=white)](https://www.sqlite.org/)
+[![Docker](https://img.shields.io/badge/Docker-20.10+-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
+[![GitHub Release](https://img.shields.io/github/v/release/ArizeSky/Emby-In-One?color=green)](https://github.com/ArizeSky/Emby-In-One/releases)
+[![GitHub Stars](https://img.shields.io/github/stars/ArizeSky/Emby-In-One?style=social)](https://github.com/ArizeSky/Emby-In-One)
+
 [Changelog](Update.md) | [中文文档](README.md) | [Security Policy](SECURITY.md) | [Update Plan](Update%20Plan.md) | [V1.2.1 Legacy Docs](README_V1.2.1.md) | [GitHub](https://github.com/ArizeSky/Emby-In-One)
 
 Based on Go language, it implements a multi-server Emby aggregation proxy — merges media libraries from multiple upstream Emby servers into a single unified endpoint accessible by any standard Emby client. Supports multi-user management, independent watch history, UA spoofing, concurrent playback limits, and role-based access control.
@@ -509,6 +516,10 @@ Runtime directories:
 | GET | `/admin/api/logs/download` | Download persisted log files |
 | DELETE | `/admin/api/logs` | Clear logs |
 | GET | `/admin/api/client-info` | Get currently captured client information |
+| GET | `/admin/api/users` | List all regular users |
+| POST | `/admin/api/users` | Create regular user |
+| PUT | `/admin/api/users/:id` | Update regular user |
+| DELETE | `/admin/api/users/:id` | Delete regular user (auto-clears watch data) |
 | POST | `/admin/api/logout` | Admin logout |
 
 ---
@@ -636,9 +647,14 @@ Emby-In-One/
 ├── docker-compose.yml
 ├── install.sh                      # Source repo one-click deploy script (Docker)
 ├── release-install.sh              # Release binary one-click deploy script (systemd)
-├── go_install.sh                   # Go environment install helper
 └── emby-in-one-cli.sh              # SSH terminal management menu script
 ```
+
+---
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=ArizeSky/Emby-In-One&type=Date)](https://star-history.com/#ArizeSky/Emby-In-One&Date)
 
 ---
 
