@@ -83,6 +83,15 @@ const passthroughDeferredWarning = "透传模式上游已保存，但当前没�
 
 func (a *App) validateUpstreamConnectivity(cfg Config, draft UpstreamConfig, index int, reqCtx *RequestContext) (upstreamValidationResult, error) {
 	client := newUpstreamClient(cfg, draft, index, a.Logger)
+	if draft.SpoofClient == "passthrough" && strings.TrimSpace(draft.APIKey) == "" {
+		source, _ := client.resolveIdentityHeaders(reqCtx, a.Identity, nil)
+		if source == "infuse-fallback" {
+			if a.Logger != nil {
+				a.Logger.Infof("[%s] Passthrough admin validation deferred — no captured client identity yet", draft.Name)
+			}
+			return upstreamValidationResult{Online: false, Warning: passthroughDeferredWarning}, nil
+		}
+	}
 	client.Login(context.Background(), reqCtx, a.Identity)
 	snapshot := client.snapshot()
 	if snapshot.Online && snapshot.AccessToken != "" && snapshot.UserID != "" {
@@ -90,10 +99,6 @@ func (a *App) validateUpstreamConnectivity(cfg Config, draft UpstreamConfig, ind
 	}
 	if draft.SpoofClient == "passthrough" {
 		if shouldDeferPassthroughValidation(snapshot.LastError) {
-			return upstreamValidationResult{Online: false, Warning: passthroughDeferredWarning}, nil
-		}
-		source, _ := client.resolveIdentityHeaders(reqCtx, a.Identity, nil)
-		if source == "infuse-fallback" {
 			return upstreamValidationResult{Online: false, Warning: passthroughDeferredWarning}, nil
 		}
 	}

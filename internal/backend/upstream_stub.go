@@ -164,6 +164,13 @@ func (p *UpstreamPool) handleUpstreamAuthError(c *UpstreamClient) {
 	}
 	c.lastRecovery = time.Now()
 	c.recoveryMu.Unlock()
+	if !p.canAttemptPassthroughLogin(c) {
+		if p.logger != nil {
+			p.logger.Warnf("[%s] Upstream auth error but passthrough recovery skipped — waiting for real client", c.Name)
+		}
+		c.setOffline("upstream auth expired")
+		return
+	}
 	if p.logger != nil {
 		p.logger.Warnf("[%s] Upstream auth error on normal request, triggering recovery re-login", c.Name)
 	}
@@ -285,6 +292,14 @@ func (p *UpstreamPool) Clients() []*UpstreamClient {
 	return out
 }
 
+func (p *UpstreamPool) canAttemptPassthroughLogin(client *UpstreamClient) bool {
+	if client == nil || client.Config.SpoofClient != "passthrough" || strings.TrimSpace(client.Config.APIKey) != "" {
+		return true
+	}
+	identity := p.identityService()
+	return identity != nil && identity.HasCapturedHeaders(client.serverKey)
+}
+
 func (p *UpstreamPool) OnlineClients() []*UpstreamClient {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -301,6 +316,13 @@ func (p *UpstreamPool) Reconnect(index int) *UpstreamClient {
 	client := p.GetClient(index)
 	if client == nil {
 		return nil
+	}
+	if !p.canAttemptPassthroughLogin(client) {
+		if p.logger != nil {
+			p.logger.Infof("[%s] Passthrough reconnect skipped — waiting for real client", client.Name)
+		}
+		copyClient := client.snapshot()
+		return &copyClient
 	}
 	client.Login(context.Background(), nil, p.identityService())
 	copyClient := client.snapshot()
