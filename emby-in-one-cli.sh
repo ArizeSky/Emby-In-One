@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 
 # ╔══════════════════════════════════════╗
-# ║    Emby In One 管理菜单 V1.4.0       ║
+# ║    Emby In One 管理菜单 V1.4.2       ║
 # ╚══════════════════════════════════════╝
 
 PROJECT_DIR="/opt/emby-in-one"
-VERSION="1.4.0"
+VERSION="1.4.2"
 SERVICE_NAME="emby-in-one"
 GITHUB_REPO="ArizeSky/Emby-In-One"
 
@@ -235,6 +235,7 @@ COPY go.mod ./
 COPY third_party ./third_party
 COPY cmd ./cmd
 COPY internal ./internal
+COPY public ./public
 RUN CGO_ENABLED=1 go build -ldflags="-s -w -X main.Version=${VERSION}" -o /out/emby-in-one ./cmd/emby-in-one
 
 FROM debian:bookworm-slim
@@ -253,7 +254,7 @@ services:
     build:
       context: .
       args:
-        VERSION: v1.4.0
+        VERSION: v1.4.2
     container_name: emby-in-one
     ports:
       - "8096:8096"
@@ -411,6 +412,7 @@ COPY go.mod ./
 COPY third_party ./third_party
 COPY cmd ./cmd
 COPY internal ./internal
+COPY public ./public
 RUN CGO_ENABLED=1 go build -ldflags="-s -w -X main.Version=${VERSION}" -o /out/emby-in-one ./cmd/emby-in-one
 
 FROM debian:bookworm-slim

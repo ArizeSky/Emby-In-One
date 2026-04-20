@@ -183,6 +183,48 @@ func TestShowsNextUpUsesPrimarySeriesResultWithoutQueryingSecondary(t *testing.T
 	})
 }
 
+func TestVideoStreamFailsExplicitlyWhenMediaSourceTargetServerIsUnavailable(t *testing.T) {
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/Users/AuthenticateByName":
+			_ = json.NewEncoder(w).Encode(map[string]any{"AccessToken": "tok-a", "User": map[string]any{"Id": "user-a"}})
+		case r.Method == http.MethodGet && r.URL.Path == "/Items/episode-a/PlaybackInfo":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"MediaSources": []map[string]any{{
+					"Id":        "ms-b",
+					"Container": "mkv",
+				}},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer primary.Close()
+
+	secondary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/Users/AuthenticateByName":
+			_ = json.NewEncoder(w).Encode(map[string]any{"AccessToken": "tok-b", "User": map[string]any{"Id": "user-b"}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer secondary.Close()
+
+	config := dualUpstreamConfig(primary.URL, secondary.URL)
+	withTempAppConfig(t, config, func(app *App, handler http.Handler) {
+		token := loginToken(t, handler, "secret")
+		virtualEpisode := app.IDStore.GetOrCreateVirtualID("episode-a", 0)
+		virtualMS := app.IDStore.GetOrCreateVirtualID("ms-b", 1)
+		app.Upstream.GetClient(1).setOffline("test offline")
+
+		rr := doJSONRequest(t, handler, http.MethodGet, "/Videos/"+virtualEpisode+"/stream.mkv?MediaSourceId="+virtualMS+"&api_key="+token, nil, "")
+		if rr.Code == http.StatusOK {
+			t.Fatalf("stream unexpectedly succeeded: %s", rr.Body.String())
+		}
+	})
+}
+
 func TestPlaybackInfoAndMasterPlaylistProxy(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {

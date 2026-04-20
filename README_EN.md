@@ -1,6 +1,6 @@
 # Emby-In-One
 
-> **Version: V1.4.1**
+> **Version: V1.4.2**
 
 [![License: GPL v3](https://img.shields.io/github/license/ArizeSky/Emby-In-One?color=blue)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.23+-00ADD8?logo=go&logoColor=white)](https://go.dev/)
@@ -74,7 +74,7 @@ Password: 5T5xF4oMxcnrcCPA
 
 > **Notice for Legacy Node.js Deployment**: If you wish to deploy the V1.2.1 stable Node.js version, please navigate to the [Releases page](https://github.com/ArizeSky/Emby-In-One/releases) of this repository, download the V1.2.1 Source code archive, extract it, and run `bash install.sh`.
 
-This project primarily recommends using Release binaries for V1.4.1 deployment directly on Linux servers (no local Go build required); Docker deployment is suitable for scenarios where you want to build the image yourself.
+This project primarily recommends using Release binaries for V1.4.2 deployment directly on Linux servers (no local Go build required); Docker deployment is suitable for scenarios where you want to build the image yourself.
 
 ### Method 1: Release Binary One-Click Install (Primary Recommendation)
 

@@ -142,8 +142,10 @@ func (ws *WatchStore) MarkPlayed(proxyUserID, virtualItemID string, played bool)
 	ws.mu.Lock()
 	defer ws.mu.Unlock()
 	return ws.db.execParams(`
-		UPDATE user_watch_progress SET played = ? WHERE proxy_user_id = ? AND virtual_item_id = ?
-	`, boolToInt(played), proxyUserID, virtualItemID)
+		INSERT INTO user_watch_progress (proxy_user_id, virtual_item_id, server_index, played, last_played)
+		VALUES (?, ?, 0, ?, ?)
+		ON CONFLICT(proxy_user_id, virtual_item_id) DO UPDATE SET played = excluded.played
+	`, proxyUserID, virtualItemID, boolToInt(played), time.Now().UnixMilli())
 }
 
 // SetFavorite sets the favorite status for a user+item.

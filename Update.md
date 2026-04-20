@@ -1,5 +1,25 @@
 # Emby-In-One 更新日志
 
+## V1.4.2
+
+发布日期：2026-04-20
+
+> V1.4.2 为 V1.4.1 的补丁版本，重点修复播放状态双写对上游失败过度敏感的问题，并收紧跨服 `MediaSourceId` 的流路由行为，补充 PlaybackInfo 诊断日志。
+
+### Bug 修复
+
+- 修复普通用户标记已播放 / 未播放时，本地 `WatchStore` 状态更新会被上游 `UserData` HTML / 502 错误连带阻断的问题：本地 Played 状态现可独立落盘，不再依赖上游成功
+- 修复 `WatchStore.MarkPlayed()` 仅执行 `UPDATE`、在无现有记录时无法创建播放状态的问题：现已改为 UPSERT，可直接写入首条 Played/Unplayed 记录
+- 修复 stream 路径中 `MediaSourceId` 明确指向其他上游但目标服务器不可用时，代码仍可能继续沿用原服务器尝试请求的问题：现改为显式返回 `Target media source server is unavailable`
+- 为 `PlaybackInfo` 增加按实例失败日志，记录具体失败的上游服务器与原始 item id，便于定位 `all upstream requests failed` 的真实来源
+
+### 测试与验证
+
+- 已 fresh 通过以下 Go 定向测试：
+  - `go test ./internal/backend -run 'TestWatchStoreMarkPlayedUpsertsWithoutPriorRecord|TestUserDataPlayedStillUpdatesLocalStateWhenUpstreamFails|TestVideoStreamFailsExplicitlyWhenMediaSourceTargetServerIsUnavailable|TestPlaybackInfoAndMasterPlaylistProxy|TestAdminUpstream(Create|Update)PassthroughWithoutCapturedHeadersDoesNotCallUpstream|TestPassthrough(Reconnect|AuthErrorRecovery)WithoutCapturedHeadersDoesNotCallUpstream' -count=1`
+
+---
+
 ## V1.4.1
 
 发布日期：2026-04-18

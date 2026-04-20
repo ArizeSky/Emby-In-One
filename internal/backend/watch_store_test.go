@@ -136,6 +136,20 @@ func TestWatchStoreMarkPlayed(t *testing.T) {
 	}
 }
 
+func TestWatchStoreMarkPlayedUpsertsWithoutPriorRecord(t *testing.T) {
+	ws := newTestWatchStore(t)
+
+	ws.MarkPlayed("user1", "item1", true)
+
+	got := ws.GetProgress("user1", "item1")
+	if got == nil {
+		t.Fatalf("expected progress record after MarkPlayed")
+	}
+	if !got.Played {
+		t.Fatalf("Played = false, want true")
+	}
+}
+
 func TestWatchStoreSetFavorite(t *testing.T) {
 	ws := newTestWatchStore(t)
 

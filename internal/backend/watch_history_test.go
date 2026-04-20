@@ -326,6 +326,53 @@ func TestWatchHistoryOverlayOnItemDetail(t *testing.T) {
 // TestWatchHistoryNoLeakFromUpstreamAdmin verifies that when a regular user
 // has no local watch progress, the upstream admin's UserData is cleared
 // (Played=false, position=0) instead of leaking to the user.
+func TestUserDataPlayedStillUpdatesLocalStateWhenUpstreamFails(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/Users/AuthenticateByName":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"AccessToken": "tok-a",
+				"User":        map[string]any{"Id": "user-a"},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/Users/user-a/Items/movie-a/UserData":
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte("<!DOCTYPE html><html><body>Cloudflare</body></html>"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+
+	config := parityConfigWithUpstreams(fmt.Sprintf("  - name: \"A\"\n    url: %q\n    username: \"u1\"\n    password: \"p1\"\n", upstream.URL))
+	withTempAppPrepared(t, config, nil, func(app *App, handler http.Handler, dir string) {
+		adminToken := loginTokenAs(t, handler, "admin", "secret")
+		rr := doAuthJSON(t, handler, http.MethodPost, "/admin/api/users", map[string]any{"username": "child", "password": "child123"}, adminToken)
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("create user: status=%d body=%s", rr.Code, rr.Body.String())
+		}
+		childToken := loginTokenAs(t, handler, "child", "child123")
+		childInfo := app.Auth.ValidateToken(childToken)
+		if childInfo == nil {
+			t.Fatal("child token validation returned nil")
+		}
+		childUserID := childInfo.UserID
+
+		virtualMovieID := app.IDStore.GetOrCreateVirtualID("movie-a", 0)
+		rr = doAuthJSON(t, handler, http.MethodPost,
+			fmt.Sprintf("/Users/%s/Items/%s/UserData", app.Auth.ProxyUserID(), virtualMovieID),
+			map[string]any{"Played": true}, childToken)
+		if rr.Code != http.StatusInternalServerError {
+			t.Fatalf("userdata POST status=%d body=%s", rr.Code, rr.Body.String())
+		}
+
+		progress := app.WatchStore.GetProgress(childUserID, virtualMovieID)
+		if progress == nil || !progress.Played {
+			t.Fatalf("Played should still be true locally after upstream failure")
+		}
+	})
+}
+
 func TestWatchHistoryNoLeakFromUpstreamAdmin(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {

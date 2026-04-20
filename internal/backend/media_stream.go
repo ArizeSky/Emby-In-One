@@ -46,10 +46,15 @@ func (a *App) handleVideoProxy(w http.ResponseWriter, r *http.Request) {
 					writeJSON(w, http.StatusForbidden, map[string]any{"message": "Access denied"})
 					return
 				}
-				if client := a.Upstream.GetClient(msResolved.ServerIndex); client != nil && client.IsOnline() {
-					if a.Logger != nil {
-						a.Logger.Infof("Stream: switching to server [%s] for MediaSourceId %s", client.Name, virtualMediaSourceID)
-					}
+				client := a.Upstream.GetClient(msResolved.ServerIndex)
+				if client == nil || !client.IsOnline() {
+					writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Target media source server is unavailable"})
+					return
+				}
+				if a.Logger != nil {
+					a.Logger.Infof("Stream: switching to server [%s] for MediaSourceId %s", client.Name, virtualMediaSourceID)
+				}
+				{
 					// Enforce concurrent playback limit on the target server
 					if reqCtx := requestContextFrom(r.Context()); reqCtx != nil && reqCtx.ProxyUser != nil && reqCtx.ProxyUser.Role != "admin" && a.PlaybackLimiter != nil {
 						cfg := a.ConfigStore.Snapshot()
@@ -212,10 +217,15 @@ func (a *App) handleAudioProxy(w http.ResponseWriter, r *http.Request) {
 					writeJSON(w, http.StatusForbidden, map[string]any{"message": "Access denied"})
 					return
 				}
-				if client := a.Upstream.GetClient(msResolved.ServerIndex); client != nil && client.IsOnline() {
-					if a.Logger != nil {
-						a.Logger.Infof("Audio stream: switching to server [%s] for MediaSourceId %s", client.Name, virtualMediaSourceID)
-					}
+				client := a.Upstream.GetClient(msResolved.ServerIndex)
+				if client == nil || !client.IsOnline() {
+					writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Target media source server is unavailable"})
+					return
+				}
+				if a.Logger != nil {
+					a.Logger.Infof("Audio stream: switching to server [%s] for MediaSourceId %s", client.Name, virtualMediaSourceID)
+				}
+				{
 					// Enforce concurrent playback limit on the target server
 					if reqCtx := requestContextFrom(r.Context()); reqCtx != nil && reqCtx.ProxyUser != nil && reqCtx.ProxyUser.Role != "admin" && a.PlaybackLimiter != nil {
 						cfg := a.ConfigStore.Snapshot()

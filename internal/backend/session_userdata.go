@@ -421,20 +421,22 @@ func (a *App) handleUserItemUserData(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "Invalid JSON body"})
 		return
 	}
+	var playedValue *bool
+	if bodyMap, ok := body.(map[string]any); ok {
+		if played, ok := bodyMap["Played"].(bool); ok {
+			playedValue = &played
+		}
+	}
+	// Dual-write: record played status to WatchStore for non-admin users
+	if a.WatchStore != nil {
+		if reqCtx := requestContextFrom(r.Context()); reqCtx != nil && reqCtx.ProxyUser != nil && reqCtx.ProxyUser.Role != "admin" && playedValue != nil {
+			_ = a.WatchStore.MarkPlayed(reqCtx.ProxyUser.UserID, virtualItemID, *playedValue)
+		}
+	}
 	status, payload, err := a.forwardJSONOrNoContent(r, resolved.Client, http.MethodPost, fmt.Sprintf("/Users/%s/Items/%s/UserData", resolved.Client.UserID, resolved.OriginalID), nil, body)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"message": err.Error()})
 		return
-	}
-	// Dual-write: record played status to WatchStore for non-admin users
-	if a.WatchStore != nil {
-		if reqCtx := requestContextFrom(r.Context()); reqCtx != nil && reqCtx.ProxyUser != nil && reqCtx.ProxyUser.Role != "admin" {
-			if bodyMap, ok := body.(map[string]any); ok {
-				if played, ok := bodyMap["Played"].(bool); ok {
-					_ = a.WatchStore.MarkPlayed(reqCtx.ProxyUser.UserID, virtualItemID, played)
-				}
-			}
-		}
 	}
 	if payload == nil {
 		if status == 0 {

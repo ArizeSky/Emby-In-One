@@ -1,6 +1,6 @@
 ﻿# Emby-In-One
 
-> **Version: V1.4.1**
+> **Version: V1.4.2**
 
 [![License: GPL v3](https://img.shields.io/github/license/ArizeSky/Emby-In-One?color=blue)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.23+-00ADD8?logo=go&logoColor=white)](https://go.dev/)
@@ -61,7 +61,7 @@ Emby连接地址：https://emby.cothx.eu.cc/
 - **角色权限隔离** — 管理员拥有所有服务器和管理面板的完整访问权限；普通用户只能访问被分配的服务器，无法访问管理 API。
 - **多服务器聚合** — 合并并展示多台服务器的媒体库与搜索结果。使用 Goroutine 并发请求配合可配置宽恕期——快速服务器优先返回，慢速服务器在宽恕期窗口内继续汇入；超时数据在后台静默补全，聚合延迟取决于最快服务器加宽恕期而非最慢服务器。当某台上游离线时，已聚合内容自动通过 OtherInstances 回退到其他在线服务器——继续观看和接下来观看不受影响。
 - **智能去重与优先级** — 相同影片自动合并，保留多版本片源；支持 4 级元数据优先级逻辑（指定标记 > 中文 > 长度 > 顺序）智能选择最佳展示信息。
-- **高级 UA 伪装** — 支持 Infuse 伪装（高风险！！！）和客户端 UA 透传。还可使用 `custom` 模式为每台上游独立定义全部 5 个 Emby 客户端身份头，绕过常见 Emby UA 限制。
+- **高级 UA 伪装** — 支持 Infuse 伪装和客户端 UA 透传。还可使用 `custom` 模式为每台上游独立定义全部 5 个 Emby 客户端身份头，绕过常见 Emby UA 限制。
 - **网络代理池** — 可为每台上游服务器单独配置 HTTP/HTTPS 代理，内置一键连通性测试。
 - **双播放模式** — 代理模式（流量转发、隐藏上游、支持 HLS/分片）或直连模式（302 重定向至上游，节省代理带宽）。
 - **Token 管理与会话稳定** — 代理 Token 永不过期（仅在登出、改密或手动撤销时移除），防止长时间空闲设备频繁 401；上游 Token 过期时通过 30 秒防抖的异步重登录自动恢复；管理员改密后自动撤销所有已签发 Token。
@@ -74,7 +74,7 @@ Emby连接地址：https://emby.cothx.eu.cc/
 
 > **旧版 Node.js 部署说明**：如果您希望部署基于 Node.js 的 V1.2.1 稳定版，请前往本仓库的 [Releases 页面](https://github.com/ArizeSky/Emby-In-One/releases) 下载 V1.2.1 的 Source code 源码压缩包，解压后同样运行 `bash install.sh` 即可。
 
-本项目优先推荐在 Linux 服务器直接使用 Release 二进制部署 V1.4.1（无需本地编译）；Docker 方式适合希望自行构建镜像的场景。
+本项目优先推荐在 Linux 服务器直接使用 Release 二进制部署 V1.4.2（无需本地编译）；Docker 方式适合希望自行构建镜像的场景。
 
 ### 方式一：Release 二进制一键安装（首推）
 
