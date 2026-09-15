@@ -267,8 +267,9 @@ func newUpstreamClient(cfg Config, upstream UpstreamConfig, index int, logger *L
 		Config:        upstream,
 		serverKey:     StableUpstreamKey(upstream),
 		httpClient: &http.Client{
-			Transport: transport,
-			Timeout:   time.Duration(timeouts.API) * time.Millisecond,
+			Transport:     transport,
+			Timeout:       time.Duration(timeouts.API) * time.Millisecond,
+			CheckRedirect: redirectPolicy(upstream.FollowRedirects),
 		},
 		transport: transport,
 		logger:    logger,
@@ -579,6 +580,21 @@ func (c *UpstreamClient) Stream(ctx context.Context, reqCtx *RequestContext, ide
 	return c.doRequest(ctx, reqCtx, http.MethodGet, path, params, nil, headers, true)
 }
 
+// redirectPolicy returns the redirect handling for an upstream. Following is the
+// default and is delegated to net/http, which caps the chain at 10 hops; passing
+// nil keeps exactly that. When the administrator turns following off, the request
+// stops at the upstream's redirect and is reported as an upstream failure: the
+// proxy never hands an upstream redirect target to the client as a successful
+// response, because that target can carry the upstream's own credentials.
+func redirectPolicy(follow bool) func(*http.Request, []*http.Request) error {
+	if follow {
+		return nil
+	}
+	return func(*http.Request, []*http.Request) error {
+		return errUpstreamRedirectNotFollowed
+	}
+}
+
 // getAccessToken returns the upstream's access token in a thread-safe manner.
 func (c *UpstreamClient) getAccessToken() string {
 	c.mu.RLock()
@@ -632,7 +648,7 @@ func (c *UpstreamClient) BuildURLForMode(path string, params url.Values, stream 
 	if businessPath == "" {
 		businessPath = "/"
 	}
-	policy := resolveOutboundPolicy(businessPath, http.MethodGet, mode, base)
+	policy := resolveOutboundPolicy(businessPath, http.MethodGet, stream, mode, base)
 	result, err := prepareOutboundURLWithReport(fullURL, reqCtx, auth, policy)
 	if err != nil {
 		return "", err
@@ -664,7 +680,7 @@ func (c *UpstreamClient) doRequestForMode(ctx context.Context, reqCtx *RequestCo
 	}
 
 	auth := c.authSnapshot()
-	policy := resolveOutboundPolicy(path, method, mode, base)
+	policy := resolveOutboundPolicy(path, method, stream, mode, base)
 
 	fullURL, err := url.Parse(base + path)
 	if err != nil {
@@ -732,7 +748,7 @@ func (c *UpstreamClient) doRequestForMode(ctx context.Context, reqCtx *RequestCo
 	}
 	client := c.httpClient
 	if stream {
-		client = &http.Client{Transport: c.transport, Timeout: 0}
+		client = &http.Client{Transport: c.transport, Timeout: 0, CheckRedirect: redirectPolicy(c.Config.FollowRedirects)}
 	}
 	if c.logger != nil {
 		changed := preparedURL.changed
@@ -752,7 +768,11 @@ func (c *UpstreamClient) doRequestForMode(ctx context.Context, reqCtx *RequestCo
 			c.logger.Errorf("[%s] Request failed: %s %s: %s", c.Name, method,
 				formatOutboundURLForLog(preparedURL.url.String()), redactURLInError(doErr))
 		}
-		return nil, doErr
+		// net/http builds this error from the request URL, which for a stream
+		// request carries the upstream token. Handlers surface upstream errors to
+		// the client, so the wrapped message is redacted here rather than at each
+		// of them; Unwrap keeps errors.Is/As working for cancellation checks.
+		return nil, &redactedError{err: doErr}
 	}
 	if c.logger != nil {
 		c.logger.Debugf("[%s] <- %s %s %d", c.Name, method, formatOutboundURLForLog(preparedURL.url.String()), resp.StatusCode)

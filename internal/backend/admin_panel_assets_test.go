@@ -365,3 +365,34 @@ func mustGetwd(t *testing.T) string {
 	}
 	return wd
 }
+
+// TestAdminPanelNamesTheUpstreamRedirectSetting guards the wording of the
+// followRedirects control. The setting decides whether an upstream's
+// 301/302/303/307/308 response is followed, which is the opposite direction from
+// the playback mode's "直连模式 (302)", where this proxy is the one answering
+// with a 302. A label that names only the status code leaves the reader unable to
+// tell the two apart, so the label has to name the action and the direction.
+// adminFollowRedirectsLabel captures the label text of the control bound to
+// serverForm.followRedirects.
+var adminFollowRedirectsLabel = regexp.MustCompile(`<label[^>]*>([^<]*)</label><select v-model="serverForm\.followRedirects"`)
+
+func TestAdminPanelNamesTheUpstreamRedirectSetting(t *testing.T) {
+	withEmbeddedPanel(t, func(handler http.Handler) {
+		page := fetchAdminPath(t, handler, "/admin/admin.html").Body.String()
+
+		label := adminFollowRedirectsLabel.FindStringSubmatch(page)
+		if label == nil {
+			t.Fatalf("admin.html no longer has a label bound to serverForm.followRedirects")
+		}
+		text := label[1]
+		if !strings.Contains(text, "跟随") {
+			t.Fatalf("the followRedirects label %q does not say what happens to the redirect", text)
+		}
+		if strings.Contains(text, "302") {
+			t.Fatalf("the followRedirects label %q names only one status code", text)
+		}
+		if strings.Contains(text, "自动") && !strings.Contains(text, "上游") {
+			t.Fatalf("the followRedirects label %q does not say who redirects", text)
+		}
+	})
+}

@@ -224,7 +224,7 @@ upstream:
     playbackMode: "redirect"                   # Overrides global playback mode
     spoofClient: "infuse"                      # none | passthrough | infuse | custom
     streamingUrl: "https://cdn.example.com"    # Independent streaming domain (optional)
-    followRedirects: true                      # Follow upstream 302 redirects (default true)
+    followRedirects: true                      # Follow upstream 301/302/303/307/308 (default true; when false the redirect is reported as an upstream error instead of being forwarded to the client)
     proxyId: null                              # Associate with proxy ID from proxy pool
     priorityMetadata: false                    # Prefer using this server's metadata when merging
     maxConcurrent: 3                           # Max concurrent playbacks, 0 means unlimited (affects regular users only)

@@ -37,8 +37,15 @@ func prepareURLForTest(t *testing.T, rawURL string, params url.Values, reqCtx *R
 	return result.url.String(), result.changed, nil
 }
 
+// testPolicy builds the policy for a normal (non-stream) API request.
 func testPolicy(businessPath, method string, mode outboundAuthMode) outboundIdentityPolicy {
-	return resolveOutboundPolicy(businessPath, method, mode, "")
+	return resolveOutboundPolicy(businessPath, method, false, mode, "")
+}
+
+// testStreamPolicy builds the policy for a stream request, which is the only
+// shape that authenticates through the query string.
+func testStreamPolicy(businessPath, method string, mode outboundAuthMode) outboundIdentityPolicy {
+	return resolveOutboundPolicy(businessPath, method, true, mode, "")
 }
 
 const (
@@ -136,33 +143,63 @@ func TestOutboundIdentityFinalQuery(t *testing.T) {
 func TestOutboundIdentityApiKeyHandling(t *testing.T) {
 	auth := fixtureAuthSnapshot()
 	reqCtx := fixtureRequestContext(fixtureAliceID)
-	policy := testPolicy("/Users/"+fixtureAliceID+"/Items", http.MethodGet, authModeNormal)
 
-	// api_key comes in under several spellings from both the params and the base
-	// URL; the local token must not survive in any of them, and the upstream token
-	// is written from this snapshot exactly once.
-	finalURL, _, err := prepareURLForTest(t,
-		"http://up.test/Users/"+fixtureAliceID+"/Items?api_key="+fixtureAliceToken+"&ApiKey="+fixtureAliceToken,
-		url.Values{"API_KEY": {fixtureAliceToken}},
-		reqCtx, auth, policy)
+	// api_key arrives under several spellings from both the params and the base
+	// URL. Every one of them must be gone, and none of them may be replaced: a
+	// normal API request authenticates with the header set.
+	rawURL := "http://up.test/Users/" + fixtureAliceID + "/Items?api_key=" + fixtureAliceToken + "&ApiKey=" + fixtureAliceToken
+	params := url.Values{"API_KEY": {fixtureAliceToken}}
+
+	normalPolicy := testPolicy("/Users/"+fixtureAliceID+"/Items", http.MethodGet, authModeNormal)
+	finalURL, _, err := prepareURLForTest(t, rawURL, params, reqCtx, auth, normalPolicy)
 	if err != nil {
 		t.Fatalf("prepare: %v", err)
 	}
-	parsed, _ := url.Parse(finalURL)
-	values := parsed.Query()
-	for key, rawValues := range values {
-		if strings.EqualFold(key, "api_key") {
-			if key != "api_key" {
-				t.Fatalf("api_key spelling %q survived: %s", key, finalURL)
-			}
-			if len(rawValues) != 1 || rawValues[0] != fixtureTargetToken {
-				t.Fatalf("api_key = %v, want exactly [%s]", rawValues, fixtureTargetToken)
-			}
+	if got := apiKeyValues(finalURL); len(got) != 0 {
+		t.Fatalf("a normal request carried an api_key %v: %s", got, finalURL)
+	}
+	for _, secret := range []string{fixtureAliceToken, fixtureTargetToken} {
+		if strings.Contains(finalURL, secret) {
+			t.Fatalf("a token reached the normal request URL: %s", finalURL)
 		}
 	}
-	if strings.Contains(finalURL, fixtureAliceToken) {
-		t.Fatalf("the local token reached the outbound URL: %s", finalURL)
+
+	// A stream request is the one shape that authenticates through the query, so
+	// there the upstream token is written — exactly once, from this snapshot.
+	streamPolicy := testStreamPolicy("/Videos/"+fixtureAliceID+"/master.m3u8", http.MethodGet, authModeNormal)
+	streamURL, _, err := prepareURLForTest(t, rawURL, params, reqCtx, auth, streamPolicy)
+	if err != nil {
+		t.Fatalf("prepare stream: %v", err)
 	}
+	got := apiKeyValues(streamURL)
+	if len(got) != 1 || got[0] != fixtureTargetToken {
+		t.Fatalf("stream api_key = %v, want exactly [%s] (%s)", got, fixtureTargetToken, streamURL)
+	}
+	if strings.Contains(streamURL, fixtureAliceToken) {
+		t.Fatalf("the local token reached the stream URL: %s", streamURL)
+	}
+	// No api_key spelling other than the canonical one survives.
+	parsed, _ := url.Parse(streamURL)
+	for key := range parsed.Query() {
+		if strings.EqualFold(key, "api_key") && key != "api_key" {
+			t.Fatalf("api_key spelling %q survived: %s", key, streamURL)
+		}
+	}
+}
+
+// apiKeyValues returns every api_key value in a prepared URL, whatever its case.
+func apiKeyValues(rawURL string) []string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for key, values := range parsed.Query() {
+		if strings.EqualFold(key, "api_key") {
+			out = append(out, values...)
+		}
+	}
+	return out
 }
 
 func TestOutboundIdentityAbsentUserID(t *testing.T) {
@@ -247,7 +284,7 @@ func TestOutboundIdentitySemanticPath(t *testing.T) {
 		// A deployment prefix and an unrelated path segment that happens to contain
 		// the user ID must not be rewritten.
 		path := "/emby/" + fixtureAliceID + "/Users/" + fixtureAliceID + "/Items"
-		policy := resolveOutboundPolicy("/Users/"+fixtureAliceID+"/Items", http.MethodGet, authModeNormal, "http://up.test/emby/"+fixtureAliceID)
+		policy := resolveOutboundPolicy("/Users/"+fixtureAliceID+"/Items", http.MethodGet, false, authModeNormal, "http://up.test/emby/"+fixtureAliceID)
 		finalURL, _, err := prepareURLForTest(t, "http://up.test"+path, nil, reqCtx, auth, policy)
 		if err != nil {
 			t.Fatalf("prepare: %v", err)

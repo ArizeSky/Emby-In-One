@@ -628,7 +628,27 @@ P5-test 的代码只有测试调用，不能顺带改 server.go 初始化或 Ups
 | P5-prod | 按第 9.3 节**保持暂缓**：未创建环境开关、运行时限频表或 `server.go` / `UpstreamPool.Reload` 接线。 |
 | 版本号常量 | `docker-compose.yml` / `install.sh` / `emby-in-one-cli.sh` 的版本串未在本批改动，发版时统一提升。 |
 
-### 12.5 回退方式
+### 12.5 实施后自查修正与追加项
+
+以下两项在本批验收后自查发现，已随 V1.4.4 一并修复：
+
+| 项目 | 说明 |
+|---|---|
+| **api_key 写回范围偏离 5.5 节** | 首批实现把上游 token 写进了**每一条**出站 URL，而第 5.5 节要求「普通 API 请求移除客户端 api_key 变体，以最终上游认证头认证」——只删不加，token 只属于流请求。实测偏差：`普通请求 URL = /Users/user-a/CustomEndpoint/orig-item?api_key=UPSTREAM-TOKEN`。已改为 `stripAPIKey`（清除）与 `apiKeyInQuery`（仅流请求写入）两个独立判定；修正后普通请求为 `/Users/user-a/CustomEndpoint/orig-item`，流请求仍为 `/Videos/orig-item/master.m3u8?api_key=…`。原 `TestOutboundIdentityApiKeyHandling` 是按实现而非按方案写的，已改写为断言「普通请求无 api_key、流请求恰好一个上游 token」。 |
+| **上游错误串的凭据** | `net/http` 的**传输错误**（连接失败／超时）按请求 URL 拼装，而流请求 URL 含上游 token；多处 handler 把 `err.Error()` 直接回给客户端。已在 `doRequest` 出口统一包一层 `redactedError`（`Error()` 经 `redactURLInError`，`Unwrap()` 保留原错误，`errors.Is/As` 语义不变），而不是逐个 handler 改。<br>记录一处自查中的判断修正：最初以为被拒绝的重定向也会带出请求 URL，实测 `net/http` 对该情形用的是**重定向目标**（上游 `Location`），并不含本代理请求的 token，因此最初的用例是空断言。已改为用真实可复现的路径——把 `streamingUrl` 指向无监听端口，制造连接失败——做断言，并做变异验证（去掉脱敏后用例立即报出明文 token）。 |
+
+追加修复（第 11 节残留之外的新增项，已在变更说明列明）：
+
+| 项目 | 说明 |
+|---|---|
+| **`followRedirects` 开关未接线** | 该字段在 Go 版只有声明／解析／写回／透出四处，**没有任何请求路径读取**；三处 `http.Client{}` 均未设置 `CheckRedirect`，Go 默认行为（跟随最多 10 跳）恒定生效，面板的「开启／关闭」是空操作。Node 版是接线的（`src/emby-client.js:366` `maxRedirects: this.config.followRedirects ? 5 : 0`），Go 重构时丢失。已接线：`true`（默认，含配置文件缺省时的 `UpstreamConfig{FollowRedirects: true}`）保持 `CheckRedirect = nil` 即沿用 net/http 默认，`false` 时返回 `errUpstreamRedirectNotFollowed`，请求按上游错误处理，不把上游重定向地址交给客户端。 |
+| **面板标签「自动 302」** | 只写状态码，且与同表单播放模式的「直连模式 (302)」方向相反。已更名为「跟随上游重定向」，选项「跟随（默认）／不跟随」，并标注覆盖 301/302/303/307/308。 |
+
+新增测试：`upstream_redirect_test.go`（默认跟随、关闭时不跟随且回 502 且不把重定向目标当流返回、流请求连接失败时错误串不含上游 token、`errors.Is` 穿透脱敏包装）；`admin_panel_assets_test.go` 增加标签回归用例。两处均做变异验证（把标签改回「自动 302」、去掉错误脱敏，对应用例分别失败）。
+
+本追加轮验收：`go build ./...` / `go vet ./...` / `gofmt` 干净；`go test ./... -count=1` 全绿；`go test -race ./internal/backend -count=1` → 510.8s，exit 0，无 DATA RACE。
+
+### 12.6 回退方式
 
 - 第一批：`git revert ec71507 186a663`（`.gitignore` 与基线保留）。
 - 第二批 P3：`git revert 3973dc5`；回退后旧客户端与新客户端都回到全局占位 ID，第一批的新旧 ID 兼容逻辑不依赖 P3。

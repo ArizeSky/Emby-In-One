@@ -224,7 +224,7 @@ upstream:
     playbackMode: "redirect"                   # 覆盖全局播放模式
     spoofClient: "infuse"                      # none | passthrough | infuse | custom
     streamingUrl: "https://cdn.example.com"    # 独立推流域名（可选）
-    followRedirects: true                      # 跟随上游 302 重定向（默认 true）
+    followRedirects: true                      # 是否跟随上游的 301/302/303/307/308（默认 true；false 时按上游错误处理，不把重定向地址转发给客户端）
     proxyId: null                              # 关联代理池中的代理 ID
     priorityMetadata: false                    # 合并时优先使用此服务器的元数据
     maxConcurrent: 3                           # 最大并发播放数，0表示不限制（仅影响普通用户）

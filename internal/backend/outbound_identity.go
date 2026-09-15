@@ -202,7 +202,11 @@ func prepareOutboundURLWithReport(
 		if changed, _ := stripAPIKeyVariants(query); changed {
 			result.changed = append(result.changed, carrierQuery)
 		}
-		if auth.AccessToken != "" {
+		// Stream requests authenticate through the query string. Everything else
+		// authenticates with the header set, so the token is not written here: a
+		// credential in every outbound URL buys nothing and widens what a log line
+		// or an error string can expose.
+		if policy.apiKeyInQuery && auth.AccessToken != "" {
 			query.Set("api_key", auth.AccessToken)
 		}
 	}

@@ -89,3 +89,37 @@ func preparationErrorBody(err error) map[string]any {
 		"field":   prep.Field,
 	}
 }
+
+// errUpstreamRedirectNotFollowed is returned in place of following an upstream
+// redirect when the administrator turned redirect following off for that
+// upstream. It carries no URL of its own: the request URL this proxy builds can
+// contain the upstream token, and net/http wraps this error in a *url.Error that
+// already includes the original request URL.
+var errUpstreamRedirectNotFollowed = errors.New("upstream redirect not followed (followRedirects is off)")
+
+// redactedError replaces an error's message with a version whose embedded URLs
+// have their credentials removed, while keeping the original error reachable
+// through Unwrap so errors.Is and errors.As still work.
+//
+// It exists because a transport error from net/http is built from the request
+// URL, and a stream request authenticates through its query string, so that URL
+// holds the upstream token; handlers surface upstream errors to the client. (A
+// refused redirect is not this case: net/http builds that one from the redirect
+// target, which is the upstream's own Location value.)
+type redactedError struct {
+	err error
+}
+
+func (e *redactedError) Error() string {
+	if e == nil || e.err == nil {
+		return ""
+	}
+	return redactURLInError(e.err)
+}
+
+func (e *redactedError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
+}

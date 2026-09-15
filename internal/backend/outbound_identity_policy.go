@@ -63,7 +63,14 @@ type outboundIdentityPolicy struct {
 	bodyUserID  identityFieldAction
 	authMode    outboundAuthMode
 	pathAction  identityFieldAction
+	// stripAPIKey removes every api_key spelling the client sent, whatever its
+	// case and whether it came from params or the base URL.
 	stripAPIKey bool
+	// apiKeyInQuery writes this request's upstream token into the query string.
+	// Only a stream request authenticates that way; a normal API request carries
+	// its credential in the header set, so writing it here as well would put a
+	// token in every outbound URL for no benefit.
+	apiKeyInQuery bool
 	// supported marks an endpoint the action table declares as a current-user
 	// endpoint. An unsupported request keeps the fallback rules.
 	supported bool
@@ -180,7 +187,7 @@ func pathHasAnySuffix(path string, suffixes []string) bool {
 // businessPath is the request path without the upstream base URL's own prefix.
 // method and mode select the bootstrap rules; baseURL is used only to keep the
 // deployment prefix out of the path rules.
-func resolveOutboundPolicy(businessPath string, method string, mode outboundAuthMode, baseURL string) outboundIdentityPolicy {
+func resolveOutboundPolicy(businessPath string, method string, stream bool, mode outboundAuthMode, baseURL string) outboundIdentityPolicy {
 	if mode == authModePasswordLogin || mode == authModeAPIKeyValidation {
 		return outboundIdentityPolicy{
 			pathClass:   pathClassBootstrap,
@@ -193,13 +200,14 @@ func resolveOutboundPolicy(businessPath string, method string, mode outboundAuth
 	}
 
 	policy := outboundIdentityPolicy{
-		pathClass:   pathClassUnclassified,
-		queryUserID: actionPassthrough,
-		bodyUserID:  actionPassthrough,
-		authMode:    authModeNormal,
-		pathAction:  actionPassthrough,
-		stripAPIKey: true,
-		baseURL:     baseURL,
+		pathClass:     pathClassUnclassified,
+		queryUserID:   actionPassthrough,
+		bodyUserID:    actionPassthrough,
+		authMode:      authModeNormal,
+		pathAction:    actionPassthrough,
+		stripAPIKey:   true,
+		apiKeyInQuery: stream,
+		baseURL:       baseURL,
 	}
 
 	// The path and query rules are independent. A supported endpoint normalizes

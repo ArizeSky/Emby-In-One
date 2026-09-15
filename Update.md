@@ -44,7 +44,7 @@
 - **已支持接口的 UserId 归一化**：`Items`、`Shows/NextUp`、`Seasons`、`Episodes`、媒体库读取、`Genres/MusicGenres/Studios/Persons/Artists`、`Search/Hints`、`Views`、`/Users/{id}/...`、`PlaybackInfo`、`Sessions/Playing|Progress|Stopped|Capabilities` 等接口声明的 `UserId`（query 与顶层 JSON body）按目标上游身份写入；字段缺省则不新增
 - **路径用户段归一化**：只替换业务 path 中完整的 `/Users/{id}` 用户段，不再对整条字符串做 `ReplaceAll`。旧 fallback 的全局字符串替换补丁已删除——它会把路径中任何位置出现的相同文本一起改掉
 - **认证头清理**：复合认证头（`X-Emby-Authorization` / `Authorization`）里的 `UserId`、`Token` 与原始凭据在重建时移除，只保留 Client / Device / DeviceId / Version 等设备信息；captured / last-success / latest **所有身份来源**走同一套清理，旧的持久化捕获文件在加载时也会被清洗
-- **redirect 与 HLS 基准 URL**：客户端直连上游的 302 `Location` 与 HLS manifest 基准 URL 复用同一套 URL 规则；`api_key` 的大小写变体统一清除后，由同一次快照写入上游 token
+- **`api_key` 只在流请求里出现**：客户端发来的 `api_key` / `ApiKey` 等大小写变体一律清除。**只有流请求**（含 redirect 模式的 `Location` 与 HLS 基准 URL）由同一次快照把上游 token 写入 query；普通 API 请求改由认证头认证，不再把 token 放进 URL——这既少了一处凭据暴露面，也不影响上游认证
 - **会话事件状态码**：`Progress` / `Stopped` 无法准备请求时不再吞成 204，改为返回准备错误对应的状态码；上游网络失败仍维持原有 204 约定，停止清理在该路径上继续执行，不会因为上报失败而漏放并发名额
 
 **响应身份（普通用户）**
@@ -57,9 +57,12 @@
 
 - redirect 目标、客户端流查询、上游错误里的 URL 一律经脱敏助手输出；`api_key` / `Token` / `Authorization` / 密码类字段、URL userinfo 与 fragment 不落日志
 - `Debugf` 同样进入内存日志，因此同样脱敏，不以“只有 debug”为由保留凭据
+- **对客户端的错误串同样脱敏**：`net/http` 的**传输错误**（连接失败、超时等）是按请求 URL 拼出来的，而流请求的 URL 含上游 token，此前该错误会原样转发给客户端；现已在出口统一去掉凭据，同时保留 `errors.Is/As` 语义，取消检测不受影响。已用变异验证覆盖（去掉脱敏后测试立即报出明文 token）
 
 ### Bug 修复
 
+- **上游「自动 302」开关不生效**：上游配置里的 `followRedirects` 只在解析、写回与管理 API 之间往返，**没有任何请求路径读它**——`http.Client` 从未设置 `CheckRedirect`，因此无论面板选什么，Go 的默认行为（跟随最多 10 跳）恒定生效。该开关在 Node 版是接线的（`emby-client.js` 的 `maxRedirects: 5/0`），Go 重构时丢的。现已接上：`followRedirects: true`（默认）保持原有跟随行为不变，`false` 时请求停在上游的重定向处并按上游错误处理（502），**不会把上游的重定向地址交给客户端**——那个地址可能带上游自己的凭据
+- **面板标签「自动 302」更名为「跟随上游重定向」**：原标签只写状态码，且与同一表单里播放模式的「直连模式 (302)」方向相反——一个指上游回 302 时本代理跟不跟，一个指本代理自己回 302。现标签写明动作与方向，选项为「跟随（默认）／不跟随」，并标注实际覆盖的 301/302/303/307/308
 - **无 `ParentId` 的聚合列表分页错误**：普通用户请求不带 `ParentId` 的列表时存在两个缺陷——偏移量被应用两次，翻到第 2 页起可能直接返回空列表；`TotalRecordCount` 只报告当页条数、丢失上游总数，导致客户端无法正确分页。现改为由代理统一接管分页并正确回传总数
 - **候选集截断无提示**：聚合扫描超过 5000 条时，现在会输出一条节流 WARN 说明总数与列表尾部可能被截断，而不是静默返回不完整的列表
 - **`login` / `healthCheck` 超时未接入请求链路**：两个配置项此前不生效，现已接入；默认值由 10000ms 调整为 **30000ms**（与接线前的实际行为一致）。启动时会检查 `login` 或 `healthCheck` 是否小于 `api` 并给出提示
@@ -112,6 +115,8 @@ object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'
 - 全量：`go test ./...` 全绿；`go test -race ./internal/backend/` → **414.4s，exit 0**
 - 虚拟用户 ID 透传修复新增测试：`outbound_identity_test.go`、`outbound_identity_policy_test.go`、`identifier_lookup_test.go`、`response_identity_test.go`、`outbound_diagnostics_test.go`、`stream_identity_test.go`、`stream_hls_identity_test.go`、`passthrough_identity_test.go`
 - 该批验证：`go build ./...` exit 0；`go test ./... -count=1` 全绿；`go test -race ./internal/backend -count=1` → **494.0s，exit 0**，无 DATA RACE
+- 上游重定向开关新增 `upstream_redirect_test.go`：默认跟随、关闭时不跟随且回 502 且不把重定向目标当流返回、流请求连接失败时错误串不含上游 token、`errors.Is` 穿透脱敏包装；面板文案用 `admin_panel_assets_test.go` 的用例守住。两处均做变异验证：把标签改回「自动 302」、去掉错误脱敏，对应用例分别失败
+- 该项复查后再次全量：`go build ./...` / `go vet ./...` / `gofmt` 干净；`go test ./... -count=1` 全绿；`go test -race ./internal/backend -count=1` → **510.8s，exit 0**，无 DATA RACE
 - 关键修复均做**变异验证**（故意破坏 → 确认测试失败 → 还原），覆盖：CSP 放回 `'unsafe-inline'`、样式表指回 CDN、面板资源改名、磁盘/内嵌回退方向反转、移除反斜杠守卫、移除 `/admin/{$}` 精确路由（确认 `/admin/` 退回目录列表时测试失败）
 
 ### 已知限制
@@ -131,7 +136,7 @@ object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'
 
 ### 文档与版本同步
 
-- `README.md` / `README_EN.md`：当前版本与推荐部署版本同步更新为 **V1.4.4**；补充 `trustProxy` 使用前提与 nginx 配置片段、日志轮转说明、超时参考与「上游服务器显示离线 / 登录超时」FAQ
+- `README.md` / `README_EN.md`：当前版本与推荐部署版本同步更新为 **V1.4.4**；补充 `trustProxy` 使用前提与 nginx 配置片段、日志轮转说明、超时参考与「上游服务器显示离线 / 登录超时」FAQ；`followRedirects` 的注释写清实际覆盖的状态码与关闭后的行为
 - `docker-compose.yml` / `install.sh` / `emby-in-one-cli.sh`：默认构建版本与 CLI 展示版本同步更新为 **V1.4.4**
 - `Update Plan.md`：当前稳定版本同步更新为 **V1.4.4**
 
