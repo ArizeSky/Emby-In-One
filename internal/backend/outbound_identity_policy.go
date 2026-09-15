@@ -215,35 +215,41 @@ func resolveOutboundPolicy(businessPath string, method string, mode outboundAuth
 		}
 	}
 
+	declared := false
 	if pathMatchesAny(businessPath, currentUserQueryPaths) ||
 		pathHasAnySuffix(businessPath, currentUserPathSuffixes) {
+		declared = true
 		policy.supported = true
 		policy.queryUserID = actionNormalizeToCurrent
 		policy.pathAction = actionNormalizeToCurrent
 	}
 	if pathMatchesAny(businessPath, currentUserWritablePaths) {
+		declared = true
 		policy.supported = true
 		policy.queryUserID = actionNormalizeToCurrent
 		policy.bodyUserID = actionNormalizeToCurrent
+		policy.pathAction = actionPassthrough
 	}
 	if strings.HasSuffix(businessPath, "/PlaybackInfo") {
+		declared = true
 		policy.supported = true
 		policy.queryUserID = actionNormalizeToCurrent
 		policy.bodyUserID = actionNormalizeToCurrent
 		policy.pathAction = actionPassthrough
 	}
 
-	// An unclassified GET/HEAD read may still be answered for the current user when
-	// every UserId it carries is a trusted alias of this request. Writes and
-	// unknown authorization targets are never rewritten this way.
-	if !policy.supported {
+	if !declared {
+		// The path table does not name this endpoint, so nothing here is assumed to
+		// be a current-user field. The narrow self-alias exception still applies: a
+		// trusted alias of this request keeps working while another local user's ID
+		// passes through.
+		policy.pathClass = pathClassSelfAlias
+		// The query-side half of that exception is limited to reads. A write body is
+		// never rewritten, so an unclassified write keeps every value it was sent.
 		switch strings.ToUpper(method) {
 		case "GET", "HEAD":
 			policy.fallbackRead = true
 		}
-	}
-	if policy.pathClass == pathClassUnclassified && policy.pathAction == actionPassthrough {
-		policy.pathClass = pathClassSelfAlias
 	}
 	return policy
 }

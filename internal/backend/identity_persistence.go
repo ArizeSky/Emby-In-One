@@ -155,7 +155,25 @@ func (p *IdentityPersistence) loadLocked() (identityPersistenceSnapshot, error) 
 	if snapshot.LastSuccessByServer == nil {
 		snapshot.LastSuccessByServer = map[string]persistedCapturedHeaders{}
 	}
+	sanitizePersistenceSnapshot(&snapshot)
 	return snapshot, nil
+}
+
+// sanitizePersistenceSnapshot drops credential-bearing headers from every entry
+// the file holds. A capture file written by an older version stored the compound
+// authorization header verbatim; loading it without cleanup would both forward
+// those credentials and write them back on the next save.
+func sanitizePersistenceSnapshot(snapshot *identityPersistenceSnapshot) {
+	if snapshot == nil {
+		return
+	}
+	if snapshot.LatestCaptured != nil {
+		snapshot.LatestCaptured.Headers = normalizeCapturedHeaders(snapshot.LatestCaptured.Headers)
+	}
+	for serverKey, persisted := range snapshot.LastSuccessByServer {
+		persisted.Headers = normalizeCapturedHeaders(persisted.Headers)
+		snapshot.LastSuccessByServer[serverKey] = persisted
+	}
 }
 
 func (p *IdentityPersistence) saveLocked(snapshot identityPersistenceSnapshot) error {

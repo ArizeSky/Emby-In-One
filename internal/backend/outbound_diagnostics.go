@@ -125,11 +125,12 @@ func scanOutboundIdentity(input outboundDiagnosticsInput, lookup *IdentifierLook
 				}
 				sort.Strings(keys)
 				for _, key := range keys {
-					if strings.EqualFold(key, "UserId") {
-						for _, value := range parsed.Query()[key] {
-							if !record(carrierQuery, "query."+key, value) {
-								return result
-							}
+					if !isDiagnosticIdentityQueryKey(key) {
+						continue
+					}
+					for _, value := range parsed.Query()[key] {
+						if !record(carrierQuery, "query."+key, value) {
+							return result
 						}
 					}
 				}
@@ -199,6 +200,26 @@ func scanOutboundIdentity(input outboundDiagnosticsInput, lookup *IdentifierLook
 		}
 	}
 	return result
+}
+
+// diagnosticIdentityQueryKeys are the query parameters a scan reads: the declared
+// current-user field plus the resource identifiers this proxy maps. A value is
+// only reported when it actually matches a registered identifier, so reading a
+// wider key set cannot produce a finding on its own.
+var diagnosticIdentityQueryKeys = map[string]bool{
+	"userid":        true,
+	"itemid":        true,
+	"id":            true,
+	"parentid":      true,
+	"seriesid":      true,
+	"seasonid":      true,
+	"mediasourceid": true,
+	"playsessionid": true,
+	"sessionid":     true,
+}
+
+func isDiagnosticIdentityQueryKey(key string) bool {
+	return diagnosticIdentityQueryKeys[strings.ToLower(key)]
 }
 
 // isIdentityBearingHeader reports whether a header carries a credential or an

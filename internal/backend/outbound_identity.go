@@ -218,11 +218,13 @@ func prepareOutboundURLWithReport(
 	segment, hasSegment := userIDPathSegment(businessPath)
 	if hasSegment && !isStaticUserRoute(segment) {
 		normalizeSegment := policy.pathAction == actionNormalizeToCurrent
-		if !normalizeSegment && policy.fallbackRead {
-			// The same compatibility exception the query rule uses: an unclassified
-			// read whose user segment is a trusted alias of this request is
-			// normalized, so a client that still holds the legacy global ID keeps
-			// working. Another local user's ID is not an alias and passes through.
+		if !normalizeSegment && policy.pathClass == pathClassSelfAlias {
+			// The path-side compatibility exception, for any method: an
+			// unclassified path whose user segment is a trusted alias of this
+			// request keeps working, so a client still holding the legacy global ID
+			// is not locked out of an endpoint the proxy does not model. Another
+			// local user's ID is not an alias and passes through untouched. The
+			// write-body rule is separate and never widened by this.
 			normalizeSegment = IsCurrentUserAlias(segment, reqCtx, auth, policyLookup(reqCtx))
 		}
 		if normalizeSegment {
