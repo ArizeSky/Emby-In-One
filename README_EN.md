@@ -240,7 +240,7 @@ upstream:
     customDeviceId: "your-custom-device-id"
 ```
 
-Settings modified in the admin panel take effect hotly, no service restart required.
+Settings modified in the admin panel take effect hotly, no service restart required. The one exception is the global default playback mode, which is only the initial value for a new upstream — see Playback Modes.
 
 ### Reverse Proxy Trust (`trustProxy`)
 
@@ -356,6 +356,8 @@ Authentication decision and fault tolerance logic:
 | `redirect` | The client receives a `302` redirect, connecting directly to the upstream stream URL. Traffic does not pass via the proxy after redirection. | Clients can directly connect upstream; Saves proxy server bandwidth |
 
 **Priority**: Single server `playbackMode` > Global `playback.mode` > `"proxy"` (default)
+
+> **The global `playback.mode` is only the initial value for a new upstream.** Once an upstream exists its `playbackMode` has already been written with the value of that moment, so changing the global default later does **not** affect any existing upstream (same for the "default playback mode" field at the top of the panel). To change one upstream's mode, use the playback-mode dropdown in that server's edit dialog — it takes effect immediately.
 
 When using `proxy` mode, if the upstream has a separate streaming domain (CDN, etc.), you can set `streamingUrl`, and the proxy will construct stream URLs using that domain instead of the API address.
 

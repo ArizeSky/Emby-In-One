@@ -70,6 +70,9 @@
 - **管理面板宽限期输入框无法关闭功能**：两个宽限期输入的 `min` 由 1000 改为 0，并标注 `0=禁用`
 - **管理面板入口多一跳、地址栏重复 `admin`**：`/admin` 原先 302 到 `/admin/admin.html`，地址栏最终停在带文件名的二级路径上。这一跳是被逼出来的——面板自身的资源引用是相对路径（`vendor/vue.global.prod.js`、`admin.js`），只有在以 `/` 结尾的目录 URL 下才能正确解析，而当时的 `/admin/` 返回的是 `http.FileServer` 的**目录列表**（列出 `admin.html`、`admin.js`、`vendor/`），并不是面板。现在 `/admin` 一跳跳到 `/admin/`，由 `/admin/` 直接返回面板内容，目录列表不再暴露；`/admin/admin.html` 继续可用，旧书签不受影响。`admin.html` 本身一行未改，因此磁盘上任何历史版本的面板文件在新入口下都能正常加载
 - **安装脚本文件权限**：`install.sh` 与 `emby-in-one-cli.sh` 补齐 `data/` 与 `config.yaml` 的权限设置，避免脚本重写配置后权限被放宽
+- **上游排序会让普通用户的「允许服务器」串位**（越权/失权风险）：`handleAdminUpstreamReorder` 只同步了 ID 映射（`IDStore.ReorderServerIndices`），**没有同步每个用户的允许服务器列表**——而该列表存的是**下标**，删除路径是有对应处理的（`UserStore.ShiftServerIndices`），排序这条漏了。面板上点一次上移/下移，普通用户的权限就悄悄指向另一台上游（实测：允许服务器 1 = "B"，排序后下标仍是 1，却已变成 "A"）。现补 `UserStore.ReorderServerIndices`，并与 ID 映射一起封进 `App.remapServerIndices`，两半不再可能被拆开；重映射会写回 `user_servers` 表（只改内存的话重启后权限又跳回去），且**保持「无限制用户」的空列表不变**——`nil`（允许全部）与空列表（不允许任何服务器）在鉴权里不是一回事
+- **上游「认证方式」在面板上无法切换**：面板的 `authType` 只是从「`apiKey` 是否为空」**推导出来的展示值**，不是可写字段；后端更新分支里 `apiKey` 与 `password` 都只在非空时覆盖，没有任何分支能清掉另一种凭据，而校验要求两者**恰好其一**。结果 apiKey ↔ 用户名/密码 两个方向都被 400「上游认证方式必须为 apiKey 或 用户名+密码 二选一」挡下，配好之后只能删掉服务器重建。现在 `authType` 是真正的输入：显式声明的那一种凭据生效，另一种被清空；清除动作在逐字段写入**之后**执行，因此声明值胜过请求里顺带带上的旧凭据（面板切换时会带着旧的 `username`）
+- **设置页保存后 `api` / `login` / `healthCheck` / `healthInterval` 不生效**：这四个值在构建上游客户端时被读入（`http.Client.Timeout`、客户端的 `timeouts` 字段、健康检查 ticker），而设置页保存走 `commitConfigSettingsOnly`（不重建上游池）——面板提示「保存成功」，运行中的客户端却一直用旧值，直到重启或碰巧改一次上游。现在设置页保存同样重建上游池（`healthInterval` 由这次重建顺带重启的健康检查循环生效），但**不重新登录**：凭据按 `serverKey` 沿用，上游不会被踢下线（已有用例 `TestAdminSettingsUpdateKeepsUpstreamOnlineAfterCommit` 继续守住这一点）。`global` 与三个宽恕期本来就是每请求读快照，行为不变
 
 ### 稳定性与可维护性
 
@@ -117,6 +120,9 @@ object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'
 - 该批验证：`go build ./...` exit 0；`go test ./... -count=1` 全绿；`go test -race ./internal/backend -count=1` → **494.0s，exit 0**，无 DATA RACE
 - 上游重定向开关新增 `upstream_redirect_test.go`：默认跟随、关闭时不跟随且回 502 且不把重定向目标当流返回、流请求连接失败时错误串不含上游 token、`errors.Is` 穿透脱敏包装；面板文案用 `admin_panel_assets_test.go` 的用例守住。两处均做变异验证：把标签改回「自动 302」、去掉错误脱敏，对应用例分别失败
 - 该项复查后再次全量：`go build ./...` / `go vet ./...` / `gofmt` 干净；`go test ./... -count=1` 全绿；`go test -race ./internal/backend -count=1` → **510.8s，exit 0**，无 DATA RACE
+- 面板设置接线复查（上游排序权限、认证方式切换、超时即时生效）新增测试：`admin_settings_reload_test.go`、`admin_upstream_auth_test.go`、`user_store_test.go` 的 `TestUserStoreReorderServers`、`multiuser_test.go` 的 `TestUpstreamReorderKeepsUserPermissionsOnTheSameServer`
+- 该批四处均做**变异验证**：设置页保存改回不重建上游池 → 四个超时断言全部失败；移除 `applyDeclaredAuthType` → 两个方向的切换都退回 400；排序只同步 ID 映射 → 权限串回 "A"；索引只改内存不落库 → 重启后的持久化断言失败
+- 该批全量：`go build ./...` / `go vet ./...` / `gofmt` 干净；`go test ./... -count=1` 全绿；`go test -race ./internal/backend -count=1` → **537.7s，exit 0**，无 DATA RACE
 - 关键修复均做**变异验证**（故意破坏 → 确认测试失败 → 还原），覆盖：CSP 放回 `'unsafe-inline'`、样式表指回 CDN、面板资源改名、磁盘/内嵌回退方向反转、移除反斜杠守卫、移除 `/admin/{$}` 精确路由（确认 `/admin/` 退回目录列表时测试失败）
 
 ### 已知限制
@@ -133,6 +139,9 @@ object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'
 - **响应改写器仍按字段名推断语义**：未知接口中的多用户实体需要后续独立适配，替换响应身份参数不等于解决全部响应语义
 - **raw body 不是「物理不可改写」**：JSON 声明以外的原始字节按原样转发（含前后空白），已知格式之外的 UserId 本轮不做适配
 - **身份来源覆盖有限**：临时 session ID、已删除标识、重置数据库前的缓存值与过期 token 不在查询覆盖内
+- **面板「默认播放模式」对已有上游无效（本次未修）**：全局模式只在**新建上游**时作为初始值写入（加载期 `normalizeUpstream` 把全局值填进每个上游），此后该上游的 `PlaybackMode` 非空，`streamPlaybackMode` 的「回退到全局」分支永远走不到；设置页保存又不重建上游池，因此改全局模式**既不立刻生效、重启也不生效**。更麻烦的是这次保存会把当时的旧模式当成「显式覆盖」写进每个上游（序列化条件 `upstream.PlaybackMode != cfg.Playback.Mode`），等于把全局设置**永久钉死**。要改某台上游的模式，请用该服务器的「播放模式」下拉（**即时生效**）。彻底修法需要区分「显式设置」与「继承全局」（空值=继承、校验允许空、序列化只写显式值），留待后续版本；新增服务器对话框的「播放模式」下拉目前也固定显示「代理模式」，与全局默认无关，同属这一处
+- **上游排序同样不会同步观看记录里的 `server_index`（本次未修）**：`user_watch_progress` 表按 `(proxy_user_id, virtual_item_id)` 主键，另存一份 `server_index` 副本，读路径 `resolveWatchItemServer` 会**先用它**（只有当那台上游离线时才回退到 ID 映射与其他实例）。排序后这份副本同样会指向另一台上游，于是「继续观看」可能拿 A 的地址去要 B 的条目 ID。它比权限串位轻——条目重新播放时会写回新下标，且离线时会经 IDStore 自愈——但性质相同。修法与本次一致（补一个 `WatchStore` 的索引重映射并挂进 `App.remapServerIndices`），留待后续版本
+- **删除网络代理不会清理上游对它的引用**：上游配置里的 `proxyId` 会留下悬空值，运行时静默回退为直连（只写一条日志），面板列表显示「不使用」，但配置文件里始终留着那个已删除的 id
 
 ### 文档与版本同步
 
