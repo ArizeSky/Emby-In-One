@@ -375,6 +375,11 @@ func (a *App) handleAdminProxyTest(w http.ResponseWriter, r *http.Request) {
 	safeTransport := wrapTransportWithSSRFCheck(transport)
 	client := &http.Client{Transport: safeTransport, Timeout: 10 * time.Second}
 	start := time.Now()
+	// This is a probe-only exit: it talks to an administrator-supplied URL and
+	// carries no client request identity, so it deliberately does not go through
+	// the shared outbound preparation layer. If it is ever changed to forward a
+	// real business request, it must be wired into that layer instead of relying
+	// on this comment.
 	resp, err := client.Get(body.TargetURL)
 	latency := time.Since(start).Milliseconds()
 	if err != nil {
@@ -627,7 +632,7 @@ func (a *App) handleAdminUsersDelete(w http.ResponseWriter, r *http.Request) {
 	a.Auth.RevokeTokensByUserID(id)
 	if a.WatchStore != nil {
 		if err := a.WatchStore.DeleteUser(id); err != nil && a.Logger != nil {
-			a.Logger.Warnf("failed to delete watch data for user %s: %v", id, err)
+			a.Logger.Warnf("failed to delete watch data for user %s: %s", id, redactURLInError(err))
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"success": true})

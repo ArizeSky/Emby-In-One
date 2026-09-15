@@ -144,7 +144,7 @@ func (a *App) recordSessionToWatchStore(r *http.Request, virtualItemID string, b
 
 	if err := a.WatchStore.RecordProgress(p); err != nil {
 		if a.Logger != nil {
-			a.Logger.Warnf("WatchStore record error: %v", err)
+			a.Logger.Warnf("WatchStore record error: %s", redactURLInError(err))
 		}
 	}
 }

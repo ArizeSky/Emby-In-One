@@ -109,7 +109,7 @@ func (a *App) forwardStream(w http.ResponseWriter, r *http.Request, client *Upst
 			return // client disconnected or timed out — not a server error
 		}
 		if a.Logger != nil {
-			a.Logger.Errorf("Stream error: itemId=%s upstream=%s: %s", virtualItemID, upstreamPath, err.Error())
+			a.Logger.Errorf("Stream error: itemId=%s upstream=%s: %s", virtualItemID, upstreamPath, redactURLInError(err))
 		}
 		writeJSON(w, http.StatusBadGateway, map[string]any{"message": err.Error()})
 		return

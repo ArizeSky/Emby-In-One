@@ -240,7 +240,7 @@ func (a *App) localUserStateRows(proxyUserID string, f userStateFilter) map[stri
 	}
 	if err != nil {
 		if a.Logger != nil {
-			a.Logger.Warnf("local user-state filter read failed: %v", err)
+			a.Logger.Warnf("local user-state filter read failed: %s", redactURLInError(err))
 		}
 		return nil
 	}

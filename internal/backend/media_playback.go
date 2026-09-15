@@ -71,7 +71,7 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 		payload, err := inst.Client.RequestJSON(r.Context(), requestContextFrom(r.Context()), a.Identity, r.Method, "/Items/"+inst.OriginalID+"/PlaybackInfo", instQuery, instBody)
 		if err != nil {
 			if a.Logger != nil {
-				a.Logger.Warnf("PlaybackInfo: server=[%s] originalId=%s failed: %v", inst.Client.Name, inst.OriginalID, err)
+				a.Logger.Warnf("PlaybackInfo: server=[%s] originalId=%s failed: %s", inst.Client.Name, inst.OriginalID, redactURLInError(err))
 			}
 			continue
 		}
