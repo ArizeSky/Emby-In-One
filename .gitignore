@@ -1,0 +1,33 @@
+# ---- Runtime configuration and secrets ----
+config.json
+*.config.json
+.env
+.env.*
+tokens.json
+captured-headers.json
+identity-cache.json
+admin-password.txt
+
+# ---- Runtime data directories (SQLite mappings, watch history, WAL/SHM) ----
+data/
+internal/backend/data/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# ---- Logs ----
+*.log
+logs/
+
+# ---- Build output and dependency caches ----
+/emby-in-one
+/emby-in-one.exe
+/cmd/emby-in-one/emby-in-one
+/cmd/emby-in-one/emby-in-one.exe
+node_modules/
+dist/
+build/
+*.test
+coverage.out

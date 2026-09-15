@@ -1,0 +1,59 @@
+/* Input for the admin panel stylesheet.
+ *
+ *   npm run build:panel        (-> public/vendor/tailwind.css)
+ *
+ * The generated file is committed, so running the panel needs no build step —
+ * only picking up a class change does.
+ */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Panel-specific rules. These used to sit in an inline <style> block inside
+ * admin.html; they moved here so the page has no inline style source of its own,
+ * which is what lets the CSP drop 'unsafe-inline' from style-src. */
+body {
+  font-family: 'Inter', sans-serif;
+  background-color: #f8fafc;
+  color: #1e293b;
+}
+
+[v-cloak] {
+  display: none !important;
+}
+
+.sidebar-link.active {
+  background-color: #eff6ff;
+  color: #2563eb;
+  border-right: 3px solid #2563eb;
+}
+
+.card {
+  background: white;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+.btn-primary {
+  background-color: #2563eb;
+  color: white;
+  transition: all 0.2s;
+}
+
+.btn-primary:hover {
+  background-color: #1d4ed8;
+  transform: translateY(-1px);
+}
+
+.log-container {
+  background: #1e293b;
+  color: #f1f5f9;
+  font-family: monospace;
+  font-size: 13px;
+}
+
+.level-ERROR { color: #f87171; }
+.level-WARN { color: #fbbf24; }
+.level-INFO { color: #34d399; }
+.level-DEBUG { color: #94a3b8; }

@@ -1,0 +1,39 @@
+# Normalise every text file to LF, in the repository and in the working tree on
+# every platform. The repo-wide cleanup this file exists to prevent was caused by
+# Windows editors writing CRLF into files that had been LF; pinning the working
+# tree to LF means the next save cannot reintroduce it.
+* text=auto eol=lf
+
+# Spelled out as well, so a future `text=auto` heuristic cannot misjudge one of
+# these. Shell scripts matter most: a CRLF `install.sh` is unrunnable on Linux.
+*.go       text eol=lf
+*.sh       text eol=lf
+*.js       text eol=lf
+*.html     text eol=lf
+*.css      text eol=lf
+*.md       text eol=lf
+*.yml      text eol=lf
+*.yaml     text eol=lf
+*.json     text eol=lf
+*.mod      text eol=lf
+*.sum      text eol=lf
+Dockerfile text eol=lf
+
+# Binary files must never be line-ending converted.
+*.png    binary
+*.jpg    binary
+*.jpeg   binary
+*.gif    binary
+*.ico    binary
+*.svg    binary
+*.woff   binary
+*.woff2  binary
+*.ttf    binary
+*.zip    binary
+*.gz     binary
+*.db     binary
+*.sqlite binary
+*.exe    binary
+
+# Vendored SQLite amalgamation: kept byte-for-byte as upstream ships it.
+third_party/** -text
