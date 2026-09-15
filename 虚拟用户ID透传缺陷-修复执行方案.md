@@ -1,6 +1,6 @@
 # 虚拟用户 ID 透传缺陷：修复执行方案
 
-基准日期：2026-09-15。修订版：R2，已纳入后续复核意见。状态：待实施。本文只定义修改与验收，尚未修改 Go 代码或初始化 Git。
+基准日期：2026-09-15。修订版：R2，已纳入后续复核意见。状态：**已实施**（P0/P1/P2/P3/P4/P5-test 已落地并提交：`c73d812` / `ec71507` / `3973dc5` / `186a663`；P5-prod 按第 9.3 节暂缓）。本文定义修改与验收，实施结果见第 12 节「执行记录」，其中含三处实施中修正的方案结论。
 
 执行约定：以本文中的动作表、阶段边界和验收结果为准；标为“未分类/残留”的场景不得临时扩展策略。本文不要求创建子任务或使用其他模型。
 
@@ -22,13 +22,13 @@
 
 | 事实与位置 | 对实施的影响 |
 |---|---|
-| [internal/backend/upstream.go:619](D:/UserData/Desktop/Emby-In-One-main/internal/backend/upstream.go:619) 的 doRequest 是代理自身 HTTP 请求的集中出口 | 正常请求统一在这里完成身份归一化与最终认证头构建 |
+| [internal/backend/upstream.go:619](D:/UserData/Desktop/Emby-In-One-main/internal/backend/upstream.go:619) 的 doRequest 是代理**业务** HTTP 请求的集中出口（管理面板探测等出口到不了这里，见本表末行） | 正常请求统一在这里完成身份归一化与最终认证头构建 |
 | [internal/backend/media_stream.go:84](D:/UserData/Desktop/Emby-In-One-main/internal/backend/media_stream.go:84) 的 redirect 使用 [internal/backend/upstream.go:600](D:/UserData/Desktop/Emby-In-One-main/internal/backend/upstream.go:600) 的 BuildURL | 客户端直连上游的 URL 不经过 doRequest；BuildURL 必须复用同一 URL 处理规则 |
 | [internal/backend/aggregation.go:35](D:/UserData/Desktop/Emby-In-One-main/internal/backend/aggregation.go:35) 创建独立的后台 context；[internal/backend/media_items.go:418](D:/UserData/Desktop/Emby-In-One-main/internal/backend/media_items.go:418) 仍显式持有 reqCtx | 下传身份必须使用显式 reqCtx，不能假设 context.Context 总带着原始 HTTP 身份 |
 
 需要修改的 doRequest 生产调用点是六处：四处业务入口，加两处认证引导入口。原文所称“四个调用点”只计算了业务入口。
 
-[internal/backend/handlers_admin.go:378](D:/UserData/Desktop/Emby-In-One-main/internal/backend/handlers_admin.go:378) 的管理面板延迟探测另用 client.Get(body.TargetURL)，不转发当前客户端请求的身份载体。本批在该处补注释，明确这是探测专用出口；未来若改为转发业务请求，必须接入公共准备层，不能依赖本次覆盖结论。
+[internal/backend/handlers_admin.go:378](D:/UserData/Desktop/Emby-In-One-main/internal/backend/handlers_admin.go:378) 的管理面板延迟探测另用 client.Get(body.TargetURL)，不转发当前客户端请求的身份载体。本批在该处补注释，明确这是探测专用出口；未来若改为转发业务请求，必须接入公共准备层，不能依赖本次覆盖结论。**因此“唯一出口”只描述业务请求，不构成对全进程 HTTP 出口的完备性声明。**
 
 **3. 执行顺序、Git 基线与文件落点**
 
@@ -225,6 +225,8 @@ withContext 建立只读 RequestContext.Identifiers 查询视图，供显式 req
 
 路径没有“删除 UserId 字段”的分支。legacy 别名仅代表当前已认证本地用户，不赋予管理员权限、不作为资源路由依据。未知值的透传保持兼容性，也意味着此范围仍可能发生上游拒绝或身份语义错误；在变更说明列明，不写成全量安全。
 
+实施修正（见 12.3）：路径规则与 query 规则分开决策。本表的“未分类兜底路径”只归一化**确为本次可信别名**的用户段（`self-alias-compat`），未分类 query/body 仍按 5.4 节透传；两个规则互不放大。
+
 5.4 三分类字段策略：已确认当前用户 / 已验证省略等价 / 未分类。
 
 下表针对 query 与可解析 JSON body 的具体字段。认证头中的客户端凭据始终按 P2 清理，不因业务接口未分类而保留；路径始终使用第 5.3 节的独立动作表。
@@ -327,6 +329,8 @@ fallback 中 JSON 声明但格式错误沿用现有 400；session 的解码失�
 |---|---|---|---|
 | [internal/backend/session_userdata.go:295](D:/UserData/Desktop/Emby-In-One-main/internal/backend/session_userdata.go:295) Playing | 新增明确 400 或 503 | 保持当前记录后 204 的约定 | 保持本地进度与 limiter 原语义 |
 | [internal/backend/session_userdata.go:335](D:/UserData/Desktop/Emby-In-One-main/internal/backend/session_userdata.go:335) Progress | 从吞错误的 204 改为 400 或 503，仅限上述准备错误 | 保持 204 | 合法进度继续写本地，不能因无法上报而改为上游用户归属 |
+
+实施修正（见 12.3）：session handler 先经过 `client.IsOnline()` 判断，而该判断本身要求上游 UserID 非空，因此“上游缺少 UserID”这一形态在这些路由上不可达。实际可达且已测试的准备失败是**声明了当前用户字段但请求未携带该字段**；状态映射同时在转发出口 `a.forwardNoContent` 上单独断言。
 | [internal/backend/session_userdata.go:371](D:/UserData/Desktop/Emby-In-One-main/internal/backend/session_userdata.go:371) Stopped | 从吞错误的 204 改为 400 或 503，仅限上述准备错误 | 保持 204 | 使用 defer/统一出口保证已有停止清理继续运行，避免提前 return 留下并发名额 |
 | [internal/backend/session_userdata.go:386](D:/UserData/Desktop/Emby-In-One-main/internal/backend/session_userdata.go:386)、[internal/backend/session_userdata.go:397](D:/UserData/Desktop/Emby-In-One-main/internal/backend/session_userdata.go:397) Capabilities 广播 | 遇到准备错误记录并返回其明确状态；不把所有准备都失败伪装成成功 | 保持现有尽力广播后的 204 | 准备错误后不重放已发送的写操作 |
 
@@ -538,26 +542,29 @@ P5-test 的代码只有测试调用，不能顺带改 server.go 初始化或 Ups
 
 本轮实施者按阶段记录；勾选必须有代码/测试/联调证据。P5-prod 明确留待后续。
 
-- [ ] P0：先检查现有 Git 状态；建立排除配置、凭据、运行数据的本地源码基线，记录 commit ID。
-- [ ] P0：原有八处定点修复保留；缺陷复现与新策略测试分开记录，预期来自独立 fixture。
-- [ ] 第一批 P1：六处 doRequest 显式 reqCtx 接线完成，后台 context 用例通过。
-- [ ] 第一批 P1：标识查询落在签发/登记源，两个谓词共享查询但保持不同语义；Bob 不成为 Alice 的别名。
-- [ ] 第一批 P1：所有运行时 UpstreamClient.UserID 无锁读取完成审计与替换，锁内例外列明。
-- [ ] 第一批 P1：BuildURL、redirect Location、HLS 基准 URL 使用公共 URL 规则。
-- [ ] 第一批 P1：未知路径用户段透传并标 unclassified；未知 query/body 不自动删除、注入或新增 400；省略等价集合为空。
-- [ ] 第一批 P1/P2：已支持当前用户载体使用同一认证快照，身份不参与资源路由；旧 fallback ReplaceAll 删除。
-- [ ] 第一批 P2：复合头存在/缺省与各字段组合都有覆盖；密码登录、API key 引导、健康恢复保持正确。
-- [ ] 第一批 P2：session 准备错误状态码、网络失败 204、本地进度归属及停止清理均按表验证。
-- [ ] 第一批 P4：query、redirect、网络错误以及内存日志脱敏；未延后到 P3。
+- [x] P0：先检查现有 Git 状态；建立排除配置、凭据、运行数据的本地源码基线，记录 commit ID。
+- [x] P0：原有八处定点修复保留；缺陷复现与新策略测试分开记录，预期来自独立 fixture。
+- [x] 第一批 P1：六处 doRequest 显式 reqCtx 接线完成，后台 context 用例通过。
+- [x] 第一批 P1：标识查询落在签发/登记源，两个谓词共享查询但保持不同语义；Bob 不成为 Alice 的别名。
+- [x] 第一批 P1：所有运行时 UpstreamClient.UserID 无锁读取完成审计与替换，锁内例外列明。
+- [x] 第一批 P1：BuildURL、redirect Location、HLS 基准 URL 使用公共 URL 规则。
+- [x] 第一批 P1：未知路径用户段透传并标 unclassified；未知 query/body 不自动删除、注入或新增 400；省略等价集合为空。
+- [x] 第一批 P1/P2：已支持当前用户载体使用同一认证快照，身份不参与资源路由；旧 fallback ReplaceAll 删除。
+- [x] 第一批 P2：复合头存在/缺省与各字段组合都有覆盖；密码登录、API key 引导、健康恢复保持正确。
+- [x] 第一批 P2：session 准备错误状态码、网络失败 204、本地进度归属及停止清理均按表验证。
+- [x] 第一批 P4：query、redirect、网络错误以及内存日志脱敏；未延后到 P3。
 - [ ] 第一批：targeted/build/full/race 有明确结果；M1–M8 尤其 passthrough 两类真实头形态有覆盖证据，未测格不勾选完成。
-- [ ] 第二批 P3：独立提交；先有 P1 新旧别名兼容再切换响应，普通用户与管理员响应身份分别正确。
-- [ ] 第二批 P3：聚合参数接线及旧客户端缓存兼容验证通过；行为变更和回退方式已记录。
-- [ ] 第三批 P5-test：纯扫描使用源查询，预期不由被测分类器生成，无生产钩子。
-- [ ] 残留项和支持边界写入变更说明；不宣称 unknown raw body 或未知用户管理已修复。
-- [ ] 更新两份分析材料中“六处/八处”“唯一出口”“客户端不可能持有上游真实 ID”“raw body 物理不可改写”等过强结论，不把文档当作实现已完成的证据。
-- [ ] P5-prod：保持暂缓，不实施环境开关、限频表和运行时接线。
+- [x] 第二批 P3：独立提交；先有 P1 新旧别名兼容再切换响应，普通用户与管理员响应身份分别正确。
+- [x] 第二批 P3：聚合参数接线及旧客户端缓存兼容验证通过；行为变更和回退方式已记录。
+- [x] 第三批 P5-test：纯扫描使用源查询，预期不由被测分类器生成，无生产钩子。
+- [x] 残留项和支持边界写入变更说明；不宣称 unknown raw body 或未知用户管理已修复。
+- [x] 更新两份分析材料中“六处/八处”“唯一出口”“客户端不可能持有上游真实 ID”“raw body 物理不可改写”等过强结论，不把文档当作实现已完成的证据。
+- [x] P5-prod：保持暂缓，不实施环境开关、限频表和运行时接线。
 
-建议在实施提交说明或单独执行记录中填写下表；本次修订不创建虚假的测试结果：
+建议在实施提交说明或单独执行记录中填写下表；本次修订不创建虚假的测试结果。
+
+> 实施结果见第 12 节「执行记录」。下表保持方案原始模板不变，其中的“待实施填写 / 待运行”以第 12 节为准。
+> 第 10 节的勾选项按实际完成情况标注：**未执行真实联调的项（M1–M8 兼容性验收）不勾选**，第 12.4 节列明为未完成项。
 
 | 批次 | Commit | 自动测试 | 真实矩阵/客户端版本 | 未测与残留 | 回退说明 |
 |---|---|---|---|---|---|
@@ -575,3 +582,55 @@ P5-test 的代码只有测试调用，不能顺带改 server.go 初始化或 Ups
 4. rawRequestBody 是字节包装，不是“物理不可改写”。已知格式可显式适配；本轮未知格式保持原始字节，不能保证修复其 UserId。D 对未知编码同样无法保证检测。
 5. 身份去重、临时 session、删除后/过期/重置前缓存标识可能超出当前查询覆盖。共享源入口及其测试只能验证已列出的来源，不能证明未来所有签发路径完备。
 6. 真实客户端兼容性必须由实际请求形态与联调记录支撑；“某品牌通常用某种头”“两次都是 200”“只有一个正常播放”都不能代替矩阵覆盖。
+
+---
+
+**12. 执行记录（实施后填写）**
+
+本节记录本次实施的实际结果，不改变第 1–11 节的方案定义。方案正文中标为“待实施/待运行”的位置以本节为准。
+
+### 12.1 提交
+
+| 批次 | Commit | 范围 |
+|---|---|---|
+| P0 基线 | `c73d812` | 首次 `git init`；新增 `.gitignore`（排除运行配置、`tokens.json`、`captured-headers.json`、SQLite 及 WAL/SHM、日志、构建输出、依赖缓存）；提交含八处定点修复的源码基线 |
+| 第一批 P1/P2/P4/P5-test | `ec71507` | 出站准备层、决策表、准备错误、源侧标识查询、P3 之外的响应接线、日志脱敏、测试侧诊断 |
+| 第二批 P3 | `3973dc5` | 响应身份；独立提交，可单独 `git revert` |
+| 第三批 P4 收尾 | `186a663` | 剩余日志脱敏点与探测出口注释 |
+
+### 12.2 命令结果
+
+| 命令 | 结果 |
+|---|---|
+| `go build ./...` | exit 0 |
+| `go test ./... -count=1` | `ok emby-in-one/cmd/emby-in-one`、`ok emby-in-one/internal/backend` |
+| `go vet ./...` | 无输出 |
+| `go test -race ./internal/backend -run 'Test(IdentifierLookupFixtures\|OutboundIdentity\|FallbackCurrentUserIdentity\|SessionForwardsUpstreamUserID\|OutboundDiagnostics)' -count=1` | exit 0，27.3s，无 DATA RACE |
+| `go test -race ./internal/backend -count=1`（全量并发检查） | exit 0，494.0s，无 DATA RACE |
+| 实施后搜索 | 六处 `doRequest` 接线、两处 `BuildURL` 使用位置、运行时 `UpstreamClient.UserID` 读取、旧 `ReplaceAll` 补丁与日志点均已核对；见 12.3 |
+
+基线一次性全量测试（P0 步骤 4）：`go build ./...` exit 0，`go test ./... -count=1` 全绿，无既有失败需要单列。
+
+### 12.3 实施中的三点澄清
+
+| 方案原文 | 实际结论 |
+|---|---|
+| 5.3 “未分类兜底路径，用户段是 IsCurrentUserAlias 明确识别的本次用户/legacy 别名 → 精确段替换” | 路径规则与 query 规则必须**分开决策**。若把 `/Users/{id}` 段一律归一化，`TestFallbackProxyRoutesUnknownPathByVirtualIDs` 这类未分类路径会被改写，与第 5.3 节“未知值原样透传”冲突。实现改为：只有**动作表声明的** `/Users/{id}` 形状归一化用户段；未分类路径仅在该段确实是本次可信别名时归一化（`pathClass = self-alias-compat`），方法不限；写请求的 body 永不受此影响。 |
+| 6.3 “Progress/Stopped 从吞错误的 204 改为 400 或 503” | session handler 先做 `client.IsOnline()` 判断，而 `IsOnline()` 本身要求 `UserID != ""`，因此“目标上游 UserID 为空”这一路径上无法构造。实际可达的准备失败是**声明了当前用户字段但请求未携带**（body 无 `UserId` 而路径或 query 需要归一化）。测试据此驱动 `a.forwardNoContent` 这一转发出口断言状态映射，并单独断言上游离线时维持 204。 |
+| 8.1 “media_stream.go:86 打印含上游 api_key 的 redirectURL，必须同步脱敏” | 已改；同时确认 `RewriteM3U8ForItem` **按设计**让 manifest 段地址直连上游（保留上游 host，只把 item 段虚拟化并把 `api_key` 换成客户端代理 token）。因此该函数不承担“manifest 不出现上游 host”的职责，本批未改变这一既有行为，也未据此宣称客户端无法得知上游地址。 |
+
+### 12.4 未完成项
+
+| 项目 | 状态 |
+|---|---|
+| 真实实例三维联调 M1–M8 | **未执行**。无真实上游与两种认证头形态的真实客户端样本，本批标注「代码完成 / 联调待验」，不宣称真实兼容性验收完成。 |
+| `-race` 并发检查 | **已运行**：定向用例 27.3s、全量 494.0s，均 exit 0 且无 DATA RACE（Windows/amd64，CGO 可用）。 |
+| P5-prod | 按第 9.3 节**保持暂缓**：未创建环境开关、运行时限频表或 `server.go` / `UpstreamPool.Reload` 接线。 |
+| 版本号常量 | `docker-compose.yml` / `install.sh` / `emby-in-one-cli.sh` 的版本串未在本批改动，发版时统一提升。 |
+
+### 12.5 回退方式
+
+- 第一批：`git revert ec71507 186a663`（`.gitignore` 与基线保留）。
+- 第二批 P3：`git revert 3973dc5`；回退后旧客户端与新客户端都回到全局占位 ID，第一批的新旧 ID 兼容逻辑不依赖 P3。
+- 第三批 P5-test 为纯函数与测试，随第一批提交，无运行时接线可回退。
+- 未使用 `reset --hard` 或 `clean`。

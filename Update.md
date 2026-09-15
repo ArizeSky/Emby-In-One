@@ -4,13 +4,14 @@
 
 发布日期：2026-09-15
 
-> V1.4.4 为 V1.4.3 的累积更新，汇总一次全项目审查的修复产出（15 项）与后续跟进项：内容访问控制与 SSRF 加固、普通用户本地观看状态筛选落地、无 `ParentId` 聚合列表的分页缺陷修复、仓库行尾统一，以及管理面板前端依赖自托管与 CSP 收紧。**管理面板的资源加载方式与安全策略有变化，升级前请先读「升级须知」。**
+> V1.4.4 为 V1.4.3 的累积更新，汇总一次全项目审查的修复产出（15 项）与后续跟进项：内容访问控制与 SSRF 加固、普通用户本地观看状态筛选落地、无 `ParentId` 聚合列表的分页缺陷修复、虚拟用户 ID 透传缺陷修复、仓库行尾统一，以及管理面板前端依赖自托管与 CSP 收紧。**管理面板的资源加载方式、安全策略与普通用户的响应身份有变化，升级前请先读「升级须知」。**
 
 ### ⚠️ 升级须知
 
 - **管理面板不再从任何第三方地址加载资源**。Vue、lucide、Tailwind CSS 与字体全部改为自托管并内嵌进二进制，CSP 同时收紧，**不再允许内联脚本与内联样式**。
 - **只换二进制、不刷新面板文件可能白屏**。新 CSP 会拦掉磁盘上旧版 `public/admin.html` 里的内联 `<style>` 与 CDN 引用。正常升级（`emby-in-one-cli.sh` 更新或重跑安装脚本）会自动刷新面板文件；**万一刷新失败，现在会明确告警**，不再静默跳过。遇到白屏时删掉 `public/admin.html` 即可，面板会改用二进制内嵌版本（内嵌版本永远与新 CSP 匹配）。
 - **`public/vendor/` 不需要存在于磁盘**。安装脚本不会创建它，面板会自动回退到二进制内嵌的 vendor 资源。
+- **普通用户响应中的用户 ID 取值变化**：`Views`、`PlaybackInfo`、媒体列表、`UserData`、收藏等「当前用户」响应，此前统一填全局管理员占位 ID，现在填该普通用户自己的本地 ID。这是**一致性修复**，不是新增故障；**不需要清客户端缓存**（旧 ID 与本地 ID 都被当作当前用户别名接受，见「虚拟用户 ID 透传缺陷修复」）。
 - **四个筛选项对普通用户仍是上游语义**，见「已知限制」。
 
 ### 安全增强
@@ -32,6 +33,30 @@
 - **本地排序**：支持 `SortName`、`DateCreated`、`ProductionYear`、`CommunityRating`
 - **季 / 集 / 搜索建议**接口同步补上本地观看状态覆盖，避免同一部剧在不同页面显示不一致的观看状态
 - 新增 `user_filter.go`；`WatchStore` 新增 `GetPlayedItems` / `GetResumableItems`
+
+### 虚拟用户 ID 透传缺陷修复
+
+代理此前把客户端手里的 EIO **虚拟用户 ID** 原样发给上游，上游查不到该用户；`passthrough` 模式下，客户端复合认证头里的**本地 Token 与 UserId** 也会被带进上游请求。本版在代理出站出口统一归一化请求身份，并让普通用户的响应身份与其登录身份一致。实现落在新增的出站准备层（`outbound_identity.go` / `outbound_identity_policy.go` / `outbound_errors.go` / `outbound_log.go` / `upstream_auth_state.go` / `identifier_lookup.go`），`upstream.go` 只做接线。
+
+**请求身份（全部上游请求）**
+
+- **一次请求只冻结一次认证快照**：UserId 与 AccessToken 在同一把锁内读取，URL、body、认证头全部来自同一次快照，不会出现「早先读到的用户 ID 配上稍后取得的 token」
+- **已支持接口的 UserId 归一化**：`Items`、`Shows/NextUp`、`Seasons`、`Episodes`、媒体库读取、`Genres/MusicGenres/Studios/Persons/Artists`、`Search/Hints`、`Views`、`/Users/{id}/...`、`PlaybackInfo`、`Sessions/Playing|Progress|Stopped|Capabilities` 等接口声明的 `UserId`（query 与顶层 JSON body）按目标上游身份写入；字段缺省则不新增
+- **路径用户段归一化**：只替换业务 path 中完整的 `/Users/{id}` 用户段，不再对整条字符串做 `ReplaceAll`。旧 fallback 的全局字符串替换补丁已删除——它会把路径中任何位置出现的相同文本一起改掉
+- **认证头清理**：复合认证头（`X-Emby-Authorization` / `Authorization`）里的 `UserId`、`Token` 与原始凭据在重建时移除，只保留 Client / Device / DeviceId / Version 等设备信息；captured / last-success / latest **所有身份来源**走同一套清理，旧的持久化捕获文件在加载时也会被清洗
+- **redirect 与 HLS 基准 URL**：客户端直连上游的 302 `Location` 与 HLS manifest 基准 URL 复用同一套 URL 规则；`api_key` 的大小写变体统一清除后，由同一次快照写入上游 token
+- **会话事件状态码**：`Progress` / `Stopped` 无法准备请求时不再吞成 204，改为返回准备错误对应的状态码；上游网络失败仍维持原有 204 约定，停止清理在该路径上继续执行，不会因为上报失败而漏放并发名额
+
+**响应身份（普通用户）**
+
+- 新增 `clientFacingUserID`：已认证请求返回该请求自己的用户，仅在完全没有代理用户的公开/内部路径回退到全局占位 ID
+- 聚合改写函数（`rewriteItems` / `mergedItemsPayload` / `mergeRoundRobinItems`）改为显式接收响应身份，后台聚合协程不会再拿到全局值
+- 后台迟到结果的 ID 登记（`aggregation.go`）**有意保留全局值**——它只登记映射、不生成客户端响应，是生产代码中唯一的例外，已在代码中注明
+
+**日志脱敏**
+
+- redirect 目标、客户端流查询、上游错误里的 URL 一律经脱敏助手输出；`api_key` / `Token` / `Authorization` / 密码类字段、URL userinfo 与 fragment 不落日志
+- `Debugf` 同样进入内存日志，因此同样脱敏，不以“只有 debug”为由保留凭据
 
 ### Bug 修复
 
@@ -85,6 +110,8 @@ object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'
   - `go test ./internal/backend -run 'TestUserItems|TestItemsCollection|TestUserDataOverlay' -count=1`
   - `go test ./internal/backend -run 'TestAdminPanel|TestAdminResponses|TestAdminStatus|TestAdminUpstreamList|TestAdminProxyList' -count=1`
 - 全量：`go test ./...` 全绿；`go test -race ./internal/backend/` → **414.4s，exit 0**
+- 虚拟用户 ID 透传修复新增测试：`outbound_identity_test.go`、`outbound_identity_policy_test.go`、`identifier_lookup_test.go`、`response_identity_test.go`、`outbound_diagnostics_test.go`、`stream_identity_test.go`、`stream_hls_identity_test.go`、`passthrough_identity_test.go`
+- 该批验证：`go build ./...` exit 0；`go test ./... -count=1` 全绿；`go test -race ./internal/backend -count=1` → **494.0s，exit 0**，无 DATA RACE
 - 关键修复均做**变异验证**（故意破坏 → 确认测试失败 → 还原），覆盖：CSP 放回 `'unsafe-inline'`、样式表指回 CDN、面板资源改名、磁盘/内嵌回退方向反转、移除反斜杠守卫、移除 `/admin/{$}` 精确路由（确认 `/admin/` 退回目录列表时测试失败）
 
 ### 已知限制
@@ -96,6 +123,11 @@ object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'
   这些筛选会透传上游并返回共享账号的结果，同时给出响应头提示与节流 WARN 日志（仅普通用户，管理员不受影响）
 - **`'unsafe-eval'` 仍在 CSP 中**，原因见上
 - **管理面板 token 仍存放于 localStorage**：任何同源脚本都可读取。本次收紧 CSP 降低了被注入脚本触发的概率，但没有改变这一点
+- **未分类接口的 UserId 保持原值**：动作表之外的 query / body / path 用户值**原样透传**并记录 `unclassified`。这意味着未知接口仍可能把本地 ID 或跨上游真实 ID 发到不理解它的上游；标记不等于修复
+- **redirect 会把上游 token 放进直连 URL**：客户端因此可能得知上游真实用户 ID，不能把「客户端永远不知道上游 ID」当作安全前提
+- **响应改写器仍按字段名推断语义**：未知接口中的多用户实体需要后续独立适配，替换响应身份参数不等于解决全部响应语义
+- **raw body 不是「物理不可改写」**：JSON 声明以外的原始字节按原样转发（含前后空白），已知格式之外的 UserId 本轮不做适配
+- **身份来源覆盖有限**：临时 session ID、已删除标识、重置数据库前的缓存值与过期 token 不在查询覆盖内
 
 ### 文档与版本同步
 
