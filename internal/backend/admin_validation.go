@@ -382,6 +382,7 @@ func applyAdminUpstreamInput(dst *UpstreamConfig, body adminUpstreamInput, isCre
 				dst.MaxConcurrent = *body.MaxConcurrent
 			}
 		}
+		applyDeclaredAuthType(dst, body)
 		return
 	}
 
@@ -437,6 +438,29 @@ func applyAdminUpstreamInput(dst *UpstreamConfig, body adminUpstreamInput, isCre
 		if *body.MaxConcurrent >= 0 {
 			dst.MaxConcurrent = *body.MaxConcurrent
 		}
+	}
+	applyDeclaredAuthType(dst, body)
+}
+
+// applyDeclaredAuthType makes an explicitly declared authType authoritative for
+// which credential the upstream stores. The panel shows one credential kind at a
+// time, so switching between them has to drop the other one: without this a
+// switch leaves both stored, and validateUpstreamDraft rejects the draft for
+// carrying an API key and a username/password at once — the panel cannot express
+// "forget the API key", so the switch was impossible in either direction.
+//
+// It runs after the per-field writes so that the declared kind wins over a
+// credential the request happens to carry as well.
+func applyDeclaredAuthType(dst *UpstreamConfig, body adminUpstreamInput) {
+	if body.AuthType == nil {
+		return
+	}
+	switch strings.TrimSpace(*body.AuthType) {
+	case "apiKey":
+		dst.Username = ""
+		dst.Password = ""
+	case "password":
+		dst.APIKey = ""
 	}
 }
 

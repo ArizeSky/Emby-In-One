@@ -164,6 +164,67 @@ func TestUserStoreShiftServers(t *testing.T) {
 	}
 }
 
+// A reorder moves the servers, so a permission has to move with them. The
+// deletion counterpart (ShiftServerIndices) already did this; without the
+// reorder half a permission kept its index and silently named another server.
+func TestUserStoreReorderServers(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+	db, err := openSQLite(dbPath)
+	if err != nil {
+		t.Fatalf("openSQLite: %v", err)
+	}
+	_ = db.exec(`PRAGMA journal_mode = WAL`)
+	store, err := NewUserStore(db, nil)
+	if err != nil {
+		t.Fatalf("NewUserStore: %v", err)
+	}
+
+	carol, err := store.Create("carol", "pass", []int{0, 2})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// A user with no restrictions stores no rows at all. That empty list is not
+	// the same as an empty non-nil one, which means "no server allowed", so the
+	// remap must leave it alone.
+	unrestricted, err := store.Create("dave", "pass", nil)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Move server 0 to the end: [A B C] becomes [B C A].
+	store.ReorderServerIndices(0, 2)
+
+	got := store.Get(carol.ID)
+	if len(got.AllowedServers) != 2 || got.AllowedServers[0] != 1 || got.AllowedServers[1] != 2 {
+		t.Fatalf("AllowedServers = %v, want [1 2] (A and C keep their servers)", got.AllowedServers)
+	}
+	if dave := store.Get(unrestricted.ID); dave.AllowedServers != nil {
+		t.Fatalf("a user with no restrictions gained %v", dave.AllowedServers)
+	}
+
+	// The remap has to be written, not only applied in memory: the next start
+	// loads the stored rows and would put the permission back on the wrong server.
+	_ = closeSQLite(db)
+	db2, err := openSQLite(dbPath)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer closeSQLite(db2)
+	_ = db2.exec(`PRAGMA journal_mode = WAL`)
+	store2, err := NewUserStore(db2, nil)
+	if err != nil {
+		t.Fatalf("NewUserStore reopen: %v", err)
+	}
+	reloaded := store2.Get(carol.ID)
+	if reloaded == nil {
+		t.Fatal("carol disappeared after reopen")
+	}
+	if len(reloaded.AllowedServers) != 2 || reloaded.AllowedServers[0] != 1 || reloaded.AllowedServers[1] != 2 {
+		t.Fatalf("stored AllowedServers = %v, want [1 2]", reloaded.AllowedServers)
+	}
+}
+
 func TestUserStoreList(t *testing.T) {
 	store := newTestUserStore(t)
 

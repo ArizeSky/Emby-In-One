@@ -15,6 +15,7 @@ type adminUpstreamInput struct {
 	Username            *string `json:"username"`
 	Password            *string `json:"password"`
 	APIKey              *string `json:"apiKey"`
+	AuthType            *string `json:"authType"`
 	PlaybackMode        *string `json:"playbackMode"`
 	SpoofClient         *string `json:"spoofClient"`
 	FollowRedirects     *bool   `json:"followRedirects"`
@@ -223,13 +224,27 @@ func (a *App) handleAdminUpstreamReorder(w http.ResponseWriter, r *http.Request)
 	reordered = append(reordered, item)
 	reordered = append(reordered, nextCfg.Upstream[body.ToIndex:]...)
 	nextCfg.Upstream = reordered
-	a.IDStore.ReorderServerIndices(body.FromIndex, body.ToIndex)
+	a.remapServerIndices(body.FromIndex, body.ToIndex)
 	if err := a.commitConfig(nextCfg); err != nil {
-		a.IDStore.ReorderServerIndices(body.ToIndex, body.FromIndex)
+		a.remapServerIndices(body.ToIndex, body.FromIndex)
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"success": true})
+}
+
+// remapServerIndices moves everything that addresses an upstream by its position
+// in the list, so that a reorder leaves each of them naming the same server.
+//
+// Both halves belong together: the ID mappings and every user's allowed-server
+// list are index-based, and a reorder that moves one without the other silently
+// repoints the other at a different server. Deleting an upstream has the same
+// pairing (IDStore.RemoveByServerIndex/ShiftServerIndices + the UserStore shift).
+func (a *App) remapServerIndices(fromIndex, toIndex int) {
+	a.IDStore.ReorderServerIndices(fromIndex, toIndex)
+	if a.UserStore != nil {
+		a.UserStore.ReorderServerIndices(fromIndex, toIndex)
+	}
 }
 
 func (a *App) handleAdminUpstreamDelete(w http.ResponseWriter, r *http.Request) {
@@ -642,19 +657,29 @@ func (a *App) commitConfig(nextCfg Config) error {
 	return a.commitConfigFull(nextCfg, true)
 }
 
+// commitConfigSettingsOnly applies a change to the global settings. The pool is
+// rebuilt but not re-authenticated: the credentials carry over unchanged, and a
+// re-login would only interrupt upstreams that are working.
 func (a *App) commitConfigSettingsOnly(nextCfg Config) error {
 	return a.commitConfigFull(nextCfg, false)
 }
 
-func (a *App) commitConfigFull(nextCfg Config, reloadUpstreams bool) error {
+// commitConfigFull writes the new config and rebuilds the upstream pool.
+//
+// Every save rebuilds the pool, because several settings (the API and login
+// timeouts, the health-check interval) are read while a client is built: without
+// the rebuild a save would report success and leave the running clients on the
+// old values. reLogin additionally re-authenticates, which an upstream's own
+// connection details need; a settings save leaves the existing sessions alone.
+func (a *App) commitConfigFull(nextCfg Config, reLogin bool) error {
 	previous := a.ConfigStore.Snapshot()
 	a.ConfigStore.Replace(nextCfg)
 	if err := a.ConfigStore.Save(); err != nil {
 		a.ConfigStore.Replace(previous)
 		return err
 	}
-	if reloadUpstreams {
-		a.Upstream.Reload(nextCfg)
+	a.Upstream.Reload(nextCfg)
+	if reLogin {
 		go a.Upstream.LoginAll()
 	}
 	return nil

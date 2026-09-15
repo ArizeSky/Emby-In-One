@@ -354,6 +354,87 @@ func TestMultiUserDuplicateUsernameRejected(t *testing.T) {
 	})
 }
 
+// A user's allowed-server list addresses upstreams by their position, so the
+// reorder the panel performs has to move that list with them. It used to move
+// only the ID mappings, which silently pointed a permission at another server.
+func TestUpstreamReorderKeepsUserPermissionsOnTheSameServer(t *testing.T) {
+	upstreams := map[string]*httptest.Server{}
+	for _, name := range []string{"A", "B"} {
+		upstreams[name] = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPost && r.URL.Path == "/Users/AuthenticateByName" {
+				_ = json.NewEncoder(w).Encode(map[string]any{"AccessToken": "tok-" + name, "User": map[string]any{"Id": "user-" + name}})
+				return
+			}
+			http.NotFound(w, r)
+		}))
+		defer upstreams[name].Close()
+	}
+
+	config := fmt.Sprintf(`server:
+  port: 8096
+  name: "Test"
+  id: "svr"
+admin:
+  username: "admin"
+  password: "secret"
+playback:
+  mode: "proxy"
+timeouts:
+  api: 30000
+  global: 15000
+  login: 10000
+  healthCheck: 10000
+  healthInterval: 60000
+proxies: []
+upstream:
+  - name: "A"
+    url: %q
+    username: "u1"
+    password: "p1"
+  - name: "B"
+    url: %q
+    username: "u2"
+    password: "p2"
+`, upstreams["A"].URL, upstreams["B"].URL)
+
+	withTempAppConfig(t, config, func(app *App, handler http.Handler) {
+		adminToken := loginTokenAs(t, handler, "admin", "secret")
+		aliceID := createTestUser(t, handler, adminToken, "alice", "alice123")
+
+		// Alice may use server index 1, which is "B".
+		rr := doAuthJSON(t, handler, http.MethodPut, "/admin/api/users/"+aliceID,
+			map[string]any{"allowedServers": []int{1}}, adminToken)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("set allowed servers: status=%d body=%s", rr.Code, rr.Body.String())
+		}
+
+		before := app.ConfigStore.Snapshot().Upstream
+		if len(before) != 2 || before[1].Name != "B" {
+			t.Fatalf("unexpected upstream order before the reorder: %+v", before)
+		}
+
+		// The panel's down arrow on the first server.
+		rr = doAuthJSON(t, handler, http.MethodPost, "/admin/api/upstream/reorder",
+			map[string]any{"fromIndex": 0, "toIndex": 1}, adminToken)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("reorder: status=%d body=%s", rr.Code, rr.Body.String())
+		}
+
+		after := app.ConfigStore.Snapshot().Upstream
+		if after[0].Name != "B" || after[1].Name != "A" {
+			t.Fatalf("the reorder did not move the servers: %+v", after)
+		}
+
+		allowed := app.UserStore.Get(aliceID).AllowedServers
+		if len(allowed) != 1 {
+			t.Fatalf("alice's allowed servers = %v, want one entry", allowed)
+		}
+		if name := after[allowed[0]].Name; name != "B" {
+			t.Fatalf("after the reorder alice's permission names %q, want B (allowed=%v)", name, allowed)
+		}
+	})
+}
+
 func TestMaxConcurrentInUpstreamAPI(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost && r.URL.Path == "/Users/AuthenticateByName" {

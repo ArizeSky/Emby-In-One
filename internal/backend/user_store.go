@@ -273,18 +273,8 @@ func (s *UserStore) Update(id string, username *string, password *string, enable
 	}
 
 	if allowedServers != nil {
-		if err := s.db.execParams(
-			`DELETE FROM user_servers WHERE user_id = ?`, id,
-		); err != nil {
+		if err := s.writeAllowedServersLocked(id, *allowedServers); err != nil {
 			return err
-		}
-		for _, idx := range *allowedServers {
-			if err := s.db.execParams(
-				`INSERT INTO user_servers (user_id, server_index) VALUES (?, ?)`,
-				id, idx,
-			); err != nil {
-				return err
-			}
 		}
 		user.AllowedServers = append([]int(nil), *allowedServers...)
 	}
@@ -346,6 +336,61 @@ func (s *UserStore) ShiftServerIndices(deletedIndex int) {
 		}
 		user.AllowedServers = newServers
 	}
+}
+
+// ReorderServerIndices moves every user's allowed-server list through the same
+// reorder the upstream list itself went through, so a permission keeps naming the
+// server it was granted for. It is the reorder counterpart of ShiftServerIndices,
+// which handles a deletion.
+//
+// Without it a reorder leaves each list pointing at whatever moved into those
+// positions, which changes who may reach which upstream without anything in the
+// panel showing it.
+func (s *UserStore) ReorderServerIndices(fromIndex, toIndex int) {
+	if fromIndex == toIndex {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, user := range s.users {
+		remapped := make([]int, 0, len(user.AllowedServers))
+		moved := false
+		for _, idx := range user.AllowedServers {
+			next := reorderServerIndex(idx, fromIndex, toIndex)
+			if next != idx {
+				moved = true
+			}
+			remapped = append(remapped, next)
+		}
+		if !moved {
+			continue
+		}
+		// A reorder can move a later server ahead of an earlier one, so keep the
+		// list in index order: the panel renders it in the order it is stored.
+		sort.Ints(remapped)
+		if err := s.writeAllowedServersLocked(user.ID, remapped); err != nil && s.logger != nil {
+			s.logger.Warnf("UserStore: failed to persist reordered server indices: %v", err)
+		}
+		user.AllowedServers = remapped
+	}
+}
+
+// writeAllowedServersLocked replaces a user's stored server list. The caller
+// holds the write lock.
+func (s *UserStore) writeAllowedServersLocked(id string, indices []int) error {
+	if err := s.db.execParams(`DELETE FROM user_servers WHERE user_id = ?`, id); err != nil {
+		return err
+	}
+	for _, idx := range indices {
+		if err := s.db.execParams(
+			`INSERT INTO user_servers (user_id, server_index) VALUES (?, ?)`,
+			id, idx,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *UserStore) copyUser(user *User) *User {
