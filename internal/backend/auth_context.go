@@ -12,6 +12,14 @@ type RequestContext struct {
 	Headers    http.Header
 	ProxyToken string
 	ProxyUser  *tokenInfo
+	// LegacyProxyUserID is the single global virtual user ID that older responses
+	// handed to every client. It is kept only so requests that still carry it are
+	// recognised as the current user; the identity of the request itself always
+	// comes from ProxyUser.
+	LegacyProxyUserID string
+	// Identifiers is the read-only signing/registration view for this request. It
+	// is built once and shared by the identity predicates.
+	Identifiers *IdentifierLookup
 }
 
 func (a *App) withContext(next http.HandlerFunc) http.HandlerFunc {
@@ -22,9 +30,11 @@ func (a *App) withContext(next http.HandlerFunc) http.HandlerFunc {
 			proxyUser = a.Auth.ValidateToken(token)
 		}
 		ctx := context.WithValue(r.Context(), requestContextKey{}, &RequestContext{
-			Headers:    r.Header.Clone(),
-			ProxyToken: token,
-			ProxyUser:  proxyUser,
+			Headers:           r.Header.Clone(),
+			ProxyToken:        token,
+			ProxyUser:         proxyUser,
+			LegacyProxyUserID: a.Auth.ProxyUserID(),
+			Identifiers:       a.newRequestIdentifierLookup(),
 		})
 		next(w, r.WithContext(ctx))
 	}

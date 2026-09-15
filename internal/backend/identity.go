@@ -260,6 +260,12 @@ func (s *ClientIdentityService) notifyCaptureListeners(listeners []func(string, 
 	}
 }
 
+// mergePassthroughHeaders builds the device-identity header set for one outbound
+// request. Only client/device behaviour fields are copied from the source; the
+// compound authorization header is read for its device fields and then dropped,
+// so a captured local token or user ID can never be forwarded upstream. The
+// separate device headers win over the compound header's fields, so a real client
+// is not pushed back to the default profile.
 func mergePassthroughHeaders(source http.Header) http.Header {
 	headers := http.Header{}
 	headers.Set("User-Agent", "Infuse/7.7.1 (iPhone; iOS 17.4.1; Scale/3.00)")
@@ -267,59 +273,162 @@ func mergePassthroughHeaders(source http.Header) http.Header {
 	headers.Set("X-Emby-Client-Version", "7.7.1")
 	headers.Set("X-Emby-Device-Name", "iPhone")
 	headers.Set("X-Emby-Device-Id", "infuse-spoof-id")
-	if source.Get("User-Agent") != "" {
-		headers.Set("User-Agent", source.Get("User-Agent"))
+
+	for _, key := range []string{"User-Agent", "X-Emby-Client", "X-Emby-Client-Version", "X-Emby-Device-Name", "X-Emby-Device-Id", "Accept", "Accept-Language"} {
+		if value := source.Get(key); value != "" {
+			headers.Set(key, value)
+		}
 	}
-	for _, key := range []string{"X-Emby-Client", "X-Emby-Client-Version", "X-Emby-Device-Name", "X-Emby-Device-Id", "Accept", "Accept-Language", "X-Emby-Authorization", "Authorization"} {
-		if source.Get(key) != "" {
-			headers.Set(key, source.Get(key))
+
+	// Fill only what the client did not send as its own header.
+	if headers.Get("X-Emby-Client") == "Infuse" || headers.Get("X-Emby-Device-Id") == "infuse-spoof-id" {
+		for _, authKey := range []string{"X-Emby-Authorization", "Authorization"} {
+			authValue := source.Get(authKey)
+			if authValue == "" {
+				continue
+			}
+			parsed, ok := parseAuthorizationIdentityStrict(authValue)
+			if !ok {
+				break
+			}
+			for _, field := range []struct {
+				header string
+				param  string
+			}{
+				{"X-Emby-Client", "Client"},
+				{"X-Emby-Client-Version", "Version"},
+				{"X-Emby-Device-Name", "Device"},
+				{"X-Emby-Device-Id", "DeviceId"},
+			} {
+				if headers.Get(field.header) != "" && headers.Get(field.header) != "Infuse" && headers.Get(field.header) != "infuse-spoof-id" {
+					continue
+				}
+				if value := parsed[field.param]; value != "" {
+					headers.Set(field.header, value)
+				}
+			}
+			break
 		}
 	}
 	return headers
 }
 
-func parseAuthorizationIdentity(header string) map[string]string {
+// parseAuthorizationIdentityStrict parses an Emby/MediaBrowser compound
+// authorization header into its parameters. It is a real quoted-string tokenizer:
+// parameters are split on the commas that sit outside a quoted value, and quoted
+// values honour backslash escapes. A malformed header is reported as not parsed
+// rather than half-read, because a half-read header is what lets a client value
+// smuggle an extra parameter into a rebuilt header.
+func parseAuthorizationIdentityStrict(header string) (map[string]string, bool) {
 	result := map[string]string{}
-	if header == "" {
-		return result
+	trimmed := strings.TrimSpace(header)
+	if trimmed == "" {
+		return result, true
 	}
 	for _, prefix := range []string{"MediaBrowser ", "Emby "} {
-		if strings.HasPrefix(header, prefix) {
-			header = header[len(prefix):]
+		if len(trimmed) >= len(prefix) && strings.EqualFold(trimmed[:len(prefix)], prefix) {
+			trimmed = trimmed[len(prefix):]
 			break
 		}
 	}
-	for _, part := range strings.Split(header, ",") {
-		part = strings.TrimSpace(part)
-		eqIdx := strings.Index(part, "=")
-		if eqIdx < 0 {
-			continue
+
+	index := 0
+	for index < len(trimmed) {
+		for index < len(trimmed) && (trimmed[index] == ',' || trimmed[index] == ' ' || trimmed[index] == '	') {
+			index++
 		}
-		key := strings.TrimSpace(part[:eqIdx])
-		val := strings.TrimSpace(part[eqIdx+1:])
-		if len(val) >= 2 && val[0] == '"' && val[len(val)-1] == '"' {
-			val = val[1 : len(val)-1]
+		if index >= len(trimmed) {
+			break
 		}
-		result[key] = val
+		keyStart := index
+		for index < len(trimmed) && trimmed[index] != '=' && trimmed[index] != ',' {
+			index++
+		}
+		if index >= len(trimmed) || trimmed[index] != '=' {
+			return nil, false
+		}
+		key := strings.TrimSpace(trimmed[keyStart:index])
+		index++ // consume '='
+		for index < len(trimmed) && (trimmed[index] == ' ' || trimmed[index] == '	') {
+			index++
+		}
+		var value string
+		if index < len(trimmed) && trimmed[index] == '"' {
+			index++
+			var builder strings.Builder
+			closed := false
+			for index < len(trimmed) {
+				ch := trimmed[index]
+				if ch == 0x5C && index+1 < len(trimmed) {
+					builder.WriteByte(trimmed[index+1])
+					index += 2
+					continue
+				}
+				if ch == '"' {
+					index++
+					closed = true
+					break
+				}
+				builder.WriteByte(ch)
+				index++
+			}
+			if !closed {
+				return nil, false
+			}
+			value = builder.String()
+		} else {
+			valueStart := index
+			for index < len(trimmed) && trimmed[index] != ',' {
+				index++
+			}
+			value = strings.TrimSpace(trimmed[valueStart:index])
+		}
+		if key == "" {
+			return nil, false
+		}
+		result[key] = value
 	}
-	return result
+	return result, true
 }
 
+// parseAuthorizationIdentity keeps the permissive contract for callers that read
+// best-effort device details. It returns an empty map for a malformed header.
+func parseAuthorizationIdentity(header string) map[string]string {
+	parsed, ok := parseAuthorizationIdentityStrict(header)
+	if !ok {
+		return map[string]string{}
+	}
+	return parsed
+}
+
+// capturedHeaderKeys are the only fields persisted for a captured client
+// identity: device and client behaviour, never a credential.
+var capturedHeaderKeys = []string{"User-Agent", "X-Emby-Client", "X-Emby-Client-Version", "X-Emby-Device-Name", "X-Emby-Device-Id", "Accept", "Accept-Language"}
+
+// normalizeCapturedHeaders keeps only device/client information from a set of
+// request headers. The client's UserId, Token and raw Authorization credential
+// are read for their device fields and then dropped, so a stored identity can
+// never be replayed as a credential.
 func normalizeCapturedHeaders(headers http.Header) http.Header {
 	copied := http.Header{}
-	for _, key := range []string{"User-Agent", "X-Emby-Client", "X-Emby-Client-Version", "X-Emby-Device-Name", "X-Emby-Device-Id", "Accept", "Accept-Language", "X-Emby-Authorization", "Authorization"} {
+	for _, key := range capturedHeaderKeys {
 		if values := headers.Values(key); len(values) > 0 {
 			copied[key] = append([]string(nil), values...)
 		}
 	}
-	// Fill missing individual headers from compound authorization header
-	if copied.Get("X-Emby-Client") == "" || copied.Get("X-Emby-Device-Name") == "" || copied.Get("X-Emby-Device-Id") == "" {
+	// Fill missing individual headers from compound authorization header. Both the
+	// compound header's own parameters (aside from UserId/Token) and the
+	// X-Emby-* headers are considered, with the explicit header winning.
+	if copied.Get("X-Emby-Client") == "" || copied.Get("X-Emby-Device-Name") == "" || copied.Get("X-Emby-Device-Id") == "" || copied.Get("X-Emby-Client-Version") == "" {
 		for _, authKey := range []string{"X-Emby-Authorization", "Authorization"} {
-			authVal := copied.Get(authKey)
+			authVal := headers.Get(authKey)
 			if authVal == "" {
 				continue
 			}
-			parsed := parseAuthorizationIdentity(authVal)
+			parsed, ok := parseAuthorizationIdentityStrict(authVal)
+			if !ok {
+				break
+			}
 			mapping := map[string]string{
 				"X-Emby-Client":         parsed["Client"],
 				"X-Emby-Client-Version": parsed["Version"],

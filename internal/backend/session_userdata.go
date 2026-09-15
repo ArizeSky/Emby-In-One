@@ -158,7 +158,7 @@ func (a *App) enrichWatchProgressMetadata(r *http.Request, reqCtx *RequestContex
 	}
 	q := url.Values{}
 	q.Set("Fields", "ProviderIds")
-	payload, err := client.RequestJSON(r.Context(), reqCtx, a.Identity, http.MethodGet, "/Users/"+client.UserID+"/Items/"+originalItemID, q, nil)
+	payload, err := client.RequestJSON(r.Context(), reqCtx, a.Identity, http.MethodGet, "/Users/"+client.clientUserID()+"/Items/"+originalItemID, q, nil)
 	if err != nil {
 		return
 	}
@@ -217,7 +217,8 @@ func (a *App) translateMediaSourceQuery(values url.Values) {
 }
 
 func (a *App) performUpstream(ctx *http.Request, client *UpstreamClient, method, path string, query url.Values, body any) (*http.Response, error) {
-	return client.doRequest(ctx.Context(), method, path, query, body, client.requestHeaders(requestContextFrom(ctx.Context()), a.Identity), false)
+	reqCtx := requestContextFrom(ctx.Context())
+	return client.doRequest(ctx.Context(), reqCtx, method, path, query, body, client.requestHeaders(reqCtx, a.Identity), false)
 }
 
 func readUpstreamJSONOrNoContent(resp *http.Response) (int, any, error) {
@@ -293,8 +294,15 @@ func (a *App) handleSessionPlaying(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.forwardNoContent(r, client, http.MethodPost, "/Sessions/Playing", nil, body); err != nil {
+		// A preparation failure means the request never left the process, so the
+		// client gets the preparation status and no local progress is recorded for
+		// a play event that was never announced upstream.
+		if status, ok := preparationErrorStatus(err); ok {
+			writeJSON(w, status, preparationErrorBody(err))
+			return
+		}
 		if a.Logger != nil {
-			a.Logger.Warnf("Sessions/Playing upstream error (server %d): %v", serverIndex, err)
+			a.Logger.Warnf("Sessions/Playing upstream error (server %d): %v", serverIndex, redactURLInError(err))
 		}
 	}
 	a.recordSessionToWatchStore(r, virtualItemID, body, serverIndex, false)
@@ -332,7 +340,15 @@ func (a *App) handleSessionPlayingProgress(w http.ResponseWriter, r *http.Reques
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	_ = a.forwardNoContent(r, client, http.MethodPost, "/Sessions/Playing/Progress", nil, body)
+	if err := a.forwardNoContent(r, client, http.MethodPost, "/Sessions/Playing/Progress", nil, body); err != nil {
+		// Progress used to swallow every error as 204. A preparation failure is the
+		// client's or the configuration's, and reporting it is what makes the
+		// failure visible instead of looking like a successful report.
+		if status, ok := preparationErrorStatus(err); ok {
+			writeJSON(w, status, preparationErrorBody(err))
+			return
+		}
+	}
 	a.recordSessionToWatchStore(r, virtualItemID, body, serverIndex, false)
 	if a.PlaybackLimiter != nil {
 		if reqCtx := requestContextFrom(r.Context()); reqCtx != nil && reqCtx.ProxyUser != nil && reqCtx.ProxyUser.Role != "admin" {
@@ -368,7 +384,20 @@ func (a *App) handleSessionPlayingStopped(w http.ResponseWriter, r *http.Request
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	_ = a.forwardNoContent(r, client, http.MethodPost, "/Sessions/Playing/Stopped", nil, body)
+	if err := a.forwardNoContent(r, client, http.MethodPost, "/Sessions/Playing/Stopped", nil, body); err != nil {
+		if status, ok := preparationErrorStatus(err); ok {
+			// The stop still has to release the concurrency slot and record the local
+			// progress: leaving them behind would strand a playback permit.
+			a.recordSessionToWatchStore(r, virtualItemID, body, serverIndex, true)
+			if a.PlaybackLimiter != nil {
+				if reqCtx := requestContextFrom(r.Context()); reqCtx != nil && reqCtx.ProxyUser != nil && reqCtx.ProxyUser.Role != "admin" {
+					a.PlaybackLimiter.Stop(reqCtx.ProxyUser.UserID, serverIndex)
+				}
+			}
+			writeJSON(w, status, preparationErrorBody(err))
+			return
+		}
+	}
 	a.recordSessionToWatchStore(r, virtualItemID, body, serverIndex, true)
 	if a.PlaybackLimiter != nil {
 		if reqCtx := requestContextFrom(r.Context()); reqCtx != nil && reqCtx.ProxyUser != nil && reqCtx.ProxyUser.Role != "admin" {
@@ -379,22 +408,35 @@ func (a *App) handleSessionPlayingStopped(w http.ResponseWriter, r *http.Request
 }
 
 func (a *App) handleSessionsCapabilities(w http.ResponseWriter, r *http.Request) {
-	body, err := decodeOptionalJSON(r)
-	if err == nil {
-		reqCtx := requestContextFrom(r.Context())
-		for _, client := range a.allowedClients(reqCtx) {
-			_ = a.forwardNoContent(r, client, http.MethodPost, "/Sessions/Capabilities", cloneValues(r.URL.Query()), body)
-		}
-	}
-	w.WriteHeader(http.StatusNoContent)
+	a.broadcastCapabilities(w, r, "/Sessions/Capabilities", true)
 }
 
 func (a *App) handleSessionsCapabilitiesFull(w http.ResponseWriter, r *http.Request) {
+	a.broadcastCapabilities(w, r, "/Sessions/Capabilities/Full", false)
+}
+
+// broadcastCapabilities relays a capabilities broadcast to every allowed
+// upstream. Each upstream gets its own copy of the body, so preparing one
+// upstream's identity can never modify the body another upstream will receive.
+// A preparation failure is reported with its own status instead of being hidden
+// behind the best-effort 204.
+func (a *App) broadcastCapabilities(w http.ResponseWriter, r *http.Request, path string, forwardQuery bool) {
 	body, err := decodeOptionalJSON(r)
-	if err == nil {
-		reqCtx := requestContextFrom(r.Context())
-		for _, client := range a.allowedClients(reqCtx) {
-			_ = a.forwardNoContent(r, client, http.MethodPost, "/Sessions/Capabilities/Full", nil, body)
+	if err != nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	reqCtx := requestContextFrom(r.Context())
+	var query url.Values
+	if forwardQuery {
+		query = cloneValues(r.URL.Query())
+	}
+	for _, client := range a.allowedClients(reqCtx) {
+		if err := a.forwardNoContent(r, client, http.MethodPost, path, query, body); err != nil {
+			if status, ok := preparationErrorStatus(err); ok {
+				writeJSON(w, status, preparationErrorBody(err))
+				return
+			}
 		}
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -419,7 +461,7 @@ func (a *App) handleUserPlayingItem(w http.ResponseWriter, r *http.Request, meth
 	}
 	query := cloneValues(r.URL.Query())
 	a.translateMediaSourceQuery(query)
-	path := "/Users/" + resolved.Client.UserID + "/PlayingItems/" + resolved.OriginalID
+	path := "/Users/" + resolved.Client.clientUserID() + "/PlayingItems/" + resolved.OriginalID
 	_ = a.forwardNoContent(r, resolved.Client, method, path, query, nil)
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -451,7 +493,7 @@ func (a *App) handleUserItemUserData(w http.ResponseWriter, r *http.Request) {
 			_ = a.WatchStore.MarkPlayed(reqCtx.ProxyUser.UserID, virtualItemID, *playedValue)
 		}
 	}
-	status, payload, err := a.forwardJSONOrNoContent(r, resolved.Client, http.MethodPost, fmt.Sprintf("/Users/%s/Items/%s/UserData", resolved.Client.UserID, resolved.OriginalID), nil, body)
+	status, payload, err := a.forwardJSONOrNoContent(r, resolved.Client, http.MethodPost, fmt.Sprintf("/Users/%s/Items/%s/UserData", resolved.Client.clientUserID(), resolved.OriginalID), nil, body)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"message": err.Error()})
 		return
@@ -466,7 +508,7 @@ func (a *App) handleUserItemUserData(w http.ResponseWriter, r *http.Request) {
 	// Overlay local UserData for non-admin users
 	a.overlayLocalUserData(r, virtualItemID, payload)
 	cfg := a.ConfigStore.Snapshot()
-	rewriteResponseIDs(payload, resolved.ServerIndex, a.IDStore, cfg.Server.ID, a.Auth.ProxyUserID())
+	rewriteResponseIDs(payload, resolved.ServerIndex, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 	writeJSON(w, status, payload)
 }
 
@@ -485,7 +527,7 @@ func (a *App) handleFavoriteItemAdd(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "Invalid JSON body"})
 		return
 	}
-	status, payload, err := a.forwardJSONOrNoContent(r, resolved.Client, http.MethodPost, fmt.Sprintf("/Users/%s/FavoriteItems/%s", resolved.Client.UserID, resolved.OriginalID), nil, body)
+	status, payload, err := a.forwardJSONOrNoContent(r, resolved.Client, http.MethodPost, fmt.Sprintf("/Users/%s/FavoriteItems/%s", resolved.Client.clientUserID(), resolved.OriginalID), nil, body)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"message": err.Error()})
 		return
@@ -505,7 +547,7 @@ func (a *App) handleFavoriteItemAdd(w http.ResponseWriter, r *http.Request) {
 	}
 	a.overlayLocalUserData(r, virtualItemID, payload)
 	cfg := a.ConfigStore.Snapshot()
-	rewriteResponseIDs(payload, resolved.ServerIndex, a.IDStore, cfg.Server.ID, a.Auth.ProxyUserID())
+	rewriteResponseIDs(payload, resolved.ServerIndex, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 	writeJSON(w, status, payload)
 }
 
@@ -524,7 +566,7 @@ func (a *App) handleFavoriteItemRemove(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "Invalid JSON body"})
 		return
 	}
-	status, payload, err := a.forwardJSONOrNoContent(r, resolved.Client, http.MethodDelete, fmt.Sprintf("/Users/%s/FavoriteItems/%s", resolved.Client.UserID, resolved.OriginalID), nil, body)
+	status, payload, err := a.forwardJSONOrNoContent(r, resolved.Client, http.MethodDelete, fmt.Sprintf("/Users/%s/FavoriteItems/%s", resolved.Client.clientUserID(), resolved.OriginalID), nil, body)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"message": err.Error()})
 		return
@@ -544,7 +586,7 @@ func (a *App) handleFavoriteItemRemove(w http.ResponseWriter, r *http.Request) {
 	}
 	a.overlayLocalUserData(r, virtualItemID, payload)
 	cfg := a.ConfigStore.Snapshot()
-	rewriteResponseIDs(payload, resolved.ServerIndex, a.IDStore, cfg.Server.ID, a.Auth.ProxyUserID())
+	rewriteResponseIDs(payload, resolved.ServerIndex, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 	writeJSON(w, status, payload)
 }
 

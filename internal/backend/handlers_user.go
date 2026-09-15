@@ -81,7 +81,7 @@ func (a *App) handleUsersPublic(w http.ResponseWriter, r *http.Request) {
 	users := []map[string]any{{
 		"Name":                      cfg.Admin.Username,
 		"ServerId":                  cfg.Server.ID,
-		"Id":                        a.Auth.ProxyUserID(),
+		"Id":                        a.clientFacingUserIDFor(r),
 		"HasPassword":               true,
 		"HasConfiguredPassword":     true,
 		"HasConfiguredEasyPassword": false,
@@ -127,15 +127,15 @@ func (a *App) handleUserViews(w http.ResponseWriter, r *http.Request) {
 
 	groups := fanOutClients(onlineClients, func(c *UpstreamClient) []map[string]any {
 		query := cloneValues(r.URL.Query())
-		query.Set("UserId", c.UserID)
-		payload, err := c.RequestJSON(r.Context(), reqCtx, a.Identity, http.MethodGet, "/Users/"+c.UserID+"/Views", query, nil)
+		query.Set("UserId", c.clientUserID())
+		payload, err := c.RequestJSON(r.Context(), reqCtx, a.Identity, http.MethodGet, "/Users/"+c.clientUserID()+"/Views", query, nil)
 		if err != nil {
 			return nil
 		}
 		var items []map[string]any
 		for _, item := range asItems(payload) {
 			rewritten := deepCloneMap(item)
-			rewriteResponseIDs(rewritten, c.ServerIndex, a.IDStore, cfg.Server.ID, a.Auth.ProxyUserID())
+			rewriteResponseIDs(rewritten, c.ServerIndex, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 			if multiSource {
 				if name, _ := rewritten["Name"].(string); name != "" {
 					rewritten["Name"] = name + " (" + c.Name + ")"

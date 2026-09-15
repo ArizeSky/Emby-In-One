@@ -32,16 +32,16 @@ func (a *App) handleUserItemsResume(w http.ResponseWriter, r *http.Request) {
 		for _, inst := range instances {
 			instQuery := cloneValues(query)
 			instQuery.Set("ParentId", inst.OriginalID)
-			instQuery.Set("UserId", inst.Client.UserID)
+			instQuery.Set("UserId", inst.Client.clientUserID())
 			instQuery.Del("parentId")
 			instQuery.Del("parentid")
-			payload, err := inst.Client.RequestJSON(r.Context(), requestContextFrom(r.Context()), a.Identity, http.MethodGet, "/Users/"+inst.Client.UserID+"/Items/Resume", instQuery, nil)
+			payload, err := inst.Client.RequestJSON(r.Context(), requestContextFrom(r.Context()), a.Identity, http.MethodGet, "/Users/"+inst.Client.clientUserID()+"/Items/Resume", instQuery, nil)
 			if err != nil {
 				continue
 			}
 			filtered := filterSeriesItems(asItems(payload), originalIDs)
 			if len(filtered) > 0 {
-				a.rewriteItems(filtered, inst.ServerIndex)
+				a.rewriteItems(filtered, inst.ServerIndex, a.clientFacingUserIDFor(r))
 				writeJSON(w, http.StatusOK, map[string]any{"Items": filtered, "TotalRecordCount": len(filtered), "StartIndex": 0})
 				return
 			}
@@ -50,7 +50,7 @@ func (a *App) handleUserItemsResume(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	results := a.fetchItemsAcrossUpstreams(r.Context(), requestContextFrom(r.Context()), "/Users/%s/Items/Resume", query, nil)
-	writeJSON(w, http.StatusOK, a.mergedItemsPayload(results))
+	writeJSON(w, http.StatusOK, a.mergedItemsPayload(results, a.clientFacingUserIDFor(r)))
 }
 
 // handleLocalResume serves resume items from local WatchStore for non-admin users.
@@ -149,7 +149,7 @@ func (a *App) enrichWatchItems(r *http.Request, reqCtx *RequestContext, items []
 			continue
 		}
 		// Rewrite upstream IDs to virtual
-		rewriteResponseIDs(item, wp.ServerIndex, a.IDStore, cfg.Server.ID, a.Auth.ProxyUserID())
+		rewriteResponseIDs(item, wp.ServerIndex, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 		// Overlay local UserData
 		ud, _ := item["UserData"].(map[string]any)
 		if ud == nil {

@@ -157,6 +157,34 @@ func (m *AuthManager) Authenticate(username, password string) (map[string]any, b
 	return response, true, nil
 }
 
+// HasIssuedToken reports whether token is a proxy token this manager issued.
+// It is a membership question, so it does not run ValidateToken's logging or
+// return the token's owner.
+func (m *AuthManager) HasIssuedToken(value string) bool {
+	if value == "" {
+		return false
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, ok := m.tokens[value]
+	return ok
+}
+
+// UserIDForToken returns the user a proxy token belongs to, without the logging
+// side effects of ValidateToken.
+func (m *AuthManager) UserIDForToken(value string) (string, bool) {
+	if value == "" {
+		return "", false
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	info, ok := m.tokens[value]
+	if !ok {
+		return "", false
+	}
+	return info.UserID, true
+}
+
 func (m *AuthManager) ValidateToken(token string) *tokenInfo {
 	if token == "" {
 		return nil
@@ -311,6 +339,19 @@ func (m *AuthManager) ProxyUserID() string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.proxyUserID
+}
+
+// clientFacingUserID is the user ID EIO reports back to a client for the current
+// request. An authenticated proxy user sees its own ID; only public or internal
+// paths with no proxy user fall back to the global admin placeholder.
+func (a *App) clientFacingUserID(reqCtx *RequestContext) string {
+	if reqCtx != nil && reqCtx.ProxyUser != nil && reqCtx.ProxyUser.UserID != "" {
+		return reqCtx.ProxyUser.UserID
+	}
+	if a.Auth == nil {
+		return ""
+	}
+	return a.Auth.ProxyUserID()
 }
 
 func (m *AuthManager) BuildUserObject() map[string]any {

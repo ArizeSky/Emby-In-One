@@ -35,7 +35,8 @@ func (a *App) proxyStream(w http.ResponseWriter, r *http.Request, route streamRo
 	virtualItemID := r.PathValue("itemId")
 	query := cloneValues(r.URL.Query())
 	if a.Logger != nil {
-		a.Logger.Debugf("%s request: itemId=%s, query=%s", route.label, virtualItemID, query.Encode())
+		// The client's query may carry its own token; log only the safe shape.
+		a.Logger.Debugf("%s request: itemId=%s, query=%s", route.label, virtualItemID, formatValuesForLog(query))
 	}
 
 	resolved := a.resolveRouteID(virtualItemID)
@@ -65,25 +66,26 @@ func (a *App) proxyStream(w http.ResponseWriter, r *http.Request, route streamRo
 	}
 	a.resolvePlaySessionID(query)
 
-	// Replace the proxy token with the upstream's access token for stream auth.
-	query.Del("api_key")
-	query.Del("ApiKey")
-	token := client.getAccessToken()
-	if token != "" {
-		query.Set("api_key", token)
-	}
-
 	upstreamPath := route.pathPrefix + "/" + originalID + "/" + rest
+	reqCtx := requestContextFrom(r.Context())
 	if a.Logger != nil {
-		a.Logger.Infof("%s: %s/%s/%s → [%s] %s (using token: %v)",
-			route.label, route.pathPrefix, virtualItemID, rest, client.Name, upstreamPath, token != "")
+		a.Logger.Infof("%s: %s/%s/%s -> [%s] %s",
+			route.label, route.pathPrefix, virtualItemID, rest, client.Name, upstreamPath)
 	}
 
-	// Redirect mode: hand the client a direct upstream stream URL.
+	// Redirect mode: hand the client a direct upstream stream URL. The URL is
+	// prepared by the shared layer, so its identity and its single credential come
+	// from one auth snapshot and no local token can leak into it.
 	if a.streamPlaybackMode(client) == "redirect" {
-		redirectURL := client.BuildURL(upstreamPath, query, true)
+		redirectURL, err := client.BuildURL(upstreamPath, query, true, reqCtx)
+		if err != nil {
+			if !writePreparationError(w, err) {
+				writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Failed to prepare upstream stream URL"})
+			}
+			return
+		}
 		if a.Logger != nil {
-			a.Logger.Debugf("%s redirect: %s/%s/%s → 302 %s", route.label, route.pathPrefix, virtualItemID, rest, redirectURL)
+			a.Logger.Debugf("%s redirect: %s/%s/%s -> 302 %s", route.label, route.pathPrefix, virtualItemID, rest, formatOutboundURLForLog(redirectURL))
 		}
 		http.Redirect(w, r, redirectURL, http.StatusFound)
 		return
@@ -121,7 +123,23 @@ func (a *App) forwardStream(w http.ResponseWriter, r *http.Request, client *Upst
 		if reqCtx != nil {
 			proxyToken = reqCtx.ProxyToken
 		}
-		manifest := RewriteM3U8ForItem(string(body), client.BuildURL(upstreamPath, query, true), virtualItemID, proxyToken)
+		// The manifest's own response URL is the prepared one already sent, so the
+		// base URL needs no second authentication read. A test-constructed response
+		// has no Request, and falls back to preparing the URL once more.
+		baseURL := ""
+		if resp.Request != nil && resp.Request.URL != nil {
+			baseURL = resp.Request.URL.String()
+		} else {
+			prepared, err := client.BuildURL(upstreamPath, query, true, reqCtx)
+			if err != nil {
+				if !writePreparationError(w, err) {
+					writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Failed to prepare upstream stream URL"})
+				}
+				return
+			}
+			baseURL = prepared
+		}
+		manifest := RewriteM3U8ForItem(string(body), baseURL, virtualItemID, proxyToken)
 		w.Header().Set("Content-Type", "application/x-mpegURL")
 		_, _ = io.WriteString(w, manifest)
 		return

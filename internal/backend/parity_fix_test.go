@@ -251,7 +251,7 @@ upstream: []
 			},
 		}
 
-		payload := app.mergedItemsPayload(results)
+		payload := app.mergedItemsPayload(results, app.Auth.ProxyUserID())
 		items, _ := payload["Items"].([]any)
 		if len(items) != 1 {
 			t.Fatalf("expected 1 merged item, got %d", len(items))

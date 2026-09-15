@@ -34,11 +34,10 @@ func (a *App) handleFallbackProxy(w http.ResponseWriter, r *http.Request) {
 		a.Logger.Debugf("Fallback: %s %s → [%s] %s", r.Method, r.URL.Path, targetClient.Name, rewrittenPath)
 	}
 
-	if proxyUserID := a.Auth.ProxyUserID(); proxyUserID != "" && targetClient.UserID != "" {
-		rewrittenPath = strings.ReplaceAll(rewrittenPath, proxyUserID, targetClient.UserID)
-	}
-	query.Del("api_key")
-	query.Del("ApiKey")
+	// The user segment and the api_key are handled by the shared URL preparation
+	// layer in doRequest, which normalizes the current user for supported
+	// endpoints and keeps an unclassified value as the client sent it. A blanket
+	// string replacement here would also rewrite unrelated text.
 
 	body, err := decodeFallbackBody(r)
 	if err != nil {
@@ -47,8 +46,11 @@ func (a *App) handleFallbackProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, err := a.performUpstreamRequest(r, targetClient, r.Method, rewrittenPath, query, body)
 	if err != nil {
+		if writePreparationError(w, err) {
+			return
+		}
 		if a.Logger != nil {
-			a.Logger.Errorf("Fallback error: %s %s - %s", r.Method, r.URL.Path, err.Error())
+			a.Logger.Errorf("Fallback error: %s %s - %s", r.Method, r.URL.Path, redactURLInError(err))
 		}
 		writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Upstream request failed"})
 		return
@@ -91,7 +93,7 @@ func (a *App) handleFallbackProxy(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		cfg := a.ConfigStore.Snapshot()
-		rewriteResponseIDs(payload, serverIndex, a.IDStore, cfg.Server.ID, a.Auth.ProxyUserID())
+		rewriteResponseIDs(payload, serverIndex, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 		writeJSON(w, resp.StatusCode, payload)
 		return
 	}
@@ -161,6 +163,10 @@ func (a *App) resolveFallbackTarget(r *http.Request, reqCtx *RequestContext) (*U
 	return targetClient, rewrittenPath, serverIndex, query, false
 }
 
+// decodeFallbackBody reads the client body once. A JSON-declared body is decoded
+// into a structure; anything else keeps its original bytes untouched, because
+// trimming or re-encoding a non-JSON payload would corrupt binary or signed
+// content. The trim is used only to answer "was this body empty?".
 func decodeFallbackBody(r *http.Request) (any, error) {
 	if r.Body == nil || r.Method == http.MethodGet || r.Method == http.MethodHead {
 		return nil, nil
@@ -170,8 +176,7 @@ func decodeFallbackBody(r *http.Request) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	raw = bytes.TrimSpace(raw)
-	if len(raw) == 0 {
+	if len(bytes.TrimSpace(raw)) == 0 {
 		return nil, nil
 	}
 	if !isExplicitJSONContentType(r.Header.Get("Content-Type")) {
@@ -185,7 +190,8 @@ func decodeFallbackBody(r *http.Request) (any, error) {
 }
 
 func (a *App) performUpstreamRequest(r *http.Request, client *UpstreamClient, method, path string, query url.Values, body any) (*http.Response, error) {
-	return client.doRequest(r.Context(), method, path, query, body, client.requestHeaders(requestContextFrom(r.Context()), a.Identity), false)
+	reqCtx := requestContextFrom(r.Context())
+	return client.doRequest(r.Context(), reqCtx, method, path, query, body, client.requestHeaders(reqCtx, a.Identity), false)
 }
 
 func isJSONContentType(contentType string) bool {

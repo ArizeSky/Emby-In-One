@@ -38,7 +38,7 @@ func (a *App) handleShowsNextUp(w http.ResponseWriter, r *http.Request) {
 			}
 			filtered := filterSeriesItems(asItems(payload), originalIDs)
 			if len(filtered) > 0 {
-				a.rewriteItems(filtered, inst.ServerIndex)
+				a.rewriteItems(filtered, inst.ServerIndex, a.clientFacingUserIDFor(r))
 				writeJSON(w, http.StatusOK, map[string]any{"Items": filtered, "TotalRecordCount": len(filtered), "StartIndex": 0})
 				return
 			}
@@ -47,7 +47,7 @@ func (a *App) handleShowsNextUp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	results := a.fetchItemsAcrossUpstreams(r.Context(), requestContextFrom(r.Context()), "/Shows/NextUp", query, nil)
-	writeJSON(w, http.StatusOK, a.mergedItemsPayload(results))
+	writeJSON(w, http.StatusOK, a.mergedItemsPayload(results, a.clientFacingUserIDFor(r)))
 }
 
 // handleLocalNextUp computes NextUp from local WatchStore for non-admin users.
@@ -79,7 +79,7 @@ func (a *App) handleLocalNextUp(w http.ResponseWriter, r *http.Request, reqCtx *
 			writeJSON(w, http.StatusOK, empty)
 			return
 		}
-		rewriteResponseIDs(nextEp, resolved.ServerIndex, a.IDStore, cfg.Server.ID, a.Auth.ProxyUserID())
+		rewriteResponseIDs(nextEp, resolved.ServerIndex, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 		a.overlayLocalUserDataItems(r, []map[string]any{nextEp})
 		writeJSON(w, http.StatusOK, map[string]any{"Items": []any{nextEp}, "TotalRecordCount": 1, "StartIndex": 0})
 		return
@@ -111,7 +111,7 @@ func (a *App) handleLocalNextUp(w http.ResponseWriter, r *http.Request, reqCtx *
 		}
 		nextEp := a.fetchNextEpisode(r, reqCtx, client, seriesOrigID, serverIdx, &sp)
 		if nextEp != nil {
-			rewriteResponseIDs(nextEp, serverIdx, a.IDStore, cfg.Server.ID, a.Auth.ProxyUserID())
+			rewriteResponseIDs(nextEp, serverIdx, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 			if id, _ := nextEp["Id"].(string); id != "" {
 				a.overlayLocalUserData(r, id, nextEp)
 			}
@@ -160,7 +160,7 @@ func (a *App) resolveSeriesServer(sp *WatchProgress) (serverIndex int, seriesOri
 func (a *App) fetchNextEpisode(r *http.Request, reqCtx *RequestContext, client *UpstreamClient, seriesOriginalID string, serverIndex int, lastPlayed *WatchProgress) map[string]any {
 	q := url.Values{}
 	q.Set("Fields", "BasicSyncInfo,CanDelete,PrimaryImageAspectRatio,Overview,DateCreated,MediaSources,Path,SortName,Studios,Taglines,Genres,CommunityRating,OfficialRating,CumulativeRunTimeTicks,Chapters,ProviderIds")
-	q.Set("UserId", client.UserID)
+	q.Set("UserId", client.clientUserID())
 	q.Set("Season", strconv.Itoa(lastPlayed.ParentIndexNumber))
 	q.Set("SortBy", "SortName")
 	q.Set("SortOrder", "Ascending")
@@ -199,7 +199,7 @@ func (a *App) fetchNextEpisode(r *http.Request, reqCtx *RequestContext, client *
 	if lastPlayed.Played {
 		q2 := url.Values{}
 		q2.Set("Fields", q.Get("Fields"))
-		q2.Set("UserId", client.UserID)
+		q2.Set("UserId", client.clientUserID())
 		q2.Set("Season", strconv.Itoa(lastPlayed.ParentIndexNumber+1))
 		q2.Set("SortBy", "SortName")
 		q2.Set("SortOrder", "Ascending")

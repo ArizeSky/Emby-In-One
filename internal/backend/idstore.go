@@ -237,6 +237,39 @@ func appendIfMissing(instances []AdditionalInstance, candidate AdditionalInstanc
 	return append(instances, candidate)
 }
 
+// ContainsVirtualID reports whether value is a virtual resource ID issued by this
+// store. It answers the membership question inside the store's own lock instead of
+// making every caller copy the whole mapping.
+func (s *IDStore) ContainsVirtualID(value string) bool {
+	if value == "" {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	_, ok := s.virtualToOriginal[value]
+	return ok
+}
+
+// ContainsOriginalID reports whether value is an upstream ID this store has mapped.
+func (s *IDStore) ContainsOriginalID(value string) bool {
+	if value == "" {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, entry := range s.virtualToOriginal {
+		if entry.OriginalID == value {
+			return true
+		}
+		for _, other := range entry.OtherInstances {
+			if other.OriginalID == value {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (s *IDStore) ResolveVirtualID(virtualID string) *ResolvedID {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

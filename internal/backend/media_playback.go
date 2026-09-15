@@ -65,9 +65,9 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 		// ID made the upstream look up a user that does not exist there and answer 500
 		// (NullReferenceException), which surfaced as a 502 to the client.
 		instQuery := cloneValues(query)
-		instQuery.Set("UserId", inst.Client.UserID)
+		instQuery.Set("UserId", inst.Client.clientUserID())
 		instBody := deepCloneMap(body)
-		instBody["UserId"] = inst.Client.UserID
+		instBody["UserId"] = inst.Client.clientUserID()
 		payload, err := inst.Client.RequestJSON(r.Context(), requestContextFrom(r.Context()), a.Identity, r.Method, "/Items/"+inst.OriginalID+"/PlaybackInfo", instQuery, instBody)
 		if err != nil {
 			if a.Logger != nil {
@@ -190,7 +190,7 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 	cfg := a.ConfigStore.Snapshot()
 	// Rewrite top-level fields (excluding MediaSources which were already virtualised per-server above)
 	delete(base, "MediaSources")
-	rewriteResponseIDs(base, resolved.ServerIndex, a.IDStore, cfg.Server.ID, a.Auth.ProxyUserID())
+	rewriteResponseIDs(base, resolved.ServerIndex, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 	base["MediaSources"] = make([]any, 0, len(allMediaSources))
 	for _, mediaSource := range allMediaSources {
 		base["MediaSources"] = append(base["MediaSources"].([]any), mediaSource)

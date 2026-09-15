@@ -55,7 +55,7 @@ func (a *App) handleLibraryNamedArray(w http.ResponseWriter, r *http.Request, up
 		}
 		items := asItems(payload)
 		for _, item := range items {
-			rewriteResponseIDs(item, c.ServerIndex, a.IDStore, cfg.Server.ID, a.Auth.ProxyUserID())
+			rewriteResponseIDs(item, c.ServerIndex, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 			if multiSource {
 				if name, _ := item["Name"].(string); name != "" {
 					item["Name"] = name + " (" + c.Name + ")"
@@ -79,7 +79,7 @@ func (a *App) handleLibraryMediaFolders(w http.ResponseWriter, r *http.Request) 
 		}
 		items := asItems(payload)
 		for _, item := range items {
-			rewriteResponseIDs(item, c.ServerIndex, a.IDStore, cfg.Server.ID, a.Auth.ProxyUserID())
+			rewriteResponseIDs(item, c.ServerIndex, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 		}
 		return items
 	})
@@ -94,7 +94,7 @@ func (a *App) handleLibraryTaxonomy(w http.ResponseWriter, r *http.Request, endp
 
 	groups := fanOutClients(clients, func(c *UpstreamClient) []map[string]any {
 		query := cloneValues(r.URL.Query())
-		query.Set("UserId", c.UserID)
+		query.Set("UserId", c.clientUserID())
 		if hasBatchIDQuery(query) {
 			translated, ok := translateBatchIDQueryForServer(query, c.ServerIndex, a.IDStore)
 			if !ok {
@@ -108,7 +108,7 @@ func (a *App) handleLibraryTaxonomy(w http.ResponseWriter, r *http.Request, endp
 		}
 		items := asItems(payload)
 		for _, item := range items {
-			rewriteResponseIDs(item, c.ServerIndex, a.IDStore, cfg.Server.ID, a.Auth.ProxyUserID())
+			rewriteResponseIDs(item, c.ServerIndex, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 		}
 		return items
 	})
@@ -130,7 +130,7 @@ func (a *App) handleShowsSeasons(w http.ResponseWriter, r *http.Request) {
 	unknown := []indexedItem{}
 	for _, inst := range instances {
 		query := cloneValues(r.URL.Query())
-		query.Set("UserId", inst.Client.UserID)
+		query.Set("UserId", inst.Client.clientUserID())
 		payload, err := inst.Client.RequestJSON(r.Context(), requestContextFrom(r.Context()), a.Identity, http.MethodGet, "/Shows/"+inst.OriginalID+"/Seasons", query, nil)
 		if err != nil {
 			continue
@@ -183,7 +183,7 @@ func (a *App) handleShowsSeasons(w http.ResponseWriter, r *http.Request) {
 		preservedID, _ := item["Id"].(string)
 		delete(item, "_originalId")
 		delete(item, "Id")
-		rewriteResponseIDs(item, merged[idx].ServerIndex, a.IDStore, cfg.Server.ID, a.Auth.ProxyUserID())
+		rewriteResponseIDs(item, merged[idx].ServerIndex, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 		item["Id"] = preservedID
 		items = append(items, item)
 	}
@@ -191,7 +191,7 @@ func (a *App) handleShowsSeasons(w http.ResponseWriter, r *http.Request) {
 		preservedID, _ := entry.Item["Id"].(string)
 		delete(entry.Item, "_originalId")
 		delete(entry.Item, "Id")
-		rewriteResponseIDs(entry.Item, entry.ServerIndex, a.IDStore, cfg.Server.ID, a.Auth.ProxyUserID())
+		rewriteResponseIDs(entry.Item, entry.ServerIndex, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 		entry.Item["Id"] = preservedID
 		items = append(items, entry.Item)
 	}
@@ -216,7 +216,7 @@ func (a *App) handleShowsEpisodes(w http.ResponseWriter, r *http.Request) {
 	var unkeyed []indexedItem
 	for _, inst := range instances {
 		query := cloneValues(r.URL.Query())
-		query.Set("UserId", inst.Client.UserID)
+		query.Set("UserId", inst.Client.clientUserID())
 		if seasonID := query.Get("SeasonId"); seasonID != "" {
 			if resolvedSeason := a.IDStore.ResolveVirtualID(seasonID); resolvedSeason != nil {
 				mapped := ""
@@ -293,7 +293,7 @@ func (a *App) handleShowsEpisodes(w http.ResponseWriter, r *http.Request) {
 		preservedID, _ := entry.Item["Id"].(string)
 		delete(entry.Item, "_originalId")
 		delete(entry.Item, "Id")
-		rewriteResponseIDs(entry.Item, entry.ServerIndex, a.IDStore, cfg.Server.ID, a.Auth.ProxyUserID())
+		rewriteResponseIDs(entry.Item, entry.ServerIndex, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 		entry.Item["Id"] = preservedID
 		items = append(items, entry.Item)
 	}
@@ -301,7 +301,7 @@ func (a *App) handleShowsEpisodes(w http.ResponseWriter, r *http.Request) {
 		preservedID, _ := entry.Item["Id"].(string)
 		delete(entry.Item, "_originalId")
 		delete(entry.Item, "Id")
-		rewriteResponseIDs(entry.Item, entry.ServerIndex, a.IDStore, cfg.Server.ID, a.Auth.ProxyUserID())
+		rewriteResponseIDs(entry.Item, entry.ServerIndex, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 		entry.Item["Id"] = preservedID
 		items = append(items, entry.Item)
 	}
@@ -318,7 +318,7 @@ func (a *App) handleSearchHints(w http.ResponseWriter, r *http.Request) {
 	// A failed client returns nil so its group is simply absent from the merge.
 	perClient := fanOutClients(clients, func(c *UpstreamClient) *upstreamItemsResult {
 		query := cloneValues(r.URL.Query())
-		query.Set("UserId", c.UserID)
+		query.Set("UserId", c.clientUserID())
 		payload, err := c.RequestJSON(r.Context(), reqCtx, a.Identity, http.MethodGet, "/Search/Hints", query, nil)
 		if err != nil {
 			return nil
@@ -340,7 +340,7 @@ func (a *App) handleSearchHints(w http.ResponseWriter, r *http.Request) {
 			collected = append(collected, *result)
 		}
 	}
-	merged := a.mergeRoundRobinItems(collected)
+	merged := a.mergeRoundRobinItems(collected, a.clientFacingUserIDFor(r))
 
 	a.overlayLocalUserDataItems(r, merged)
 	writeJSON(w, http.StatusOK, map[string]any{

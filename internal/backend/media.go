@@ -121,10 +121,14 @@ func asItems(payload any) []map[string]any {
 	return []map[string]any{}
 }
 
-func (a *App) rewriteItems(items []map[string]any, serverIndex int) []map[string]any {
+// rewriteItems rewrites the resource IDs of a list of items and reports the
+// current user's own ID as the response identity. clientUserID is passed in
+// explicitly so a background aggregation goroutine can never fall back to the
+// global admin placeholder.
+func (a *App) rewriteItems(items []map[string]any, serverIndex int, clientUserID string) []map[string]any {
 	cfg := a.ConfigStore.Snapshot()
 	for _, item := range items {
-		rewriteResponseIDs(item, serverIndex, a.IDStore, cfg.Server.ID, a.Auth.ProxyUserID())
+		rewriteResponseIDs(item, serverIndex, a.IDStore, cfg.Server.ID, clientUserID)
 	}
 	return items
 }

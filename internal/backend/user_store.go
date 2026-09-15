@@ -172,6 +172,18 @@ func (s *UserStore) Authenticate(username, password string) *User {
 	return s.copyUser(user)
 }
 
+// ContainsUserID reports whether value is a locally registered proxy user ID.
+// Membership stays inside the store rather than copying List() to every caller.
+func (s *UserStore) ContainsUserID(value string) bool {
+	if value == "" {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	_, ok := s.users[value]
+	return ok
+}
+
 func (s *UserStore) Get(id string) *User {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

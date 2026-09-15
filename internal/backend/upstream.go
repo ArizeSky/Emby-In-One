@@ -443,8 +443,9 @@ func (c *UpstreamClient) loginWithHeaders(ctx context.Context, reqCtx *RequestCo
 		c.logger.Debugf("[%s] Login User-Agent: %s", c.Name, headers.Get("User-Agent"))
 	}
 	headers.Set("Content-Type", "application/json")
-	headers.Set("X-Emby-Authorization", fmt.Sprintf("Emby UserId=\"\", Client=\"%s\", Device=\"%s\", DeviceId=\"%s\", Version=\"%s\"", headers.Get("X-Emby-Client"), headers.Get("X-Emby-Device-Name"), headers.Get("X-Emby-Device-Id"), headers.Get("X-Emby-Client-Version")))
-	resp, err := c.doRequest(ctx, http.MethodPost, "/Users/AuthenticateByName", nil, body, headers, false)
+	// A username/password login authenticates with the body and presents no user
+	// ID, and must never reuse a client token or a previous upstream token.
+	resp, err := c.doRequestForMode(ctx, reqCtx, http.MethodPost, "/Users/AuthenticateByName", nil, body, headers, false, authModePasswordLogin)
 	if err != nil {
 		if c.logger != nil {
 			c.logger.Errorf("[%s] Login failed: %s", c.Name, err.Error())
@@ -495,7 +496,7 @@ func (c *UpstreamClient) loginWithHeaders(ctx context.Context, reqCtx *RequestCo
 // the HTTP status is surfaced to callers: LastError is returned to the admin API,
 // and the body of an admin-supplied host is not something to reflect there.
 func (c *UpstreamClient) validateAPIKey(ctx context.Context, reqCtx *RequestContext, identity *ClientIdentityService) {
-	resp, err := c.doRequest(ctx, http.MethodGet, "/Users/Me", nil, nil, c.requestHeaders(reqCtx, identity), false)
+	resp, err := c.doRequestForMode(ctx, reqCtx, http.MethodGet, "/Users/Me", nil, nil, c.requestHeaders(reqCtx, identity), false, authModeAPIKeyValidation)
 	if err != nil {
 		if c.logger != nil {
 			c.logger.Errorf("[%s] API key validation failed: %s", c.Name, err.Error())
@@ -550,7 +551,7 @@ func (c *UpstreamClient) setOffline(message string) {
 }
 
 func (c *UpstreamClient) RequestJSON(ctx context.Context, reqCtx *RequestContext, identity *ClientIdentityService, method, path string, params url.Values, body any) (any, error) {
-	resp, err := c.doRequest(ctx, method, path, params, body, c.requestHeaders(reqCtx, identity), false)
+	resp, err := c.doRequest(ctx, reqCtx, method, path, params, body, c.requestHeaders(reqCtx, identity), false)
 	if err != nil {
 		return nil, err
 	}
@@ -575,7 +576,7 @@ func (c *UpstreamClient) Stream(ctx context.Context, reqCtx *RequestContext, ide
 			}
 		}
 	}
-	return c.doRequest(ctx, http.MethodGet, path, params, nil, headers, true)
+	return c.doRequest(ctx, reqCtx, http.MethodGet, path, params, nil, headers, true)
 }
 
 // getAccessToken returns the upstream's access token in a thread-safe manner.
@@ -597,29 +598,16 @@ func (c *UpstreamClient) loginTimeout() time.Duration {
 	return time.Duration(c.timeouts.Login) * time.Millisecond
 }
 
-func (c *UpstreamClient) BuildURL(path string, params url.Values, stream bool) string {
-	if !strings.HasPrefix(path, "/") {
-		path = "/" + path
-	}
-	base := c.BaseURL
-	if stream {
-		base = c.StreamBaseURL
-	}
-	fullURL, _ := url.Parse(base + path)
-	query := fullURL.Query()
-	for key, values := range params {
-		for _, value := range values {
-			query.Add(key, value)
-		}
-	}
-	fullURL.RawQuery = query.Encode()
-	return fullURL.String()
+// BuildURL prepares an upstream URL outside doRequest. It is used by the stream
+// redirect path, whose client talks to the upstream directly, so it must apply
+// exactly the same URL rules as a proxied request: identity normalization and one
+// credential written from this snapshot.
+func (c *UpstreamClient) BuildURL(path string, params url.Values, stream bool, reqCtx *RequestContext) (string, error) {
+	return c.BuildURLForMode(path, params, stream, reqCtx, authModeNormal)
 }
 
-func (c *UpstreamClient) doRequest(ctx context.Context, method, path string, params url.Values, body any, headers http.Header, stream bool) (*http.Response, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
+// BuildURLForMode is BuildURL with an explicit authentication mode.
+func (c *UpstreamClient) BuildURLForMode(path string, params url.Values, stream bool, reqCtx *RequestContext, mode outboundAuthMode) (string, error) {
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
 	}
@@ -629,7 +617,7 @@ func (c *UpstreamClient) doRequest(ctx context.Context, method, path string, par
 	}
 	fullURL, err := url.Parse(base + path)
 	if err != nil {
-		return nil, err
+		return "", newClientInputPreparationError("unparsable-url", "path")
 	}
 	query := fullURL.Query()
 	for key, values := range params {
@@ -639,9 +627,72 @@ func (c *UpstreamClient) doRequest(ctx context.Context, method, path string, par
 	}
 	fullURL.RawQuery = query.Encode()
 
+	auth := c.authSnapshot()
+	businessPath := strings.TrimPrefix(fullURL.Path, urlPathPrefix(base))
+	if businessPath == "" {
+		businessPath = "/"
+	}
+	policy := resolveOutboundPolicy(businessPath, http.MethodGet, mode, base)
+	result, err := prepareOutboundURLWithReport(fullURL, reqCtx, auth, policy)
+	if err != nil {
+		return "", err
+	}
+	return result.url.String(), nil
+}
+
+func (c *UpstreamClient) doRequest(ctx context.Context, reqCtx *RequestContext, method, path string, params url.Values, body any, headers http.Header, stream bool) (*http.Response, error) {
+	return c.doRequestForMode(ctx, reqCtx, method, path, params, body, headers, stream, authModeNormal)
+}
+
+// doRequestForMode is the single exit for every HTTP request this proxy makes to
+// an upstream. It freezes one authentication snapshot per request and uses that
+// same snapshot for the URL, the body and the authentication headers, so a user
+// ID can never be paired with another login's token.
+func (c *UpstreamClient) doRequestForMode(ctx context.Context, reqCtx *RequestContext, method, path string, params url.Values, body any, headers http.Header, stream bool, mode outboundAuthMode) (*http.Response, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if mode == "" {
+		mode = authModeNormal
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	base := c.BaseURL
+	if stream {
+		base = c.StreamBaseURL
+	}
+
+	auth := c.authSnapshot()
+	policy := resolveOutboundPolicy(path, method, mode, base)
+
+	fullURL, err := url.Parse(base + path)
+	if err != nil {
+		return nil, newClientInputPreparationError("unparsable-url", "path")
+	}
+	query := fullURL.Query()
+	for key, values := range params {
+		for _, value := range values {
+			query.Add(key, value)
+		}
+	}
+	fullURL.RawQuery = query.Encode()
+
+	preparedURL, err := prepareOutboundURLWithReport(fullURL, reqCtx, auth, policy)
+	if err != nil {
+		c.scheduleRecoveryForPreparationError(err)
+		return nil, err
+	}
+
+	preparedBody, bodyOutcome, err := prepareOutboundBodyWithReport(body, reqCtx, auth, policy)
+	if err != nil {
+		c.scheduleRecoveryForPreparationError(err)
+		return nil, err
+	}
+
 	var reader io.Reader
 	bodyContentType := ""
-	switch typed := body.(type) {
+	switch typed := preparedBody.(type) {
 	case nil:
 	case rawRequestBody:
 		reader = bytes.NewReader(typed.data)
@@ -652,28 +703,24 @@ func (c *UpstreamClient) doRequest(ctx context.Context, method, path string, par
 			bodyContentType = typed.contentType
 		}
 	default:
-		encoded, err := json.Marshal(body)
-		if err != nil {
-			return nil, err
+		// The map decoder loses typed numbers, so an already-object body is
+		// re-serialized directly rather than through the generic path.
+		encoded, encodeErr := json.Marshal(preparedBody)
+		if encodeErr != nil {
+			return nil, encodeErr
 		}
 		reader = bytes.NewReader(encoded)
 		bodyContentType = "application/json"
 	}
-	request, err := http.NewRequestWithContext(ctx, method, fullURL.String(), reader)
+	request, err := http.NewRequestWithContext(ctx, method, preparedURL.url.String(), reader)
 	if err != nil {
 		return nil, err
 	}
 	var requestHeaders http.Header
 	if headers != nil {
-		requestHeaders = cloneHeader(headers)
-		c.mu.RLock()
-		accessToken := c.AccessToken
-		c.mu.RUnlock()
-		if accessToken != "" {
-			requestHeaders.Set("X-Emby-Token", accessToken)
-		}
+		requestHeaders = prepareOutboundHeaders(headers, reqCtx, auth, mode)
 	} else {
-		requestHeaders = c.requestHeaders(nil, nil)
+		requestHeaders = c.requestHeaders(reqCtx, nil)
 	}
 	if bodyContentType != "" && requestHeaders.Get("Content-Type") == "" {
 		requestHeaders.Set("Content-Type", bodyContentType)
@@ -688,7 +735,13 @@ func (c *UpstreamClient) doRequest(ctx context.Context, method, path string, par
 		client = &http.Client{Transport: c.transport, Timeout: 0}
 	}
 	if c.logger != nil {
-		c.logger.Debugf("[%s] → %s %s (stream=%v)", c.Name, method, path, stream)
+		changed := preparedURL.changed
+		if bodyOutcome.changed {
+			changed = append(changed, carrierBody)
+		}
+		c.logger.Debugf("[%s] -> %s %s (stream=%v, changed=%s, body=%s)",
+			c.Name, method, formatOutboundURLForLog(preparedURL.url.String()), stream,
+			outboundChangeSummary(changed), bodyOutcome.support)
 	}
 	// This is a reverse proxy forwarding client requests to admin-configured upstream Emby
 	// servers. The base URL (c.BaseURL/c.StreamBaseURL) is set by the administrator.
@@ -696,18 +749,35 @@ func (c *UpstreamClient) doRequest(ctx context.Context, method, path string, par
 	resp, doErr := client.Do(request) // CodeQL: intentional proxy forwarding to admin-configured upstream
 	if doErr != nil {
 		if c.logger != nil {
-			c.logger.Errorf("[%s] Request failed: %s %s: %s", c.Name, method, path, doErr.Error())
+			c.logger.Errorf("[%s] Request failed: %s %s: %s", c.Name, method,
+				formatOutboundURLForLog(preparedURL.url.String()), redactURLInError(doErr))
 		}
 		return nil, doErr
 	}
 	if c.logger != nil {
-		c.logger.Debugf("[%s] ← %s %s %d", c.Name, method, path, resp.StatusCode)
+		c.logger.Debugf("[%s] <- %s %s %d", c.Name, method, formatOutboundURLForLog(preparedURL.url.String()), resp.StatusCode)
 	}
 	if (resp.StatusCode == 401 || resp.StatusCode == 403) &&
 		!isUpstreamLoginPath(path) && c.onAuthError != nil {
 		go c.onAuthError(c)
 	}
 	return resp, nil
+}
+
+// scheduleRecoveryForPreparationError handles a preparation error that never
+// reached the upstream. A missing authentication state has no upstream response
+// to trigger the existing 401/403 recovery, so the debounced recovery callback is
+// scheduled here instead. Client-input errors and unclassified values never
+// trigger a reconnect.
+func (c *UpstreamClient) scheduleRecoveryForPreparationError(err error) {
+	prep, ok := asPreparationError(err)
+	if !ok || prep.Kind != "missing-upstream-auth-state" {
+		return
+	}
+	if c.onAuthError == nil {
+		return
+	}
+	go c.onAuthError(c)
 }
 
 func (c *UpstreamClient) identityHeaders(reqCtx *RequestContext, identity *ClientIdentityService) http.Header {
@@ -753,13 +823,43 @@ func (c *UpstreamClient) resolveIdentityHeaders(reqCtx *RequestContext, identity
 	return c.Config.SpoofClient, headers
 }
 
+// requestHeaders builds the caller-side header set for one request from the same
+// auth snapshot it will be sent with.
 func (c *UpstreamClient) requestHeaders(reqCtx *RequestContext, identity *ClientIdentityService) http.Header {
+	if c.Config.SpoofClient == "passthrough" {
+		return c.passthroughRequestHeaders(reqCtx, identity)
+	}
 	headers := c.identityHeaders(reqCtx, identity)
-	c.mu.RLock()
-	accessToken := c.AccessToken
-	c.mu.RUnlock()
-	if accessToken != "" {
-		headers.Set("X-Emby-Token", accessToken)
+	if snapshot := c.authSnapshot(); snapshot.AccessToken != "" {
+		headers.Set("X-Emby-Token", snapshot.AccessToken)
+	}
+	return headers
+}
+
+// passthroughRequestHeaders resolves the identity a passthrough upstream should
+// see and installs that snapshot's credential. The device parameters are kept in
+// the compound header so the upstream still receives the client's real device
+// identity; its UserId and Token are replaced by the snapshot's own.
+func (c *UpstreamClient) passthroughRequestHeaders(reqCtx *RequestContext, identity *ClientIdentityService) http.Header {
+	_, headers := c.resolveIdentityHeaders(reqCtx, identity, nil)
+	snapshot := c.authSnapshot()
+	if snapshot.AccessToken != "" {
+		headers.Set("X-Emby-Token", snapshot.AccessToken)
+	}
+	compound := headers.Get("X-Emby-Authorization")
+	if compound == "" {
+		compound = headers.Get("Authorization")
+	}
+	headers.Del("Authorization")
+	headers.Del("X-Emby-Authorization")
+	if compound != "" {
+		if parsed, ok := parseAuthorizationIdentityStrict(compound); ok {
+			headers.Set("X-Emby-Authorization", canonicalAuthorizationHeader(snapshot.UserID,
+				parsed["Device"], parsed["DeviceId"], parsed["Version"], parsed["Client"]))
+		}
+	}
+	if headers.Get("X-Emby-Authorization") == "" && snapshot.UserID != "" {
+		headers.Set("X-Emby-Authorization", canonicalAuthorizationHeader(snapshot.UserID, "", "", "", ""))
 	}
 	return headers
 }
