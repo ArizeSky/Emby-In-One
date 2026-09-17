@@ -86,7 +86,7 @@ func TestWatchHistoryIsolationForRegularUsers(t *testing.T) {
 		childToken := loginTokenAs(t, handler, "child", "child123")
 
 		// Get virtual item ID for upstream movie-a
-		virtualMovieID := app.IDStore.GetOrCreateVirtualID("movie-a", 0)
+		virtualMovieID := app.IDStore.GetOrCreateVirtualID("movie-a", app.Upstream.Clients()[0].ID)
 
 		// ---- Test 1: Session progress is recorded in WatchStore ----
 		rr = doAuthJSON(t, handler, http.MethodPost, "/Sessions/Playing",
@@ -278,13 +278,13 @@ func TestWatchHistoryOverlayOnItemDetail(t *testing.T) {
 			}
 		}
 
-		virtualMovieID := app.IDStore.GetOrCreateVirtualID("movie-a", 0)
+		virtualMovieID := app.IDStore.GetOrCreateVirtualID("movie-a", app.Upstream.Clients()[0].ID)
 
 		// Pre-populate WatchStore with some progress + favorite
 		app.WatchStore.RecordProgress(&WatchProgress{
 			ProxyUserID:    childUserID,
 			VirtualItemID:  virtualMovieID,
-			ServerIndex:    0,
+			ServerID:       app.Upstream.Clients()[0].ID,
 			OriginalItemID: "movie-a",
 			PositionTicks:  42000,
 			RuntimeTicks:   100000,
@@ -326,7 +326,7 @@ func TestWatchHistoryOverlayOnItemDetail(t *testing.T) {
 // TestWatchHistoryNoLeakFromUpstreamAdmin verifies that when a regular user
 // has no local watch progress, the upstream admin's UserData is cleared
 // (Played=false, position=0) instead of leaking to the user.
-func TestUserDataPlayedStillUpdatesLocalStateWhenUpstreamFails(t *testing.T) {
+func TestUserDataPlayedIsNotRecordedLocallyWhenUpstreamFails(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/Users/AuthenticateByName":
@@ -358,7 +358,7 @@ func TestUserDataPlayedStillUpdatesLocalStateWhenUpstreamFails(t *testing.T) {
 		}
 		childUserID := childInfo.UserID
 
-		virtualMovieID := app.IDStore.GetOrCreateVirtualID("movie-a", 0)
+		virtualMovieID := app.IDStore.GetOrCreateVirtualID("movie-a", app.Upstream.Clients()[0].ID)
 		rr = doAuthJSON(t, handler, http.MethodPost,
 			fmt.Sprintf("/Users/%s/Items/%s/UserData", app.Auth.ProxyUserID(), virtualMovieID),
 			map[string]any{"Played": true}, childToken)
@@ -366,9 +366,11 @@ func TestUserDataPlayedStillUpdatesLocalStateWhenUpstreamFails(t *testing.T) {
 			t.Fatalf("userdata POST status=%d body=%s", rr.Code, rr.Body.String())
 		}
 
-		progress := app.WatchStore.GetProgress(childUserID, virtualMovieID)
-		if progress == nil || !progress.Played {
-			t.Fatalf("Played should still be true locally after upstream failure")
+		// The local record follows the upstream, not the other way round: writing it first
+		// left the local state "played" while the upstream still had it unwatched, and the
+		// two never met again.
+		if progress := app.WatchStore.GetProgress(childUserID, virtualMovieID); progress != nil && progress.Played {
+			t.Fatalf("Played was recorded locally even though the upstream rejected the write: %#v", progress)
 		}
 	})
 }
@@ -411,7 +413,7 @@ func TestWatchHistoryNoLeakFromUpstreamAdmin(t *testing.T) {
 		}
 
 		childToken := loginTokenAs(t, handler, "child", "child123")
-		virtualMovieID := app.IDStore.GetOrCreateVirtualID("movie-a", 0)
+		virtualMovieID := app.IDStore.GetOrCreateVirtualID("movie-a", app.Upstream.Clients()[0].ID)
 
 		// Do NOT add any local watch progress for child user
 

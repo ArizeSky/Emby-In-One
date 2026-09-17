@@ -88,7 +88,7 @@ func TestUpstreamRedirectFollowedByDefault(t *testing.T) {
 		}
 
 		token := loginToken(t, handler, "secret")
-		virtualItem := app.IDStore.GetOrCreateVirtualID("orig-item", 0)
+		virtualItem := app.IDStore.GetOrCreateVirtualID("orig-item", app.Upstream.Clients()[0].ID)
 		rr := doJSONRequest(t, handler, http.MethodGet, "/Items/"+virtualItem, nil, token)
 		if rr.Code != http.StatusOK {
 			t.Fatalf("status = %d, want 200, body=%s", rr.Code, rr.Body.String())
@@ -115,7 +115,7 @@ func TestUpstreamRedirectNotFollowed(t *testing.T) {
 		}
 
 		token := loginToken(t, handler, "secret")
-		virtualItem := app.IDStore.GetOrCreateVirtualID("orig-item", 0)
+		virtualItem := app.IDStore.GetOrCreateVirtualID("orig-item", app.Upstream.Clients()[0].ID)
 		rr := doJSONRequest(t, handler, http.MethodGet, "/Items/"+virtualItem, nil, token)
 
 		if rr.Code != http.StatusBadGateway {
@@ -140,7 +140,7 @@ func TestUpstreamRedirectNotFollowedStreamIsAnError(t *testing.T) {
 
 	withTempAppConfig(t, configWithFollowRedirects(upstream.URL, false), func(app *App, handler http.Handler) {
 		token := loginToken(t, handler, "secret")
-		virtualItem := app.IDStore.GetOrCreateVirtualID("orig-item", 0)
+		virtualItem := app.IDStore.GetOrCreateVirtualID("orig-item", app.Upstream.Clients()[0].ID)
 
 		req := httptest.NewRequest(http.MethodGet, "/Videos/"+virtualItem+"/master.m3u8", nil)
 		req.Header.Set("X-Emby-Token", token)
@@ -166,7 +166,7 @@ func TestUpstreamConnectFailureDoesNotLeakToken(t *testing.T) {
 
 	withTempAppConfig(t, config, func(app *App, handler http.Handler) {
 		token := loginToken(t, handler, "secret")
-		virtualItem := app.IDStore.GetOrCreateVirtualID("orig-item", 0)
+		virtualItem := app.IDStore.GetOrCreateVirtualID("orig-item", app.Upstream.Clients()[0].ID)
 
 		req := httptest.NewRequest(http.MethodGet, "/Videos/"+virtualItem+"/master.m3u8", nil)
 		req.Header.Set("X-Emby-Token", token)

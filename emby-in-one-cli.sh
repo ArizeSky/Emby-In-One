@@ -20,9 +20,20 @@ BOLD='\033[1m'
 DIM='\033[2m'
 NC='\033[0m'
 
+# ── 权限检查 ──
+# binary 模式要操作 systemd 并读取 0600 的 config.yaml；docker 模式下
+# docker 组成员能借 --reset-password 重置管理员密码（提权），因此一律要求 root。
+if [[ "$EUID" -ne 0 ]]; then
+  echo -e "${RED}[错误] 请使用 root 权限运行管理菜单 (sudo emby-in-one)${NC}"
+  exit 1
+fi
+
 # ── 检测部署方式：binary（systemd）或 docker ──
 detect_deploy_mode() {
-  if [[ -x "${PROJECT_DIR}/emby-in-one" ]] && systemctl list-unit-files "${SERVICE_NAME}.service" &>/dev/null 2>&1; then
+  # 注意: systemctl list-unit-files <unit> 在没有匹配项时同样返回 0，
+  # 必须自己匹配输出，否则没有 systemd 服务的 Docker 部署会被误判为 binary。
+  if [[ -x "${PROJECT_DIR}/emby-in-one" ]] \
+    && systemctl list-unit-files --type=service 2>/dev/null | grep -q "^${SERVICE_NAME}\.service"; then
     echo "binary"
   else
     echo "docker"
@@ -86,14 +97,46 @@ get_admin_token() {
   ' "$token_file"
 }
 
+# ── 当前运行版本对应的 Release Tag ──
+# 用于按 tag 拉取脚本（不再跟随 main 分支）。
+running_version_tag() {
+  local v=""
+  if [[ "$DEPLOY_MODE" == "binary" && -x "${PROJECT_DIR}/emby-in-one" ]]; then
+    v=$("${PROJECT_DIR}/emby-in-one" --version 2>/dev/null | head -1 | tr -d '[:space:]')
+  fi
+  if [[ -z "$v" || "$v" == "dev" ]]; then
+    v="${VERSION}"
+  fi
+  # GitHub Release 的 tag 惯例为大写 V 开头（见 release-install.sh 的大小写处理）。
+  # 两步前缀处理同时兼容 v1.4.4 / V1.4.4 / 1.4.4 三种输入，避免拼出 VV 前缀。
+  v="V${v#v}"; v="V${v#V}"
+  echo "${v}"
+}
+
+# ── 最新稳定版本的 Release Tag ──
+# 与 release-install.sh 的"获取最新稳定版本"逻辑一致，用于 Docker 模式的在线更新。
+latest_release_tag() {
+  local tag=""
+  tag=$(curl -sL --max-time 15 "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" 2>/dev/null \
+    | grep -o '"tag_name" *: *"[^"]*"' | head -1 | sed 's/.*: *"//;s/"$//')
+  if [[ -n "${tag}" ]]; then
+    tag="V${tag#v}"; tag="V${tag#V}"
+  fi
+  echo "${tag}"
+}
+
 reset_password_via_cli() {
   local new_password="$1"
+  # 密码经 stdin 传给内置 CLI（`--reset-password -`），不进进程列表、不进 shell 历史。
+  # 注意: CLI 默认会探测本机配置端口上是否已有实例在跑并拒绝重置，
+  # 因此调用方必须先停服务（见 do_change_password）。
   if [[ "$DEPLOY_MODE" == "binary" ]]; then
-    cd "${PROJECT_DIR}" && ./emby-in-one --reset-password "$new_password"
+    ( cd "${PROJECT_DIR}" && printf '%s' "$new_password" | ./emby-in-one --reset-password - )
   elif docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'emby-in-one'; then
-    docker exec -i emby-in-one /app/emby-in-one --reset-password "$new_password"
+    printf '%s' "$new_password" | docker exec -i emby-in-one /app/emby-in-one --reset-password -
   else
-    cd "${PROJECT_DIR}" && compose_cmd run --rm --no-deps emby-in-one /app/emby-in-one --reset-password "$new_password"
+    # -T: stdin 是管道而非 TTY，必须关掉 TTY 分配
+    ( cd "${PROJECT_DIR}" && printf '%s' "$new_password" | compose_cmd run --rm --no-deps -T emby-in-one /app/emby-in-one --reset-password - )
   fi
 }
 
@@ -134,9 +177,15 @@ do_start() {
   echo -e "${GREEN}▶ 正在启动服务...${NC}"
   echo ""
   if [[ "$DEPLOY_MODE" == "binary" ]]; then
-    systemctl start "${SERVICE_NAME}"
+    if ! systemctl start "${SERVICE_NAME}"; then
+      echo -e "${RED}✘ 启动失败，请查看: journalctl -u ${SERVICE_NAME} -n 50${NC}"
+      return 1
+    fi
   else
-    cd "${PROJECT_DIR}" && compose_cmd up -d
+    if ! ( cd "${PROJECT_DIR}" && compose_cmd up -d ); then
+      echo -e "${RED}✘ 启动失败，请检查容器日志 (菜单选项 [10])${NC}"
+      return 1
+    fi
   fi
   echo ""
   echo -e "${GREEN}✔ 服务已启动${NC}"
@@ -146,9 +195,15 @@ do_restart() {
   echo -e "${YELLOW}▶ 正在重启服务...${NC}"
   echo ""
   if [[ "$DEPLOY_MODE" == "binary" ]]; then
-    systemctl restart "${SERVICE_NAME}"
+    if ! systemctl restart "${SERVICE_NAME}"; then
+      echo -e "${RED}✘ 重启失败，请查看: journalctl -u ${SERVICE_NAME} -n 50${NC}"
+      return 1
+    fi
   else
-    cd "${PROJECT_DIR}" && compose_cmd restart
+    if ! ( cd "${PROJECT_DIR}" && compose_cmd restart ); then
+      echo -e "${RED}✘ 重启失败，请检查容器日志 (菜单选项 [10])${NC}"
+      return 1
+    fi
   fi
   echo ""
   echo -e "${GREEN}✔ 服务已重启${NC}"
@@ -158,126 +213,71 @@ do_stop() {
   echo -e "${RED}▶ 正在关闭服务...${NC}"
   echo ""
   if [[ "$DEPLOY_MODE" == "binary" ]]; then
-    systemctl stop "${SERVICE_NAME}"
+    if ! systemctl stop "${SERVICE_NAME}"; then
+      echo -e "${RED}✘ 关闭失败，请查看: systemctl status ${SERVICE_NAME}${NC}"
+      return 1
+    fi
   else
-    cd "${PROJECT_DIR}" && compose_cmd down
+    if ! ( cd "${PROJECT_DIR}" && compose_cmd down ); then
+      echo -e "${RED}✘ 关闭失败，请检查容器状态 (菜单选项 [5])${NC}"
+      return 1
+    fi
   fi
   echo ""
   echo -e "${GREEN}✔ 服务已关闭${NC}"
 }
-
-REPO_TARBALL="https://github.com/${GITHUB_REPO}/archive/refs/heads/main.tar.gz"
 
 do_update() {
   if [[ "$DEPLOY_MODE" == "binary" ]]; then
     # ── Binary 模式：通过 release-install.sh 更新 ──
     echo -e "${CYAN}▶ 正在通过 release-install.sh 更新服务...${NC}"
     echo ""
-    local tmp_script="/tmp/emby-in-one-release-install-$$.sh"
-    if curl -fsSL --max-time 30 -o "${tmp_script}" "https://raw.githubusercontent.com/${GITHUB_REPO}/main/release-install.sh"; then
-      bash "${tmp_script}"
-      rm -f "${tmp_script}"
+    local tmp_script="" installer="" tag
+    if [[ -f "${PROJECT_DIR}/release-install.sh" ]]; then
+      # 1) 优先复用磁盘上已安装的脚本（release-install.sh 安装时会留在安装目录）
+      installer="${PROJECT_DIR}/release-install.sh"
+      echo -e "  ${DIM}使用已安装的 ${installer}${NC}"
     else
-      echo -e "${RED}✘ 下载更新脚本失败，请检查网络${NC}"
+      # 2) 其次按当前运行版本的 tag 拉取，不再跟随 main 分支
+      tag=$(running_version_tag)
+      tmp_script="/tmp/emby-in-one-release-install-$$.sh"
+      echo -e "  ${DIM}从 Release ${tag} 获取更新脚本...${NC}"
+      if ! curl -fsSL --max-time 30 -o "${tmp_script}" \
+        "https://github.com/${GITHUB_REPO}/releases/download/${tag}/release-install.sh"; then
+        # Release 未附带该脚本时退到同一 tag 的仓库快照（仍是版本锁定，不是 main）
+        if ! curl -fsSL --max-time 30 -o "${tmp_script}" \
+          "https://raw.githubusercontent.com/${GITHUB_REPO}/${tag}/release-install.sh"; then
+          rm -f "${tmp_script}"
+          echo -e "${RED}✘ 获取更新脚本失败（Release ${tag} 可能未附带 release-install.sh）${NC}"
+          echo -e "${DIM}  可改用菜单选项 [15] 指定版本更新${NC}"
+          return 1
+        fi
+      fi
+      installer="${tmp_script}"
+    fi
+    bash "${installer}"
+    local rc=$?
+    if [[ -n "$tmp_script" ]]; then
+      rm -f "${tmp_script}"
+    fi
+    if [[ $rc -ne 0 ]]; then
+      echo -e "${RED}✘ 更新脚本执行失败 (退出码 ${rc})${NC}"
       return 1
     fi
   else
-    # ── Docker 模式：拉取最新源码并重新构建 ──
-    echo -e "${CYAN}▶ 正在拉取最新源码并重新构建...${NC}"
+    # ── Docker 模式：下载最新 Release 的源码包（带校验和）并重新构建 ──
+    echo -e "${CYAN}▶ 正在获取最新 Release 并重新构建...${NC}"
     echo ""
-
-    # 1. 下载最新源码到临时目录
-    local tmp_dir
-    tmp_dir=$(mktemp -d)
-    echo -e "  ${DIM}从 GitHub 下载最新代码...${NC}"
-    if ! curl -fsSL --max-time 120 "${REPO_TARBALL}" | tar -xz -C "${tmp_dir}" --strip-components=1; then
-      rm -rf "${tmp_dir}"
-      echo -e "${RED}✘ 下载源码失败，请检查网络${NC}"
+    # 不再拉 main 分支 tarball：该路径无校验和，且内容与运行版本不对应。
+    # Release 的 docker 源码包走 download_and_install_docker 的 sha256 校验。
+    local latest_tag
+    latest_tag=$(latest_release_tag)
+    if [[ -z "${latest_tag}" ]]; then
+      echo -e "${RED}✘ 无法获取最新 Release 版本号，请检查网络（或改用菜单选项 [15] 指定版本）${NC}"
       return 1
     fi
-
-    # 2. 定位源码根目录（支持独立发行和根仓库两种结构）
-    local src_dir=""
-    if [[ -d "${tmp_dir}/cmd" && -d "${tmp_dir}/internal" && -f "${tmp_dir}/go.mod" ]]; then
-      src_dir="${tmp_dir}"
-    elif [[ -d "${tmp_dir}/Emby-In-One-Go/cmd" && -f "${tmp_dir}/Emby-In-One-Go/go.mod" ]]; then
-      src_dir="${tmp_dir}/Emby-In-One-Go"
-    fi
-
-    if [[ -z "$src_dir" ]]; then
-      rm -rf "${tmp_dir}"
-      echo -e "${RED}✘ 下载内容中未找到可部署的 Go 项目文件${NC}"
-      return 1
-    fi
-
-    # 3. 替换源码（保留 config/ data/ log/ 用户数据）
-    echo -e "  ${DIM}更新项目文件...${NC}"
-    for item in cmd internal third_party public go.mod; do
-      rm -rf "${PROJECT_DIR:?}/${item}"
-      if [[ -e "${src_dir}/${item}" ]]; then
-        cp -r "${src_dir}/${item}" "${PROJECT_DIR}/"
-      fi
-    done
-    for item in README.md README_EN.md Update.md emby-in-one-cli.sh .dockerignore LICENSE; do
-      if [[ -e "${src_dir}/${item}" ]]; then
-        cp -f "${src_dir}/${item}" "${PROJECT_DIR}/"
-      fi
-    done
-
-    # 4. 重新生成 Dockerfile 和 docker-compose.yml
-    echo -e "  ${DIM}生成构建文件...${NC}"
-    cat > "${PROJECT_DIR}/Dockerfile" <<'DEOF'
-FROM golang:1.23-bookworm AS builder
-ARG VERSION=dev
-RUN apt-get update && apt-get install -y --no-install-recommends build-essential ca-certificates && rm -rf /var/lib/apt/lists/*
-WORKDIR /src
-COPY go.mod ./
-COPY third_party ./third_party
-COPY cmd ./cmd
-COPY internal ./internal
-COPY public ./public
-RUN CGO_ENABLED=1 go build -ldflags="-s -w -X main.Version=${VERSION}" -o /out/emby-in-one ./cmd/emby-in-one
-
-FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata && rm -rf /var/lib/apt/lists/*
-WORKDIR /app
-RUN mkdir -p /app/config /app/data /app/public
-COPY public ./public
-COPY --from=builder /out/emby-in-one ./emby-in-one
-EXPOSE 8096
-CMD ["./emby-in-one"]
-DEOF
-
-    cat > "${PROJECT_DIR}/docker-compose.yml" <<'CEOF'
-services:
-  emby-in-one:
-    build:
-      context: .
-      args:
-        VERSION: v1.4.4
-    container_name: emby-in-one
-    ports:
-      - "8096:8096"
-    volumes:
-      - ./config:/app/config
-      - ./data:/app/data
-    restart: unless-stopped
-CEOF
-
-    rm -rf "${tmp_dir}"
-
-    # 5. 重建镜像并启动
-    echo -e "  ${DIM}构建 Docker 镜像（首次可能需要数分钟）...${NC}"
-    cd "${PROJECT_DIR}" && compose_cmd build --no-cache || { echo -e "${RED}✘ 构建镜像失败${NC}"; return 1; }
-    compose_cmd up -d
-
-    # 6. 安全替换 CLI 脚本（原子操作，避免覆盖运行中脚本）
-    if [[ -f "${PROJECT_DIR}/emby-in-one-cli.sh" ]]; then
-      local tmp_cli="/usr/local/bin/emby-in-one.tmp.$$"
-      cp -f "${PROJECT_DIR}/emby-in-one-cli.sh" "${tmp_cli}"
-      mv -f "${tmp_cli}" /usr/local/bin/emby-in-one
-      chmod +x /usr/local/bin/emby-in-one
-    fi
+    echo -e "  ${DIM}最新 Release: ${latest_tag}${NC}"
+    download_and_install_docker "${latest_tag}" || return 1
   fi
   echo ""
   echo -e "${GREEN}✔ 服务已更新${NC}"
@@ -346,10 +346,55 @@ download_and_install() {
   fi
 }
 
+# ── 下载产物的 sha256 校验 ──
+# 返回 0: 校验通过，或该 Release 未提供 .sha256（已告警，兼容旧版本）
+# 返回 1: 校验失败/校验和文件无法识别，调用方必须中止安装
+verify_download() {
+  local file="$1" url="$2"
+  if ! command -v sha256sum &>/dev/null; then
+    echo -e "${YELLOW}  ⚠ 系统缺少 sha256sum，已跳过完整性校验${NC}"
+    return 0
+  fi
+  local asset_name="${url##*/}"
+  local sha_file="${file}.sha256" expected actual
+  if ! curl -fsSL --max-time 30 -o "${sha_file}" "${url}.sha256" 2>/dev/null; then
+    rm -f "${sha_file}"
+    echo -e "${YELLOW}  ⚠ 该 Release 未提供 ${asset_name}.sha256，已跳过完整性校验${NC}"
+    return 0
+  fi
+  # 优先取文件名匹配的那一行，兼容"单文件"和"多文件合并"两种校验和格式
+  expected=$(awk -v want="${asset_name}" '
+    { name=$2; sub(/^\*/, "", name); sub(/^\.\//, "", name) }
+    name == want { print $1; exit }
+  ' "${sha_file}" | grep -oE '^[0-9a-fA-F]{64}$' | head -1)
+  if [[ -z "$expected" ]]; then
+    expected=$(awk '{print $1}' "${sha_file}" | grep -oE '^[0-9a-fA-F]{64}$' | head -1)
+  fi
+  rm -f "${sha_file}"
+  if [[ -z "$expected" ]]; then
+    echo -e "${RED}✘ 校验和文件格式无法识别: ${url}.sha256${NC}"
+    return 1
+  fi
+  actual=$(sha256sum "${file}" | awk '{print $1}')
+  if [[ "${expected,,}" != "${actual,,}" ]]; then
+    echo -e "${RED}✘ 校验失败！下载内容可能已损坏或被篡改${NC}"
+    echo -e "${DIM}    期望: ${expected}${NC}"
+    echo -e "${DIM}    实际: ${actual}${NC}"
+    return 1
+  fi
+  echo -e "${DIM}  完整性校验通过: ${asset_name}${NC}"
+  return 0
+}
+
 download_and_install_docker() {
   local version_tag="$1"
-  local archive_name="Emby-In-One-docker-${version_tag}.tar.gz"
-  local download_url="https://github.com/${GITHUB_REPO}/releases/download/${version_tag}/${archive_name}"
+  # GitHub Release 的 tag 为大写 V 开头，归档文件名中的版本为小写 v 开头
+  # （与 release-install.sh 的大小写处理一致；tag 大小写错误会 404）
+  local release_tag="V${version_tag#v}"
+  release_tag="V${release_tag#V}"
+  local file_version="v${release_tag#V}"
+  local archive_name="Emby-In-One-docker-${file_version}.tar.gz"
+  local download_url="https://github.com/${GITHUB_REPO}/releases/download/${release_tag}/${archive_name}"
 
   echo ""
   echo -e "${CYAN}▶ 正在下载 Docker 源码包 ${archive_name}...${NC}"
@@ -360,6 +405,11 @@ download_and_install_docker() {
     rm -rf "${tmp_dir}"
     echo -e "${RED}[错误] 下载失败，请检查版本号 ${version_tag} 是否存在${NC}"
     echo -e "${DIM}  下载地址: ${download_url}${NC}"
+    return 1
+  fi
+  if ! verify_download "${tmp_dir}/${archive_name}" "${download_url}"; then
+    rm -rf "${tmp_dir}"
+    echo -e "${RED}[错误] 完整性校验未通过，已中止安装${NC}"
     return 1
   fi
 
@@ -393,7 +443,7 @@ download_and_install_docker() {
       cp -r "${src_dir}/${item}" "${PROJECT_DIR}/"
     fi
   done
-  for item in emby-in-one-cli.sh; do
+  for item in emby-in-one-cli.sh .dockerignore; do
     if [[ -e "${src_dir}/${item}" ]]; then
       cp -f "${src_dir}/${item}" "${PROJECT_DIR}/"
     fi
@@ -416,12 +466,17 @@ COPY public ./public
 RUN CGO_ENABLED=1 go build -ldflags="-s -w -X main.Version=${VERSION}" -o /out/emby-in-one ./cmd/emby-in-one
 
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata wget && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 RUN mkdir -p /app/config /app/data /app/public
 COPY public ./public
 COPY --from=builder /out/emby-in-one ./emby-in-one
+# 非 root 运行 (uid 1000，与 docker-compose.yml 的 user 一致)
+RUN useradd -r -u 1000 -U -s /usr/sbin/nologin eio && chown -R eio:eio /app
+USER eio
 EXPOSE 8096
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD wget -qO- http://127.0.0.1:8096/System/Info/Public || exit 1
 CMD ["./emby-in-one"]
 DEOF
   fi
@@ -435,20 +490,31 @@ services:
       args:
         VERSION: ${version_tag}
     container_name: emby-in-one
+    # 容器以 uid 1000 运行，挂载目录需先 chown 1000:1000
+    user: "1000:1000"
     ports:
       - "8096:8096"
     volumes:
       - ./config:/app/config
       - ./data:/app/data
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 EOF
 
   rm -rf "${tmp_dir}"
 
   # 重建镜像并启动
   echo -e "  ${DIM}构建 Docker 镜像（首次可能需要数分钟）...${NC}"
+  # 容器以非 root (uid 1000) 运行，挂载目录必须可写
+  chown -R 1000:1000 "${PROJECT_DIR}/config" "${PROJECT_DIR}/data" 2>/dev/null || true
   cd "${PROJECT_DIR}" && compose_cmd build --no-cache || { echo -e "${RED}✘ 构建镜像失败${NC}"; return 1; }
-  compose_cmd up -d
+  compose_cmd up -d || { echo -e "${RED}✘ 启动容器失败${NC}"; return 1; }
 
   # 安全替换 CLI 脚本（原子操作）
   if [[ -f "${PROJECT_DIR}/emby-in-one-cli.sh" ]]; then
@@ -465,8 +531,12 @@ EOF
 download_and_install_binary() {
   local version_tag="$1"
   local arch="$2"
-  local binary_name="Emby-In-One-linux-${arch}-${version_tag}"
-  local download_url="https://github.com/${GITHUB_REPO}/releases/download/${version_tag}/${binary_name}"
+  # Release tag 大写 V、文件名版本小写 v（与 release-install.sh 一致；tag 大小写错误会 404）
+  local release_tag="V${version_tag#v}"
+  release_tag="V${release_tag#V}"
+  local file_version="v${release_tag#V}"
+  local binary_name="Emby-In-One-linux-${arch}-${file_version}"
+  local download_url="https://github.com/${GITHUB_REPO}/releases/download/${release_tag}/${binary_name}"
 
   echo ""
   echo -e "${CYAN}▶ 正在下载 ${binary_name}...${NC}"
@@ -476,6 +546,11 @@ download_and_install_binary() {
     rm -f "${tmp_file}"
     echo -e "${RED}[错误] 下载失败，请检查版本号 ${version_tag} 是否存在${NC}"
     echo -e "${DIM}  下载地址: ${download_url}${NC}"
+    return 1
+  fi
+  if ! verify_download "${tmp_file}" "${download_url}"; then
+    rm -f "${tmp_file}"
+    echo -e "${RED}[错误] 完整性校验未通过，已中止更新（服务未改动）${NC}"
     return 1
   fi
 
@@ -515,6 +590,11 @@ download_and_install_binary() {
       local asset_url="https://github.com/${GITHUB_REPO}/releases/download/${version_tag}/${asset}"
       local asset_tmp="${PROJECT_DIR}/public/${asset}.tmp.$$"
       if curl -fsSL --max-time 30 -o "${asset_tmp}" "${asset_url}" 2>/dev/null; then
+        if ! verify_download "${asset_tmp}" "${asset_url}"; then
+          rm -f "${asset_tmp}"
+          echo -e "${RED}  ✘ ${asset} 校验未通过，磁盘上的旧副本保持原样${NC}"
+          continue
+        fi
         mv -f "${asset_tmp}" "${PROJECT_DIR}/public/${asset}"
         echo -e "${DIM}  已更新 ${asset}${NC}"
       else
@@ -645,15 +725,32 @@ do_status() {
   print_line
 }
 
+# ── 本机出口地址 ──
+# 只查本机路由表，不再查询第三方 ip.sb（避免把服务器 IP 泄露给外部服务）
+detect_outbound_ip() {
+  local family="$1" ip=""
+  if command -v ip &>/dev/null; then
+    if [[ "$family" == "6" ]]; then
+      ip=$(ip -6 route get 2001:4860:4860::8888 2>/dev/null | grep -oE 'src [0-9a-fA-F:]+' | awk '{print $2}' | head -1)
+    else
+      ip=$(ip route get 1.1.1.1 2>/dev/null | grep -oE 'src [0-9.]+' | awk '{print $2}' | head -1)
+    fi
+  fi
+  if [[ -z "$ip" && "$family" == "4" ]] && command -v hostname &>/dev/null; then
+    ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+  fi
+  echo "$ip"
+}
+
 do_show_ip() {
   local port
   port=$(get_port)
   port=${port:-8096}
 
-  echo -e "${CYAN}▶ 正在获取公网 IP 地址...${NC}"
+  echo -e "${CYAN}▶ 正在获取本机地址...${NC}"
   local ipv4 ipv6
-  ipv4=$(curl -4 -s --max-time 5 ip.sb 2>/dev/null)
-  ipv6=$(curl -6 -s --max-time 5 ip.sb 2>/dev/null)
+  ipv4=$(detect_outbound_ip 4)
+  ipv6=$(detect_outbound_ip 6)
 
   echo ""
   print_line
@@ -680,6 +777,8 @@ do_show_ip() {
     print_kv "IPv6 访问" "${GREEN}http://[${ipv6}]:${port}${NC}"
   fi
   print_line
+  echo ""
+  echo -e "  ${DIM}说明: 地址取自本机路由表（未查询第三方服务）；NAT 环境下显示的是内网地址${NC}"
   echo ""
 }
 
@@ -717,6 +816,12 @@ do_change_username() {
     echo -e "${YELLOW}用户名不能为空，操作取消${NC}"
     return
   fi
+  # 用户名会写进 config.yaml，必须先限定字符集: 否则含引号/换行的输入会写出非法 YAML，
+  # 反斜杠还会被 awk -v 解释成转义序列（与 Go 侧用户名校验保持一致）。
+  if [[ ! "$new_username" =~ ^[A-Za-z0-9_-]+$ ]]; then
+    echo -e "${RED}用户名只能包含字母、数字、下划线和连字符${NC}"
+    return
+  fi
   awk -v val="$new_username" '/^  username:/{print "  username: \x27" val "\x27"; next}1' "${PROJECT_DIR}/config/config.yaml" > "${PROJECT_DIR}/config/config.yaml.tmp" && mv "${PROJECT_DIR}/config/config.yaml.tmp" "${PROJECT_DIR}/config/config.yaml"
   chmod 600 "${PROJECT_DIR}/config/config.yaml" 2>/dev/null || true
   echo ""
@@ -731,23 +836,39 @@ do_change_username() {
 }
 
 do_change_password() {
-  read -e -rp "  请输入新密码: " new_password
+  read -s -e -rp "  请输入新密码: " new_password
+  echo ""
   if [[ -z "$new_password" ]]; then
     echo -e "${YELLOW}密码不能为空，操作取消${NC}"
     return
   fi
-  echo -e "${YELLOW}▶ 正在调用内置 reset-password CLI...${NC}"
-  if ! reset_password_via_cli "$new_password"; then
-    echo -e "${RED}✘ 密码重置失败${NC}"
-    return
-  fi
-  echo ""
-  echo -e "${GREEN}✔ 密码已修改${NC}"
-  echo -e "${YELLOW}▶ 正在重启服务使配置生效...${NC}"
+  # 内置 CLI 默认拒绝在服务运行中重置（避免与运行实例竞争 config/tokens），
+  # 所以先停服务，重置完成后无论成败都重新拉起。
+  echo -e "${YELLOW}▶ 正在停止服务...${NC}"
   if [[ "$DEPLOY_MODE" == "binary" ]]; then
-    systemctl restart "${SERVICE_NAME}" >/dev/null 2>&1 || true
+    systemctl stop "${SERVICE_NAME}" >/dev/null 2>&1 || true
   else
-    cd "${PROJECT_DIR}" && compose_cmd restart >/dev/null 2>&1 || true
+    ( cd "${PROJECT_DIR}" && compose_cmd stop ) >/dev/null 2>&1 || true
+  fi
+  echo -e "${YELLOW}▶ 正在调用内置 reset-password CLI...${NC}"
+  if reset_password_via_cli "$new_password"; then
+    echo ""
+    echo -e "${GREEN}✔ 密码已修改${NC}"
+  else
+    echo ""
+    echo -e "${RED}✘ 密码重置失败${NC}"
+    if [[ "$DEPLOY_MODE" == "binary" ]]; then
+      echo -e "${DIM}  若因服务仍在运行而失败，可停服后加 --force 重试: ./emby-in-one --reset-password - --force${NC}"
+    else
+      echo -e "${DIM}  若因服务仍在运行而失败，可手动执行 (服务需先停):${NC}"
+      echo -e "${DIM}  docker compose -f ${PROJECT_DIR}/docker-compose.yml run --rm -T emby-in-one /app/emby-in-one --reset-password - --force${NC}"
+    fi
+  fi
+  echo -e "${YELLOW}▶ 正在启动服务...${NC}"
+  if [[ "$DEPLOY_MODE" == "binary" ]]; then
+    systemctl start "${SERVICE_NAME}" >/dev/null 2>&1 || true
+  else
+    ( cd "${PROJECT_DIR}" && compose_cmd up -d ) >/dev/null 2>&1 || true
   fi
   echo -e "${GREEN}✔ 完成${NC}"
 }
@@ -828,10 +949,14 @@ do_user_add() {
   fi
 
   local create_result
+  # 密码经 stdin (--data @-) 传给 curl，避免出现在进程列表里
   create_result=$(curl -s --max-time 5 -X POST "http://127.0.0.1:${port}/admin/api/users" \
     -H 'Content-Type: application/json' \
     -H "X-Emby-Token: ${token}" \
-    -d "{\"username\":\"$(json_escape "${new_user}")\",\"password\":\"$(json_escape "${new_pass}")\"}" 2>/dev/null)
+    --data @- 2>/dev/null <<JSON
+{"username":"$(json_escape "${new_user}")","password":"$(json_escape "${new_pass}")"}
+JSON
+)
   if echo "$create_result" | grep -q '"error"'; then
     local err
     err=$(echo "$create_result" | grep -o '"error" *: *"[^"]*"' | head -1 | sed 's/.*: *"//;s/"$//')
@@ -870,10 +995,18 @@ do_user_delete() {
   fi
 
   # 获取用户列表查找 ID
+  # 用户名用 grep -F 做字面匹配: 直接把用户输入拼进正则时，输入 `.*` 会匹配到别的用户。
+  # 记录按 {...} 切分（该接口没有嵌套对象），再按用户名筛选，不依赖字段顺序。
   local users_result user_id
   users_result=$(curl -s --max-time 5 "http://127.0.0.1:${port}/admin/api/users" \
     -H "X-Emby-Token: ${token}" 2>/dev/null)
-  user_id=$(echo "$users_result" | grep -o "\"id\":\"[^\"]*\",\"username\":\"${del_user}\"" | head -1 | sed 's/.*"id":"//;s/".*//')
+  user_id=$(echo "$users_result" \
+    | grep -oE '\{[^{}]*"username":"[^"]*"[^{}]*\}' \
+    | grep -F "\"username\":\"${del_user}\"" \
+    | head -1 \
+    | grep -oE '"id":"[^"]*"' \
+    | head -1 \
+    | sed 's/.*"id":"//;s/"$//')
   if [[ -z "$user_id" ]]; then
     echo -e "${RED}[错误] 未找到用户 ${del_user}（注意：不能删除管理员账号）${NC}"
     return

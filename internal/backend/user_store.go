@@ -13,7 +13,7 @@ type User struct {
 	Username       string
 	Password       string // scrypt hash
 	Enabled        bool
-	AllowedServers []int
+	AllowedServers []string
 	CreatedAt      int64 // Unix milliseconds
 }
 
@@ -40,8 +40,8 @@ func NewUserStore(db *sqliteDB, logger *Logger) (*UserStore, error) {
 		);
 		CREATE TABLE IF NOT EXISTS user_servers (
 			user_id TEXT NOT NULL,
-			server_index INTEGER NOT NULL,
-			PRIMARY KEY (user_id, server_index),
+			server_id TEXT NOT NULL,
+			PRIMARY KEY (user_id, server_id),
 			FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 		);
 	`); err != nil {
@@ -84,13 +84,13 @@ func (s *UserStore) loadAll() error {
 			Username:  stmt.columnText(1),
 			Password:  stmt.columnText(2),
 			Enabled:   stmt.columnInt(3) != 0,
-			CreatedAt: int64(stmt.columnInt(4)),
+			CreatedAt: stmt.columnInt64(4),
 		}
 		s.users[user.ID] = user
 		s.byName[strings.ToLower(user.Username)] = user
 	}
 
-	stmtServers, err := s.db.prepare(`SELECT user_id, server_index FROM user_servers ORDER BY server_index`)
+	stmtServers, err := s.db.prepare(`SELECT user_id, server_id FROM user_servers ORDER BY server_id`)
 	if err != nil {
 		return err
 	}
@@ -104,15 +104,15 @@ func (s *UserStore) loadAll() error {
 			break
 		}
 		userID := stmtServers.columnText(0)
-		serverIndex := stmtServers.columnInt(1)
+		serverID := stmtServers.columnText(1)
 		if user, ok := s.users[userID]; ok {
-			user.AllowedServers = append(user.AllowedServers, serverIndex)
+			user.AllowedServers = append(user.AllowedServers, serverID)
 		}
 	}
 	return nil
 }
 
-func (s *UserStore) Create(username, password string, allowedServers []int) (*User, error) {
+func (s *UserStore) Create(username, password string, allowedServers []string) (*User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -128,20 +128,16 @@ func (s *UserStore) Create(username, password string, allowedServers []int) (*Us
 	id := randomHex(16)
 	now := time.Now().UnixMilli()
 
-	if err := s.db.execParams(
-		`INSERT INTO users (id, username, password, enabled, created_at) VALUES (?, ?, ?, 1, ?)`,
-		id, username, hashed, now,
-	); err != nil {
-		return nil, err
-	}
-
-	for _, idx := range allowedServers {
+	if err := s.db.withWriteTx(func() error {
 		if err := s.db.execParams(
-			`INSERT INTO user_servers (user_id, server_index) VALUES (?, ?)`,
-			id, idx,
+			`INSERT INTO users (id, username, password, enabled, created_at) VALUES (?, ?, ?, 1, ?)`,
+			id, username, hashed, now,
 		); err != nil {
-			return nil, err
+			return err
 		}
+		return s.replaceAllowedServersParams(id, allowedServers)
+	}); err != nil {
+		return nil, err
 	}
 
 	user := &User{
@@ -149,7 +145,7 @@ func (s *UserStore) Create(username, password string, allowedServers []int) (*Us
 		Username:       username,
 		Password:       hashed,
 		Enabled:        true,
-		AllowedServers: append([]int(nil), allowedServers...),
+		AllowedServers: append([]string(nil), allowedServers...),
 		CreatedAt:      now,
 	}
 	s.users[id] = user
@@ -163,6 +159,9 @@ func (s *UserStore) Authenticate(username, password string) *User {
 
 	user, ok := s.byName[strings.ToLower(username)]
 	if !ok || !user.Enabled {
+		// Same reason as AuthManager.Authenticate: an unknown or disabled account must not
+		// answer faster than a wrong password.
+		spendVerifyTime(password)
 		return nil
 	}
 	if !VerifyPassword(password, user.Password) {
@@ -217,7 +216,7 @@ func (s *UserStore) List() []*User {
 	return result
 }
 
-func (s *UserStore) Update(id string, username *string, password *string, enabled *bool, allowedServers *[]int) error {
+func (s *UserStore) Update(id string, username *string, password *string, enabled *bool, allowedServers *[]string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -232,51 +231,54 @@ func (s *UserStore) Update(id string, username *string, password *string, enable
 		}
 	}
 
-	if username != nil {
-		if err := s.db.execParams(
-			`UPDATE users SET username = ? WHERE id = ?`,
-			*username, id,
-		); err != nil {
-			return err
+	hashed := ""
+	if password != nil && *password != "" {
+		value, err := HashPassword(*password)
+		if err != nil {
+			return fmt.Errorf("hash password: %w", err)
 		}
+		hashed = value
+	}
+
+	if err := s.db.withWriteTx(func() error {
+		if username != nil {
+			if err := s.db.execParams(`UPDATE users SET username = ? WHERE id = ?`, *username, id); err != nil {
+				return err
+			}
+		}
+		if hashed != "" {
+			if err := s.db.execParams(`UPDATE users SET password = ? WHERE id = ?`, hashed, id); err != nil {
+				return err
+			}
+		}
+		if enabled != nil {
+			if err := s.db.execParams(`UPDATE users SET enabled = ? WHERE id = ?`, boolToInt(*enabled), id); err != nil {
+				return err
+			}
+		}
+		if allowedServers != nil {
+			return s.replaceAllowedServersParams(id, *allowedServers)
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+
+	// Applied only after the transaction committed, so a failed write cannot leave the
+	// in-memory user ahead of the database.
+	if username != nil {
 		delete(s.byName, strings.ToLower(user.Username))
 		user.Username = *username
 		s.byName[strings.ToLower(user.Username)] = user
 	}
-
-	if password != nil && *password != "" {
-		hashed, err := HashPassword(*password)
-		if err != nil {
-			return fmt.Errorf("hash password: %w", err)
-		}
-		if err := s.db.execParams(
-			`UPDATE users SET password = ? WHERE id = ?`,
-			hashed, id,
-		); err != nil {
-			return err
-		}
+	if hashed != "" {
 		user.Password = hashed
 	}
-
 	if enabled != nil {
-		enabledInt := 0
-		if *enabled {
-			enabledInt = 1
-		}
-		if err := s.db.execParams(
-			`UPDATE users SET enabled = ? WHERE id = ?`,
-			enabledInt, id,
-		); err != nil {
-			return err
-		}
 		user.Enabled = *enabled
 	}
-
 	if allowedServers != nil {
-		if err := s.writeAllowedServersLocked(id, *allowedServers); err != nil {
-			return err
-		}
-		user.AllowedServers = append([]int(nil), *allowedServers...)
+		user.AllowedServers = append([]string(nil), *allowedServers...)
 	}
 
 	return nil
@@ -291,12 +293,14 @@ func (s *UserStore) Delete(id string) error {
 		return fmt.Errorf("user not found: %s", id)
 	}
 
-	// Enable foreign keys for cascade delete
-	_ = s.db.exec(`PRAGMA foreign_keys = ON`)
-	if err := s.db.execParams(`DELETE FROM user_servers WHERE user_id = ?`, id); err != nil {
-		return err
-	}
-	if err := s.db.execParams(`DELETE FROM users WHERE id = ?`, id); err != nil {
+	// foreign_keys is already on for this connection (set when the store was created); a
+	// PRAGMA issued inside a transaction would be silently ignored anyway.
+	if err := s.db.withWriteTx(func() error {
+		if err := s.db.execParams(`DELETE FROM user_servers WHERE user_id = ?`, id); err != nil {
+			return err
+		}
+		return s.db.execParams(`DELETE FROM users WHERE id = ?`, id)
+	}); err != nil {
 		return err
 	}
 
@@ -305,87 +309,42 @@ func (s *UserStore) Delete(id string) error {
 	return nil
 }
 
-func (s *UserStore) ShiftServerIndices(deletedIndex int) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Remove associations for the deleted server and shift higher indices down
-	if err := s.db.execParams(`DELETE FROM user_servers WHERE server_index = ?`, deletedIndex); err != nil {
-		if s.logger != nil {
-			s.logger.Warnf("UserStore: failed to delete server_index=%d: %v", deletedIndex, err)
-		}
-	}
-	if err := s.db.execParams(`UPDATE user_servers SET server_index = server_index - 1 WHERE server_index > ?`, deletedIndex); err != nil {
-		if s.logger != nil {
-			s.logger.Warnf("UserStore: failed to shift server indices > %d: %v", deletedIndex, err)
-		}
-	}
-
-	// Update in-memory state
-	for _, user := range s.users {
-		newServers := make([]int, 0, len(user.AllowedServers))
-		for _, idx := range user.AllowedServers {
-			if idx == deletedIndex {
-				continue
-			}
-			if idx > deletedIndex {
-				newServers = append(newServers, idx-1)
-			} else {
-				newServers = append(newServers, idx)
-			}
-		}
-		user.AllowedServers = newServers
-	}
-}
-
-// ReorderServerIndices moves every user's allowed-server list through the same
-// reorder the upstream list itself went through, so a permission keeps naming the
-// server it was granted for. It is the reorder counterpart of ShiftServerIndices,
-// which handles a deletion.
-//
-// Without it a reorder leaves each list pointing at whatever moved into those
-// positions, which changes who may reach which upstream without anything in the
-// panel showing it.
-func (s *UserStore) ReorderServerIndices(fromIndex, toIndex int) {
-	if fromIndex == toIndex {
-		return
+// RemoveServerGrants removes all access grants for the deleted upstream server.
+func (s *UserStore) RemoveServerGrants(serverID string) error {
+	if serverID == "" {
+		return nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	for _, user := range s.users {
-		remapped := make([]int, 0, len(user.AllowedServers))
-		moved := false
-		for _, idx := range user.AllowedServers {
-			next := reorderServerIndex(idx, fromIndex, toIndex)
-			if next != idx {
-				moved = true
-			}
-			remapped = append(remapped, next)
+	if s.db != nil {
+		if err := s.db.execParams(`DELETE FROM user_servers WHERE server_id = ?`, serverID); err != nil {
+			return err
 		}
-		if !moved {
-			continue
-		}
-		// A reorder can move a later server ahead of an earlier one, so keep the
-		// list in index order: the panel renders it in the order it is stored.
-		sort.Ints(remapped)
-		if err := s.writeAllowedServersLocked(user.ID, remapped); err != nil && s.logger != nil {
-			s.logger.Warnf("UserStore: failed to persist reordered server indices: %v", err)
-		}
-		user.AllowedServers = remapped
 	}
+
+	for _, user := range s.users {
+		kept := make([]string, 0, len(user.AllowedServers))
+		for _, id := range user.AllowedServers {
+			if id != serverID {
+				kept = append(kept, id)
+			}
+		}
+		user.AllowedServers = kept
+	}
+	return nil
 }
 
-// writeAllowedServersLocked replaces a user's stored server list. The caller
-// holds the write lock.
-func (s *UserStore) writeAllowedServersLocked(id string, indices []int) error {
+// replaceAllowedServersParams replaces a user's stored server list using the caller's
+// transaction or write lock. The caller holds the store lock.
+func (s *UserStore) replaceAllowedServersParams(id string, servers []string) error {
 	if err := s.db.execParams(`DELETE FROM user_servers WHERE user_id = ?`, id); err != nil {
 		return err
 	}
-	for _, idx := range indices {
+	for _, serverID := range servers {
 		if err := s.db.execParams(
-			`INSERT INTO user_servers (user_id, server_index) VALUES (?, ?)`,
-			id, idx,
+			`INSERT INTO user_servers (user_id, server_id) VALUES (?, ?)`,
+			id, serverID,
 		); err != nil {
 			return err
 		}
@@ -399,7 +358,7 @@ func (s *UserStore) copyUser(user *User) *User {
 		Username:       user.Username,
 		Password:       user.Password,
 		Enabled:        user.Enabled,
-		AllowedServers: append([]int(nil), user.AllowedServers...),
+		AllowedServers: append([]string(nil), user.AllowedServers...),
 		CreatedAt:      user.CreatedAt,
 	}
 }

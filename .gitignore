@@ -7,6 +7,9 @@ tokens.json
 captured-headers.json
 identity-cache.json
 admin-password.txt
+# config.yaml holds the upstream apiKey/password in cleartext (written 0600 by config.go)
+config.yaml
+config/
 
 # ---- Runtime data directories (SQLite mappings, watch history, WAL/SHM) ----
 data/

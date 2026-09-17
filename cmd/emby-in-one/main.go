@@ -4,9 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"emby-in-one/internal/backend"
 )
@@ -24,15 +27,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	if len(args) > 0 && args[0] == "--reset-password" {
-		if len(args) != 2 {
-			_, _ = io.WriteString(stderr, "usage: emby-in-one --reset-password <new-password>\n")
-			return 1
-		}
-		if err := resetPassword(args[1], stdout); err != nil {
-			_, _ = io.WriteString(stderr, err.Error()+"\n")
-			return 1
-		}
-		return 0
+		return runResetPassword(args[1:], stdout, stderr)
 	}
 
 	app, err := backend.NewApp()
@@ -49,12 +44,74 @@ func run(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func resetPassword(newPassword string, stdout io.Writer) error {
+const resetPasswordUsage = "usage: emby-in-one --reset-password <new-password|-> [--force]\n"
+
+// runResetPassword parses the reset command. A password of "-" is read from stdin, which
+// keeps it out of the process list and out of the shell history.
+func runResetPassword(args []string, stdout, stderr io.Writer) int {
+	password := ""
+	force := false
+	for _, arg := range args {
+		switch arg {
+		case "--force":
+			force = true
+		case "-":
+			password = "-"
+		default:
+			if password != "" {
+				_, _ = io.WriteString(stderr, resetPasswordUsage)
+				return 1
+			}
+			password = arg
+		}
+	}
+	if password == "" {
+		_, _ = io.WriteString(stderr, resetPasswordUsage)
+		return 1
+	}
+	if password == "-" {
+		raw, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			_, _ = io.WriteString(stderr, "read password from stdin: "+err.Error()+"\n")
+			return 1
+		}
+		password = strings.TrimRight(string(raw), "\r\n")
+	}
+	if err := resetPassword(password, force, stdout); err != nil {
+		_, _ = io.WriteString(stderr, err.Error()+"\n")
+		return 1
+	}
+	return 0
+}
+
+// ensureServiceStopped refuses to touch the token file while a server instance is running.
+// A live instance holds the tokens in memory and writes the whole file back on its next
+// login or logout, which would restore every token this command just cleared. The probe
+// asks the configured port; anything that answers means the operator should stop the
+// service first.
+func ensureServiceStopped(cfg backend.Config, force bool) error {
+	if force {
+		return nil
+	}
+	address := "127.0.0.1:" + strconv.Itoa(cfg.Server.Port)
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get("http://" + address + "/System/Info/Public")
+	if err != nil {
+		return nil // nothing listening on the configured port
+	}
+	_ = resp.Body.Close()
+	return fmt.Errorf("emby-in-one is still running on %s; stop it first (systemctl stop emby-in-one) or pass --force", address)
+}
+
+func resetPassword(newPassword string, force bool, stdout io.Writer) error {
 	if strings.TrimSpace(newPassword) == "" {
 		return fmt.Errorf("new password cannot be empty")
 	}
 	store, err := backend.LoadConfigStore()
 	if err != nil {
+		return err
+	}
+	if err := ensureServiceStopped(store.Snapshot(), force); err != nil {
 		return err
 	}
 	hashed, err := backend.HashPassword(newPassword)
@@ -71,11 +128,9 @@ func resetPassword(newPassword string, stdout io.Writer) error {
 		return err
 	}
 
-	// Clear all proxy tokens but preserve _proxyUserId
+	// Clear all proxy tokens but preserve _proxyUserId. The write is atomic: a truncated
+	// tokens.json makes AuthManager.load fail and the service refuse to start.
 	tokenFile := filepath.Join(store.Snapshot().DataDir, "tokens.json")
-	if tokenFile == "" || tokenFile == "." || tokenFile == string(filepath.Separator) {
-		tokenFile = filepath.Join("data", "tokens.json")
-	}
 	if _, err := os.Stat(tokenFile); err == nil {
 		raw, readErr := os.ReadFile(tokenFile)
 		minimal := []byte("{}\n")
@@ -89,7 +144,9 @@ func resetPassword(newPassword string, stdout io.Writer) error {
 				}
 			}
 		}
-		_ = os.WriteFile(tokenFile, minimal, backend.PrivateFileMode())
+		if err := backend.WriteFileAtomic(tokenFile, minimal, backend.PrivateFileMode()); err != nil {
+			return fmt.Errorf("clear proxy tokens: %w", err)
+		}
 	}
 
 	_, _ = io.WriteString(stdout, "Administrator password reset successfully.\n")

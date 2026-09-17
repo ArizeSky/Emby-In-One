@@ -44,10 +44,10 @@ func TestVideoStreamSwitchesToMediaSourceServer(t *testing.T) {
 
 	withTempAppConfig(t, dualUpstreamConfig(primary.URL, secondary.URL), func(app *App, handler http.Handler) {
 		token := loginToken(t, handler, "secret")
-		virtualEpisode := app.IDStore.GetOrCreateVirtualID("episode-a", 0)
-		virtualMediaSource := app.IDStore.GetOrCreateVirtualID("ms-b", 1)
+		virtualEpisode := app.IDStore.GetOrCreateVirtualID("episode-a", app.Upstream.Clients()[0].ID)
+		virtualMediaSource := app.IDStore.GetOrCreateVirtualID("ms-b", app.Upstream.Clients()[1].ID)
 		// Server B holds its own copy of the same episode.
-		app.IDStore.AssociateAdditionalInstance(virtualEpisode, "episode-b", 1)
+		app.IDStore.AssociateAdditionalInstance(virtualEpisode, "episode-b", app.Upstream.Clients()[1].ID)
 
 		rr := doJSONRequest(t, handler, http.MethodGet,
 			"/Videos/"+virtualEpisode+"/stream.mkv?MediaSourceId="+virtualMediaSource+"&api_key="+token, nil, "")
@@ -96,8 +96,8 @@ func TestVideoStreamFailsExplicitlyWhenMediaSourceTargetServerIsUnavailable(t *t
 
 	withTempAppConfig(t, dualUpstreamConfig(primary.URL, secondary.URL), func(app *App, handler http.Handler) {
 		token := loginToken(t, handler, "secret")
-		virtualEpisode := app.IDStore.GetOrCreateVirtualID("episode-a", 0)
-		virtualMS := app.IDStore.GetOrCreateVirtualID("ms-b", 1)
+		virtualEpisode := app.IDStore.GetOrCreateVirtualID("episode-a", app.Upstream.Clients()[0].ID)
+		virtualMS := app.IDStore.GetOrCreateVirtualID("ms-b", app.Upstream.Clients()[1].ID)
 		app.Upstream.GetClient(1).setOffline("test offline")
 
 		rr := doJSONRequest(t, handler, http.MethodGet, "/Videos/"+virtualEpisode+"/stream.mkv?MediaSourceId="+virtualMS+"&api_key="+token, nil, "")

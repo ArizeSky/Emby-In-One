@@ -10,24 +10,25 @@ import (
 )
 
 type adminUpstreamInput struct {
-	Name                *string `json:"name"`
-	URL                 *string `json:"url"`
-	Username            *string `json:"username"`
-	Password            *string `json:"password"`
-	APIKey              *string `json:"apiKey"`
-	AuthType            *string `json:"authType"`
-	PlaybackMode        *string `json:"playbackMode"`
-	SpoofClient         *string `json:"spoofClient"`
-	FollowRedirects     *bool   `json:"followRedirects"`
-	ProxyID             *string `json:"proxyId"`
-	PriorityMetadata    *bool   `json:"priorityMetadata"`
-	CustomUserAgent     *string `json:"customUserAgent"`
-	CustomClient        *string `json:"customClient"`
-	CustomClientVersion *string `json:"customClientVersion"`
-	CustomDeviceName    *string `json:"customDeviceName"`
-	CustomDeviceId      *string `json:"customDeviceId"`
-	MaxConcurrent       *int    `json:"maxConcurrent"`
-	StreamingURL        *string `json:"streamingUrl"`
+	Name                *string   `json:"name"`
+	URL                 *string   `json:"url"`
+	Username            *string   `json:"username"`
+	Password            *string   `json:"password"`
+	APIKey              *string   `json:"apiKey"`
+	AuthType            *string   `json:"authType"`
+	PlaybackMode        *string   `json:"playbackMode"`
+	SpoofClient         *string   `json:"spoofClient"`
+	FollowRedirects     *bool     `json:"followRedirects"`
+	ProxyID             *string   `json:"proxyId"`
+	PriorityMetadata    *bool     `json:"priorityMetadata"`
+	CustomUserAgent     *string   `json:"customUserAgent"`
+	CustomClient        *string   `json:"customClient"`
+	CustomClientVersion *string   `json:"customClientVersion"`
+	CustomDeviceName    *string   `json:"customDeviceName"`
+	CustomDeviceId      *string   `json:"customDeviceId"`
+	MaxConcurrent       *int      `json:"maxConcurrent"`
+	StreamingURL        *string   `json:"streamingUrl"`
+	StreamingURLs       *[]string `json:"streamingUrls"`
 }
 
 type adminSettingsInput struct {
@@ -58,6 +59,7 @@ func (a *App) handleAdminStatus(w http.ResponseWriter, r *http.Request) {
 			online++
 		}
 		upstream = append(upstream, map[string]any{
+			"id":           client.ID,
 			"index":        client.ServerIndex,
 			"name":         client.Name,
 			"url":          sanitizeUpstreamURL(client.BaseURL),
@@ -91,7 +93,9 @@ func (a *App) handleAdminUpstreamList(w http.ResponseWriter, r *http.Request) {
 		if upstream.APIKey != "" {
 			authType = "apiKey"
 		}
+		streamingURLs := append([]string(nil), upstream.StreamingURLs...)
 		out = append(out, map[string]any{
+			"id":                  upstream.ID,
 			"index":               index,
 			"name":                upstream.Name,
 			"url":                 sanitizeUpstreamURL(upstream.URL),
@@ -110,6 +114,7 @@ func (a *App) handleAdminUpstreamList(w http.ResponseWriter, r *http.Request) {
 			"customDeviceId":      upstream.CustomDeviceId,
 			"maxConcurrent":       upstream.MaxConcurrent,
 			"streamingUrl":        upstream.StreamingURL,
+			"streamingUrls":       streamingURLs,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -147,20 +152,35 @@ func (a *App) handleAdminUpstreamCreate(w http.ResponseWriter, r *http.Request) 
 		online = client.IsOnline()
 	}
 	payload := map[string]any{"success": true, "index": len(cfg.Upstream), "name": draft.Name, "online": online}
-	if validation.Warning != "" && !online {
+	if validation.Warning != "" {
 		payload["warning"] = validation.Warning
 	}
 	writeJSON(w, http.StatusOK, payload)
 }
 
-func (a *App) handleAdminUpstreamUpdate(w http.ResponseWriter, r *http.Request) {
-	index, ok := parsePathIndex(r, "index")
-	if !ok {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "Invalid upstream index"})
-		return
+func parsePathUpstream(r *http.Request, cfg *Config) (int, *UpstreamConfig, bool) {
+	id := r.PathValue("id")
+	if id == "" {
+		id = r.PathValue("index")
 	}
+	if id == "" {
+		return -1, nil, false
+	}
+	for i := range cfg.Upstream {
+		if cfg.Upstream[i].ID == id {
+			return i, &cfg.Upstream[i], true
+		}
+	}
+	if idx, err := strconv.Atoi(id); err == nil && idx >= 0 && idx < len(cfg.Upstream) {
+		return idx, &cfg.Upstream[idx], true
+	}
+	return -1, nil, false
+}
+
+func (a *App) handleAdminUpstreamUpdate(w http.ResponseWriter, r *http.Request) {
 	cfg := a.ConfigStore.Snapshot()
-	if index < 0 || index >= len(cfg.Upstream) {
+	index, existing, ok := parsePathUpstream(r, &cfg)
+	if !ok {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
@@ -171,8 +191,9 @@ func (a *App) handleAdminUpstreamUpdate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	draft := cfg.Upstream[index]
+	draft := *existing
 	applyAdminUpstreamInput(&draft, body, false)
+	draft.ID = existing.ID // Keep existing persistent ID
 	normalizeUpstream(&draft, index, &cfg)
 	if err := validateUpstreamDraft(draft); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
@@ -192,11 +213,11 @@ func (a *App) handleAdminUpstreamUpdate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	online := validation.Online
-	if client := a.Upstream.GetClient(index); client != nil {
+	if client := a.Upstream.ClientByID(draft.ID); client != nil {
 		online = client.IsOnline()
 	}
-	payload := map[string]any{"success": true, "index": index, "name": draft.Name, "online": online}
-	if validation.Warning != "" && !online {
+	payload := map[string]any{"success": true, "id": draft.ID, "index": index, "name": draft.Name, "online": online}
+	if validation.Warning != "" {
 		payload["warning"] = validation.Warning
 	}
 	writeJSON(w, http.StatusOK, payload)
@@ -224,62 +245,66 @@ func (a *App) handleAdminUpstreamReorder(w http.ResponseWriter, r *http.Request)
 	reordered = append(reordered, item)
 	reordered = append(reordered, nextCfg.Upstream[body.ToIndex:]...)
 	nextCfg.Upstream = reordered
-	a.remapServerIndices(body.FromIndex, body.ToIndex)
 	if err := a.commitConfig(nextCfg); err != nil {
-		a.remapServerIndices(body.ToIndex, body.FromIndex)
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"success": true})
 }
 
-// remapServerIndices moves everything that addresses an upstream by its position
-// in the list, so that a reorder leaves each of them naming the same server.
-//
-// Both halves belong together: the ID mappings and every user's allowed-server
-// list are index-based, and a reorder that moves one without the other silently
-// repoints the other at a different server. Deleting an upstream has the same
-// pairing (IDStore.RemoveByServerIndex/ShiftServerIndices + the UserStore shift).
-func (a *App) remapServerIndices(fromIndex, toIndex int) {
-	a.IDStore.ReorderServerIndices(fromIndex, toIndex)
-	if a.UserStore != nil {
-		a.UserStore.ReorderServerIndices(fromIndex, toIndex)
-	}
-}
-
 func (a *App) handleAdminUpstreamDelete(w http.ResponseWriter, r *http.Request) {
-	index, ok := parsePathIndex(r, "index")
-	if !ok {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "Invalid upstream index"})
-		return
-	}
 	cfg := a.ConfigStore.Snapshot()
-	if index < 0 || index >= len(cfg.Upstream) {
+	index, existing, ok := parsePathUpstream(r, &cfg)
+	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "Server not found"})
 		return
 	}
+	serverID := existing.ID
+
 	nextCfg := cfg
-	nextCfg.Upstream = append([]UpstreamConfig(nil), cfg.Upstream[:index]...)
+	nextCfg.Upstream = make([]UpstreamConfig, 0, len(cfg.Upstream)-1)
+	nextCfg.Upstream = append(nextCfg.Upstream, cfg.Upstream[:index]...)
 	nextCfg.Upstream = append(nextCfg.Upstream, cfg.Upstream[index+1:]...)
+
 	if err := a.commitConfig(nextCfg); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	a.IDStore.RemoveByServerIndex(index)
-	a.IDStore.ShiftServerIndices(index)
-	if a.UserStore != nil {
-		a.UserStore.ShiftServerIndices(index)
+
+	// Clean up database records for this server
+	if a.IDStore != nil && serverID != "" {
+		if err := a.IDStore.RemoveByServerID(serverID); err != nil && a.Logger != nil {
+			a.Logger.Errorf("delete upstream %s: remove ID mappings: %v", serverID, err)
+		}
 	}
+	if a.UserStore != nil && serverID != "" {
+		if err := a.UserStore.RemoveServerGrants(serverID); err != nil && a.Logger != nil {
+			a.Logger.Errorf("delete upstream %s: remove user server grants: %v", serverID, err)
+		}
+	}
+	if a.WatchStore != nil && serverID != "" {
+		if err := a.WatchStore.DeleteServerData(serverID); err != nil && a.Logger != nil {
+			a.Logger.Errorf("delete upstream %s: delete watch progress: %v", serverID, err)
+		}
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{"success": true})
 }
 
 func (a *App) handleAdminUpstreamReconnect(w http.ResponseWriter, r *http.Request) {
-	index, ok := parsePathIndex(r, "index")
+	cfg := a.ConfigStore.Snapshot()
+	index, existing, ok := parsePathUpstream(r, &cfg)
 	if !ok {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "Invalid upstream index"})
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "Invalid upstream identifier"})
 		return
 	}
-	client := a.Upstream.Reconnect(index)
+	var client *UpstreamClient
+	if existing.ID != "" {
+		client = a.Upstream.ReconnectByID(existing.ID)
+	}
+	if client == nil {
+		client = a.Upstream.Reconnect(index)
+	}
 	if client == nil {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "Server not found"})
 		return
@@ -458,6 +483,16 @@ func (a *App) handleAdminSettingsUpdate(w http.ResponseWriter, r *http.Request) 
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 			return
 		}
+		if username != cfg.Admin.Username {
+			currentPassword := ""
+			if body.CurrentPassword != nil {
+				currentPassword = *body.CurrentPassword
+			}
+			if !VerifyPassword(currentPassword, cfg.Admin.Password) {
+				writeJSON(w, http.StatusForbidden, map[string]any{"error": "当前密码不正确"})
+				return
+			}
+		}
 		nextCfg.Admin.Username = username
 	}
 	if body.AdminPassword != nil && *body.AdminPassword != "" {
@@ -467,6 +502,10 @@ func (a *App) handleAdminSettingsUpdate(w http.ResponseWriter, r *http.Request) 
 		}
 		if !VerifyPassword(currentPassword, cfg.Admin.Password) {
 			writeJSON(w, http.StatusForbidden, map[string]any{"error": "当前密码不正确"})
+			return
+		}
+		if err := validatePassword("adminPassword", *body.AdminPassword); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 			return
 		}
 		hashed, err := HashPassword(*body.AdminPassword)
@@ -549,9 +588,12 @@ func (a *App) handleAdminUsersList(w http.ResponseWriter, r *http.Request) {
 	result := make([]map[string]any, 0, len(users))
 	for _, u := range users {
 		serverNames := make([]string, 0, len(u.AllowedServers))
-		for _, idx := range u.AllowedServers {
-			if idx >= 0 && idx < len(cfg.Upstream) {
-				serverNames = append(serverNames, cfg.Upstream[idx].Name)
+		for _, serverID := range u.AllowedServers {
+			for _, us := range cfg.Upstream {
+				if us.ID == serverID {
+					serverNames = append(serverNames, us.Name)
+					break
+				}
 			}
 		}
 		result = append(result, map[string]any{
@@ -572,9 +614,9 @@ func (a *App) handleAdminUsersCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct {
-		Username       string `json:"username"`
-		Password       string `json:"password"`
-		AllowedServers []int  `json:"allowedServers"`
+		Username       string   `json:"username"`
+		Password       string   `json:"password"`
+		AllowedServers []string `json:"allowedServers"`
 	}
 	if err := decodeJSONBody(r, &input); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "Invalid request body"})
@@ -582,6 +624,10 @@ func (a *App) handleAdminUsersCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	if input.Username == "" || input.Password == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "用户名和密码不能为空"})
+		return
+	}
+	if err := validatePassword("password", input.Password); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
 	cfg := a.ConfigStore.Snapshot()
@@ -608,10 +654,10 @@ func (a *App) handleAdminUsersUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	id := r.PathValue("id")
 	var input struct {
-		Username       *string `json:"username"`
-		Password       *string `json:"password"`
-		Enabled        *bool   `json:"enabled"`
-		AllowedServers *[]int  `json:"allowedServers"`
+		Username       *string   `json:"username"`
+		Password       *string   `json:"password"`
+		Enabled        *bool     `json:"enabled"`
+		AllowedServers *[]string `json:"allowedServers"`
 	}
 	if err := decodeJSONBody(r, &input); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "Invalid request body"})
@@ -621,6 +667,12 @@ func (a *App) handleAdminUsersUpdate(w http.ResponseWriter, r *http.Request) {
 		cfg := a.ConfigStore.Snapshot()
 		if strings.EqualFold(*input.Username, cfg.Admin.Username) {
 			writeJSON(w, http.StatusConflict, map[string]any{"error": "用户名与管理员冲突"})
+			return
+		}
+	}
+	if input.Password != nil && *input.Password != "" {
+		if err := validatePassword("password", *input.Password); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 			return
 		}
 	}

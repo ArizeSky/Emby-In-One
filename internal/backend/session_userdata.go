@@ -43,7 +43,7 @@ func decodeOptionalJSON(r *http.Request) (any, error) {
 	return payload, nil
 }
 
-func (a *App) translateSessionBodyIDs(body map[string]any) (int, bool) {
+func (a *App) translateSessionBodyIDs(body map[string]any) (string, bool) {
 	// Resolve each ID independently to its OWN server's original value.
 	// This matches the Node.js reference implementation where each virtual ID
 	// is translated to its own server's original regardless of the target server.
@@ -55,8 +55,8 @@ func (a *App) translateSessionBodyIDs(body map[string]any) (int, bool) {
 	// on the target server.
 
 	type resolvedID struct {
-		OriginalID  string
-		ServerIndex int
+		OriginalID string
+		ServerID   string
 	}
 
 	resolutions := map[string]*resolvedID{} // key → resolved
@@ -71,42 +71,42 @@ func (a *App) translateSessionBodyIDs(body map[string]any) (int, bool) {
 		}
 		if resolved != nil {
 			resolutions[key] = &resolvedID{
-				OriginalID:  resolved.OriginalID,
-				ServerIndex: resolved.ServerIndex,
+				OriginalID: resolved.OriginalID,
+				ServerID:   resolved.ServerID,
 			}
 			body[key] = resolved.OriginalID
 		}
 	}
 
 	// Determine target server: prefer ItemId's server (matches Node.js)
-	serverIndex := -1
+	serverID := ""
 	for _, key := range []string{"ItemId", "MediaSourceId", "PlaySessionId"} {
 		if r, ok := resolutions[key]; ok {
-			serverIndex = r.ServerIndex
+			serverID = r.ServerID
 			break
 		}
 	}
 
-	if serverIndex < 0 {
+	if serverID == "" {
 		// Last resort: check which server last served a PlaybackInfo for ItemId
 		if itemID, _ := body["ItemId"].(string); itemID != "" {
 			if idx, ok := a.IDStore.GetActiveStream(itemID); ok {
-				serverIndex = idx
+				serverID = idx
 			}
 		}
 	}
 
 	if a.Logger != nil {
-		a.Logger.Debugf("Session translation: TargetServer=%d, MediaSourceId=%v, ItemId=%v, PlaySessionId=%v",
-			serverIndex, body["MediaSourceId"], body["ItemId"], body["PlaySessionId"])
+		a.Logger.Debugf("Session translation: TargetServer=%s, MediaSourceId=%v, ItemId=%v, PlaySessionId=%v",
+			serverID, body["MediaSourceId"], body["ItemId"], body["PlaySessionId"])
 	}
-	return serverIndex, serverIndex >= 0
+	return serverID, serverID != ""
 }
 
 // recordSessionToWatchStore writes playback progress to the local WatchStore
 // for non-admin users. virtualItemID is the pre-translation virtual ID.
 // isStopped indicates whether the playback has ended (Stopped event).
-func (a *App) recordSessionToWatchStore(r *http.Request, virtualItemID string, body map[string]any, serverIndex int, isStopped bool) {
+func (a *App) recordSessionToWatchStore(r *http.Request, virtualItemID string, body map[string]any, serverID string, isStopped bool) {
 	if a.WatchStore == nil || virtualItemID == "" {
 		return
 	}
@@ -121,7 +121,7 @@ func (a *App) recordSessionToWatchStore(r *http.Request, virtualItemID string, b
 	p := &WatchProgress{
 		ProxyUserID:    reqCtx.ProxyUser.UserID,
 		VirtualItemID:  virtualItemID,
-		ServerIndex:    serverIndex,
+		ServerID:       serverID,
 		OriginalItemID: originalItemID,
 		PositionTicks:  positionTicks,
 		RuntimeTicks:   runtimeTicks,
@@ -139,7 +139,7 @@ func (a *App) recordSessionToWatchStore(r *http.Request, virtualItemID string, b
 	// Enrich with item metadata if not already stored
 	existing := a.WatchStore.GetProgress(reqCtx.ProxyUser.UserID, virtualItemID)
 	if existing == nil || existing.ItemType == "" {
-		a.enrichWatchProgressMetadata(r, reqCtx, p, originalItemID, serverIndex)
+		a.enrichWatchProgressMetadata(r, reqCtx, p, originalItemID, serverID)
 	}
 
 	if err := a.WatchStore.RecordProgress(p); err != nil {
@@ -151,8 +151,8 @@ func (a *App) recordSessionToWatchStore(r *http.Request, virtualItemID string, b
 
 // enrichWatchProgressMetadata fetches item details from upstream and populates
 // metadata fields on the WatchProgress (type, series info, name, etc.).
-func (a *App) enrichWatchProgressMetadata(r *http.Request, reqCtx *RequestContext, p *WatchProgress, originalItemID string, serverIndex int) {
-	client := a.Upstream.GetClient(serverIndex)
+func (a *App) enrichWatchProgressMetadata(r *http.Request, reqCtx *RequestContext, p *WatchProgress, originalItemID string, serverID string) {
+	client := a.Upstream.ClientByID(serverID)
 	if client == nil || !client.IsOnline() || originalItemID == "" {
 		return
 	}
@@ -190,7 +190,7 @@ func (a *App) enrichWatchProgressMetadata(r *http.Request, reqCtx *RequestContex
 		// Map seriesId to virtual
 		if seriesID, _ := item["SeriesId"].(string); seriesID != "" {
 			p.SeriesOriginalID = seriesID
-			p.SeriesVirtualID = a.IDStore.GetOrCreateVirtualID(seriesID, serverIndex)
+			p.SeriesVirtualID = a.IDStore.GetOrCreateVirtualID(seriesID, serverID)
 		}
 	}
 }
@@ -279,16 +279,16 @@ func (a *App) handleSessionPlaying(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	virtualItemID, _ := body["ItemId"].(string) // capture before translation
-	serverIndex, found := a.translateSessionBodyIDs(body)
+	serverID, found := a.translateSessionBodyIDs(body)
 	if !found {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "Cannot determine target server"})
 		return
 	}
-	if !a.isServerAllowed(requestContextFrom(r.Context()), serverIndex) {
+	if !a.isServerAllowed(requestContextFrom(r.Context()), serverID) {
 		writeJSON(w, http.StatusForbidden, map[string]any{"message": "Access denied"})
 		return
 	}
-	client := a.Upstream.GetClient(serverIndex)
+	client := a.Upstream.ClientByID(serverID)
 	if client == nil || !client.IsOnline() {
 		writeJSON(w, http.StatusNotFound, map[string]any{"message": "Server not found"})
 		return
@@ -302,13 +302,13 @@ func (a *App) handleSessionPlaying(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if a.Logger != nil {
-			a.Logger.Warnf("Sessions/Playing upstream error (server %d): %v", serverIndex, redactURLInError(err))
+			a.Logger.Warnf("Sessions/Playing upstream error (server %s): %v", serverID, redactURLInError(err))
 		}
 	}
-	a.recordSessionToWatchStore(r, virtualItemID, body, serverIndex, false)
+	a.recordSessionToWatchStore(r, virtualItemID, body, serverID, false)
 	if a.PlaybackLimiter != nil {
 		if reqCtx := requestContextFrom(r.Context()); reqCtx != nil && reqCtx.ProxyUser != nil && reqCtx.ProxyUser.Role != "admin" {
-			a.PlaybackLimiter.Heartbeat(reqCtx.ProxyUser.UserID, serverIndex)
+			a.PlaybackLimiter.Heartbeat(reqCtx.ProxyUser.UserID, serverID)
 		}
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -326,16 +326,16 @@ func (a *App) handleSessionPlayingProgress(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	virtualItemID, _ := body["ItemId"].(string)
-	serverIndex, found := a.translateSessionBodyIDs(body)
+	serverID, found := a.translateSessionBodyIDs(body)
 	if !found {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	if !a.isServerAllowed(requestContextFrom(r.Context()), serverIndex) {
+	if !a.isServerAllowed(requestContextFrom(r.Context()), serverID) {
 		writeJSON(w, http.StatusForbidden, map[string]any{"message": "Access denied"})
 		return
 	}
-	client := a.Upstream.GetClient(serverIndex)
+	client := a.Upstream.ClientByID(serverID)
 	if client == nil || !client.IsOnline() {
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -349,10 +349,10 @@ func (a *App) handleSessionPlayingProgress(w http.ResponseWriter, r *http.Reques
 			return
 		}
 	}
-	a.recordSessionToWatchStore(r, virtualItemID, body, serverIndex, false)
+	a.recordSessionToWatchStore(r, virtualItemID, body, serverID, false)
 	if a.PlaybackLimiter != nil {
 		if reqCtx := requestContextFrom(r.Context()); reqCtx != nil && reqCtx.ProxyUser != nil && reqCtx.ProxyUser.Role != "admin" {
-			a.PlaybackLimiter.Heartbeat(reqCtx.ProxyUser.UserID, serverIndex)
+			a.PlaybackLimiter.Heartbeat(reqCtx.ProxyUser.UserID, serverID)
 		}
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -370,16 +370,16 @@ func (a *App) handleSessionPlayingStopped(w http.ResponseWriter, r *http.Request
 		return
 	}
 	virtualItemID, _ := body["ItemId"].(string)
-	serverIndex, found := a.translateSessionBodyIDs(body)
+	serverID, found := a.translateSessionBodyIDs(body)
 	if !found {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	if !a.isServerAllowed(requestContextFrom(r.Context()), serverIndex) {
+	if !a.isServerAllowed(requestContextFrom(r.Context()), serverID) {
 		writeJSON(w, http.StatusForbidden, map[string]any{"message": "Access denied"})
 		return
 	}
-	client := a.Upstream.GetClient(serverIndex)
+	client := a.Upstream.ClientByID(serverID)
 	if client == nil || !client.IsOnline() {
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -388,20 +388,20 @@ func (a *App) handleSessionPlayingStopped(w http.ResponseWriter, r *http.Request
 		if status, ok := preparationErrorStatus(err); ok {
 			// The stop still has to release the concurrency slot and record the local
 			// progress: leaving them behind would strand a playback permit.
-			a.recordSessionToWatchStore(r, virtualItemID, body, serverIndex, true)
+			a.recordSessionToWatchStore(r, virtualItemID, body, serverID, true)
 			if a.PlaybackLimiter != nil {
 				if reqCtx := requestContextFrom(r.Context()); reqCtx != nil && reqCtx.ProxyUser != nil && reqCtx.ProxyUser.Role != "admin" {
-					a.PlaybackLimiter.Stop(reqCtx.ProxyUser.UserID, serverIndex)
+					a.PlaybackLimiter.Stop(reqCtx.ProxyUser.UserID, serverID)
 				}
 			}
 			writeJSON(w, status, preparationErrorBody(err))
 			return
 		}
 	}
-	a.recordSessionToWatchStore(r, virtualItemID, body, serverIndex, true)
+	a.recordSessionToWatchStore(r, virtualItemID, body, serverID, true)
 	if a.PlaybackLimiter != nil {
 		if reqCtx := requestContextFrom(r.Context()); reqCtx != nil && reqCtx.ProxyUser != nil && reqCtx.ProxyUser.Role != "admin" {
-			a.PlaybackLimiter.Stop(reqCtx.ProxyUser.UserID, serverIndex)
+			a.PlaybackLimiter.Stop(reqCtx.ProxyUser.UserID, serverID)
 		}
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -487,16 +487,20 @@ func (a *App) handleUserItemUserData(w http.ResponseWriter, r *http.Request) {
 			playedValue = &played
 		}
 	}
-	// Dual-write: record played status to WatchStore for non-admin users
-	if a.WatchStore != nil {
-		if reqCtx := requestContextFrom(r.Context()); reqCtx != nil && reqCtx.ProxyUser != nil && reqCtx.ProxyUser.Role != "admin" && playedValue != nil {
-			_ = a.WatchStore.MarkPlayed(reqCtx.ProxyUser.UserID, virtualItemID, *playedValue)
-		}
-	}
 	status, payload, err := a.forwardJSONOrNoContent(r, resolved.Client, http.MethodPost, fmt.Sprintf("/Users/%s/Items/%s/UserData", resolved.Client.clientUserID(), resolved.OriginalID), nil, body)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"message": err.Error()})
 		return
+	}
+	// Dual-write: record played status to WatchStore for non-admin users. This runs
+	// only after the upstream accepted the change, matching handleFavoriteItemAdd and
+	// handleFavoriteItemRemove. Writing first left the local state permanently ahead of
+	// the upstream whenever the forward failed — and MarkPlayed inserts a skeleton row
+	// (server_index = 0) even for an item that was never watched.
+	if a.WatchStore != nil {
+		if reqCtx := requestContextFrom(r.Context()); reqCtx != nil && reqCtx.ProxyUser != nil && reqCtx.ProxyUser.Role != "admin" && playedValue != nil {
+			_ = a.WatchStore.MarkPlayed(reqCtx.ProxyUser.UserID, virtualItemID, *playedValue)
+		}
 	}
 	if payload == nil {
 		if status == 0 {
@@ -508,7 +512,7 @@ func (a *App) handleUserItemUserData(w http.ResponseWriter, r *http.Request) {
 	// Overlay local UserData for non-admin users
 	a.overlayLocalUserData(r, virtualItemID, payload)
 	cfg := a.ConfigStore.Snapshot()
-	rewriteResponseIDs(payload, resolved.ServerIndex, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
+	rewriteResponseIDs(payload, resolved.ServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 	writeJSON(w, status, payload)
 }
 
@@ -547,7 +551,7 @@ func (a *App) handleFavoriteItemAdd(w http.ResponseWriter, r *http.Request) {
 	}
 	a.overlayLocalUserData(r, virtualItemID, payload)
 	cfg := a.ConfigStore.Snapshot()
-	rewriteResponseIDs(payload, resolved.ServerIndex, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
+	rewriteResponseIDs(payload, resolved.ServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 	writeJSON(w, status, payload)
 }
 
@@ -586,7 +590,7 @@ func (a *App) handleFavoriteItemRemove(w http.ResponseWriter, r *http.Request) {
 	}
 	a.overlayLocalUserData(r, virtualItemID, payload)
 	cfg := a.ConfigStore.Snapshot()
-	rewriteResponseIDs(payload, resolved.ServerIndex, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
+	rewriteResponseIDs(payload, resolved.ServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 	writeJSON(w, status, payload)
 }
 

@@ -253,9 +253,10 @@ func TestUserItemsFavoriteFilterUsesLocalState(t *testing.T) {
 	})
 
 	withTempAppConfig(t, singleUpstreamConfig(stub.server.URL), func(app *App, handler http.Handler) {
+		serverID := app.Upstream.Clients()[0].ID
 		userToken := createRegularUser(t, handler)
-		favoriteLocally(t, handler, app, userToken, app.IDStore.GetOrCreateVirtualID("movie-b", 0))
-		favoriteLocally(t, handler, app, userToken, app.IDStore.GetOrCreateVirtualID("movie-c", 0))
+		favoriteLocally(t, handler, app, userToken, app.IDStore.GetOrCreateVirtualID("movie-b", serverID))
+		favoriteLocally(t, handler, app, userToken, app.IDStore.GetOrCreateVirtualID("movie-c", serverID))
 
 		rr := doJSONRequest(t, handler, http.MethodGet,
 			"/Users/"+app.Auth.ProxyUserID()+"/Items?Filters=IsFavorite&SortBy=SortName&SortOrder=Ascending",
@@ -290,8 +291,9 @@ func TestUserItemsPlayedFilterUsesLocalState(t *testing.T) {
 	})
 
 	withTempAppConfig(t, singleUpstreamConfig(stub.server.URL), func(app *App, handler http.Handler) {
+		serverID := app.Upstream.Clients()[0].ID
 		userToken := createRegularUser(t, handler)
-		markPlayedLocally(t, handler, app, userToken, app.IDStore.GetOrCreateVirtualID("movie-b", 0))
+		markPlayedLocally(t, handler, app, userToken, app.IDStore.GetOrCreateVirtualID("movie-b", serverID))
 
 		rr := doJSONRequest(t, handler, http.MethodGet,
 			"/Users/"+app.Auth.ProxyUserID()+"/Items?Filters=IsPlayed&SortBy=SortName&SortOrder=Ascending",
@@ -320,8 +322,9 @@ func TestUserItemsResumableFilterUsesLocalState(t *testing.T) {
 	})
 
 	withTempAppConfig(t, singleUpstreamConfig(stub.server.URL), func(app *App, handler http.Handler) {
+		serverID := app.Upstream.Clients()[0].ID
 		userToken := createRegularUser(t, handler)
-		markInProgressLocally(t, handler, userToken, app.IDStore.GetOrCreateVirtualID("movie-c", 0), 5000)
+		markInProgressLocally(t, handler, userToken, app.IDStore.GetOrCreateVirtualID("movie-c", serverID), 5000)
 
 		rr := doJSONRequest(t, handler, http.MethodGet,
 			"/Users/"+app.Auth.ProxyUserID()+"/Items?Filters=IsResumable&SortBy=SortName&SortOrder=Ascending",
@@ -355,9 +358,10 @@ func TestUserItemsFilterPaginationAndTotalCount(t *testing.T) {
 	})
 
 	withTempAppConfig(t, singleUpstreamConfig(stub.server.URL), func(app *App, handler http.Handler) {
+		serverID := app.Upstream.Clients()[0].ID
 		userToken := createRegularUser(t, handler)
 		for _, original := range []string{"movie-a", "movie-b", "movie-c", "movie-d", "movie-e"} {
-			favoriteLocally(t, handler, app, userToken, app.IDStore.GetOrCreateVirtualID(original, 0))
+			favoriteLocally(t, handler, app, userToken, app.IDStore.GetOrCreateVirtualID(original, serverID))
 		}
 
 		rr := doJSONRequest(t, handler, http.MethodGet,
@@ -385,11 +389,12 @@ func TestUserItemsFilterScopedByParentId(t *testing.T) {
 	})
 
 	withTempAppConfig(t, singleUpstreamConfig(stub.server.URL), func(app *App, handler http.Handler) {
+		serverID := app.Upstream.Clients()[0].ID
 		userToken := createRegularUser(t, handler)
-		favoriteLocally(t, handler, app, userToken, app.IDStore.GetOrCreateVirtualID("movie-a", 0))
-		favoriteLocally(t, handler, app, userToken, app.IDStore.GetOrCreateVirtualID("movie-c", 0))
+		favoriteLocally(t, handler, app, userToken, app.IDStore.GetOrCreateVirtualID("movie-a", serverID))
+		favoriteLocally(t, handler, app, userToken, app.IDStore.GetOrCreateVirtualID("movie-c", serverID))
 
-		libraryID := app.IDStore.GetOrCreateVirtualID("lib-1", 0)
+		libraryID := app.IDStore.GetOrCreateVirtualID("lib-1", serverID)
 		rr := doJSONRequest(t, handler, http.MethodGet,
 			"/Users/"+app.Auth.ProxyUserID()+"/Items?ParentId="+libraryID+"&Filters=IsFavorite&SortBy=SortName&SortOrder=Ascending",
 			nil, userToken)
@@ -514,9 +519,10 @@ func TestUserItemsUnknownFilterValuesPassThrough(t *testing.T) {
 	})
 
 	withTempAppConfig(t, singleUpstreamConfig(stub.server.URL), func(app *App, handler http.Handler) {
+		serverID := app.Upstream.Clients()[0].ID
 		userToken := createRegularUser(t, handler)
-		favoriteLocally(t, handler, app, userToken, app.IDStore.GetOrCreateVirtualID("movie-b", 0))
-		favoriteLocally(t, handler, app, userToken, app.IDStore.GetOrCreateVirtualID("movie-c", 0))
+		favoriteLocally(t, handler, app, userToken, app.IDStore.GetOrCreateVirtualID("movie-b", serverID))
+		favoriteLocally(t, handler, app, userToken, app.IDStore.GetOrCreateVirtualID("movie-c", serverID))
 
 		rr := doJSONRequest(t, handler, http.MethodGet,
 			"/Users/"+app.Auth.ProxyUserID()+"/Items?Filters=IsFolder,IsFavorite&SortBy=SortName&SortOrder=Ascending",
@@ -541,9 +547,10 @@ func TestUserItemsFilterSortsLocally(t *testing.T) {
 	})
 
 	withTempAppConfig(t, singleUpstreamConfig(stub.server.URL), func(app *App, handler http.Handler) {
+		serverID := app.Upstream.Clients()[0].ID
 		userToken := createRegularUser(t, handler)
 		for _, original := range []string{"movie-a", "movie-b", "movie-c"} {
-			favoriteLocally(t, handler, app, userToken, app.IDStore.GetOrCreateVirtualID(original, 0))
+			favoriteLocally(t, handler, app, userToken, app.IDStore.GetOrCreateVirtualID(original, serverID))
 		}
 
 		rr := doJSONRequest(t, handler, http.MethodGet,
@@ -566,8 +573,9 @@ func TestUserItemsFilterAsksForSortFields(t *testing.T) {
 	})
 
 	withTempAppConfig(t, singleUpstreamConfig(stub.server.URL), func(app *App, handler http.Handler) {
+		serverID := app.Upstream.Clients()[0].ID
 		userToken := createRegularUser(t, handler)
-		favoriteLocally(t, handler, app, userToken, app.IDStore.GetOrCreateVirtualID("movie-a", 0))
+		favoriteLocally(t, handler, app, userToken, app.IDStore.GetOrCreateVirtualID("movie-a", serverID))
 
 		rr := doJSONRequest(t, handler, http.MethodGet,
 			"/Users/"+app.Auth.ProxyUserID()+"/Items?Filters=IsFavorite&Fields=Overview", nil, userToken)

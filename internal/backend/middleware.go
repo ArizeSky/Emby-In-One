@@ -179,9 +179,18 @@ func (a *App) corsMiddleware(next http.Handler) http.Handler {
 				w.Header().Set("Access-Control-Allow-Origin", origin)
 				w.Header().Set("Vary", "Origin")
 			}
-		} else {
+		} else if !isCredentialPath(r.URL.Path) {
 			w.Header().Set("Access-Control-Allow-Origin", "*")
 		}
+		// The credential endpoints get no CORS grant at all, so a cross-origin page
+		// cannot read a login response. The limiter only counts real failures, so
+		// probes that never reach the credential check cannot lock a visitor out.
+		// The residual exposure: a form post needs no preflight, and the body parser
+		// accepts a JSON payload regardless of Content-Type, so a hostile page can
+		// still burn a visitor's failure budget with genuinely failing credentials.
+		// Enforcing an application/json Content-Type on these routes would close
+		// that if it ever becomes a problem. Emby's own clients talk to the server
+		// directly and are unaffected.
 		w.Header().Set("Access-Control-Allow-Methods", allowMethods)
 		w.Header().Set("Access-Control-Allow-Headers", allowHeaders)
 		if r.Method == http.MethodOptions {
@@ -190,6 +199,12 @@ func (a *App) corsMiddleware(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// isCredentialPath reports whether path accepts a password. These endpoints must not be
+// reachable cross-origin.
+func isCredentialPath(path string) bool {
+	return strings.EqualFold(strings.TrimSuffix(path, "/"), "/Users/AuthenticateByName")
 }
 
 func isAdminPath(path string) bool {

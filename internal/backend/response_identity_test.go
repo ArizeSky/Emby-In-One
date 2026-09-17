@@ -72,16 +72,16 @@ func TestResponseIdentityPerUser(t *testing.T) {
 	withTempAppConfig(t, singleUpstreamConfig(upstream.URL), func(app *App, handler http.Handler) {
 		adminToken := loginTokenAs(t, handler, "admin", "secret")
 		aliceID := createTestUser(t, handler, adminToken, "alice", "alice123")
-		bobID := createTestUser(t, handler, adminToken, "bob", "bob123")
+		bobID := createTestUser(t, handler, adminToken, "bob", "bob12345")
 		aliceToken := loginTokenAs(t, handler, "alice", "alice123")
-		bobToken := loginTokenAs(t, handler, "bob", "bob123")
+		bobToken := loginTokenAs(t, handler, "bob", "bob12345")
 
 		legacyProxyUser := app.Auth.ProxyUserID()
 		if aliceID == legacyProxyUser || bobID == legacyProxyUser {
 			t.Fatalf("fixture collision: a local user ID equals the legacy proxy user ID")
 		}
 
-		virtualParent := app.IDStore.GetOrCreateVirtualID("orig-parent", 0)
+		virtualParent := app.IDStore.GetOrCreateVirtualID("orig-parent", app.Upstream.Clients()[0].ID)
 		itemUserID := func(token string) (string, string) {
 			rr := doJSONRequest(t, handler, http.MethodGet, "/Users/"+legacyProxyUser+"/Items?ParentId="+virtualParent, nil, token)
 			if rr.Code != http.StatusOK {
@@ -135,7 +135,7 @@ func TestResponseIdentityLegacyUserIDCompat(t *testing.T) {
 		aliceToken := loginTokenAs(t, handler, "alice", "alice123")
 		legacyProxyUser := app.Auth.ProxyUserID()
 
-		virtualParent := app.IDStore.GetOrCreateVirtualID("orig-parent", 0)
+		virtualParent := app.IDStore.GetOrCreateVirtualID("orig-parent", app.Upstream.Clients()[0].ID)
 		// The client asks for the legacy global user's items with its own token.
 		rr := doJSONRequest(t, handler, http.MethodGet, "/Users/"+legacyProxyUser+"/Items?ParentId="+virtualParent+"&UserId="+legacyProxyUser, nil, aliceToken)
 		if rr.Code != http.StatusOK {
@@ -194,7 +194,7 @@ func TestFallbackCurrentUserIdentity(t *testing.T) {
 		aliceToken := loginTokenAs(t, handler, "alice", "alice123")
 		legacyProxyUser := app.Auth.ProxyUserID()
 
-		virtualItem := app.IDStore.GetOrCreateVirtualID("orig-item", 0)
+		virtualItem := app.IDStore.GetOrCreateVirtualID("orig-item", app.Upstream.Clients()[0].ID)
 
 		// A regular user's unclassified read is normalized to the target upstream.
 		rr := doJSONRequest(t, handler, http.MethodGet,
@@ -247,8 +247,8 @@ func TestResponseIdentityResumeAndNextUp(t *testing.T) {
 		if app.WatchStore != nil {
 			if err := app.WatchStore.RecordProgress(&WatchProgress{
 				ProxyUserID:   aliceID,
-				VirtualItemID: app.IDStore.GetOrCreateVirtualID("orig-item", 0),
-				ServerIndex:   0,
+				VirtualItemID: app.IDStore.GetOrCreateVirtualID("orig-item", app.Upstream.Clients()[0].ID),
+				ServerID:      app.Upstream.Clients()[0].ID,
 				PositionTicks: 100,
 				RuntimeTicks:  1000,
 			}); err != nil {

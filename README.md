@@ -38,9 +38,9 @@
 ## 测试站点
 
 [演示站点](https://emby.cothx.eu.cc/)
-Emby连接地址：https://emby.cothx.eu.cc/
-账号：admin
-密码：5T5xF4oMxcnrcCPA
+Emby 连接地址：https://emby.cothx.eu.cc/
+
+> **演示站账号不再随仓库公开。** 出于安全考虑，本仓库不提供明文账号与密码；如需体验，请通过 GitHub [Issues](https://github.com/ArizeSky/Emby-In-One/issues) 联系维护者获取**定期轮换**的临时账号。请勿在公开渠道传播演示站凭据。
 
 ## 预览
 
@@ -63,7 +63,7 @@ Emby连接地址：https://emby.cothx.eu.cc/
 - **智能去重与优先级** — 相同影片自动合并，保留多版本片源；支持 4 级元数据优先级逻辑（指定标记 > 中文 > 长度 > 顺序）智能选择最佳展示信息。
 - **高级 UA 伪装** — 支持 Infuse 伪装（高风险，不建议！）和客户端 UA 透传。还可使用 `custom` 模式为每台上游独立定义全部 5 个 Emby 客户端身份头，绕过常见 Emby UA 限制。
 - **网络代理池** — 可为每台上游服务器单独配置 HTTP/HTTPS 代理，内置一键连通性测试。
-- **双播放模式** — 代理模式（流量转发、隐藏上游、支持 HLS/分片）或直连模式（302 重定向至上游，节省代理带宽）。
+- **双播放模式** — 代理模式（流量转发、隐藏上游、支持 HLS/分片）或直连模式（302 重定向至上游，节省代理带宽；**会向上游暴露账号凭据，详见[播放模式详解](#播放模式详解)**）。
 - **Token 管理与会话稳定** — 代理 Token 永不过期（仅在登出、改密或手动撤销时移除），防止长时间空闲设备频繁 401；上游 Token 过期时通过 30 秒防抖的异步重登录自动恢复；管理员改密后自动撤销所有已签发 Token。
 - **Passthrough 延迟登录** — passthrough 模式的上游不再在启动时使用 Infuse 身份尝试登录；而是等待真实客户端连接后再认证，避免在上游 Emby 产生虚假设备记录。
 - **全面管控与运维** — 内置现代化 SSH CLI 菜单和 Web 管理面板；配备持久化日志和 SQLite ID 映射。SSH 菜单自动检测 Binary/Docker 部署模式，所有操作自动分发到 systemd 或 Docker Compose 对应命令。
@@ -72,7 +72,7 @@ Emby连接地址：https://emby.cothx.eu.cc/
 
 ## 快速安装
 
-> **旧版 Node.js 部署说明**：如果您希望部署基于 Node.js 的 V1.2.1 稳定版，请前往本仓库的 [Releases 页面](https://github.com/ArizeSky/Emby-In-One/releases) 下载 V1.2.1 的 Source code 源码压缩包，解压后同样运行 `bash install.sh` 即可。
+> **旧版 Node.js 部署说明**：如果您希望部署基于 Node.js 的 V1.2.1 稳定版，请前往本仓库的 [Releases 页面](https://github.com/ArizeSky/Emby-In-One/releases) 下载 V1.2.1 的 Source code 源码压缩包，解压后同样运行 `bash install.sh` 即可。 仓库中的 `legacy/` 目录保留了 V1.2.1 的 Node.js 源码，**仅供对照参考**（Go 版的 ID 虚拟化以它为蓝本），它不参与 Go 版的构建、镜像或安装流程，详见 `legacy/README.md`。
 
 本项目优先推荐在 Linux 服务器直接使用 Release 二进制部署 V1.4.4（无需本地编译）；Docker 方式适合希望自行构建镜像的场景。
 
@@ -110,9 +110,10 @@ bash install.sh
 
 ### 方式三：手动 Docker Compose 部署
 
-1. 创建项目目录：
+1. 创建项目目录并交给容器运行用户（容器以 uid 1000 运行，挂载目录不可写会导致启动时无法写入 `tokens.json` / `mappings.db` 而失败）：
 ```bash
 mkdir -p /opt/emby-in-one/{config,data}
+chown -R 1000:1000 /opt/emby-in-one/config /opt/emby-in-one/data
 cd /opt/emby-in-one
 ```
 2. 拷贝本仓库下的所有核心文件（包括 `go.mod`, `cmd/`, `internal/`, `public/`, `Dockerfile`, `docker-compose.yml` 等）至该目录。
@@ -184,6 +185,8 @@ go run ./cmd/emby-in-one
 配置文件位于 `config/config.yaml`（Docker 部署时挂载到容器内 `/app/config/config.yaml`）。
 
 ```yaml
+# dataDir: "/opt/emby-in-one/data"    # 运行时数据目录（顶层键，默认值见下方「数据目录」说明）
+
 server:
   port: 8096
   name: "Emby-In-One"
@@ -223,7 +226,9 @@ upstream:
     apiKey: "your-api-key"
     playbackMode: "redirect"                   # 覆盖全局播放模式
     spoofClient: "infuse"                      # none | passthrough | infuse | custom
-    streamingUrl: "https://cdn.example.com"    # 独立推流域名（可选）
+    streamingUrls:                               # 推流线路（可选，有序；单条也可写 streamingUrl: "..."）
+      - "https://cdn.example.com"                # 第 1 条为主线路
+      - "https://backup.example.com"             # 其余为备用线路
     followRedirects: true                      # 是否跟随上游的 301/302/303/307/308（默认 true；false 时按上游错误处理，不把重定向地址转发给客户端）
     proxyId: null                              # 关联代理池中的代理 ID
     priorityMetadata: false                    # 合并时优先使用此服务器的元数据
@@ -259,6 +264,33 @@ upstream:
 > proxy_set_header X-Forwarded-For $remote_addr;
 > ```
 > 只要代理写入了 `X-Real-IP`（本程序优先使用，且该头无法靠追加伪造），限流就值得信任。
+>
+> **反过来说：前面没有可信反向代理时，必须保持 `false`。** `trustProxy: true` 意味着服务端**无条件**采信请求头里的 `X-Real-IP` / `X-Forwarded-For`，不做任何来源校验。如果实例直接暴露在公网（或链路中没有任何一层会覆写这两个头），任何人都能自行填入任意 IP：每次登录失败换一个假 IP，就能绕过 `POST /Users/AuthenticateByName` 的失败计数与 15 分钟锁定；也可以填上别人的 IP，定向把那个 IP 锁死。
+>
+> 判断标准很简单：**只有当「能访问到本服务的最后一道入口必然是您自己的反向代理」时才开启它**；不能确定就不要开。
+
+### 数据目录 (`dataDir`)
+
+`dataDir` 是配置文件里的**顶层键**（与 `server`、`admin`、`playback` 同级），决定运行时数据的落盘位置。
+
+| 项 | 值 |
+|----|-----|
+| 默认值 | 若 `/app/data` 存在（官方 Docker 镜像内置该目录）则用 `/app/data`；否则用进程工作目录下的 `data/` |
+| 落盘内容 | `mappings.db`（虚拟 ID 映射、用户数据、观看历史）、`tokens.json`（代理层 token）、`captured-headers.json`（passthrough 客户端头）、`emby-in-one.log`（日志文件） |
+
+> **该键与配置文件本身无关。** `config.yaml` 始终位于 `config/config.yaml`（Docker 容器内为 `/app/config/config.yaml`），不会随 `dataDir` 移动。各文件的说明见[数据目录说明](#数据目录说明)。
+
+**什么时候需要改**：
+
+- **二进制 / 源码部署**：`data/` 是相对**进程工作目录**解析的。如果服务的启动目录不是项目目录（例如 systemd 的 `WorkingDirectory` 指向 `/opt/emby-in-one`），而你想把数据固定到某个绝对路径、或与 `config/` 分开挂载，就显式指定 `dataDir`。
+- **Docker 部署**：容器内默认即 `/app/data`，而 `docker-compose.yml` 已把宿主的 `./data` 挂载到这里，通常**不需要**改；只有自定义挂载点时才需要。
+- **迁移 / 复用旧数据**：把 `dataDir` 指向已有数据所在目录即可，无需手动搬文件。
+
+**注意事项**：
+
+- 只写在配置文件里即可（`dataDir: "/opt/emby-in-one/data"`），管理面板不提供此项，修改后需**重启服务**生效；
+- 生产环境请使用**绝对路径**——相对路径会随启动时的工作目录变化，可能表现为「数据丢失」（实际是换了个目录读写）；
+- 该目录需要进程用户可读写。
 
 ---
 
@@ -359,7 +391,17 @@ V1.4 新增多用户支持，允许管理员创建多个普通用户，每个用
 
 > **全局 `playback.mode` 只是新增上游时的初始值。** 上游一旦建立，它的 `playbackMode` 就已经被写成了当时的值，此后修改全局默认**不会影响任何已存在的上游**（面板顶部的「默认播放模式」同理）。要改变某台上游的模式，请在该服务器的编辑框里用「播放模式」下拉——它是即时生效的。
 
-使用 `proxy` 模式时，如果上游有独立的推流域名（CDN 等），可设置 `streamingUrl`，代理会使用该域名构建流地址而非 API 地址。
+> ⚠ **`redirect`（直连播放模式）的安全警告**：直连播放模式会把上游账号凭据（`api_key`）写入 302 跳转链接，**任何能播放的用户都可从中提取凭据**——包括被 `AllowedServers` 限制的用户——并绕过本代理直连上游（相当于上游管理员权限）。因此：
+>
+> - 请**为该上游使用专用的受限账号**（只授予所需的媒体库播放权限、不授予管理权限，必要时限制并发），不要复用上游管理员账号或多人共用的账号；
+> - 该凭据一旦泄露，只能在上游侧修改密码或吊销 API Key 才能失效；
+> - 无法接受该风险时，请保持默认的 `proxy` 模式。
+
+上游可以配置**多条推流线路**（`streamingUrls`，有序列表）：第 1 条为主线路，其余为备用。所有线路必须指向同一台 Emby 服务器（多条线路 = 到同一服务器的多条路由，而不是多台镜像服务器——转码会话存在服务器本地，跨镜像切换线路会导致 404）。
+
+- **代理模式**：主线路连接失败（连接拒绝/超时/TLS 错误）时自动切换备用线路，客户端无感知；上游返回的任何 HTTP 状态（含 404/403）不视为线路故障。
+- **直连模式**：按线路健康状态选择——每个健康检查周期对所有备用线路做连接级探测（任何 HTTP 响应都算存活，包括只转发 `/Videos/`、`/Audio/` 的分流反代返回的 403/404），被标记死亡的线路 60 秒内不再选用，之后自动恢复候选。302 发出后流量不经过代理，播放中途的线路故障由播放器重新拉取清单时自然切换。
+- 留空时与 `url`（前端地址）一致，行为与单条 `streamingUrl` 相同。
 
 ### UA 伪装详解 (`spoofClient`)
 
@@ -417,7 +459,7 @@ Passthrough 使用五级 header 解析，确保在任何状态下都能向上游
 
 ### ID 虚拟化
 
-每个上游 Item ID 被映射为全局唯一的虚拟 ID（UUID 格式）。客户端看到的所有 ID 都是虚拟的。
+每个上游 Item ID 被映射为全局唯一的虚拟 ID——由 `crypto/rand` 生成的 16 字节（128 位）随机数构成，对外表现为 32 位小写十六进制字符串（不带连字符）。客户端看到的所有 ID 都是虚拟的。
 
 - **存储**：SQLite（WAL 模式）持久化，配合内存缓存加速访问
 - **映射关系**：`virtualId <-> { originalId, serverIndex }`，并额外持久化附加实例关系 `otherInstances`
@@ -441,14 +483,23 @@ Passthrough 使用五级 header 解析，确保在任何状态下都能向上游
 - **支持 CLI 重置密码**：
 
 ```bash
-emby-in-one --reset-password <new-password>
-# 或通过 SSH 菜单选择「修改管理员密码」
+emby-in-one --reset-password <new-password|-> [--force]
+# 或通过 SSH 菜单选择「修改管理员密码」（菜单会自动先停服务、重置、再启动）
 ```
+
+  - 密码传 `-` 时**从 stdin 读取**，不进入进程列表（`ps`）也不进入 shell 历史——安装/管理脚本用的就是这个形式：`printf '%s' "$pass" | emby-in-one --reset-password -`
+  - 默认会先探测 `127.0.0.1:<config.yaml 里的 port>/System/Info/Public`：**只要服务还在运行就拒绝执行**，并提示先 `systemctl stop emby-in-one`（原因见下方说明）
+  - `--force` 跳过该探测；仅在明确知道自己在做什么时使用
+  - 重置时 `tokens.json` 以**原子写**方式清空（保留 `_proxyUserId`），不会再出现文件写坏导致服务起不来的情况；**所有已签发的代理 Token 随之失效**，客户端需要重新登录
+
+  > **为什么运行中必须拒绝**：运行中的实例把 token 存在内存里，会在下一次登录或登出时把整个 `tokens.json` 写回去——刚清掉的令牌会被原样恢复，重置等于没做。所以 CLI 宁可报错也不静默「重置失败」。Docker 部署请用 SSH 菜单，或按菜单失败时打印的命令手动执行（`docker compose ... run --rm -T emby-in-one /app/emby-in-one --reset-password - --force`）。
 
 - **`data/tokens.json` 权限更严格**：Unix/Linux 上按 `0600` 写入
 - **`config.yaml` 安全写入**：原子替换方式保存 + `0600` 权限，减少配置损坏风险并防止其他用户读取密码
 - **请求体大小限制**：所有 API 请求体限制 2MB（`http.MaxBytesReader`），防止恶意大请求消耗内存
 - **登录速率限制**：同一 IP 连续登录失败 5 次后锁定 15 分钟，返回 `429 Too Many Requests`；原子操作避免 TOCTOU 竞态条件；支持反向代理场景下的真实 IP 识别（`X-Real-IP` / `X-Forwarded-For` / IPv6）
+- **`trustProxy` 只在可信反代之后开启**：登录限流按 IP 计数，而 `server.trustProxy: true` 时服务端对来源**不做任何校验**就采信 `X-Real-IP` / `X-Forwarded-For` 的第一段。前面没有可信反向代理却开启它，等于把限流的键交给客户端——攻击者可以不断伪造 IP 绕过 5 次失败锁定，也可以定向锁死他人 IP。配置细节见[反向代理信任](#反向代理信任-trustproxy)
+- **图片端点免认证（已知取舍，非疏漏）**：`GET /Items/{itemId}/Images/{imageType}` **不要求 token**。原因是客户端会把图片 URL 内嵌进界面并长期缓存，若强制鉴权，token 轮换或缓存失效后客户端会大面积刷不出海报。它的安全性建立在**虚拟 ID 本身就是能力 URL** 之上：URL 里的 `itemId` 是 `crypto/rand` 生成的 128 位随机数，只有真正取到过该媒体元数据的用户才知道它，猜不出来。两点明确含义：(1) **任何拿到该 URL 的人都能取到那张图**，即使他没有 token——因此未认证请求不会经过 `AllowedServers` 白名单校验（已认证请求仍会正常校验）；(2) 取图时使用该上游的共享身份向上游请求。如需按用户签发、可撤销的图片访问控制，可改为短时效签名 URL
 - **优雅关机**：收到 `SIGINT` / `SIGTERM` 信号后，先排空当前活动连接（最多等待 10 秒），再关闭 HTTP 服务器和健康检查定时器
 - **管理面板 CSP**：Admin 面板返回严格的 `Content-Security-Policy`——`default-src 'self'`，且 `script-src` / `style-src` / `font-src` / `connect-src` 中不含任何第三方源、不含 `'unsafe-inline'`。Vue、lucide、Tailwind CSS 产物与 Inter 字体全部自托管于 `public/vendor/`，面板既不加载也不外连任何外部地址。仅保留 `'unsafe-eval'`（Vue 运行时编译 DOM 内模板所需）
 - **流媒体 URL 缓存自动淘汰**：`IDStore` 中的 `streamURLs` 缓存条目 4 小时后自动过期，每 30 分钟清理一次，防止长期运行后内存无限增长
@@ -531,10 +582,10 @@ emby-in-one
 - 查看服务状态、公网 IP
 - 查看管理员凭据、修改管理员用户名 / 密码
 - 查看用户列表、添加普通用户、删除普通用户
-- 查看日志、查看版本号（`--version`）
+- 查看日志
 - 卸载服务（支持保留配置和数据）
 
-> SSH 菜单自动检测当前部署方式（Binary / Docker），所有操作自动分发到 systemd 或 Docker Compose 对应命令。Docker 模式下更新采用源码重建流程。菜单标题栏显示当前版本号。
+> SSH 菜单自动检测当前部署方式（Binary / Docker），所有操作自动分发到 systemd 或 Docker Compose 对应命令。Docker 模式下更新采用源码重建流程。菜单没有单独的「查看版本」选项——当前版本号直接显示在菜单标题栏上（形如 `Emby In One 管理菜单 v1.4.4`）。
 
 ---
 
@@ -548,6 +599,8 @@ emby-in-one
   - `tokens.json` — 代理层 token 存储
   - `captured-headers.json` — passthrough 客户端头持久化
   - `emby-in-one.log` — 日志文件
+
+`data/` 的实际位置可以通过配置文件顶层的 [`dataDir`](#数据目录-datadir) 键改写。
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
@@ -709,11 +762,17 @@ Emby-In-One/
 │   └── vendor/                     # 自托管前端依赖：Vue、lucide、Tailwind 产物、Inter 字体
 ├── assets/panel.css                # Tailwind 输入文件（含从 admin.html 迁出的面板自定义样式）
 ├── tailwind.config.js              # Tailwind 扫描配置（改动 admin.html/admin.js 后跑 npm run build:panel）
+├── package.json                    # 根 package.json 仅保留 build:panel 一个脚本（Node 依赖已移至 legacy/）
 ├── Dockerfile                      # Go 环境容器构建
 ├── docker-compose.yml
 ├── install.sh                      # 源码仓库一键部署脚本（Docker）
 ├── release-install.sh              # Release 二进制一键部署脚本（systemd）
-└── emby-in-one-cli.sh              # SSH 终端管理面板脚本
+├── emby-in-one-cli.sh              # SSH 终端管理面板脚本
+└── legacy/                         # V1.2.1 Node.js 遗留实现：仅供对照参考，不参与构建 / 镜像 / 安装
+    ├── README.md                   #   保留原因与「不参与任何构建」的说明
+    ├── src/                        #   旧 Express 实现（Go 版 ID 虚拟化的对照参考）
+    ├── tests/                      #   旧 Node 测试（多数已失效）
+    └── package.json                #   Node 依赖（只有 npm --prefix legacy install 才会用到）
 ```
 
 ---

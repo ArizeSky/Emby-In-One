@@ -69,9 +69,9 @@ func TestSessionRoutesTranslateIDsAndBroadcastCapabilities(t *testing.T) {
 
 	withTempAppConfig(t, config, func(app *App, handler http.Handler) {
 		token := loginToken(t, handler, "secret")
-		virtualItem := app.IDStore.GetOrCreateVirtualID("item-a", 0)
-		virtualMediaSource := app.IDStore.GetOrCreateVirtualID("ms-a", 0)
-		virtualPlaySession := app.IDStore.GetOrCreateVirtualID("play-a", 0)
+		virtualItem := app.IDStore.GetOrCreateVirtualID("item-a", app.Upstream.Clients()[0].ID)
+		virtualMediaSource := app.IDStore.GetOrCreateVirtualID("ms-a", app.Upstream.Clients()[0].ID)
+		virtualPlaySession := app.IDStore.GetOrCreateVirtualID("play-a", app.Upstream.Clients()[0].ID)
 
 		body := map[string]any{
 			"ItemId":        virtualItem,
@@ -177,9 +177,9 @@ func TestCrossServerSessionRoutesToItemIdServer(t *testing.T) {
 		token := loginToken(t, handler, "secret")
 
 		// ItemId belongs to server A (index 0), MediaSourceId to server B (index 1)
-		virtualItem := app.IDStore.GetOrCreateVirtualID("item-on-a", 0)
-		virtualMS := app.IDStore.GetOrCreateVirtualID("ms-on-b", 1)
-		virtualPlay := app.IDStore.GetOrCreateVirtualID("play-on-b", 1)
+		virtualItem := app.IDStore.GetOrCreateVirtualID("item-on-a", app.Upstream.Clients()[0].ID)
+		virtualMS := app.IDStore.GetOrCreateVirtualID("ms-on-b", app.Upstream.Clients()[1].ID)
+		virtualPlay := app.IDStore.GetOrCreateVirtualID("play-on-b", app.Upstream.Clients()[1].ID)
 
 		body := map[string]any{
 			"ItemId":        virtualItem,
@@ -280,8 +280,8 @@ func TestUserStateRoutesResolveIDsAndRewriteJSONResponses(t *testing.T) {
 
 	withTempAppConfig(t, config, func(app *App, handler http.Handler) {
 		token := loginToken(t, handler, "secret")
-		virtualItem := app.IDStore.GetOrCreateVirtualID("item-a", 0)
-		virtualMediaSource := app.IDStore.GetOrCreateVirtualID("ms-a", 0)
+		virtualItem := app.IDStore.GetOrCreateVirtualID("item-a", app.Upstream.Clients()[0].ID)
+		virtualMediaSource := app.IDStore.GetOrCreateVirtualID("ms-a", app.Upstream.Clients()[0].ID)
 
 		rr := doJSONRequest(t, handler, http.MethodPost, "/Users/"+app.Auth.ProxyUserID()+"/PlayingItems/"+virtualItem+"?MediaSourceId="+virtualMediaSource, nil, token)
 		if rr.Code != http.StatusNoContent {

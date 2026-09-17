@@ -5,9 +5,19 @@ services:
       args:
         VERSION: v1.4.4
     container_name: emby-in-one
+    # 容器以 uid 1000 运行；挂载目录需先 chown 1000:1000（install.sh 会自动处理）：
+    #   mkdir -p config data && chown -R 1000:1000 config data
+    user: "1000:1000"
     ports:
       - "8096:8096"
     volumes:
       - ./config:/app/config
       - ./data:/app/data
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

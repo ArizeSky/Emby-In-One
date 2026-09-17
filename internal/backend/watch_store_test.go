@@ -29,7 +29,7 @@ func TestWatchStoreRecordAndGetProgress(t *testing.T) {
 	p := &WatchProgress{
 		ProxyUserID:    "user1",
 		VirtualItemID:  "item1",
-		ServerIndex:    0,
+		ServerID:       "srv-0",
 		OriginalItemID: "orig1",
 		ItemType:       "Movie",
 		Name:           "Test Movie",
@@ -67,7 +67,7 @@ func TestWatchStoreUpsertPreservesMetadata(t *testing.T) {
 	p := &WatchProgress{
 		ProxyUserID:    "user1",
 		VirtualItemID:  "item1",
-		ServerIndex:    0,
+		ServerID:       "srv-0",
 		OriginalItemID: "orig1",
 		ItemType:       "Episode",
 		SeriesName:     "The Show",
@@ -81,7 +81,7 @@ func TestWatchStoreUpsertPreservesMetadata(t *testing.T) {
 	p2 := &WatchProgress{
 		ProxyUserID:   "user1",
 		VirtualItemID: "item1",
-		ServerIndex:   0,
+		ServerID:      "srv-0",
 		PositionTicks: 3000,
 	}
 	ws.RecordProgress(p2)
@@ -208,7 +208,7 @@ func TestRecordProgressUpsertUpdatesPlayedAndFavorite(t *testing.T) {
 	// 1. Insert initial record (played=false, favorite=false, position=1000)
 	if err := ws.RecordProgress(&WatchProgress{
 		ProxyUserID: "user1", VirtualItemID: "ep1",
-		ServerIndex: 0, OriginalItemID: "orig-ep1",
+		ServerID: "srv-0", OriginalItemID: "orig-ep1",
 		PositionTicks: 1000, RuntimeTicks: 10000,
 	}); err != nil {
 		t.Fatalf("initial insert: %v", err)
@@ -225,7 +225,7 @@ func TestRecordProgressUpsertUpdatesPlayedAndFavorite(t *testing.T) {
 	// 2. Upsert with played=true (simulating stopped event at 95%)
 	if err := ws.RecordProgress(&WatchProgress{
 		ProxyUserID: "user1", VirtualItemID: "ep1",
-		ServerIndex: 0, OriginalItemID: "orig-ep1",
+		ServerID: "srv-0", OriginalItemID: "orig-ep1",
 		PositionTicks: 0, RuntimeTicks: 10000, Played: true,
 	}); err != nil {
 		t.Fatalf("upsert with played=true: %v", err)
@@ -239,7 +239,7 @@ func TestRecordProgressUpsertUpdatesPlayedAndFavorite(t *testing.T) {
 	// 3. Another progress event with played=false should NOT revert played=true
 	if err := ws.RecordProgress(&WatchProgress{
 		ProxyUserID: "user1", VirtualItemID: "ep1",
-		ServerIndex: 0, OriginalItemID: "orig-ep1",
+		ServerID: "srv-0", OriginalItemID: "orig-ep1",
 		PositionTicks: 500, RuntimeTicks: 10000, Played: false,
 	}); err != nil {
 		t.Fatalf("progress event: %v", err)
@@ -423,7 +423,7 @@ func TestMigratePlayedStatus(t *testing.T) {
 	// Insert dirty data: ep-1 is 100% watched but played=0
 	if err := ws.RecordProgress(&WatchProgress{
 		ProxyUserID: "user1", VirtualItemID: "ep-1",
-		ServerIndex: 0, OriginalItemID: "orig-1",
+		ServerID: "srv-0", OriginalItemID: "orig-1",
 		ItemType: "Episode", SeriesName: "三体",
 		PositionTicks: 100, RuntimeTicks: 100,
 		Played: false, LastPlayed: 1000,
@@ -433,7 +433,7 @@ func TestMigratePlayedStatus(t *testing.T) {
 	// ep-2 is 50% watched, played=0 (correct, should NOT be migrated)
 	if err := ws.RecordProgress(&WatchProgress{
 		ProxyUserID: "user1", VirtualItemID: "ep-2",
-		ServerIndex: 0, OriginalItemID: "orig-2",
+		ServerID: "srv-0", OriginalItemID: "orig-2",
 		ItemType: "Episode", SeriesName: "三体",
 		PositionTicks: 50, RuntimeTicks: 100,
 		Played: false, LastPlayed: 2000,
@@ -477,7 +477,7 @@ func TestGetResumeItemsSeriesGrouping(t *testing.T) {
 	for i := 1; i <= 5; i++ {
 		_ = ws.RecordProgress(&WatchProgress{
 			ProxyUserID: "user1", VirtualItemID: fmt.Sprintf("ep-%d", i),
-			ServerIndex: 0, OriginalItemID: fmt.Sprintf("orig-%d", i),
+			ServerID: "srv-0", OriginalItemID: fmt.Sprintf("orig-%d", i),
 			ItemType: "Episode", SeriesName: "三体", SeriesVirtualID: "series-1",
 			ParentIndexNumber: 1, IndexNumber: i,
 			PositionTicks: 100, RuntimeTicks: 100, Played: true,
@@ -486,7 +486,7 @@ func TestGetResumeItemsSeriesGrouping(t *testing.T) {
 	// 三体 E6: 50% progress, not played
 	_ = ws.RecordProgress(&WatchProgress{
 		ProxyUserID: "user1", VirtualItemID: "ep-6",
-		ServerIndex: 0, OriginalItemID: "orig-6",
+		ServerID: "srv-0", OriginalItemID: "orig-6",
 		ItemType: "Episode", SeriesName: "三体", SeriesVirtualID: "series-1",
 		ParentIndexNumber: 1, IndexNumber: 6,
 		PositionTicks: 50, RuntimeTicks: 100, Played: false,
@@ -494,7 +494,7 @@ func TestGetResumeItemsSeriesGrouping(t *testing.T) {
 	// 三体 E7: 50% progress, not played, more recent
 	_ = ws.RecordProgress(&WatchProgress{
 		ProxyUserID: "user1", VirtualItemID: "ep-7",
-		ServerIndex: 0, OriginalItemID: "orig-7",
+		ServerID: "srv-0", OriginalItemID: "orig-7",
 		ItemType: "Episode", SeriesName: "三体", SeriesVirtualID: "series-1",
 		ParentIndexNumber: 1, IndexNumber: 7,
 		PositionTicks: 50, RuntimeTicks: 100, Played: false,
@@ -502,14 +502,14 @@ func TestGetResumeItemsSeriesGrouping(t *testing.T) {
 	// Movie A: 50% progress
 	_ = ws.RecordProgress(&WatchProgress{
 		ProxyUserID: "user1", VirtualItemID: "movie-a",
-		ServerIndex: 0, OriginalItemID: "orig-ma",
+		ServerID: "srv-0", OriginalItemID: "orig-ma",
 		ItemType: "Movie", Name: "你的名字",
 		PositionTicks: 50, RuntimeTicks: 100, Played: false,
 	})
 	// Movie B: 30% progress
 	_ = ws.RecordProgress(&WatchProgress{
 		ProxyUserID: "user1", VirtualItemID: "movie-b",
-		ServerIndex: 0, OriginalItemID: "orig-mb",
+		ServerID: "srv-0", OriginalItemID: "orig-mb",
 		ItemType: "Movie", Name: "铃芽之旅",
 		PositionTicks: 30, RuntimeTicks: 100, Played: false,
 	})

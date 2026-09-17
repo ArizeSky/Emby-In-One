@@ -24,9 +24,9 @@ type IdentifierSources struct {
 	VirtualIDs virtualIDSource
 	Tokens     issuedTokenSource
 	Users      localUserSource
-	// UpstreamUserIDs maps a server index to that upstream's real user ID. It is a
+	// UpstreamUserIDs maps a server ID to that upstream's real user ID. It is a
 	// diagnostic hint: only the target snapshot decides the outbound identity.
-	UpstreamUserIDs map[int]string
+	UpstreamUserIDs map[string]string
 }
 
 // IdentifierFacts is a classified view of one value against the signing and
@@ -37,7 +37,7 @@ type IdentifierFacts struct {
 	VirtualResource bool
 	// UpstreamServers lists the upstreams whose real user ID equals the value,
 	// sorted ascending.
-	UpstreamServers []int
+	UpstreamServers []string
 	// CoverageIncomplete is true when a source could not be consulted, so the
 	// negative fields above are not proof that the value is unknown.
 	CoverageIncomplete bool
@@ -72,12 +72,12 @@ func (l *IdentifierLookup) Match(value string) IdentifierFacts {
 	if l.sources.Users != nil {
 		facts.LocalUser = l.sources.Users.ContainsUserID(value)
 	}
-	for serverIndex, userID := range l.sources.UpstreamUserIDs {
+	for serverID, userID := range l.sources.UpstreamUserIDs {
 		if userID != "" && userID == value {
-			facts.UpstreamServers = append(facts.UpstreamServers, serverIndex)
+			facts.UpstreamServers = append(facts.UpstreamServers, serverID)
 		}
 	}
-	sort.Ints(facts.UpstreamServers)
+	sort.Strings(facts.UpstreamServers)
 	return facts
 }
 
@@ -102,13 +102,13 @@ const (
 )
 
 // ClassifyLocalIdentifier names what a value is with respect to the local stores
-// and the current target upstream. targetServerIndex is the upstream this request
+// and the current target upstream. targetServerID is the upstream this request
 // is being prepared for; targetUserID is that upstream's real user ID from the
 // auth snapshot taken for this request.
 //
 // A value that matches the target is always reported as target-upstream even when
 // another upstream issues the same string: the target wins over string equality.
-func (l *IdentifierLookup) Classify(value string, targetServerIndex int, targetUserID string) IdentifierClass {
+func (l *IdentifierLookup) Classify(value string, targetServerID string, targetUserID string) IdentifierClass {
 	facts := l.Match(value)
 	if targetUserID != "" && value == targetUserID {
 		return IdentifierTargetUpstream
@@ -122,8 +122,8 @@ func (l *IdentifierLookup) Classify(value string, targetServerIndex int, targetU
 	if facts.VirtualResource {
 		return IdentifierVirtualResource
 	}
-	for _, serverIndex := range facts.UpstreamServers {
-		if serverIndex != targetServerIndex {
+	for _, serverID := range facts.UpstreamServers {
+		if serverID != targetServerID {
 			return IdentifierForeignUpstream
 		}
 	}
@@ -140,7 +140,7 @@ func (l *IdentifierLookup) IsTargetUpstreamValue(value string, targetUserID stri
 // upstreamUserIDs collects the real user ID of every configured upstream for the
 // diagnostic half of the lookup. It is read once per request context so a
 // request never walks the pool per predicate call.
-func (a *App) upstreamUserIDsByServer() map[int]string {
+func (a *App) upstreamUserIDsByServer() map[string]string {
 	if a.Upstream == nil {
 		return nil
 	}
@@ -148,12 +148,12 @@ func (a *App) upstreamUserIDsByServer() map[int]string {
 	if len(clients) == 0 {
 		return nil
 	}
-	out := make(map[int]string, len(clients))
+	out := make(map[string]string, len(clients))
 	for i := range clients {
-		serverIndex := clients[i].serverIndexValue()
+		serverID := clients[i].ID
 		userID := clients[i].clientUserID()
-		if userID != "" {
-			out[serverIndex] = userID
+		if userID != "" && serverID != "" {
+			out[serverID] = userID
 		}
 	}
 	return out
@@ -196,12 +196,12 @@ func IsCurrentUserAlias(value string, reqCtx *RequestContext, targetAuth upstrea
 // ClassifyLocalIdentifier classifies value against the shared lookup view. It is
 // the reporting counterpart of IsCurrentUserAlias and shares the same source
 // queries, but its allowed set is wider: every class is a legal answer.
-func ClassifyLocalIdentifier(value string, targetServerIndex int, targetAuth upstreamAuthSnapshot, lookup *IdentifierLookup) IdentifierClass {
+func ClassifyLocalIdentifier(value string, targetServerID string, targetAuth upstreamAuthSnapshot, lookup *IdentifierLookup) IdentifierClass {
 	if lookup == nil {
 		return IdentifierUnknown
 	}
 	if targetAuth.UserID != "" && value == targetAuth.UserID {
 		return IdentifierTargetUpstream
 	}
-	return lookup.Classify(value, targetServerIndex, targetAuth.UserID)
+	return lookup.Classify(value, targetServerID, targetAuth.UserID)
 }

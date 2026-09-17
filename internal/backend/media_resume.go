@@ -1,9 +1,10 @@
 package backend
 
 import (
-	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
+	"strings"
 )
 
 func (a *App) handleUserItemsResume(w http.ResponseWriter, r *http.Request) {
@@ -41,7 +42,7 @@ func (a *App) handleUserItemsResume(w http.ResponseWriter, r *http.Request) {
 			}
 			filtered := filterSeriesItems(asItems(payload), originalIDs)
 			if len(filtered) > 0 {
-				a.rewriteItems(filtered, inst.ServerIndex, a.clientFacingUserIDFor(r))
+				a.rewriteItems(filtered, inst.ServerID, a.clientFacingUserIDFor(r))
 				writeJSON(w, http.StatusOK, map[string]any{"Items": filtered, "TotalRecordCount": len(filtered), "StartIndex": 0})
 				return
 			}
@@ -98,23 +99,23 @@ func (a *App) handleLocalResume(w http.ResponseWriter, r *http.Request, reqCtx *
 func (a *App) enrichWatchItems(r *http.Request, reqCtx *RequestContext, items []WatchProgress) []map[string]any {
 	cfg := a.ConfigStore.Snapshot()
 
-	// Group by server index, remapping offline servers to online alternatives
+	// Group by server ID, remapping offline servers to online alternatives
 	type serverGroup struct {
 		originalIDs []string
 		watchItems  []WatchProgress
 	}
-	groups := map[int]*serverGroup{}
+	groups := map[string]*serverGroup{}
 	for i := range items {
-		serverIdx, originalID, ok := a.resolveWatchItemServer(&items[i])
+		serverID, originalID, ok := a.resolveWatchItemServer(&items[i])
 		if !ok {
 			continue // all instances offline
 		}
-		items[i].ServerIndex = serverIdx
+		items[i].ServerID = serverID
 		items[i].OriginalItemID = originalID
-		g, exists := groups[serverIdx]
+		g, exists := groups[serverID]
 		if !exists {
 			g = &serverGroup{}
-			groups[serverIdx] = g
+			groups[serverID] = g
 		}
 		g.originalIDs = append(g.originalIDs, originalID)
 		g.watchItems = append(g.watchItems, items[i])
@@ -122,8 +123,8 @@ func (a *App) enrichWatchItems(r *http.Request, reqCtx *RequestContext, items []
 
 	// Fetch metadata per server (all groups now point to online servers)
 	fetched := map[string]map[string]any{} // originalID → item metadata
-	for serverIdx, g := range groups {
-		client := a.Upstream.GetClient(serverIdx)
+	for serverID, g := range groups {
+		client := a.Upstream.ClientByID(serverID)
 		if client == nil || !client.IsOnline() {
 			continue
 		}
@@ -149,7 +150,7 @@ func (a *App) enrichWatchItems(r *http.Request, reqCtx *RequestContext, items []
 			continue
 		}
 		// Rewrite upstream IDs to virtual
-		rewriteResponseIDs(item, wp.ServerIndex, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
+		rewriteResponseIDs(item, wp.ServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 		// Overlay local UserData
 		ud, _ := item["UserData"].(map[string]any)
 		if ud == nil {
@@ -164,33 +165,33 @@ func (a *App) enrichWatchItems(r *http.Request, reqCtx *RequestContext, items []
 	return result
 }
 
-// resolveWatchItemServer returns the serverIndex and originalItemID to use for
+// resolveWatchItemServer returns the serverID and originalItemID to use for
 // fetching metadata. If the item's recorded server is offline, it tries to find
 // an online OtherInstance via IDStore.
-func (a *App) resolveWatchItemServer(wp *WatchProgress) (serverIndex int, originalItemID string, ok bool) {
-	client := a.Upstream.GetClient(wp.ServerIndex)
+func (a *App) resolveWatchItemServer(wp *WatchProgress) (serverID string, originalItemID string, ok bool) {
+	client := a.Upstream.ClientByID(wp.ServerID)
 	if client != nil && client.IsOnline() {
-		return wp.ServerIndex, wp.OriginalItemID, true
+		return wp.ServerID, wp.OriginalItemID, true
 	}
 	resolved := a.IDStore.ResolveVirtualID(wp.VirtualItemID)
 	if resolved == nil {
-		return 0, "", false
+		return "", "", false
 	}
-	// Try IDStore primary (may differ from wp.ServerIndex if mapping was updated)
-	if resolved.ServerIndex != wp.ServerIndex {
-		alt := a.Upstream.GetClient(resolved.ServerIndex)
+	// Try IDStore primary (may differ from wp.ServerID if mapping was updated)
+	if resolved.ServerID != wp.ServerID {
+		alt := a.Upstream.ClientByID(resolved.ServerID)
 		if alt != nil && alt.IsOnline() {
-			return resolved.ServerIndex, resolved.OriginalID, true
+			return resolved.ServerID, resolved.OriginalID, true
 		}
 	}
 	// Try OtherInstances
 	for _, other := range resolved.OtherInstances {
-		alt := a.Upstream.GetClient(other.ServerIndex)
+		alt := a.Upstream.ClientByID(other.ServerID)
 		if alt != nil && alt.IsOnline() {
-			return other.ServerIndex, other.OriginalID, true
+			return other.ServerID, other.OriginalID, true
 		}
 	}
-	return 0, "", false
+	return "", "", false
 }
 
 // joinComma joins strings with commas.
@@ -207,12 +208,12 @@ func joinComma(ss []string) string {
 
 // queryInt extracts an integer from a url.Values query parameter.
 func queryInt(values url.Values, key string) (int, bool) {
-	s := values.Get(key)
+	s := strings.TrimSpace(values.Get(key))
 	if s == "" {
 		return 0, false
 	}
-	var n int
-	if _, err := fmt.Sscanf(s, "%d", &n); err != nil {
+	n, err := strconv.Atoi(s)
+	if err != nil {
 		return 0, false
 	}
 	return n, true

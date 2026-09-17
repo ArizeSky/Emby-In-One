@@ -39,8 +39,8 @@ Based on Go language, it implements a multi-server Emby aggregation proxy — me
 
 [Demo Site](https://emby.cothx.eu.cc/)
 Emby Connection Address: https://emby.cothx.eu.cc/
-Account: admin
-Password: 5T5xF4oMxcnrcCPA
+
+> **Demo credentials are no longer published in this repository.** For security reasons, no plaintext account or password is provided here. To try the demo, contact the maintainer via GitHub [Issues](https://github.com/ArizeSky/Emby-In-One/issues) for a **periodically rotated** temporary account. Please do not redistribute demo credentials in public channels.
 
 ## Preview
 
@@ -63,7 +63,7 @@ Password: 5T5xF4oMxcnrcCPA
 - **Smart Deduplication & Prioritization** — Identical videos are automatically merged with multiple version sources retained; Supports a 4-level metadata priority logic (Designated Tag > Chinese > Length > Order) to smartly pick the best display information.
 - **Advanced UA Spoofing** — Supports Infuse spoofing and client UA passthrough. Can also use `custom` mode to independently define all 5 Emby client identity headers for each upstream, bypassing common Emby UA restrictions.
 - **Network Proxy Pool** — Configure dedicated HTTP/HTTPS proxies separately for each upstream server, complete with a built-in one-click connectivity tester.
-- **Dual Playback Modes** — Proxy mode (traffic relayed, hides upstream, supports HLS/segments) or Redirect mode (302 redirects to upstream, saves proxy machine bandwidth).
+- **Dual Playback Modes** — Proxy mode (traffic relayed, hides upstream, supports HLS/segments) or Redirect mode (302 redirects to upstream, saves proxy machine bandwidth; **it exposes the upstream account credential — see [Playback Mode Explained](#playback-mode-explained)**).
 - **Token Management & Session Stability** — Proxy tokens never expire (only removed on logout, password change, or manual revocation), preventing frequent 401 errors on long-idle devices; upstream tokens auto-recover via async re-login with 30-second debounce when expired; admin password changes automatically revoke all issued tokens.
 - **Passthrough Delayed Login** — Upstream servers in passthrough mode no longer attempt login with Infuse identity at startup; they wait for a real client connection before authenticating, avoiding phantom device records on upstream Emby.
 - **Full Control & Operations** — Built-in modern SSH CLI menu and Web admin panel; comes with persistent logs and SQLite ID mapping. SSH menu auto-detects Binary/Docker deployment mode, dispatching all operations to systemd or Docker Compose commands accordingly.
@@ -72,7 +72,7 @@ Password: 5T5xF4oMxcnrcCPA
 
 ## Quick Installation
 
-> **Notice for Legacy Node.js Deployment**: If you wish to deploy the V1.2.1 stable Node.js version, please navigate to the [Releases page](https://github.com/ArizeSky/Emby-In-One/releases) of this repository, download the V1.2.1 Source code archive, extract it, and run `bash install.sh`.
+> **Notice for Legacy Node.js Deployment**: If you wish to deploy the V1.2.1 stable Node.js version, please navigate to the [Releases page](https://github.com/ArizeSky/Emby-In-One/releases) of this repository, download the V1.2.1 Source code archive, extract it, and run `bash install.sh`. The `legacy/` directory in this repository keeps the V1.2.1 Node.js source **for reference only** (the Go ID virtualization was written against it); it takes part in no build, image or install of the Go version — see `legacy/README.md`.
 
 This project primarily recommends using Release binaries for V1.4.4 deployment directly on Linux servers (no local Go build required); Docker deployment is suitable for scenarios where you want to build the image yourself.
 
@@ -110,9 +110,10 @@ The script will automatically install the Docker environment, assign a random ad
 
 ### Method 3: Manual Docker Compose Deployment
 
-1. Create project directories:
+1. Create project directories and hand them to the container user (the container runs as uid 1000; unwritable mounts make startup fail when the server cannot write `tokens.json` / `mappings.db`):
 ```bash
 mkdir -p /opt/emby-in-one/{config,data}
+chown -R 1000:1000 /opt/emby-in-one/config /opt/emby-in-one/data
 cd /opt/emby-in-one
 ```
 2. Copy all core files from this repository (including `go.mod`, `cmd/`, `internal/`, `public/`, `Dockerfile`, `docker-compose.yml`, etc.) to this directory.
@@ -184,6 +185,8 @@ go run ./cmd/emby-in-one
 The config file is located at `config/config.yaml` (mounted into the container at `/app/config/config.yaml` when using Docker).
 
 ```yaml
+# dataDir: "/opt/emby-in-one/data"    # Runtime data directory (top-level key; defaults are in "Data Directory" below)
+
 server:
   port: 8096
   name: "Emby-In-One"
@@ -223,7 +226,9 @@ upstream:
     apiKey: "your-api-key"
     playbackMode: "redirect"                   # Overrides global playback mode
     spoofClient: "infuse"                      # none | passthrough | infuse | custom
-    streamingUrl: "https://cdn.example.com"    # Independent streaming domain (optional)
+    streamingUrls:                               # Streaming lines (optional, ordered; a single one can also be written as streamingUrl: "...")
+      - "https://cdn.example.com"                # 1st entry is the primary line
+      - "https://backup.example.com"             # the rest are fallbacks
     followRedirects: true                      # Follow upstream 301/302/303/307/308 (default true; when false the redirect is reported as an upstream error instead of being forwarded to the client)
     proxyId: null                              # Associate with proxy ID from proxy pool
     priorityMetadata: false                    # Prefer using this server's metadata when merging
@@ -259,6 +264,33 @@ Settings modified in the admin panel take effect hotly, no service restart requi
 > proxy_set_header X-Forwarded-For $remote_addr;
 > ```
 > As long as the proxy sets `X-Real-IP` (preferred here, and not forgeable by appending), the rate limit can be trusted.
+>
+> **Conversely: when there is no trusted reverse proxy in front, it must stay `false`.** `trustProxy: true` makes the server take `X-Real-IP` / `X-Forwarded-For` on faith, with no check of where the request came from. If the instance is directly exposed to the internet (or nothing along the path overwrites those headers), anyone can supply an arbitrary IP: rotate a fake IP on every failed login to bypass the failure counter and the 15-minute lockout on `POST /Users/AuthenticateByName`, or put someone else's IP there to lock that IP out.
+>
+> The test is simple: **enable it only when the last hop that can reach this service is certain to be your own reverse proxy.** If you are not sure, leave it off.
+
+### Data Directory (`dataDir`)
+
+`dataDir` is a **top-level key** in the config file (a sibling of `server`, `admin` and `playback`) that decides where runtime data is written.
+
+| Item | Value |
+|------|-------|
+| Default | `/app/data` when that directory exists (the official Docker image creates it); otherwise `data/` under the process working directory |
+| Contents | `mappings.db` (virtual ID mappings, user data, watch history), `tokens.json` (proxy-layer tokens), `captured-headers.json` (passthrough client headers), `emby-in-one.log` (log file) |
+
+> **This key has nothing to do with the config file itself.** `config.yaml` always lives at `config/config.yaml` (`/app/config/config.yaml` inside the Docker container) and does not move with `dataDir`. See [Data Directory Description](#data-directory-description) for what each file holds.
+
+**When to change it**:
+
+- **Binary / source deployments**: `data/` is resolved against the **process working directory**. If the service starts from a directory other than the project directory (for example a systemd `WorkingDirectory` of `/opt/emby-in-one`) and you want the data pinned to an absolute path, or mounted separately from `config/`, set `dataDir` explicitly.
+- **Docker deployments**: the container already defaults to `/app/data`, and `docker-compose.yml` mounts the host's `./data` there, so you normally **do not** need to change it; only a custom mount point would require it.
+- **Migrating / reusing existing data**: point `dataDir` at the directory that already holds your data — no need to move files by hand.
+
+**Notes**:
+
+- Setting it in the config file is enough (`dataDir: "/opt/emby-in-one/data"`); the admin panel does not expose it, and a **service restart** is required;
+- Prefer an **absolute path** in production — a relative path follows the startup working directory and can look like data loss when it is really just a different directory being read and written;
+- The directory must be readable and writable by the process user.
 
 ---
 
@@ -359,7 +391,17 @@ Authentication decision and fault tolerance logic:
 
 > **The global `playback.mode` is only the initial value for a new upstream.** Once an upstream exists its `playbackMode` has already been written with the value of that moment, so changing the global default later does **not** affect any existing upstream (same for the "default playback mode" field at the top of the panel). To change one upstream's mode, use the playback-mode dropdown in that server's edit dialog — it takes effect immediately.
 
-When using `proxy` mode, if the upstream has a separate streaming domain (CDN, etc.), you can set `streamingUrl`, and the proxy will construct stream URLs using that domain instead of the API address.
+> ⚠ **Security warning for `redirect` (direct playback) mode**: direct playback mode writes the upstream account credential (`api_key`) into the `302` redirect link, and **any user who can play can extract it** — including users restricted by `AllowedServers` — then bypass this proxy and reach the upstream directly (equivalent to upstream admin rights). Therefore:
+>
+> - Use a **dedicated, restricted account for that upstream** (grant only the media-library playback permissions it needs, no admin rights, and cap concurrency where possible); never reuse the upstream's admin account or a shared one;
+> - Once leaked, the credential can only be revoked by changing the password or revoking the API key on the upstream side;
+> - If that risk is unacceptable, keep the default `proxy` mode.
+
+An upstream can configure **multiple streaming lines** (`streamingUrls`, an ordered list): the first entry is the primary line, the rest are fallbacks. All lines must point to the same Emby server (multiple lines are multiple routes to one server, not mirrored servers — transcoding sessions live on the server itself, so switching lines across mirrors causes 404s).
+
+- **Proxy mode**: on a connect-level failure of the primary line (connection refused / timeout / TLS error) the proxy automatically switches to the next fallback, invisibly to the client. Any HTTP status returned by the upstream (including 404/403) is not treated as a line failure.
+- **Redirect mode**: the line is chosen by liveness — every health-check cycle probes fallback lines at the connect level (any HTTP response counts as alive, including the 403/404 returned by split-tunnel reverse proxies that only forward `/Videos/` and `/Audio/`). A line marked dead is skipped for 60 seconds, then becomes a candidate again. After the 302 the traffic no longer passes through the proxy; a line failure mid-playback is handled naturally when the player re-fetches the manifest.
+- When left empty the stream base equals `url` (the front-end address), same as a single `streamingUrl`.
 
 ### UA Spoofing Explained (`spoofClient`)
 
@@ -417,7 +459,7 @@ Cross-server entries are initially interleaved (Round-Robin) before duplicated m
 
 ### ID Virtualization
 
-Each upstream Item ID is mapped globally to a lone virtual ID (UUID layout). Any IDs visible to clients are virtual.
+Each upstream Item ID is mapped globally to a lone virtual ID — 16 random bytes (128 bits) from `crypto/rand`, rendered as a 32-character lowercase hex string with no dashes. Any IDs visible to clients are virtual.
 
 - **Storage**: SQLite (WAL pattern) persistence tied with memory cache aiding lookup speeds
 - **Mapping**: `virtualId <-> { originalId, serverIndex }`, saving additionally persisted `otherInstances` mapping interactions
@@ -441,14 +483,23 @@ Each upstream Item ID is mapped globally to a lone virtual ID (UUID layout). Any
 - **CLI password reset support**:
 
 ```bash
-emby-in-one --reset-password <new-password>
-# Or use the SSH menu option "Change Admin Password"
+emby-in-one --reset-password <new-password|-> [--force]
+# Or use the SSH menu option "Change Admin Password" (the menu stops the service, resets, then starts it again)
 ```
+
+  - A password of `-` is **read from stdin**, so it never shows up in the process list (`ps`) or the shell history — this is the form the install and management scripts use: `printf '%s' "$pass" | emby-in-one --reset-password -`
+  - By default it first probes `127.0.0.1:<port from config.yaml>/System/Info/Public` and **refuses to run while the service is still up**, telling you to `systemctl stop emby-in-one` first (see below for why)
+  - `--force` skips that probe; use it only when you are sure you need it
+  - The reset clears `tokens.json` with an **atomic write** (keeping `_proxyUserId`), so a truncated file can no longer stop the service from booting; **every issued proxy token is invalidated** and clients must sign in again
+
+  > **Why a running instance must be refused**: a live instance keeps the tokens in memory and writes the whole `tokens.json` back on its next login or logout — restoring every token this command just cleared, making the reset a no-op. The CLI therefore errors out rather than silently "resetting" nothing. For Docker deployments use the SSH menu, or run the command it prints on failure (`docker compose ... run --rm -T emby-in-one /app/emby-in-one --reset-password - --force`).
 
 - **Stricter `data/tokens.json` permissions**: Written with `0600` permissions on Unix/Linux
 - **Secure `config.yaml` writes**: Atomic replacement + `0600` permissions, reducing corruption risk and preventing other users from reading passwords
 - **Request body size limit**: All API request bodies limited to 2MB (`http.MaxBytesReader`), preventing malicious large requests from consuming memory
 - **Login rate limiting**: After 5 consecutive login failures from the same IP, locked for 15 minutes with `429 Too Many Requests`; atomic operations prevent TOCTOU race conditions; supports real IP detection behind reverse proxies (`X-Real-IP` / `X-Forwarded-For` / IPv6)
+- **`trustProxy` only behind a trusted reverse proxy**: login rate limiting counts by IP, and with `server.trustProxy: true` the server takes the first entry of `X-Real-IP` / `X-Forwarded-For` **without checking where it came from**. Enabling it with no trusted reverse proxy in front hands the rate-limit key to the client — an attacker can rotate forged IPs to bypass the 5-failure lockout, or aim one at a victim to lock that IP out. See [Reverse Proxy Trust](#reverse-proxy-trust-trustproxy) for the configuration details
+- **Unauthenticated image endpoint (a known trade-off, not an oversight)**: `GET /Items/{itemId}/Images/{imageType}` **does not require a token**. Clients embed image URLs in their UI and cache them for a long time, so requiring auth would leave posters broken across the board once a token rotates or a cache entry expires. Its safety rests on the **virtual ID being a capability URL**: the `itemId` in the path is a 128-bit `crypto/rand` value that only a user who actually fetched that item's metadata can know. Two consequences worth stating plainly: (1) **anyone who obtains that URL can fetch that image**, even without a token — so an unauthenticated request skips the `AllowedServers` check (authenticated requests are still checked as usual); (2) the fetch goes upstream under that upstream's shared identity. If per-user, revocable image access is needed, this can move to short-lived signed URLs
 - **Graceful shutdown**: On receiving `SIGINT` / `SIGTERM`, drains active connections (up to 10 seconds) before closing the HTTP server and health check timers
 - **Admin panel CSP**: the admin panel returns a strict `Content-Security-Policy` - `default-src 'self'`, with no third-party origin and no `'unsafe-inline'` in `script-src` / `style-src` / `font-src` / `connect-src`. Vue, lucide, the compiled Tailwind CSS and the Inter font are all self-hosted under `public/vendor/`, so the panel loads nothing from and connects to nothing on an external origin. Only `'unsafe-eval'` remains, which Vue needs to compile its in-DOM template at runtime
 - **Stream URL cache auto-eviction**: `IDStore` stream URL cache entries expire after 4 hours, cleaned every 30 minutes, preventing unbounded memory growth during long-running operation
@@ -531,10 +582,10 @@ Available commands:
 - View service status, public IP
 - View admin credentials, modify admin username / password
 - View user list, add regular user, delete regular user
-- View logs, check version (`--version`)
+- View logs
 - Uninstall service (supports preserving config and data)
 
-> The SSH menu auto-detects the current deployment method (Binary / Docker), dispatching all operations to the corresponding systemd or Docker Compose commands. Docker mode updates use a source-rebuild workflow. The menu title bar displays the current version number.
+> The SSH menu auto-detects the current deployment method (Binary / Docker), dispatching all operations to the corresponding systemd or Docker Compose commands. Docker mode updates use a source-rebuild workflow. There is no separate "check version" entry — the current version is shown directly in the menu title bar (e.g. `Emby In One 管理菜单 v1.4.4`).
 
 ---
 
@@ -548,6 +599,8 @@ Runtime directories:
   - `tokens.json` — Proxy layer token storage
   - `captured-headers.json` — Passthrough client headers persistence
   - `emby-in-one.log` — Log file
+
+The actual location of `data/` can be changed with the top-level [`dataDir`](#data-directory-datadir) key in the config file.
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -709,11 +762,17 @@ Emby-In-One/
 │   └── vendor/                     # Self-hosted frontend dependencies: Vue, lucide, Tailwind output, Inter font
 ├── assets/panel.css                # Tailwind input (holds the panel styles moved out of admin.html)
 ├── tailwind.config.js              # Tailwind content config (run npm run build:panel after editing admin.html/admin.js)
+├── package.json                    # Root package.json keeps only the build:panel script (Node deps moved to legacy/)
 ├── Dockerfile                      # Go runtime container build
 ├── docker-compose.yml
 ├── install.sh                      # Source repo one-click deploy script (Docker)
 ├── release-install.sh              # Release binary one-click deploy script (systemd)
-└── emby-in-one-cli.sh              # SSH terminal management menu script
+├── emby-in-one-cli.sh              # SSH terminal management menu script
+└── legacy/                         # V1.2.1 Node.js implementation: reference only, built into nothing
+    ├── README.md                   #   Why it is kept, and why it takes part in no build
+    ├── src/                        #   Old Express implementation (the reference for the Go ID virtualization)
+    ├── tests/                      #   Old Node tests (most no longer pass)
+    └── package.json                #   Node dependencies (only used by npm --prefix legacy install)
 ```
 
 ---

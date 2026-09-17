@@ -9,10 +9,10 @@ import (
 )
 
 type indexedItem struct {
-	Item        map[string]any
-	ServerIndex int
-	SortA       int
-	SortB       int
+	Item     map[string]any
+	ServerID string
+	SortA    int
+	SortB    int
 }
 
 func (a *App) registerLibraryAndImageRoutes(mux *http.ServeMux) {
@@ -55,7 +55,7 @@ func (a *App) handleLibraryNamedArray(w http.ResponseWriter, r *http.Request, up
 		}
 		items := asItems(payload)
 		for _, item := range items {
-			rewriteResponseIDs(item, c.ServerIndex, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
+			rewriteResponseIDs(item, c.ID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 			if multiSource {
 				if name, _ := item["Name"].(string); name != "" {
 					item["Name"] = name + " (" + c.Name + ")"
@@ -79,7 +79,7 @@ func (a *App) handleLibraryMediaFolders(w http.ResponseWriter, r *http.Request) 
 		}
 		items := asItems(payload)
 		for _, item := range items {
-			rewriteResponseIDs(item, c.ServerIndex, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
+			rewriteResponseIDs(item, c.ID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 		}
 		return items
 	})
@@ -96,7 +96,7 @@ func (a *App) handleLibraryTaxonomy(w http.ResponseWriter, r *http.Request, endp
 		query := cloneValues(r.URL.Query())
 		query.Set("UserId", c.clientUserID())
 		if hasBatchIDQuery(query) {
-			translated, ok := translateBatchIDQueryForServer(query, c.ServerIndex, a.IDStore)
+			translated, ok := translateBatchIDQueryForServer(query, c.ID, a.IDStore)
 			if !ok {
 				return nil
 			}
@@ -108,7 +108,7 @@ func (a *App) handleLibraryTaxonomy(w http.ResponseWriter, r *http.Request, endp
 		}
 		items := asItems(payload)
 		for _, item := range items {
-			rewriteResponseIDs(item, c.ServerIndex, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
+			rewriteResponseIDs(item, c.ID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 		}
 		return items
 	})
@@ -142,34 +142,34 @@ func (a *App) handleShowsSeasons(w http.ResponseWriter, r *http.Request) {
 				originalID, _ := season["Id"].(string)
 				season["_originalId"] = originalID
 				if originalID != "" {
-					season["Id"] = a.IDStore.GetOrCreateVirtualID(originalID, inst.ServerIndex)
+					season["Id"] = a.IDStore.GetOrCreateVirtualID(originalID, inst.ServerID)
 				}
-				unknown = append(unknown, indexedItem{Item: season, ServerIndex: inst.ServerIndex})
+				unknown = append(unknown, indexedItem{Item: season, ServerID: inst.ServerID})
 				continue
 			}
 			if existing, found := merged[idx]; found {
 				virtualID, _ := existing.Item["Id"].(string)
 				if virtualID == "" {
 					if originalID, _ := existing.Item["_originalId"].(string); originalID != "" {
-						virtualID = a.IDStore.GetOrCreateVirtualID(originalID, existing.ServerIndex)
+						virtualID = a.IDStore.GetOrCreateVirtualID(originalID, existing.ServerID)
 					}
 				}
 				if originalID, _ := season["Id"].(string); virtualID != "" && originalID != "" {
-					a.IDStore.AssociateAdditionalInstance(virtualID, originalID, inst.ServerIndex)
+					a.IDStore.AssociateAdditionalInstance(virtualID, originalID, inst.ServerID)
 				}
 				// Check if candidate has better metadata; if so, replace
-				if isBetterMetadata(existing.Item, existing.ServerIndex, season, inst.ServerIndex, cfg) {
+				if isBetterMetadata(existing.Item, existing.ServerID, season, inst.ServerID, cfg) {
 					season["_originalId"], _ = season["Id"].(string)
 					season["Id"] = virtualID
 					existing.Item = season
-					existing.ServerIndex = inst.ServerIndex
+					existing.ServerID = inst.ServerID
 				}
 				continue
 			}
 			originalID, _ := season["Id"].(string)
 			season["_originalId"] = originalID
-			season["Id"] = a.IDStore.GetOrCreateVirtualID(originalID, inst.ServerIndex)
-			merged[idx] = &indexedItem{Item: season, ServerIndex: inst.ServerIndex, SortA: idx}
+			season["Id"] = a.IDStore.GetOrCreateVirtualID(originalID, inst.ServerID)
+			merged[idx] = &indexedItem{Item: season, ServerID: inst.ServerID, SortA: idx}
 		}
 	}
 	keys := make([]int, 0, len(merged))
@@ -183,7 +183,7 @@ func (a *App) handleShowsSeasons(w http.ResponseWriter, r *http.Request) {
 		preservedID, _ := item["Id"].(string)
 		delete(item, "_originalId")
 		delete(item, "Id")
-		rewriteResponseIDs(item, merged[idx].ServerIndex, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
+		rewriteResponseIDs(item, merged[idx].ServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 		item["Id"] = preservedID
 		items = append(items, item)
 	}
@@ -191,7 +191,7 @@ func (a *App) handleShowsSeasons(w http.ResponseWriter, r *http.Request) {
 		preservedID, _ := entry.Item["Id"].(string)
 		delete(entry.Item, "_originalId")
 		delete(entry.Item, "Id")
-		rewriteResponseIDs(entry.Item, entry.ServerIndex, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
+		rewriteResponseIDs(entry.Item, entry.ServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 		entry.Item["Id"] = preservedID
 		items = append(items, entry.Item)
 	}
@@ -220,11 +220,11 @@ func (a *App) handleShowsEpisodes(w http.ResponseWriter, r *http.Request) {
 		if seasonID := query.Get("SeasonId"); seasonID != "" {
 			if resolvedSeason := a.IDStore.ResolveVirtualID(seasonID); resolvedSeason != nil {
 				mapped := ""
-				if resolvedSeason.ServerIndex == inst.ServerIndex {
+				if resolvedSeason.ServerID == inst.ServerID {
 					mapped = resolvedSeason.OriginalID
 				} else {
 					for _, other := range resolvedSeason.OtherInstances {
-						if other.ServerIndex == inst.ServerIndex {
+						if other.ServerID == inst.ServerID {
 							mapped = other.OriginalID
 							break
 						}
@@ -248,8 +248,8 @@ func (a *App) handleShowsEpisodes(w http.ResponseWriter, r *http.Request) {
 			if !okSeason || !okEpisode {
 				originalID, _ := episode["Id"].(string)
 				episode["_originalId"] = originalID
-				episode["Id"] = a.IDStore.GetOrCreateVirtualID(originalID, inst.ServerIndex)
-				unkeyed = append(unkeyed, indexedItem{Item: episode, ServerIndex: inst.ServerIndex})
+				episode["Id"] = a.IDStore.GetOrCreateVirtualID(originalID, inst.ServerID)
+				unkeyed = append(unkeyed, indexedItem{Item: episode, ServerID: inst.ServerID})
 				continue
 			}
 			key := strconv.Itoa(seasonNum) + ":" + strconv.Itoa(episodeNum)
@@ -257,25 +257,25 @@ func (a *App) handleShowsEpisodes(w http.ResponseWriter, r *http.Request) {
 				virtualID, _ := existing.Item["Id"].(string)
 				if virtualID == "" {
 					if originalID, _ := existing.Item["_originalId"].(string); originalID != "" {
-						virtualID = a.IDStore.GetOrCreateVirtualID(originalID, existing.ServerIndex)
+						virtualID = a.IDStore.GetOrCreateVirtualID(originalID, existing.ServerID)
 					}
 				}
 				if originalID, _ := episode["Id"].(string); virtualID != "" && originalID != "" {
-					a.IDStore.AssociateAdditionalInstance(virtualID, originalID, inst.ServerIndex)
+					a.IDStore.AssociateAdditionalInstance(virtualID, originalID, inst.ServerID)
 				}
 				// Check if candidate has better metadata; if so, replace
-				if isBetterMetadata(existing.Item, existing.ServerIndex, episode, inst.ServerIndex, cfg) {
+				if isBetterMetadata(existing.Item, existing.ServerID, episode, inst.ServerID, cfg) {
 					episode["_originalId"], _ = episode["Id"].(string)
 					episode["Id"] = virtualID
 					existing.Item = episode
-					existing.ServerIndex = inst.ServerIndex
+					existing.ServerID = inst.ServerID
 				}
 				continue
 			}
 			originalID, _ := episode["Id"].(string)
 			episode["_originalId"] = originalID
-			episode["Id"] = a.IDStore.GetOrCreateVirtualID(originalID, inst.ServerIndex)
-			merged[key] = &indexedItem{Item: episode, ServerIndex: inst.ServerIndex, SortA: seasonNum, SortB: episodeNum}
+			episode["Id"] = a.IDStore.GetOrCreateVirtualID(originalID, inst.ServerID)
+			merged[key] = &indexedItem{Item: episode, ServerID: inst.ServerID, SortA: seasonNum, SortB: episodeNum}
 		}
 	}
 	entries := make([]indexedItem, 0, len(merged))
@@ -293,7 +293,7 @@ func (a *App) handleShowsEpisodes(w http.ResponseWriter, r *http.Request) {
 		preservedID, _ := entry.Item["Id"].(string)
 		delete(entry.Item, "_originalId")
 		delete(entry.Item, "Id")
-		rewriteResponseIDs(entry.Item, entry.ServerIndex, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
+		rewriteResponseIDs(entry.Item, entry.ServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 		entry.Item["Id"] = preservedID
 		items = append(items, entry.Item)
 	}
@@ -301,7 +301,7 @@ func (a *App) handleShowsEpisodes(w http.ResponseWriter, r *http.Request) {
 		preservedID, _ := entry.Item["Id"].(string)
 		delete(entry.Item, "_originalId")
 		delete(entry.Item, "Id")
-		rewriteResponseIDs(entry.Item, entry.ServerIndex, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
+		rewriteResponseIDs(entry.Item, entry.ServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 		entry.Item["Id"] = preservedID
 		items = append(items, entry.Item)
 	}
@@ -331,7 +331,7 @@ func (a *App) handleSearchHints(w http.ResponseWriter, r *http.Request) {
 		if len(items) == 0 {
 			items = asItems(payload)
 		}
-		return &upstreamItemsResult{ServerIndex: c.ServerIndex, Items: items}
+		return &upstreamItemsResult{ServerID: c.ID, Items: items}
 	})
 
 	collected := make([]upstreamItemsResult, 0, len(perClient))
@@ -357,7 +357,7 @@ func (a *App) handleItemImage(w http.ResponseWriter, r *http.Request) {
 	}
 	// Image URLs are embedded by clients and stay reachable without a token, so
 	// the server access check only applies to authenticated requests.
-	if reqCtx := requestContextFrom(r.Context()); reqCtx != nil && reqCtx.ProxyUser != nil && !a.isServerAllowed(reqCtx, resolved.ServerIndex) {
+	if reqCtx := requestContextFrom(r.Context()); reqCtx != nil && reqCtx.ProxyUser != nil && !a.isServerAllowed(reqCtx, resolved.ServerID) {
 		writeJSON(w, http.StatusForbidden, map[string]any{"message": "Access denied"})
 		return
 	}

@@ -4,7 +4,7 @@ import "net/http"
 
 func (a *App) handleAuthenticateByName(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r, a.ConfigStore.Snapshot().Server.TrustProxy)
-	if !a.loginLimiter.checkAndRecord(ip) {
+	if !a.loginLimiter.allowed(ip) {
 		if a.Logger != nil {
 			a.Logger.Warnf("Login rate limited: ip=%s", ip)
 		}
@@ -70,6 +70,7 @@ func (a *App) handleAuthenticateByName(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 3. No match
+	a.loginLimiter.recordFailure(ip)
 	if a.Logger != nil {
 		a.Logger.Warnf("Login failed: user=%q ip=%s client=%q", body.Username, ip, r.Header.Get("X-Emby-Client"))
 	}
@@ -135,7 +136,7 @@ func (a *App) handleUserViews(w http.ResponseWriter, r *http.Request) {
 		var items []map[string]any
 		for _, item := range asItems(payload) {
 			rewritten := deepCloneMap(item)
-			rewriteResponseIDs(rewritten, c.ServerIndex, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
+			rewriteResponseIDs(rewritten, c.ID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 			if multiSource {
 				if name, _ := rewritten["Name"].(string); name != "" {
 					rewritten["Name"] = name + " (" + c.Name + ")"

@@ -44,7 +44,7 @@ func TestStreamRedirectUserID(t *testing.T) {
 			withTempAppConfig(t, config, func(app *App, handler http.Handler) {
 				token := loginToken(t, handler, "secret")
 				legacyProxyUser := app.Auth.ProxyUserID()
-				virtualID := app.IDStore.GetOrCreateVirtualID("media-1", 0)
+				virtualID := app.IDStore.GetOrCreateVirtualID("media-1", app.Upstream.Clients()[0].ID)
 
 				// The client sends its own token and the global user ID it was given.
 				target := fmt.Sprintf(route.path, virtualID) + "?UserId=" + legacyProxyUser + "&api_key=" + token
@@ -117,7 +117,7 @@ func TestSessionForwardsUpstreamUserID(t *testing.T) {
 		aliceToken := loginTokenAs(t, handler, "alice", "alice123")
 		legacyProxyUser := app.Auth.ProxyUserID()
 
-		virtualItem := app.IDStore.GetOrCreateVirtualID("orig-item", 0)
+		virtualItem := app.IDStore.GetOrCreateVirtualID("orig-item", app.Upstream.Clients()[0].ID)
 
 		// The client sends EIO's global user ID in the body, as older responses
 		// taught it to.
@@ -187,7 +187,7 @@ func TestOutboundIdentitySessionStatus(t *testing.T) {
 			token := loginToken(t, handler, "secret")
 			// A mapped item is what routes the event to an upstream at all; without one
 			// the handler answers 204 before any request is prepared.
-			virtualItem := app.IDStore.GetOrCreateVirtualID("orig-item", 0)
+			virtualItem := app.IDStore.GetOrCreateVirtualID("orig-item", app.Upstream.Clients()[0].ID)
 
 			// Drive the upstream into the state the online check cannot rule out: it
 			// reports itself online and carries a token, but its user ID is gone, so
@@ -237,7 +237,7 @@ func TestOutboundIdentitySessionStatus(t *testing.T) {
 
 		withTempAppConfig(t, singleUpstreamConfig(upstream.URL), func(app *App, handler http.Handler) {
 			token := loginToken(t, handler, "secret")
-			virtualItem := app.IDStore.GetOrCreateVirtualID("orig-item", 0)
+			virtualItem := app.IDStore.GetOrCreateVirtualID("orig-item", app.Upstream.Clients()[0].ID)
 			for _, path := range []string{"/Sessions/Playing/Progress", "/Sessions/Playing/Stopped"} {
 				rr := doJSONRequest(t, handler, http.MethodPost, path,
 					map[string]any{"ItemId": virtualItem, "PositionTicks": 5}, token)
@@ -263,19 +263,19 @@ func TestOutboundIdentitySessionStatus(t *testing.T) {
 			adminToken := loginTokenAs(t, handler, "admin", "secret")
 			aliceID := createTestUser(t, handler, adminToken, "alice", "alice123")
 			aliceToken := loginTokenAs(t, handler, "alice", "alice123")
-			virtualItem := app.IDStore.GetOrCreateVirtualID("orig-item", 0)
+			virtualItem := app.IDStore.GetOrCreateVirtualID("orig-item", app.Upstream.Clients()[0].ID)
 
 			if app.PlaybackLimiter == nil {
 				t.Skip("no playback limiter in this build")
 			}
-			app.PlaybackLimiter.TryStart(aliceID, 0, virtualItem, 5)
+			app.PlaybackLimiter.TryStart(aliceID, app.Upstream.Clients()[0].ID, virtualItem, 5)
 			rr := doJSONRequest(t, handler, http.MethodPost, "/Sessions/Playing/Stopped",
 				map[string]any{"ItemId": virtualItem, "PositionTicks": 5}, aliceToken)
 			if rr.Code != http.StatusNoContent {
 				t.Fatalf("stopped status = %d, want 204 (body=%s)", rr.Code, rr.Body.String())
 			}
 			// The slot must be free again: a failed report cannot strand a permit.
-			if !app.PlaybackLimiter.TryStart(aliceID, 0, virtualItem, 1) {
+			if !app.PlaybackLimiter.TryStart(aliceID, app.Upstream.Clients()[0].ID, virtualItem, 1) {
 				t.Fatalf("the playback slot was not released after a failed stop report")
 			}
 		})

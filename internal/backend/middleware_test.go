@@ -2,6 +2,7 @@ package backend
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -78,11 +79,11 @@ func TestAdminAPIAuditRecordsNonAdminActor(t *testing.T) {
 	withTempApp(t, func(app *App, handler http.Handler) {
 		adminToken := loginToken(t, handler, "secret")
 		rr := doJSONRequest(t, handler, http.MethodPost, "/admin/api/users",
-			map[string]any{"username": "bob", "password": "bob123"}, adminToken)
+			map[string]any{"username": "bob", "password": "bob12345"}, adminToken)
 		if rr.Code != http.StatusCreated {
 			t.Fatalf("create user: status=%d body=%s", rr.Code, rr.Body.String())
 		}
-		userToken := loginTokenAs(t, handler, "bob", "bob123")
+		userToken := loginTokenAs(t, handler, "bob", "bob12345")
 		before := len(adminAuditLines(app))
 
 		rr = doJSONRequest(t, handler, http.MethodPost, "/admin/api/users",
@@ -97,6 +98,33 @@ func TestAdminAPIAuditRecordsNonAdminActor(t *testing.T) {
 		line := lines[len(lines)-1]
 		if !strings.Contains(line, `admin "bob (role:user)":`) {
 			t.Fatalf("audit line should name the account and its role: %q", line)
+		}
+	})
+}
+
+// TestCredentialEndpointHasNoCrossOriginGrant keeps the login endpoint out of reach of
+// a page on another origin. The rate limiter counts real failures only, but a form post
+// needs no preflight and no CORS grant to cause one, so the endpoint would still be a way
+// to lock a visitor out of their own server. Denying the grant leaves the JSON body type,
+// which does require a preflight, as the only way in.
+func TestCredentialEndpointHasNoCrossOriginGrant(t *testing.T) {
+	withTempApp(t, func(app *App, handler http.Handler) {
+		for _, target := range []string{"/Users/AuthenticateByName", "/emby/Users/AuthenticateByName"} {
+			req := httptest.NewRequest(http.MethodPost, target, strings.NewReader(`{"Username":"admin","Pw":"wrong"}`))
+			req.Header.Set("Origin", "https://evil.example")
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+				t.Fatalf("%s: Access-Control-Allow-Origin = %q, want it unset", target, got)
+			}
+		}
+
+		// Every other Emby API path keeps its grant: the clients rely on it.
+		req := httptest.NewRequest(http.MethodGet, "/System/Info/Public", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+			t.Fatalf("Access-Control-Allow-Origin = %q, want *", got)
 		}
 	})
 }

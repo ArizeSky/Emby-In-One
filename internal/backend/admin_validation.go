@@ -133,9 +133,9 @@ func validateUpstreamDraft(draft UpstreamConfig) error {
 	if err := validateHTTPURL(draft.URL); err != nil {
 		return err
 	}
-	if draft.StreamingURL != "" {
-		if err := validateHTTPURL(draft.StreamingURL); err != nil {
-			return err
+	for _, streamingURL := range draft.StreamingURLs {
+		if err := validateHTTPURL(streamingURL); err != nil {
+			return &httpError{message: "推流地址 " + streamingURL + " 无效：" + err.Error()}
 		}
 	}
 	hasAPIKey := strings.TrimSpace(draft.APIKey) != ""
@@ -153,6 +153,26 @@ type upstreamValidationResult struct {
 
 const passthroughDeferredWarning = "透传模式上游已保存，但当前没有可用的客户端身份信息，登录将稍后自动重试"
 
+// redirectCredentialWarning flags the direct-playback mode: the 302 the proxy returns
+// carries the shared upstream account's access token in its query string, so every user
+// who can start playback can read it and reach the upstream directly, outside the access
+// rules, concurrency limit and identity mapping this proxy exists to apply.
+const redirectCredentialWarning = "直连播放模式会把上游账号凭据写入跳转链接，任何能播放的用户都可从中提取凭据并绕过本代理直连上游（相当于上游管理员权限）。请为该上游使用专用的受限账号，或改用代理模式"
+
+// withRedirectWarning attaches the direct-playback warning to a validation result, keeping
+// any warning already there.
+func withRedirectWarning(draft UpstreamConfig, result upstreamValidationResult) upstreamValidationResult {
+	if draft.PlaybackMode != "redirect" {
+		return result
+	}
+	if result.Warning == "" {
+		result.Warning = redirectCredentialWarning
+		return result
+	}
+	result.Warning += "；" + redirectCredentialWarning
+	return result
+}
+
 func (a *App) validateUpstreamConnectivity(cfg Config, draft UpstreamConfig, index int, reqCtx *RequestContext) (upstreamValidationResult, error) {
 	client := newUpstreamClient(cfg, draft, index, a.Logger)
 	if draft.SpoofClient == "passthrough" && strings.TrimSpace(draft.APIKey) == "" {
@@ -161,17 +181,17 @@ func (a *App) validateUpstreamConnectivity(cfg Config, draft UpstreamConfig, ind
 			if a.Logger != nil {
 				a.Logger.Infof("[%s] Passthrough admin validation deferred — no captured client identity yet", draft.Name)
 			}
-			return upstreamValidationResult{Online: false, Warning: passthroughDeferredWarning}, nil
+			return withRedirectWarning(draft, upstreamValidationResult{Online: false, Warning: passthroughDeferredWarning}), nil
 		}
 	}
 	client.Login(context.Background(), reqCtx, a.Identity)
 	snapshot := client.snapshot()
 	if snapshot.Online && snapshot.AccessToken != "" && snapshot.UserID != "" {
-		return upstreamValidationResult{Online: true}, nil
+		return withRedirectWarning(draft, upstreamValidationResult{Online: true}), nil
 	}
 	if draft.SpoofClient == "passthrough" {
 		if shouldDeferPassthroughValidation(snapshot.LastError) {
-			return upstreamValidationResult{Online: false, Warning: passthroughDeferredWarning}, nil
+			return withRedirectWarning(draft, upstreamValidationResult{Online: false, Warning: passthroughDeferredWarning}), nil
 		}
 	}
 	if snapshot.LastError != "" {
@@ -296,6 +316,23 @@ func validateTimeouts(timeouts TimeoutsConfig) error {
 	return nil
 }
 
+// minPasswordLength is the shortest password the panel and the admin API accept. The
+// stored hash is scrypt, but the credential is what a person types once and then leaves in
+// a client, so length is the only part of its strength anything here can check.
+const minPasswordLength = 8
+
+// maxPasswordLength bounds the work a single login request can ask for. scrypt cost grows
+// with the input length, and an unauthenticated caller chooses it.
+const maxPasswordLength = 128
+
+func validatePassword(field, password string) error {
+	if len(password) < minPasswordLength || len(password) > maxPasswordLength {
+		return &httpError{message: field + " 长度必须介于 " +
+			intToString(minPasswordLength) + " 和 " + intToString(maxPasswordLength) + " 之间"}
+	}
+	return nil
+}
+
 func validateRequiredLength(field, value string, minLen, maxLen int) error {
 	if len(value) < minLen || len(value) > maxLen {
 		return &httpError{message: field + " length is invalid"}
@@ -326,6 +363,40 @@ type httpError struct {
 }
 
 func (e *httpError) Error() string { return e.message }
+
+// normalizeStreamingURLInput flattens panel input into the ordered list. The
+// panel edits one textarea; lines and commas both separate entries, and
+// surrounding whitespace or slashes on each entry are noise.
+func normalizeStreamingURLInput(raw []string) []string {
+	out := make([]string, 0, len(raw))
+	for _, entry := range raw {
+		for _, piece := range strings.Split(entry, "\n") {
+			for _, item := range strings.Split(piece, ",") {
+				item = strings.TrimSpace(item)
+				if item != "" {
+					out = append(out, item)
+				}
+			}
+		}
+	}
+	return out
+}
+
+// applyStreamingURLsInput writes the streaming-base list from panel input. A
+// present streamingUrls field is authoritative (an empty array clears the
+// list); the legacy streamingUrl field is honoured only when the list field is
+// absent, so old panel builds keep working.
+func applyStreamingURLsInput(dst *UpstreamConfig, body adminUpstreamInput) {
+	if body.StreamingURLs != nil {
+		dst.StreamingURLs = normalizeStreamingURLInput(*body.StreamingURLs)
+		dst.StreamingURL = ""
+		return
+	}
+	if body.StreamingURL != nil {
+		dst.StreamingURL = strings.TrimSpace(*body.StreamingURL)
+		dst.StreamingURLs = nil
+	}
+}
 
 func applyAdminUpstreamInput(dst *UpstreamConfig, body adminUpstreamInput, isCreate bool) {
 	if isCreate {
@@ -359,9 +430,7 @@ func applyAdminUpstreamInput(dst *UpstreamConfig, body adminUpstreamInput, isCre
 		if body.PriorityMetadata != nil {
 			dst.PriorityMetadata = *body.PriorityMetadata
 		}
-		if body.StreamingURL != nil {
-			dst.StreamingURL = strings.TrimSpace(*body.StreamingURL)
-		}
+		applyStreamingURLsInput(dst, body)
 		if body.CustomUserAgent != nil {
 			dst.CustomUserAgent = strings.TrimSpace(*body.CustomUserAgent)
 		}
@@ -416,9 +485,7 @@ func applyAdminUpstreamInput(dst *UpstreamConfig, body adminUpstreamInput, isCre
 	if body.PriorityMetadata != nil {
 		dst.PriorityMetadata = *body.PriorityMetadata
 	}
-	if body.StreamingURL != nil {
-		dst.StreamingURL = strings.TrimSpace(*body.StreamingURL)
-	}
+	applyStreamingURLsInput(dst, body)
 	if body.CustomUserAgent != nil {
 		dst.CustomUserAgent = strings.TrimSpace(*body.CustomUserAgent)
 	}

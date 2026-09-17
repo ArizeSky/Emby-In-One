@@ -48,8 +48,8 @@ func TestUserItemByIDMergesMediaSourcesWithoutOrphanMappings(t *testing.T) {
 		token := loginToken(t, handler, "secret")
 
 		// Create virtual ID and associate additional instance
-		virtualID := app.IDStore.GetOrCreateVirtualID("orig-1", 0)
-		app.IDStore.AssociateAdditionalInstance(virtualID, "orig-2", 1)
+		virtualID := app.IDStore.GetOrCreateVirtualID("orig-1", app.Upstream.Clients()[0].ID)
+		app.IDStore.AssociateAdditionalInstance(virtualID, "orig-2", app.Upstream.Clients()[1].ID)
 
 		// Count mappings before request
 		statsBefore := app.IDStore.Stats()
@@ -99,7 +99,7 @@ func TestVideoProxyRedirectMode(t *testing.T) {
 
 	withTempAppConfig(t, config, func(app *App, handler http.Handler) {
 		token := loginToken(t, handler, "secret")
-		virtualID := app.IDStore.GetOrCreateVirtualID("video-1", 0)
+		virtualID := app.IDStore.GetOrCreateVirtualID("video-1", app.Upstream.Clients()[0].ID)
 
 		req := httptest.NewRequest(http.MethodGet, "/Videos/"+virtualID+"/stream.mp4", nil)
 		req.Header.Set("X-Emby-Token", token)
@@ -145,8 +145,8 @@ func TestSessionPlayingTranslatesVirtualIDs(t *testing.T) {
 
 	withTempAppConfig(t, config, func(app *App, handler http.Handler) {
 		token := loginToken(t, handler, "secret")
-		virtualItemID := app.IDStore.GetOrCreateVirtualID("real-item-1", 0)
-		virtualMediaID := app.IDStore.GetOrCreateVirtualID("real-ms-1", 0)
+		virtualItemID := app.IDStore.GetOrCreateVirtualID("real-item-1", app.Upstream.Clients()[0].ID)
+		virtualMediaID := app.IDStore.GetOrCreateVirtualID("real-ms-1", app.Upstream.Clients()[0].ID)
 
 		body := map[string]any{
 			"ItemId":        virtualItemID,
@@ -189,8 +189,8 @@ func TestSubtitlePathResolvesMediaSourceID(t *testing.T) {
 
 	withTempAppConfig(t, config, func(app *App, handler http.Handler) {
 		token := loginToken(t, handler, "secret")
-		virtualItemID := app.IDStore.GetOrCreateVirtualID("real-video", 0)
-		virtualMSID := app.IDStore.GetOrCreateVirtualID("real-mediasource", 0)
+		virtualItemID := app.IDStore.GetOrCreateVirtualID("real-video", app.Upstream.Clients()[0].ID)
+		virtualMSID := app.IDStore.GetOrCreateVirtualID("real-mediasource", app.Upstream.Clients()[0].ID)
 
 		req := httptest.NewRequest(http.MethodGet, "/Videos/"+virtualItemID+"/"+virtualMSID+"/Subtitles/0/Stream.srt", nil)
 		req.Header.Set("X-Emby-Token", token)

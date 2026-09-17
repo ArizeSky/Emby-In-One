@@ -45,8 +45,8 @@ func TestShowsSeasonsMergeAndPreserveAdditionalInstances(t *testing.T) {
 
 	withTempAppConfig(t, config, func(app *App, handler http.Handler) {
 		token := loginToken(t, handler, "secret")
-		virtualSeries := app.IDStore.GetOrCreateVirtualID("series-a", 0)
-		app.IDStore.AssociateAdditionalInstance(virtualSeries, "series-b", 1)
+		virtualSeries := app.IDStore.GetOrCreateVirtualID("series-a", app.Upstream.Clients()[0].ID)
+		app.IDStore.AssociateAdditionalInstance(virtualSeries, "series-b", app.Upstream.Clients()[1].ID)
 
 		rr := doJSONRequest(t, handler, http.MethodGet, "/Shows/"+virtualSeries+"/Seasons", nil, token)
 		if rr.Code != http.StatusOK {
@@ -111,10 +111,10 @@ func TestShowsEpisodesTranslateSeasonIDAndDeduplicate(t *testing.T) {
 
 	withTempAppConfig(t, config, func(app *App, handler http.Handler) {
 		token := loginToken(t, handler, "secret")
-		virtualSeries := app.IDStore.GetOrCreateVirtualID("series-a", 0)
-		app.IDStore.AssociateAdditionalInstance(virtualSeries, "series-b", 1)
-		virtualSeason := app.IDStore.GetOrCreateVirtualID("season-a1", 0)
-		app.IDStore.AssociateAdditionalInstance(virtualSeason, "season-b1", 1)
+		virtualSeries := app.IDStore.GetOrCreateVirtualID("series-a", app.Upstream.Clients()[0].ID)
+		app.IDStore.AssociateAdditionalInstance(virtualSeries, "series-b", app.Upstream.Clients()[1].ID)
+		virtualSeason := app.IDStore.GetOrCreateVirtualID("season-a1", app.Upstream.Clients()[0].ID)
+		app.IDStore.AssociateAdditionalInstance(virtualSeason, "season-b1", app.Upstream.Clients()[1].ID)
 
 		rr := doJSONRequest(t, handler, http.MethodGet, "/Shows/"+virtualSeries+"/Episodes?SeasonId="+virtualSeason, nil, token)
 		if rr.Code != http.StatusOK {
@@ -223,7 +223,7 @@ func TestImageProxyStreamsBytesAndSupportsEmbyPrefix(t *testing.T) {
 
 	withTempAppConfig(t, config, func(app *App, handler http.Handler) {
 		token := loginToken(t, handler, "secret")
-		virtualItem := app.IDStore.GetOrCreateVirtualID("item-a", 0)
+		virtualItem := app.IDStore.GetOrCreateVirtualID("item-a", app.Upstream.Clients()[0].ID)
 
 		req := httptest.NewRequest(http.MethodGet, "/emby/Items/"+virtualItem+"/Images/Primary/0?api_key="+token, nil)
 		rr := httptest.NewRecorder()

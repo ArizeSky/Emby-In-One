@@ -10,8 +10,8 @@
 
 [演示站点](https://emby.cothx.eu.cc/)
 Emby连接地址：https://emby.cothx.eu.cc/
-账号：admin
-密码：5T5xF4oMxcnrcCPA
+
+> **演示站账号不再随仓库公开。** 出于安全考虑，本仓库不提供明文账号与密码；如需体验，请通过 GitHub [Issues](https://github.com/ArizeSky/Emby-In-One/issues) 联系维护者获取**定期轮换**的临时账号。
 
 ## 预览
 

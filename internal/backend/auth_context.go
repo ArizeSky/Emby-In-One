@@ -80,13 +80,13 @@ func (a *App) allowedClients(reqCtx *RequestContext) []*UpstreamClient {
 	if reqCtx.ProxyUser.AllowedServers == nil {
 		return all
 	}
-	allowed := make(map[int]bool, len(reqCtx.ProxyUser.AllowedServers))
-	for _, idx := range reqCtx.ProxyUser.AllowedServers {
-		allowed[idx] = true
+	allowed := make(map[string]bool, len(reqCtx.ProxyUser.AllowedServers))
+	for _, id := range reqCtx.ProxyUser.AllowedServers {
+		allowed[id] = true
 	}
 	filtered := make([]*UpstreamClient, 0, len(all))
 	for _, c := range all {
-		if allowed[c.ServerIndex] {
+		if allowed[c.ID] {
 			filtered = append(filtered, c)
 		}
 	}
@@ -94,16 +94,16 @@ func (a *App) allowedClients(reqCtx *RequestContext) []*UpstreamClient {
 }
 
 // isServerAllowed checks whether the current user is allowed to access the
-// upstream server at the given index. Returns true for admin users (nil AllowedServers).
-func (a *App) isServerAllowed(reqCtx *RequestContext, serverIndex int) bool {
+// upstream server with the given ID. Returns true for admin users (nil AllowedServers).
+func (a *App) isServerAllowed(reqCtx *RequestContext, serverID string) bool {
 	if reqCtx == nil || reqCtx.ProxyUser == nil {
 		return false
 	}
 	if reqCtx.ProxyUser.AllowedServers == nil {
 		return true
 	}
-	for _, idx := range reqCtx.ProxyUser.AllowedServers {
-		if idx == serverIndex {
+	for _, id := range reqCtx.ProxyUser.AllowedServers {
+		if id == serverID {
 			return true
 		}
 	}
@@ -114,7 +114,7 @@ func (a *App) isServerAllowed(reqCtx *RequestContext, serverIndex int) bool {
 // user is not allowed to access the upstream server that owns resolved.
 // A nil resolution returns true so each caller keeps its own not-found response.
 func (a *App) requireServerAccess(w http.ResponseWriter, r *http.Request, resolved *routeResolution) bool {
-	if resolved == nil || a.isServerAllowed(requestContextFrom(r.Context()), resolved.ServerIndex) {
+	if resolved == nil || a.isServerAllowed(requestContextFrom(r.Context()), resolved.ServerID) {
 		return true
 	}
 	writeJSON(w, http.StatusForbidden, map[string]any{"message": "Access denied"})

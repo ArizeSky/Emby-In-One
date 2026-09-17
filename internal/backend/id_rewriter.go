@@ -33,11 +33,11 @@ var simpleIDFields = map[string]struct{}{
 	"StreamId":              {},
 }
 
-func rewriteResponseIDs(value any, serverIndex int, idStore *IDStore, proxyServerID, proxyUserID string) any {
+func rewriteResponseIDs(value any, serverID string, idStore *IDStore, proxyServerID, proxyUserID string) any {
 	switch typed := value.(type) {
 	case []any:
 		for i := range typed {
-			typed[i] = rewriteResponseIDs(typed[i], serverIndex, idStore, proxyServerID, proxyUserID)
+			typed[i] = rewriteResponseIDs(typed[i], serverID, idStore, proxyServerID, proxyUserID)
 		}
 		return typed
 	case map[string]any:
@@ -53,13 +53,13 @@ func rewriteResponseIDs(value any, serverIndex int, idStore *IDStore, proxyServe
 					if proxyUserID != "" {
 						typed[key] = proxyUserID
 					} else if text != "" {
-						typed[key] = idStore.GetOrCreateVirtualID(text, serverIndex)
+						typed[key] = idStore.GetOrCreateVirtualID(text, serverID)
 					}
 				}
 				continue
 			case "SessionId", "PlaySessionId":
 				if text, ok := raw.(string); ok && text != "" {
-					typed[key] = idStore.GetOrCreateVirtualID(text, serverIndex)
+					typed[key] = idStore.GetOrCreateVirtualID(text, serverID)
 				}
 				continue
 			case "ImageTags", "BackdropImageTags", "ParentBackdropImageTags", "ImageBlurHashes":
@@ -67,14 +67,17 @@ func rewriteResponseIDs(value any, serverIndex int, idStore *IDStore, proxyServe
 			case "UserData":
 				if block, ok := raw.(map[string]any); ok {
 					if itemID, ok := block["ItemId"].(string); ok && itemID != "" {
-						block["ItemId"] = idStore.GetOrCreateVirtualID(itemID, serverIndex)
+						block["ItemId"] = idStore.GetOrCreateVirtualID(itemID, serverID)
 					}
 				}
+				// The UserData block carries a single ID field (ItemId); recursing into it would
+				// rewrite the virtual ID we just minted a second time (Node reference does the same).
+				continue
 			}
 
 			if _, ok := simpleIDFields[key]; ok {
 				if text, ok := raw.(string); ok && text != "" && text != "0" {
-					typed[key] = idStore.GetOrCreateVirtualID(text, serverIndex)
+					typed[key] = idStore.GetOrCreateVirtualID(text, serverID)
 				}
 				continue
 			}
@@ -83,14 +86,14 @@ func rewriteResponseIDs(value any, serverIndex int, idStore *IDStore, proxyServe
 				if block, ok := raw.(map[string]any); ok {
 					rewritten := map[string]any{}
 					for oldKey, blockValue := range block {
-						rewritten[idStore.GetOrCreateVirtualID(oldKey, serverIndex)] = blockValue
+						rewritten[idStore.GetOrCreateVirtualID(oldKey, serverID)] = blockValue
 					}
 					typed[key] = rewritten
 				}
 				continue
 			}
 
-			typed[key] = rewriteResponseIDs(raw, serverIndex, idStore, proxyServerID, proxyUserID)
+			typed[key] = rewriteResponseIDs(raw, serverID, idStore, proxyServerID, proxyUserID)
 		}
 		return typed
 	default:
@@ -98,12 +101,12 @@ func rewriteResponseIDs(value any, serverIndex int, idStore *IDStore, proxyServe
 	}
 }
 
-func rewriteIDQueryValues(values map[string][]string, idStore *IDStore) (map[string][]string, int, bool) {
+func rewriteIDQueryValues(values map[string][]string, idStore *IDStore) (map[string][]string, string, bool) {
 	if values == nil {
-		return map[string][]string{}, 0, false
+		return map[string][]string{}, "", false
 	}
 	out := map[string][]string{}
-	serverIndex := 0
+	serverID := ""
 	serverDetected := false
 	for key, rawValues := range values {
 		cloned := append([]string(nil), rawValues...)
@@ -112,7 +115,7 @@ func rewriteIDQueryValues(values map[string][]string, idStore *IDStore) (map[str
 				if resolved := idStore.ResolveVirtualID(raw); resolved != nil {
 					cloned[i] = resolved.OriginalID
 					if !serverDetected {
-						serverIndex = resolved.ServerIndex
+						serverID = resolved.ServerID
 						serverDetected = true
 					}
 				}
@@ -120,5 +123,5 @@ func rewriteIDQueryValues(values map[string][]string, idStore *IDStore) (map[str
 		}
 		out[key] = cloned
 	}
-	return out, serverIndex, serverDetected
+	return out, serverID, serverDetected
 }

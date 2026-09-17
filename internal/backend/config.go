@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -56,6 +55,7 @@ type ProxyConfig struct {
 }
 
 type UpstreamConfig struct {
+	ID                  string
 	Name                string
 	URL                 string
 	Username            string
@@ -66,7 +66,8 @@ type UpstreamConfig struct {
 	FollowRedirects     bool
 	ProxyID             string
 	PriorityMetadata    bool
-	StreamingURL        string
+	StreamingURL        string   // first entry of StreamingURLs; kept as the single-value view
+	StreamingURLs       []string // ordered stream bases: [0] primary, [1:] fallbacks
 	CustomUserAgent     string
 	CustomClient        string
 	CustomClientVersion string
@@ -113,8 +114,10 @@ func LoadConfigStore() (*ConfigStore, error) {
 	if cfg.Server.Name == "" {
 		cfg.Server.Name = "Emby In One"
 	}
+	dirty := false
 	if cfg.Server.ID == "" {
 		cfg.Server.ID = randomHex(16)
+		dirty = true
 	}
 	if cfg.Playback.Mode == "" {
 		cfg.Playback.Mode = "proxy"
@@ -151,18 +154,44 @@ func LoadConfigStore() (*ConfigStore, error) {
 	if cfg.Admin.Username == "" || cfg.Admin.Password == "" {
 		return nil, errors.New("config: admin.username and admin.password are required")
 	}
+	seenIDs := make(map[string]bool)
 	for i := range cfg.Upstream {
-		normalizeUpstream(&cfg.Upstream[i], i, cfg)
+		u := &cfg.Upstream[i]
+		if u.ID == "" || seenIDs[u.ID] {
+			dirty = true
+			u.ID = ""
+		}
+		normalizeUpstream(u, i, cfg)
+		seenIDs[u.ID] = true
 	}
 	if cfg.DataDir == "" {
 		cfg.DataDir = defaultDataDir()
 	}
-	return &ConfigStore{config: cfg}, nil
+	store := &ConfigStore{config: cfg}
+	if dirty {
+		_ = store.Save()
+	}
+	return store, nil
 }
 
 func normalizeUpstream(upstream *UpstreamConfig, index int, cfg *Config) {
+	if upstream.ID == "" {
+		taken := make(map[string]bool)
+		for i, u := range cfg.Upstream {
+			if i != index && u.ID != "" {
+				taken[u.ID] = true
+			}
+		}
+		for {
+			id := randomHex(8)
+			if !taken[id] {
+				upstream.ID = id
+				break
+			}
+		}
+	}
 	upstream.URL = strings.TrimRight(upstream.URL, "/")
-	upstream.StreamingURL = strings.TrimRight(upstream.StreamingURL, "/")
+	normalizeStreamingURLs(upstream)
 	if upstream.Name == "" {
 		upstream.Name = fmt.Sprintf("Server %d", index+1)
 	}
@@ -193,12 +222,42 @@ func normalizeUpstream(upstream *UpstreamConfig, index int, cfg *Config) {
 	}
 }
 
+// normalizeStreamingURLs canonicalizes the ordered stream-base list: trims and
+// drops empties, folds the legacy single streamingUrl key in, removes
+// duplicates, and keeps StreamingURL pointing at the first entry (or "" when
+// the list is empty, which means "same as the API address").
+func normalizeStreamingURLs(upstream *UpstreamConfig) {
+	merged := make([]string, 0, len(upstream.StreamingURLs)+1)
+	merged = append(merged, upstream.StreamingURLs...)
+	if upstream.StreamingURL != "" {
+		merged = append(merged, upstream.StreamingURL)
+	}
+	seen := make(map[string]bool, len(merged))
+	upstream.StreamingURLs = upstream.StreamingURLs[:0]
+	for _, raw := range merged {
+		trimmed := strings.TrimRight(strings.TrimSpace(raw), "/")
+		if trimmed == "" || seen[trimmed] {
+			continue
+		}
+		seen[trimmed] = true
+		upstream.StreamingURLs = append(upstream.StreamingURLs, trimmed)
+	}
+	if len(upstream.StreamingURLs) > 0 {
+		upstream.StreamingURL = upstream.StreamingURLs[0]
+	} else {
+		upstream.StreamingURL = ""
+	}
+}
+
 func (s *ConfigStore) Snapshot() Config {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	clone := *s.config
 	clone.Proxies = append([]ProxyConfig(nil), s.config.Proxies...)
 	clone.Upstream = append([]UpstreamConfig(nil), s.config.Upstream...)
+	for i := range clone.Upstream {
+		clone.Upstream[i].StreamingURLs = append([]string(nil), s.config.Upstream[i].StreamingURLs...)
+	}
 	return clone
 }
 
@@ -214,6 +273,9 @@ func (s *ConfigStore) Replace(cfg Config) {
 	clone := cfg
 	clone.Proxies = append([]ProxyConfig(nil), cfg.Proxies...)
 	clone.Upstream = append([]UpstreamConfig(nil), cfg.Upstream...)
+	for i := range clone.Upstream {
+		clone.Upstream[i].StreamingURLs = append([]string(nil), cfg.Upstream[i].StreamingURLs...)
+	}
 	s.config = &clone
 }
 
@@ -225,56 +287,7 @@ func (s *ConfigStore) Save() error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	return writeFileAtomically(path, []byte(content), 0o600)
-}
-
-func writeFileAtomically(path string, data []byte, mode os.FileMode) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	tmpFile, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmpFile.Name()
-	cleanup := func() {
-		_ = tmpFile.Close()
-		_ = os.Remove(tmpPath)
-	}
-	if runtime.GOOS != "windows" {
-		_ = tmpFile.Chmod(mode)
-	}
-	if _, err := tmpFile.Write(data); err != nil {
-		cleanup()
-		return err
-	}
-	if err := tmpFile.Sync(); err != nil {
-		cleanup()
-		return err
-	}
-	if err := tmpFile.Close(); err != nil {
-		_ = os.Remove(tmpPath)
-		return err
-	}
-	if err := replaceFile(tmpPath, path); err != nil {
-		_ = os.Remove(tmpPath)
-		return err
-	}
-	if runtime.GOOS != "windows" {
-		_ = os.Chmod(path, mode)
-	}
-	return nil
-}
-
-func replaceFile(tmpPath, path string) error {
-	if err := os.Rename(tmpPath, path); err == nil {
-		return nil
-	} else if runtime.GOOS != "windows" {
-		return err
-	}
-	_ = os.Remove(path)
-	return os.Rename(tmpPath, path)
+	return WriteFileAtomic(path, []byte(content), 0o600)
 }
 
 func parseConfigYAML(raw string) (*Config, error) {
@@ -401,6 +414,35 @@ func parseBoolValue(value string) bool {
 	return value == "true" || value == "yes" || value == "1"
 }
 
+// parseStringListValue parses a YAML flow sequence of scalars, e.g.
+// ["https://a", 'https://b']. It exists because the config parser is line
+// based and cannot read a block list nested inside an upstream entry; a flow
+// sequence is a single line and survives it. A bare scalar (no brackets)
+// yields a one-element list so hand-edited files can write either shape.
+func parseStringListValue(value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	if !strings.HasPrefix(value, "[") || !strings.HasSuffix(value, "]") {
+		return []string{parseStringValue(value)}
+	}
+	inner := strings.TrimSpace(value[1 : len(value)-1])
+	if inner == "" {
+		return nil
+	}
+	items := strings.Split(inner, ",")
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		out = append(out, parseStringValue(item))
+	}
+	return out
+}
+
 func parseIntValue(value string) int {
 	n, _ := strconv.Atoi(parseStringValue(value))
 	return n
@@ -467,6 +509,8 @@ func assignListField(cfg *Config, listName string, index int, key, value string)
 	case "upstream":
 		upstream := &cfg.Upstream[index]
 		switch key {
+		case "id":
+			upstream.ID = parseStringValue(value)
 		case "name":
 			upstream.Name = parseStringValue(value)
 		case "url":
@@ -489,6 +533,8 @@ func assignListField(cfg *Config, listName string, index int, key, value string)
 			upstream.PriorityMetadata = parseBoolValue(value)
 		case "streamingUrl":
 			upstream.StreamingURL = parseStringValue(value)
+		case "streamingUrls":
+			upstream.StreamingURLs = append(upstream.StreamingURLs, parseStringListValue(value)...)
 		case "customUserAgent":
 			upstream.CustomUserAgent = parseStringValue(value)
 		case "customClient":
@@ -509,6 +555,16 @@ func yamlStr(s string) string {
 	// Use single-quoted YAML scalar; escape internal single quotes by doubling them.
 	// Values containing newlines are not supported: the parser reads line by line.
 	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+}
+
+// joinQuoted renders a flow-sequence body: 'a', 'b'. Used only by
+// renderConfigYAML for streamingUrls.
+func joinQuoted(items []string) string {
+	parts := make([]string, 0, len(items))
+	for _, item := range items {
+		parts = append(parts, yamlStr(item))
+	}
+	return strings.Join(parts, ", ")
 }
 
 func renderConfigYAML(cfg *Config) string {
@@ -556,7 +612,12 @@ func renderConfigYAML(cfg *Config) string {
 	} else {
 		b.WriteString("upstream:\n")
 		for _, upstream := range cfg.Upstream {
-			fmt.Fprintf(&b, "  - name: %s\n", yamlStr(upstream.Name))
+			if upstream.ID != "" {
+				fmt.Fprintf(&b, "  - id: %s\n", yamlStr(upstream.ID))
+				fmt.Fprintf(&b, "    name: %s\n", yamlStr(upstream.Name))
+			} else {
+				fmt.Fprintf(&b, "  - name: %s\n", yamlStr(upstream.Name))
+			}
 			fmt.Fprintf(&b, "    url: %s\n", yamlStr(upstream.URL))
 			if upstream.APIKey != "" {
 				fmt.Fprintf(&b, "    apiKey: %s\n", yamlStr(upstream.APIKey))
@@ -570,8 +631,10 @@ func renderConfigYAML(cfg *Config) string {
 			if upstream.SpoofClient != "" && upstream.SpoofClient != "none" {
 				fmt.Fprintf(&b, "    spoofClient: %s\n", yamlStr(upstream.SpoofClient))
 			}
-			if upstream.StreamingURL != "" {
-				fmt.Fprintf(&b, "    streamingUrl: %s\n", yamlStr(upstream.StreamingURL))
+			if len(upstream.StreamingURLs) > 1 {
+				fmt.Fprintf(&b, "    streamingUrls: [%s]\n", joinQuoted(upstream.StreamingURLs))
+			} else if len(upstream.StreamingURLs) == 1 {
+				fmt.Fprintf(&b, "    streamingUrl: %s\n", yamlStr(upstream.StreamingURLs[0]))
 			}
 			if upstream.SpoofClient == "custom" {
 				if upstream.CustomUserAgent != "" {

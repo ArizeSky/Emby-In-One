@@ -38,7 +38,7 @@ func TestStreamHLSIdentityBaseURL(t *testing.T) {
 	withTempAppConfig(t, singleUpstreamConfig(upstream.URL), func(app *App, handler http.Handler) {
 		token := loginToken(t, handler, "secret")
 		legacyProxyUser := app.Auth.ProxyUserID()
-		virtualID := app.IDStore.GetOrCreateVirtualID("hls-item", 0)
+		virtualID := app.IDStore.GetOrCreateVirtualID("hls-item", app.Upstream.Clients()[0].ID)
 
 		target := "/Videos/" + virtualID + "/master.m3u8?UserId=" + legacyProxyUser + "&api_key=" + token
 		req := httptest.NewRequest(http.MethodGet, target, nil)
@@ -149,7 +149,7 @@ func TestStreamRedirectPreparationFailureStatus(t *testing.T) {
 	withTempAppConfig(t, config, func(app *App, handler http.Handler) {
 		token := loginToken(t, handler, "secret")
 		legacyProxyUser := app.Auth.ProxyUserID()
-		virtualID := app.IDStore.GetOrCreateVirtualID("media-1", 0)
+		virtualID := app.IDStore.GetOrCreateVirtualID("media-1", app.Upstream.Clients()[0].ID)
 
 		client := app.Upstream.GetClient(0)
 		client.mu.Lock()

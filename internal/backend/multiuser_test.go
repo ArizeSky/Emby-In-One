@@ -234,13 +234,13 @@ func TestMultiUserContentFiltering(t *testing.T) {
 
 		// Create user with access only to server 0 (A)
 		rr := doAuthJSON(t, handler, http.MethodPost, "/admin/api/users",
-			map[string]any{"username": "bob", "password": "bob123", "allowedServers": []int{0}}, adminToken)
+			map[string]any{"username": "bob", "password": "bob12345", "allowedServers": []string{app.Upstream.Clients()[0].ID}}, adminToken)
 		if rr.Code != http.StatusCreated {
 			t.Fatalf("create user: status=%d body=%s", rr.Code, rr.Body.String())
 		}
 
 		// Login as bob
-		userToken := loginTokenAs(t, handler, "bob", "bob123")
+		userToken := loginTokenAs(t, handler, "bob", "bob12345")
 
 		// Admin sees views from both servers
 		rr = doAuthJSON(t, handler, http.MethodGet, "/Users/"+app.Auth.ProxyUserID()+"/Views", nil, adminToken)
@@ -283,10 +283,10 @@ func TestUsersPublicShowsAllEnabledUsers(t *testing.T) {
 
 		// Create two users, one enabled, one disabled
 		doAuthJSON(t, handler, http.MethodPost, "/admin/api/users",
-			map[string]any{"username": "carol", "password": "carol1"}, adminToken)
+			map[string]any{"username": "carol", "password": "carol1234"}, adminToken)
 
 		rr := doAuthJSON(t, handler, http.MethodPost, "/admin/api/users",
-			map[string]any{"username": "dave", "password": "dave1"}, adminToken)
+			map[string]any{"username": "dave", "password": "dave12345"}, adminToken)
 		var dave map[string]any
 		_ = json.Unmarshal(rr.Body.Bytes(), &dave)
 		daveID, _ := dave["id"].(string)
@@ -333,21 +333,21 @@ func TestMultiUserDuplicateUsernameRejected(t *testing.T) {
 
 		// Create first user
 		rr := doAuthJSON(t, handler, http.MethodPost, "/admin/api/users",
-			map[string]any{"username": "eve", "password": "eve1"}, adminToken)
+			map[string]any{"username": "eve", "password": "eve12345"}, adminToken)
 		if rr.Code != http.StatusCreated {
 			t.Fatalf("status=%d", rr.Code)
 		}
 
 		// Try creating duplicate
 		rr = doAuthJSON(t, handler, http.MethodPost, "/admin/api/users",
-			map[string]any{"username": "eve", "password": "eve2"}, adminToken)
+			map[string]any{"username": "eve", "password": "eve23456"}, adminToken)
 		if rr.Code != http.StatusConflict {
 			t.Fatalf("duplicate create: status=%d, want 409", rr.Code)
 		}
 
 		// Try creating with admin username
 		rr = doAuthJSON(t, handler, http.MethodPost, "/admin/api/users",
-			map[string]any{"username": "admin", "password": "x"}, adminToken)
+			map[string]any{"username": "admin", "password": "x1234567"}, adminToken)
 		if rr.Code != http.StatusConflict {
 			t.Fatalf("admin-name create: status=%d, want 409", rr.Code)
 		}
@@ -401,9 +401,10 @@ upstream:
 		adminToken := loginTokenAs(t, handler, "admin", "secret")
 		aliceID := createTestUser(t, handler, adminToken, "alice", "alice123")
 
-		// Alice may use server index 1, which is "B".
+		// Alice may use server B.
+		serverB := app.Upstream.Clients()[1].ID
 		rr := doAuthJSON(t, handler, http.MethodPut, "/admin/api/users/"+aliceID,
-			map[string]any{"allowedServers": []int{1}}, adminToken)
+			map[string]any{"allowedServers": []string{serverB}}, adminToken)
 		if rr.Code != http.StatusOK {
 			t.Fatalf("set allowed servers: status=%d body=%s", rr.Code, rr.Body.String())
 		}
@@ -429,8 +430,8 @@ upstream:
 		if len(allowed) != 1 {
 			t.Fatalf("alice's allowed servers = %v, want one entry", allowed)
 		}
-		if name := after[allowed[0]].Name; name != "B" {
-			t.Fatalf("after the reorder alice's permission names %q, want B (allowed=%v)", name, allowed)
+		if allowed[0] != serverB {
+			t.Fatalf("after the reorder alice's permission is %q, want %s (allowed=%v)", allowed[0], serverB, allowed)
 		}
 	})
 }

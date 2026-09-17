@@ -1,21 +1,31 @@
 package backend
 
 import (
+	"errors"
 	"net/http"
 	"net/url"
 )
 
 type routeResolution struct {
 	OriginalID     string
-	ServerIndex    int
+	ServerID       string
 	Client         *UpstreamClient
 	OtherInstances []AdditionalInstance
 }
 
 type upstreamItemsResult struct {
-	ServerIndex int
-	Items       []map[string]any
+	ServerID string
+	Items    []map[string]any
+	// Err distinguishes "this upstream answered with no items" from "this upstream did not
+	// answer", which the index can no longer express now that an empty page is collected
+	// from every server alike.
+	Err error
 }
+
+// errBatchQueryNotTranslatable marks a request an upstream cannot answer because the batch
+// ID query it carries names items that server does not know. It is a failure of that
+// server, not an empty result.
+var errBatchQueryNotTranslatable = errors.New("batch query is not translatable for this server")
 
 func (a *App) registerMediaRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /Users/{userId}/Items", a.withContext(a.requireAuth(a.handleUserItems)))
@@ -40,32 +50,32 @@ func (a *App) resolveRouteID(id string) *routeResolution {
 		return nil
 	}
 	// Try primary instance first
-	client := a.Upstream.GetClient(resolved.ServerIndex)
+	client := a.Upstream.ClientByID(resolved.ServerID)
 	if client != nil && client.IsOnline() {
 		return &routeResolution{
 			OriginalID:     resolved.OriginalID,
-			ServerIndex:    resolved.ServerIndex,
+			ServerID:       resolved.ServerID,
 			Client:         client,
 			OtherInstances: append([]AdditionalInstance(nil), resolved.OtherInstances...),
 		}
 	}
 	// Primary offline — try OtherInstances
 	for _, other := range resolved.OtherInstances {
-		alt := a.Upstream.GetClient(other.ServerIndex)
+		alt := a.Upstream.ClientByID(other.ServerID)
 		if alt != nil && alt.IsOnline() {
 			remaining := make([]AdditionalInstance, 0, len(resolved.OtherInstances))
 			remaining = append(remaining, AdditionalInstance{
-				OriginalID:  resolved.OriginalID,
-				ServerIndex: resolved.ServerIndex,
+				OriginalID: resolved.OriginalID,
+				ServerID:   resolved.ServerID,
 			})
 			for _, oi := range resolved.OtherInstances {
-				if oi.ServerIndex != other.ServerIndex || oi.OriginalID != other.OriginalID {
+				if oi.ServerID != other.ServerID || oi.OriginalID != other.OriginalID {
 					remaining = append(remaining, oi)
 				}
 			}
 			return &routeResolution{
 				OriginalID:     other.OriginalID,
-				ServerIndex:    other.ServerIndex,
+				ServerID:       other.ServerID,
 				Client:         alt,
 				OtherInstances: remaining,
 			}
@@ -85,7 +95,7 @@ func (a *App) collectAllowedInstances(reqCtx *RequestContext, resolved *routeRes
 	}
 	allowed := instances[:0]
 	for _, instance := range instances {
-		if a.isServerAllowed(reqCtx, instance.ServerIndex) {
+		if a.isServerAllowed(reqCtx, instance.ServerID) {
 			allowed = append(allowed, instance)
 		}
 	}
@@ -125,10 +135,10 @@ func asItems(payload any) []map[string]any {
 // current user's own ID as the response identity. clientUserID is passed in
 // explicitly so a background aggregation goroutine can never fall back to the
 // global admin placeholder.
-func (a *App) rewriteItems(items []map[string]any, serverIndex int, clientUserID string) []map[string]any {
+func (a *App) rewriteItems(items []map[string]any, serverID string, clientUserID string) []map[string]any {
 	cfg := a.ConfigStore.Snapshot()
 	for _, item := range items {
-		rewriteResponseIDs(item, serverIndex, a.IDStore, cfg.Server.ID, clientUserID)
+		rewriteResponseIDs(item, serverID, a.IDStore, cfg.Server.ID, clientUserID)
 	}
 	return items
 }

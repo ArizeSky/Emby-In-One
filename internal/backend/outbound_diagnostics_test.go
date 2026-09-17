@@ -26,12 +26,12 @@ func newDiagnosticsFixture(t *testing.T) *diagnosticsFixture {
 		VirtualIDs: idStore,
 		Tokens:     &stubTokenSource{issued: map[string]string{fixtureAliceToken: fixtureAliceID}},
 		Users:      &stubUserSource{users: map[string]struct{}{fixtureAliceID: {}, fixtureBobID: {}}},
-		UpstreamUserIDs: map[int]string{
-			0: fixtureUpstreamA,
-			1: fixtureUpstreamB,
+		UpstreamUserIDs: map[string]string{
+			"srv-0": fixtureUpstreamA,
+			"srv-1": fixtureUpstreamB,
 		},
 	})
-	return &diagnosticsFixture{lookup: lookup, idStore: idStore, virtualItem: idStore.GetOrCreateVirtualID("item-virtual", 0)}
+	return &diagnosticsFixture{lookup: lookup, idStore: idStore, virtualItem: idStore.GetOrCreateVirtualID("item-virtual", "srv-0")}
 }
 
 func TestOutboundDiagnosticsClassifiesRegisteredIdentifiers(t *testing.T) {
@@ -87,7 +87,7 @@ func TestOutboundDiagnosticsBobIsNotAnAlias(t *testing.T) {
 	if IsCurrentUserAlias(fixtureBobID, reqCtx, auth, lookup) {
 		t.Fatalf("bob-local was accepted as the current user's alias")
 	}
-	if got := ClassifyLocalIdentifier(fixtureBobID, 0, auth, lookup); got != IdentifierLocalUser {
+	if got := ClassifyLocalIdentifier(fixtureBobID, "srv-0", auth, lookup); got != IdentifierLocalUser {
 		t.Fatalf("classify(bob-local) = %q, want %q", got, IdentifierLocalUser)
 	}
 }

@@ -68,15 +68,15 @@ func TestSeriesRoutesOverlayLocalUserState(t *testing.T) {
 	withTempAppConfig(t, singleUpstreamConfig(upstream.URL), func(app *App, handler http.Handler) {
 		adminToken := loginToken(t, handler, "secret")
 		rr := doJSONRequest(t, handler, http.MethodPost, "/admin/api/users",
-			map[string]any{"username": "bob", "password": "bob123"}, adminToken)
+			map[string]any{"username": "bob", "password": "bob12345"}, adminToken)
 		if rr.Code != http.StatusCreated {
 			t.Fatalf("create user: status=%d body=%s", rr.Code, rr.Body.String())
 		}
-		userToken := loginTokenAs(t, handler, "bob", "bob123")
+		userToken := loginTokenAs(t, handler, "bob", "bob12345")
 
-		virtualSeries := app.IDStore.GetOrCreateVirtualID("series-a", 0)
-		virtualSeason := app.IDStore.GetOrCreateVirtualID("season-a", 0)
-		virtualEpisode := app.IDStore.GetOrCreateVirtualID("episode-a", 0)
+		virtualSeries := app.IDStore.GetOrCreateVirtualID("series-a", app.Upstream.Clients()[0].ID)
+		virtualSeason := app.IDStore.GetOrCreateVirtualID("season-a", app.Upstream.Clients()[0].ID)
+		virtualEpisode := app.IDStore.GetOrCreateVirtualID("episode-a", app.Upstream.Clients()[0].ID)
 
 		// A regular user with no local record must not inherit the upstream marks.
 		rr = doJSONRequest(t, handler, http.MethodGet, "/Shows/"+virtualSeries+"/Seasons", nil, userToken)

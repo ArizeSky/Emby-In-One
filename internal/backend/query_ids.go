@@ -30,23 +30,23 @@ func isBatchIDQueryKey(key string) bool {
 	}
 }
 
-func translateVirtualIDForServer(id string, serverIndex int, idStore *IDStore) (string, bool) {
+func translateVirtualIDForServer(id string, serverID string, idStore *IDStore) (string, bool) {
 	resolved := idStore.ResolveVirtualID(id)
 	if resolved == nil {
 		return id, true
 	}
-	if resolved.ServerIndex == serverIndex {
+	if resolved.ServerID == serverID {
 		return resolved.OriginalID, true
 	}
 	for _, other := range resolved.OtherInstances {
-		if other.ServerIndex == serverIndex {
+		if other.ServerID == serverID {
 			return other.OriginalID, true
 		}
 	}
 	return "", false
 }
 
-func translateBatchIDQueryForServer(values url.Values, serverIndex int, idStore *IDStore) (url.Values, bool) {
+func translateBatchIDQueryForServer(values url.Values, serverID string, idStore *IDStore) (url.Values, bool) {
 	cloned := cloneValues(values)
 	for key, rawValues := range cloned {
 		if !isBatchIDQueryKey(key) {
@@ -64,7 +64,7 @@ func translateBatchIDQueryForServer(values url.Values, serverIndex int, idStore 
 				if part == "" {
 					continue
 				}
-				translated, ok := translateVirtualIDForServer(part, serverIndex, idStore)
+				translated, ok := translateVirtualIDForServer(part, serverID, idStore)
 				if !ok {
 					continue
 				}

@@ -63,8 +63,8 @@ func TestItemsBatchQueryTranslatesDedupedMovieIDsAcrossServers(t *testing.T) {
 
 	withTempAppConfig(t, config, func(app *App, handler http.Handler) {
 		token := loginToken(t, handler, "secret")
-		virtualMovie := app.IDStore.GetOrCreateVirtualID("movie-a", 0)
-		app.IDStore.AssociateAdditionalInstance(virtualMovie, "movie-b", 1)
+		virtualMovie := app.IDStore.GetOrCreateVirtualID("movie-a", app.Upstream.Clients()[0].ID)
+		app.IDStore.AssociateAdditionalInstance(virtualMovie, "movie-b", app.Upstream.Clients()[1].ID)
 
 		rr := doJSONRequest(t, handler, http.MethodGet, "/Items?Ids="+virtualMovie, nil, token)
 		if rr.Code != http.StatusOK {
@@ -122,8 +122,8 @@ func TestPersonsQueryTranslatesCommaSeparatedVirtualIDs(t *testing.T) {
 
 	withTempAppConfig(t, config, func(app *App, handler http.Handler) {
 		token := loginToken(t, handler, "secret")
-		virtualPersonA := app.IDStore.GetOrCreateVirtualID("person-a", 0)
-		virtualPersonB := app.IDStore.GetOrCreateVirtualID("person-b", 0)
+		virtualPersonA := app.IDStore.GetOrCreateVirtualID("person-a", app.Upstream.Clients()[0].ID)
+		virtualPersonB := app.IDStore.GetOrCreateVirtualID("person-b", app.Upstream.Clients()[0].ID)
 
 		rr := doJSONRequest(t, handler, http.MethodGet, "/Persons?Ids="+virtualPersonA+","+virtualPersonB, nil, token)
 		if rr.Code != http.StatusOK {
@@ -164,7 +164,7 @@ func TestTranslateBatchIDQuery_RejectsOversized(t *testing.T) {
 		ids[i] = fmt.Sprintf("id-%d", i)
 	}
 	values.Set("Ids", strings.Join(ids, ","))
-	_, ok := translateBatchIDQueryForServer(values, 0, store)
+	_, ok := translateBatchIDQueryForServer(values, "srv-0", store)
 	if ok {
 		t.Error("expected oversized batch to be rejected")
 	}
@@ -180,7 +180,7 @@ func TestTranslateBatchIDQuery_AcceptsWithinLimit(t *testing.T) {
 		ids[i] = fmt.Sprintf("id-%d", i)
 	}
 	values.Set("Ids", strings.Join(ids, ","))
-	_, ok := translateBatchIDQueryForServer(values, 0, store)
+	_, ok := translateBatchIDQueryForServer(values, "srv-0", store)
 	if !ok {
 		t.Error("expected batch within limit to be accepted")
 	}

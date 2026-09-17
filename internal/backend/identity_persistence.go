@@ -190,7 +190,7 @@ func (p *IdentityPersistence) saveLocked(snapshot identityPersistenceSnapshot) e
 	if err != nil {
 		return err
 	}
-	return writeFileAtomically(p.path, encoded, PrivateFileMode())
+	return WriteFileAtomic(p.path, encoded, PrivateFileMode())
 }
 
 func (p *IdentityPersistence) warnf(format string, args ...any) {

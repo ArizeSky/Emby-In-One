@@ -10,13 +10,13 @@ import (
 )
 
 type AdditionalInstance struct {
-	OriginalID  string
-	ServerIndex int
+	OriginalID string
+	ServerID   string
 }
 
 type ResolvedID struct {
 	OriginalID     string
-	ServerIndex    int
+	ServerID       string
 	OtherInstances []AdditionalInstance
 }
 
@@ -27,14 +27,14 @@ type IDStoreStats struct {
 
 type idEntry struct {
 	OriginalID     string
-	ServerIndex    int
+	ServerID       string
 	OtherInstances []AdditionalInstance
 }
 
 type activeStreamEntry struct {
-	OriginalID  string
-	ServerIndex int
-	CreatedAt   time.Time
+	OriginalID string
+	ServerID   string
+	CreatedAt  time.Time
 }
 
 // activeStreamTTL bounds how long a recorded playback server stays valid.
@@ -46,12 +46,13 @@ type IDStore struct {
 	persistent bool
 	logger     *Logger
 
-	virtualToOriginal  map[string]*idEntry
-	originalToVirtual  map[string]string
-	activeStreamServer map[string]activeStreamEntry // virtualItemID → last-chosen server
+	virtualToOriginal   map[string]*idEntry
+	originalToVirtual   map[string]string
+	originalIDToVirtual map[string][]string          // originalID → virtual IDs known for it
+	activeStreamServer  map[string]activeStreamEntry // virtualItemID → last-chosen server
 }
 
-func NewIDStore(dataDir string, logger *Logger) (*IDStore, error) {
+func NewIDStore(dataDir string, logger *Logger, upstreamIDs ...string) (*IDStore, error) {
 	if dataDir == "" {
 		dataDir = defaultDataDir()
 	}
@@ -60,10 +61,11 @@ func NewIDStore(dataDir string, logger *Logger) (*IDStore, error) {
 	}
 
 	store := &IDStore{
-		logger:             logger,
-		virtualToOriginal:  map[string]*idEntry{},
-		originalToVirtual:  map[string]string{},
-		activeStreamServer: map[string]activeStreamEntry{},
+		logger:              logger,
+		virtualToOriginal:   map[string]*idEntry{},
+		originalToVirtual:   map[string]string{},
+		originalIDToVirtual: map[string][]string{},
+		activeStreamServer:  map[string]activeStreamEntry{},
 	}
 
 	dbPath := filepath.Join(dataDir, "mappings.db")
@@ -74,19 +76,26 @@ func NewIDStore(dataDir string, logger *Logger) (*IDStore, error) {
 		}
 		return store, nil
 	}
+	if err := migrateDatabaseToServerID(db, upstreamIDs, logger); err != nil {
+		if logger != nil {
+			logger.Errorf("SQLite database migration failed: %v", err)
+		}
+		_ = closeSQLite(db)
+		return nil, fmt.Errorf("migrate database to server_id: %w", err)
+	}
 	if err := db.exec(`
         PRAGMA journal_mode = WAL;
         CREATE TABLE IF NOT EXISTS id_mappings (
             virtual_id TEXT PRIMARY KEY,
             original_id TEXT NOT NULL,
-            server_index INTEGER NOT NULL
+            server_id TEXT NOT NULL
         );
-        CREATE INDEX IF NOT EXISTS idx_original ON id_mappings(original_id, server_index);
+        CREATE INDEX IF NOT EXISTS idx_original ON id_mappings(original_id, server_id);
         CREATE TABLE IF NOT EXISTS id_additional_instances (
             virtual_id TEXT NOT NULL,
             original_id TEXT NOT NULL,
-            server_index INTEGER NOT NULL,
-            UNIQUE(virtual_id, original_id, server_index)
+            server_id TEXT NOT NULL,
+            UNIQUE(virtual_id, original_id, server_id)
         );
         CREATE INDEX IF NOT EXISTS idx_additional_virtual ON id_additional_instances(virtual_id);
     `); err != nil {
@@ -125,7 +134,7 @@ func (s *IDStore) load() error {
 	if s.db == nil {
 		return nil
 	}
-	stmt, err := s.db.prepare(`SELECT virtual_id, original_id, server_index FROM id_mappings`)
+	stmt, err := s.db.prepare(`SELECT virtual_id, original_id, server_id FROM id_mappings`)
 	if err != nil {
 		return err
 	}
@@ -140,12 +149,12 @@ func (s *IDStore) load() error {
 		}
 		virtualID := stmt.columnText(0)
 		originalID := stmt.columnText(1)
-		serverIndex := stmt.columnInt(2)
-		s.virtualToOriginal[virtualID] = &idEntry{OriginalID: originalID, ServerIndex: serverIndex, OtherInstances: []AdditionalInstance{}}
-		s.originalToVirtual[compositeKey(originalID, serverIndex)] = virtualID
+		serverID := stmt.columnText(2)
+		s.virtualToOriginal[virtualID] = &idEntry{OriginalID: originalID, ServerID: serverID, OtherInstances: []AdditionalInstance{}}
+		s.originalToVirtual[compositeKey(originalID, serverID)] = virtualID
 	}
 
-	addStmt, err := s.db.prepare(`SELECT virtual_id, original_id, server_index FROM id_additional_instances`)
+	addStmt, err := s.db.prepare(`SELECT virtual_id, original_id, server_id FROM id_additional_instances`)
 	if err != nil {
 		return err
 	}
@@ -160,12 +169,13 @@ func (s *IDStore) load() error {
 		}
 		virtualID := addStmt.columnText(0)
 		originalID := addStmt.columnText(1)
-		serverIndex := addStmt.columnInt(2)
+		serverID := addStmt.columnText(2)
 		if entry, ok := s.virtualToOriginal[virtualID]; ok {
-			entry.OtherInstances = appendIfMissing(entry.OtherInstances, AdditionalInstance{OriginalID: originalID, ServerIndex: serverIndex})
-			s.originalToVirtual[compositeKey(originalID, serverIndex)] = virtualID
+			entry.OtherInstances = appendIfMissing(entry.OtherInstances, AdditionalInstance{OriginalID: originalID, ServerID: serverID})
+			s.originalToVirtual[compositeKey(originalID, serverID)] = virtualID
 		}
 	}
+	s.rebuildIndexesLocked()
 	return nil
 }
 
@@ -175,35 +185,38 @@ func (s *IDStore) Close() error {
 	return closeSQLite(s.db)
 }
 
-func compositeKey(originalID string, serverIndex int) string {
-	return fmt.Sprintf("%s:%d", originalID, serverIndex)
+func compositeKey(originalID, serverID string) string {
+	return fmt.Sprintf("%s:%s", originalID, serverID)
 }
 
-func (s *IDStore) GetOrCreateVirtualID(originalID string, serverIndex int) string {
+func (s *IDStore) GetOrCreateVirtualID(originalID, serverID string) string {
 	if originalID == "" {
 		return originalID
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	key := compositeKey(originalID, serverIndex)
+	key := compositeKey(originalID, serverID)
 	if existing, ok := s.originalToVirtual[key]; ok {
 		return existing
 	}
 	virtualID := randomHex(16)
-	s.virtualToOriginal[virtualID] = &idEntry{OriginalID: originalID, ServerIndex: serverIndex, OtherInstances: []AdditionalInstance{}}
+	s.virtualToOriginal[virtualID] = &idEntry{OriginalID: originalID, ServerID: serverID, OtherInstances: []AdditionalInstance{}}
 	s.originalToVirtual[key] = virtualID
+	s.originalIDToVirtual[originalID] = append(s.originalIDToVirtual[originalID], virtualID)
 	if s.db != nil {
-		stmt, err := s.db.prepare(`INSERT OR IGNORE INTO id_mappings (virtual_id, original_id, server_index) VALUES (?, ?, ?)`)
-		if err == nil {
-			_ = stmt.bindAll(virtualID, originalID, serverIndex)
-			_, _ = stmt.step()
-			stmt.finalize()
+		if err := s.db.writeParams(
+			`INSERT OR IGNORE INTO id_mappings (virtual_id, original_id, server_id) VALUES (?, ?, ?)`,
+			virtualID, originalID, serverID,
+		); err != nil && s.logger != nil {
+			// The in-memory mapping stays authoritative for this process; without the row
+			// every client-held virtual ID for this item turns into a 404 after a restart.
+			s.logger.Warnf("idstore: persist mapping %s -> %s@%s: %v", virtualID, originalID, serverID, err)
 		}
 	}
 	return virtualID
 }
 
-func (s *IDStore) AssociateAdditionalInstance(virtualID, originalID string, serverIndex int) {
+func (s *IDStore) AssociateAdditionalInstance(virtualID, originalID, serverID string) {
 	if virtualID == "" || originalID == "" {
 		return
 	}
@@ -213,24 +226,27 @@ func (s *IDStore) AssociateAdditionalInstance(virtualID, originalID string, serv
 	if !ok {
 		return
 	}
-	if entry.OriginalID == originalID && entry.ServerIndex == serverIndex {
+	if entry.OriginalID == originalID && entry.ServerID == serverID {
 		return
 	}
-	entry.OtherInstances = appendIfMissing(entry.OtherInstances, AdditionalInstance{OriginalID: originalID, ServerIndex: serverIndex})
-	s.originalToVirtual[compositeKey(originalID, serverIndex)] = virtualID
+	entry.OtherInstances = appendIfMissing(entry.OtherInstances, AdditionalInstance{OriginalID: originalID, ServerID: serverID})
+	s.originalToVirtual[compositeKey(originalID, serverID)] = virtualID
+	if !containsString(s.originalIDToVirtual[originalID], virtualID) {
+		s.originalIDToVirtual[originalID] = append(s.originalIDToVirtual[originalID], virtualID)
+	}
 	if s.db != nil {
-		stmt, err := s.db.prepare(`INSERT OR IGNORE INTO id_additional_instances (virtual_id, original_id, server_index) VALUES (?, ?, ?)`)
-		if err == nil {
-			_ = stmt.bindAll(virtualID, originalID, serverIndex)
-			_, _ = stmt.step()
-			stmt.finalize()
+		if err := s.db.writeParams(
+			`INSERT OR IGNORE INTO id_additional_instances (virtual_id, original_id, server_id) VALUES (?, ?, ?)`,
+			virtualID, originalID, serverID,
+		); err != nil && s.logger != nil {
+			s.logger.Warnf("idstore: persist additional instance %s -> %s@%s: %v", virtualID, originalID, serverID, err)
 		}
 	}
 }
 
 func appendIfMissing(instances []AdditionalInstance, candidate AdditionalInstance) []AdditionalInstance {
 	for _, instance := range instances {
-		if instance.OriginalID == candidate.OriginalID && instance.ServerIndex == candidate.ServerIndex {
+		if instance.OriginalID == candidate.OriginalID && instance.ServerID == candidate.ServerID {
 			return instances
 		}
 	}
@@ -257,17 +273,7 @@ func (s *IDStore) ContainsOriginalID(value string) bool {
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	for _, entry := range s.virtualToOriginal {
-		if entry.OriginalID == value {
-			return true
-		}
-		for _, other := range entry.OtherInstances {
-			if other.OriginalID == value {
-				return true
-			}
-		}
-	}
-	return false
+	return len(s.originalIDToVirtual[value]) > 0
 }
 
 func (s *IDStore) ResolveVirtualID(virtualID string) *ResolvedID {
@@ -279,27 +285,41 @@ func (s *IDStore) ResolveVirtualID(virtualID string) *ResolvedID {
 	}
 	return &ResolvedID{
 		OriginalID:     entry.OriginalID,
-		ServerIndex:    entry.ServerIndex,
+		ServerID:       entry.ServerID,
 		OtherInstances: append([]AdditionalInstance(nil), entry.OtherInstances...),
 	}
 }
 
 // ResolveByOriginalID finds a ResolvedID by original upstream ID.
 // This handles clients that send raw upstream IDs instead of virtual IDs.
+// ResolveByOriginalID finds a ResolvedID by original upstream ID. This handles clients
+// that send raw upstream IDs instead of virtual IDs. The same upstream ID can be known to
+// more than one server; the oldest mapping for it wins, which is the one the store issued
+// first.
 func (s *IDStore) ResolveByOriginalID(originalID string) *ResolvedID {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	// Scan virtualToOriginal since composite keys include serverIndex
-	for _, entry := range s.virtualToOriginal {
-		if entry.OriginalID == originalID {
-			return &ResolvedID{
-				OriginalID:     entry.OriginalID,
-				ServerIndex:    entry.ServerIndex,
-				OtherInstances: append([]AdditionalInstance(nil), entry.OtherInstances...),
-			}
+	for _, virtualID := range s.originalIDToVirtual[originalID] {
+		entry, ok := s.virtualToOriginal[virtualID]
+		if !ok {
+			continue
+		}
+		return &ResolvedID{
+			OriginalID:     entry.OriginalID,
+			ServerID:       entry.ServerID,
+			OtherInstances: append([]AdditionalInstance(nil), entry.OtherInstances...),
 		}
 	}
 	return nil
+}
+
+func containsString(values []string, candidate string) bool {
+	for _, value := range values {
+		if value == candidate {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *IDStore) Stats() IDStoreStats {
@@ -320,219 +340,99 @@ func (s *IDStore) evictExpiredStreamState() {
 	}
 }
 
-func (s *IDStore) RemoveByServerIndex(serverIndex int) int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	removed := 0
-	keysToDelete := []string{}
-	for virtualID, entry := range s.virtualToOriginal {
-		if entry.ServerIndex == serverIndex {
-			keysToDelete = append(keysToDelete, virtualID)
-		}
-	}
-	for _, virtualID := range keysToDelete {
-		entry := s.virtualToOriginal[virtualID]
-		delete(s.originalToVirtual, compositeKey(entry.OriginalID, entry.ServerIndex))
-		delete(s.virtualToOriginal, virtualID)
-		removed++
-		if s.db != nil {
-			stmt, err := s.db.prepare(`DELETE FROM id_additional_instances WHERE virtual_id = ?`)
-			if err == nil {
-				if bindErr := stmt.bindAll(virtualID); bindErr != nil && s.logger != nil {
-					s.logger.Warnf("idstore: bind delete virtual_id=%s: %v", virtualID, bindErr)
-				} else if _, stepErr := stmt.step(); stepErr != nil && s.logger != nil {
-					s.logger.Warnf("idstore: delete virtual_id=%s: %v", virtualID, stepErr)
-				}
-				stmt.finalize()
-			} else if s.logger != nil {
-				s.logger.Warnf("idstore: prepare delete: %v", err)
-			}
-		}
-	}
-	for _, entry := range s.virtualToOriginal {
-		filtered := make([]AdditionalInstance, 0, len(entry.OtherInstances))
-		for _, instance := range entry.OtherInstances {
-			if instance.ServerIndex != serverIndex {
-				filtered = append(filtered, instance)
-			}
-		}
-		entry.OtherInstances = filtered
-	}
-	if s.db != nil {
-		if stmt, err := s.db.prepare(`DELETE FROM id_mappings WHERE server_index = ?`); err == nil {
-			if bindErr := stmt.bindAll(serverIndex); bindErr != nil && s.logger != nil {
-				s.logger.Warnf("idstore: bind delete mappings server_index=%d: %v", serverIndex, bindErr)
-			} else if _, stepErr := stmt.step(); stepErr != nil && s.logger != nil {
-				s.logger.Warnf("idstore: delete mappings server_index=%d: %v", serverIndex, stepErr)
-			}
-			stmt.finalize()
-		} else if s.logger != nil {
-			s.logger.Warnf("idstore: prepare delete mappings: %v", err)
-		}
-		if stmt, err := s.db.prepare(`DELETE FROM id_additional_instances WHERE server_index = ?`); err == nil {
-			if bindErr := stmt.bindAll(serverIndex); bindErr != nil && s.logger != nil {
-				s.logger.Warnf("idstore: bind delete additional server_index=%d: %v", serverIndex, bindErr)
-			} else if _, stepErr := stmt.step(); stepErr != nil && s.logger != nil {
-				s.logger.Warnf("idstore: delete additional server_index=%d: %v", serverIndex, stepErr)
-			}
-			stmt.finalize()
-		} else if s.logger != nil {
-			s.logger.Warnf("idstore: prepare delete additional: %v", err)
-		}
-	}
-	return removed
-}
-
-func (s *IDStore) ReorderServerIndices(fromIndex, toIndex int) {
-	if fromIndex == toIndex {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	newOriginalToVirtual := map[string]string{}
-	for virtualID, entry := range s.virtualToOriginal {
-		entry.ServerIndex = reorderServerIndex(entry.ServerIndex, fromIndex, toIndex)
-		newOriginalToVirtual[compositeKey(entry.OriginalID, entry.ServerIndex)] = virtualID
-		for i := range entry.OtherInstances {
-			entry.OtherInstances[i].ServerIndex = reorderServerIndex(entry.OtherInstances[i].ServerIndex, fromIndex, toIndex)
-		}
-	}
-	s.originalToVirtual = newOriginalToVirtual
-	if err := s.persistAllLocked(); err != nil && s.logger != nil {
-		s.logger.Warnf("failed to persist reordered ID mappings: %v", err)
-	}
-}
-
-func (s *IDStore) persistAllLocked() error {
-	if s.db == nil {
+// RemoveByServerID removes every mapping belonging to the deleted upstream,
+// both primary entries registered for it and additional-instance entries on surviving primaries.
+// It cascades to drop additional instances belonging to primaries on the deleted server.
+func (s *IDStore) RemoveByServerID(serverID string) error {
+	if serverID == "" {
 		return nil
 	}
-	if err := s.db.exec(`BEGIN IMMEDIATE`); err != nil {
-		return err
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = s.db.exec(`ROLLBACK`)
-		}
-	}()
-	if err := s.db.exec(`DELETE FROM id_additional_instances; DELETE FROM id_mappings;`); err != nil {
-		return err
-	}
-	for virtualID, entry := range s.virtualToOriginal {
-		stmt, err := s.db.prepare(`INSERT INTO id_mappings (virtual_id, original_id, server_index) VALUES (?, ?, ?)`)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.db != nil {
+		err := s.db.withWriteTx(func() error {
+			// 1. Cascade cleanup: delete additional instances owned by primaries that belong to this server.
+			if err := s.db.execParams(
+				`DELETE FROM id_additional_instances WHERE virtual_id IN (SELECT virtual_id FROM id_mappings WHERE server_id = ?)`,
+				serverID,
+			); err != nil {
+				return err
+			}
+			// 2. Delete additional instances that point directly to this server.
+			if err := s.db.execParams(`DELETE FROM id_additional_instances WHERE server_id = ?`, serverID); err != nil {
+				return err
+			}
+			// 3. Delete primary mappings for this server.
+			return s.db.execParams(`DELETE FROM id_mappings WHERE server_id = ?`, serverID)
+		})
 		if err != nil {
 			return err
 		}
-		if err := stmt.bindAll(virtualID, entry.OriginalID, entry.ServerIndex); err != nil {
-			stmt.finalize()
-			return err
+	}
+
+	for virtualID, entry := range s.virtualToOriginal {
+		if entry.ServerID == serverID {
+			delete(s.virtualToOriginal, virtualID)
+			continue
 		}
-		if _, err := stmt.step(); err != nil {
-			stmt.finalize()
-			return err
-		}
-		stmt.finalize()
+		kept := entry.OtherInstances[:0]
 		for _, other := range entry.OtherInstances {
-			addStmt, err := s.db.prepare(`INSERT INTO id_additional_instances (virtual_id, original_id, server_index) VALUES (?, ?, ?)`)
-			if err != nil {
-				return err
+			if other.ServerID == serverID {
+				continue
 			}
-			if err := addStmt.bindAll(virtualID, other.OriginalID, other.ServerIndex); err != nil {
-				addStmt.finalize()
-				return err
-			}
-			if _, err := addStmt.step(); err != nil {
-				addStmt.finalize()
-				return err
-			}
-			addStmt.finalize()
+			kept = append(kept, other)
 		}
+		entry.OtherInstances = kept
 	}
-	if err := s.db.exec(`COMMIT`); err != nil {
-		return err
-	}
-	committed = true
+	s.rebuildIndexesLocked()
 	return nil
 }
-func (s *IDStore) ShiftServerIndices(deletedIndex int) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+
+// rebuildIndexesLocked recomputes both derived indexes from virtualToOriginal.
+func (s *IDStore) rebuildIndexesLocked() {
+	rebuilt := make(map[string]string, len(s.originalToVirtual))
+	byOriginal := make(map[string][]string, len(s.originalIDToVirtual))
 	for virtualID, entry := range s.virtualToOriginal {
-		if entry.ServerIndex > deletedIndex {
-			delete(s.originalToVirtual, compositeKey(entry.OriginalID, entry.ServerIndex))
-			entry.ServerIndex--
-			s.originalToVirtual[compositeKey(entry.OriginalID, entry.ServerIndex)] = virtualID
-		}
-		for i := range entry.OtherInstances {
-			if entry.OtherInstances[i].ServerIndex > deletedIndex {
-				entry.OtherInstances[i].ServerIndex--
+		rebuilt[compositeKey(entry.OriginalID, entry.ServerID)] = virtualID
+		byOriginal[entry.OriginalID] = append(byOriginal[entry.OriginalID], virtualID)
+		for _, other := range entry.OtherInstances {
+			rebuilt[compositeKey(other.OriginalID, other.ServerID)] = virtualID
+			if !containsString(byOriginal[other.OriginalID], virtualID) {
+				byOriginal[other.OriginalID] = append(byOriginal[other.OriginalID], virtualID)
 			}
 		}
 	}
-	if s.db != nil {
-		if stmt, err := s.db.prepare(`UPDATE id_mappings SET server_index = server_index - 1 WHERE server_index > ?`); err == nil {
-			if bindErr := stmt.bindAll(deletedIndex); bindErr != nil && s.logger != nil {
-				s.logger.Warnf("idstore: bind shift mappings: %v", bindErr)
-			} else if _, stepErr := stmt.step(); stepErr != nil && s.logger != nil {
-				s.logger.Warnf("idstore: shift mappings: %v", stepErr)
-			}
-			stmt.finalize()
-		} else if s.logger != nil {
-			s.logger.Warnf("idstore: prepare shift mappings: %v", err)
-		}
-		if stmt, err := s.db.prepare(`UPDATE id_additional_instances SET server_index = server_index - 1 WHERE server_index > ?`); err == nil {
-			if bindErr := stmt.bindAll(deletedIndex); bindErr != nil && s.logger != nil {
-				s.logger.Warnf("idstore: bind shift additional: %v", bindErr)
-			} else if _, stepErr := stmt.step(); stepErr != nil && s.logger != nil {
-				s.logger.Warnf("idstore: shift additional: %v", stepErr)
-			}
-			stmt.finalize()
-		} else if s.logger != nil {
-			s.logger.Warnf("idstore: prepare shift additional: %v", err)
-		}
-	}
+	s.originalToVirtual = rebuilt
+	s.originalIDToVirtual = byOriginal
 }
 
-func reorderServerIndex(index, fromIndex, toIndex int) int {
-	if fromIndex == toIndex {
-		return index
-	}
-	if index == fromIndex {
-		return toIndex
-	}
-	if fromIndex < toIndex {
-		if index > fromIndex && index <= toIndex {
-			return index - 1
-		}
-		return index
-	}
-	if index >= toIndex && index < fromIndex {
-		return index + 1
-	}
-	return index
-}
 func randomHex(byteLen int) string {
 	bytes := make([]byte, byteLen)
-	_, _ = rand.Read(bytes)
+	if _, err := rand.Read(bytes); err != nil {
+		// Every virtual ID, proxy user ID and session token is derived from this. A
+		// zero-filled fallback would hand out predictable identifiers, and no caller can
+		// do anything meaningful with the failure.
+		panic("crypto/rand unavailable: " + err.Error())
+	}
 	return fmt.Sprintf("%x", bytes)
 }
 
-func (s *IDStore) SetActiveStream(virtualItemID string, serverIndex int) {
+func (s *IDStore) SetActiveStream(virtualItemID string, serverID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.activeStreamServer[virtualItemID] = activeStreamEntry{ServerIndex: serverIndex, CreatedAt: time.Now()}
+	s.activeStreamServer[virtualItemID] = activeStreamEntry{ServerID: serverID, CreatedAt: time.Now()}
 }
 
-func (s *IDStore) GetActiveStream(virtualItemID string) (int, bool) {
+func (s *IDStore) GetActiveStream(virtualItemID string) (string, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	entry, ok := s.activeStreamServer[virtualItemID]
 	if !ok {
-		return 0, false
+		return "", false
 	}
 	if time.Since(entry.CreatedAt) > activeStreamTTL {
-		return 0, false
+		return "", false
 	}
-	return entry.ServerIndex, true
+	return entry.ServerID, true
 }

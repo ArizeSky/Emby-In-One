@@ -92,16 +92,16 @@ func TestItemRoutesRejectUpstreamOutsideAllowedServers(t *testing.T) {
 	withTempAppConfig(t, dualUpstreamConfig(permitted.URL, forbidden.URL), func(app *App, handler http.Handler) {
 		adminToken := loginTokenAs(t, handler, "admin", "secret")
 		rr := doAuthJSON(t, handler, http.MethodPost, "/admin/api/users",
-			map[string]any{"username": "bob", "password": "bob123", "allowedServers": []int{0}}, adminToken)
+			map[string]any{"username": "bob", "password": "bob12345", "allowedServers": []string{app.Upstream.Clients()[0].ID}}, adminToken)
 		if rr.Code != http.StatusCreated {
 			t.Fatalf("create user: status=%d body=%s", rr.Code, rr.Body.String())
 		}
-		userToken := loginTokenAs(t, handler, "bob", "bob123")
+		userToken := loginTokenAs(t, handler, "bob", "bob12345")
 
 		userID := app.Auth.ProxyUserID()
-		forbiddenMovie := app.IDStore.GetOrCreateVirtualID("movie-b", 1)
-		forbiddenSeries := app.IDStore.GetOrCreateVirtualID("series-b", 1)
-		permittedMovie := app.IDStore.GetOrCreateVirtualID("movie-a", 0)
+		forbiddenMovie := app.IDStore.GetOrCreateVirtualID("movie-b", app.Upstream.Clients()[1].ID)
+		forbiddenSeries := app.IDStore.GetOrCreateVirtualID("series-b", app.Upstream.Clients()[1].ID)
+		permittedMovie := app.IDStore.GetOrCreateVirtualID("movie-a", app.Upstream.Clients()[0].ID)
 
 		for _, route := range itemScopedRoutes(userID, forbiddenMovie, forbiddenSeries) {
 			rr := doAuthJSON(t, handler, route.method, route.path, route.body, userToken)
@@ -139,7 +139,7 @@ func TestItemImageStaysReachableWithoutToken(t *testing.T) {
 	permitted := permittedUpstreamStub(t)
 
 	withTempAppConfig(t, dualUpstreamConfig(permitted.URL, forbidden.URL), func(app *App, handler http.Handler) {
-		forbiddenMovie := app.IDStore.GetOrCreateVirtualID("movie-b", 1)
+		forbiddenMovie := app.IDStore.GetOrCreateVirtualID("movie-b", app.Upstream.Clients()[1].ID)
 		rr := doAuthJSON(t, handler, http.MethodGet, "/Items/"+forbiddenMovie+"/Images/Primary", nil, "")
 		if rr.Code != http.StatusOK {
 			t.Fatalf("anonymous image request: status=%d, want 200", rr.Code)

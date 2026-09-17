@@ -11,7 +11,7 @@ type lookupFixture struct {
 	idStore     *IDStore
 	authStub    *stubTokenSource
 	userStub    *stubUserSource
-	upstreamIDs map[int]string
+	upstreamIDs map[string]string
 	lookup      *IdentifierLookup
 }
 
@@ -69,9 +69,9 @@ func newLookupFixture(t *testing.T) *lookupFixture {
 			fixtureAliceID: {},
 			fixtureBobID:   {},
 		}},
-		upstreamIDs: map[int]string{
-			0: fixtureUpstreamA,
-			1: fixtureUpstreamB,
+		upstreamIDs: map[string]string{
+			"srv-0": fixtureUpstreamA,
+			"srv-1": fixtureUpstreamB,
 		},
 	}
 	fixture.lookup = newIdentifierLookup(IdentifierSources{
@@ -94,7 +94,7 @@ func fixtureRequestContext(proxyUserID string) *RequestContext {
 
 func TestIdentifierLookupFixtures(t *testing.T) {
 	fixture := newLookupFixture(t)
-	virtualItem := fixture.idStore.GetOrCreateVirtualID("item-virtual", 0)
+	virtualItem := fixture.idStore.GetOrCreateVirtualID("item-virtual", "srv-0")
 	reqCtx := fixtureRequestContext(fixtureAliceID)
 	targetAuth := upstreamAuthSnapshot{UserID: fixtureUpstreamA, AccessToken: fixtureUpstreamTok}
 
@@ -105,7 +105,7 @@ func TestIdentifierLookupFixtures(t *testing.T) {
 	if IsCurrentUserAlias(fixtureBobID, reqCtx, targetAuth, fixture.lookup) {
 		t.Fatalf("bob-local must not count as the current user's alias")
 	}
-	if got := ClassifyLocalIdentifier(fixtureBobID, 0, targetAuth, fixture.lookup); got != IdentifierLocalUser {
+	if got := ClassifyLocalIdentifier(fixtureBobID, "srv-0", targetAuth, fixture.lookup); got != IdentifierLocalUser {
 		t.Fatalf("classify(bob-local) = %q, want %q", got, IdentifierLocalUser)
 	}
 
@@ -126,21 +126,21 @@ func TestIdentifierLookupFixtures(t *testing.T) {
 	if !tokenFacts.LocalToken {
 		t.Fatalf("token-local should be classified as an issued token")
 	}
-	if got := ClassifyLocalIdentifier(fixtureAliceToken, 0, targetAuth, fixture.lookup); got != IdentifierLocalToken {
+	if got := ClassifyLocalIdentifier(fixtureAliceToken, "srv-0", targetAuth, fixture.lookup); got != IdentifierLocalToken {
 		t.Fatalf("classify(token-local) = %q, want %q", got, IdentifierLocalToken)
 	}
 
-	if got := ClassifyLocalIdentifier(virtualItem, 0, targetAuth, fixture.lookup); got != IdentifierVirtualResource {
+	if got := ClassifyLocalIdentifier(virtualItem, "srv-0", targetAuth, fixture.lookup); got != IdentifierVirtualResource {
 		t.Fatalf("classify(virtual item) = %q, want %q", got, IdentifierVirtualResource)
 	}
 
-	if got := ClassifyLocalIdentifier(fixtureUpstreamA, 0, targetAuth, fixture.lookup); got != IdentifierTargetUpstream {
+	if got := ClassifyLocalIdentifier(fixtureUpstreamA, "srv-0", targetAuth, fixture.lookup); got != IdentifierTargetUpstream {
 		t.Fatalf("classify(target upstream id) = %q, want %q", got, IdentifierTargetUpstream)
 	}
-	if got := ClassifyLocalIdentifier(fixtureUpstreamB, 0, targetAuth, fixture.lookup); got != IdentifierForeignUpstream {
+	if got := ClassifyLocalIdentifier(fixtureUpstreamB, "srv-0", targetAuth, fixture.lookup); got != IdentifierForeignUpstream {
 		t.Fatalf("classify(other upstream id) = %q, want %q", got, IdentifierForeignUpstream)
 	}
-	if got := ClassifyLocalIdentifier(fixtureUnknownID, 0, targetAuth, fixture.lookup); got != IdentifierUnknown {
+	if got := ClassifyLocalIdentifier(fixtureUnknownID, "srv-0", targetAuth, fixture.lookup); got != IdentifierUnknown {
 		t.Fatalf("classify(unknown) = %q, want %q", got, IdentifierUnknown)
 	}
 }
@@ -160,16 +160,16 @@ func TestIdentifierLookupSameValueAcrossUpstreams(t *testing.T) {
 		VirtualIDs:      idStore,
 		Tokens:          &stubTokenSource{issued: map[string]string{}},
 		Users:           &stubUserSource{users: map[string]struct{}{}},
-		UpstreamUserIDs: map[int]string{0: shared, 1: shared},
+		UpstreamUserIDs: map[string]string{"srv-0": shared, "srv-1": shared},
 	})
 
-	if got := lookup.Classify(shared, 0, shared); got != IdentifierTargetUpstream {
+	if got := lookup.Classify(shared, "srv-0", shared); got != IdentifierTargetUpstream {
 		t.Fatalf("classify on target server = %q, want %q", got, IdentifierTargetUpstream)
 	}
-	if got := lookup.Classify(shared, 1, shared); got != IdentifierTargetUpstream {
+	if got := lookup.Classify(shared, "srv-1", shared); got != IdentifierTargetUpstream {
 		t.Fatalf("classify on the other server = %q, want %q", got, IdentifierTargetUpstream)
 	}
-	if got := lookup.Classify(shared, 2, "third-server-user"); got != IdentifierForeignUpstream {
+	if got := lookup.Classify(shared, "srv-2", "third-server-user"); got != IdentifierForeignUpstream {
 		t.Fatalf("classify when targeting a third server = %q, want %q", got, IdentifierForeignUpstream)
 	}
 }

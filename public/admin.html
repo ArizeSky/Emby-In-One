@@ -136,7 +136,7 @@
       <table class="w-full min-w-[700px] text-left border-collapse">
         <thead class="bg-slate-50 text-slate-500 text-xs font-semibold uppercase"><tr><th class="px-6 py-4">顺序</th><th class="px-6 py-4">名称</th><th class="px-6 py-4">地址</th><th class="px-6 py-4">代理</th><th class="px-6 py-4">权重</th><th class="px-6 py-4">状态</th><th class="px-6 py-4">操作</th></tr></thead>
         <tbody class="divide-y divide-slate-100">
-          <tr v-for="(s, idx) in upstreamList" :key="s.index" class="hover:bg-slate-50/50">
+          <tr v-for="(s, idx) in upstreamList" :key="s.id || s.index" class="hover:bg-slate-50/50">
             <td class="px-6 py-4 flex flex-col space-y-1">
               <button @click="reorder(idx, idx-1)" :disabled="idx===0" class="hover:text-blue-600 disabled:opacity-20"><i data-lucide="chevron-up" class="w-4 h-4"></i></button>
               <button @click="reorder(idx, idx+1)" :disabled="idx===upstreamList.length-1" class="hover:text-blue-600 disabled:opacity-20"><i data-lucide="chevron-down" class="w-4 h-4"></i></button>
@@ -146,7 +146,7 @@
             <td class="px-6 py-4 text-sm">{{ getProxyName(s.proxyId) }}</td>
             <td class="px-6 py-4"><span v-if="s.priorityMetadata" class="px-2 py-0.5 bg-purple-100 text-purple-700 rounded text-xs font-bold">元数据优先</span></td>
             <td class="px-6 py-4"><span :class="s.online ? 'bg-green-50 text-green-600' : 'bg-red-50 text-red-600'" class="px-2 py-1 rounded-full text-xs font-bold border">{{ s.online ? '在线' : '离线' }}</span></td>
-            <td class="px-6 py-4"><div class="flex space-x-2"><button @click="editServer(s)" class="p-2 text-slate-400 hover:text-blue-600"><i data-lucide="edit-3" class="w-4 h-4"></i></button><button @click="reconnectServer(s.index)" class="p-2 text-slate-400 hover:text-green-600"><i data-lucide="refresh-cw" class="w-4 h-4"></i></button><button @click="deleteServer(s.index)" class="p-2 text-slate-400 hover:text-red-600"><i data-lucide="trash-2" class="w-4 h-4"></i></button></div></td>
+            <td class="px-6 py-4"><div class="flex space-x-2"><button @click="editServer(s)" class="p-2 text-slate-400 hover:text-blue-600"><i data-lucide="edit-3" class="w-4 h-4"></i></button><button @click="reconnectServer(s.id || s.index)" class="p-2 text-slate-400 hover:text-green-600"><i data-lucide="refresh-cw" class="w-4 h-4"></i></button><button @click="deleteServer(s.id || s.index)" class="p-2 text-slate-400 hover:text-red-600"><i data-lucide="trash-2" class="w-4 h-4"></i></button></div></td>
           </tr>
         </tbody>
       </table>
@@ -171,12 +171,12 @@
       <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div class="space-y-4"><h3 class="text-xs font-bold text-slate-400 uppercase tracking-widest">系统设置</h3>
           <div><label class="block text-sm font-medium mb-1">系统名称</label><input type="text" v-model="settings.serverName" class="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"></div>
-          <div><label class="block text-sm font-medium mb-1">默认播放模式</label><select v-model="settings.playbackMode" class="w-full px-4 py-2 border rounded-lg outline-none"><option value="proxy">代理模式 (Proxy)</option><option value="redirect">直连模式 (302)</option></select><p v-if="settings.playbackMode === 'redirect'" class="mt-1 text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded p-2">⚠ 直连模式会将上游服务器的 Access Token 暴露在 302 重定向 URL 中，客户端可见。请确认您了解此安全风险。</p></div>
+          <div><label class="block text-sm font-medium mb-1">默认播放模式</label><select v-model="settings.playbackMode" class="w-full px-4 py-2 border rounded-lg outline-none"><option value="proxy">代理模式 (Proxy)</option><option value="redirect">直连模式 (302)</option></select><p v-if="settings.playbackMode === 'redirect'" class="mt-1 text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded p-2">⚠ <b>直连播放模式的安全风险：</b>直连播放模式会把上游账号凭据写入 302 跳转链接，<b>任何能播放的用户都可从中提取凭据</b>并绕过本代理直连上游（相当于上游管理员权限）。请为该上游使用<b>专用的受限账号</b>（仅授予必要的媒体库播放权限、不授予管理权限，不要复用上游管理员账号），或改用代理模式。</p></div>
         </div>
         <div class="space-y-4"><h3 class="text-xs font-bold text-slate-400 uppercase tracking-widest">管理员账户</h3>
-          <div><label class="block text-sm font-medium mb-1">管理用户名</label><input type="text" v-model="settings.adminUsername" class="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"></div>
-          <div><label class="block text-sm font-medium mb-1">修改密码</label><input type="password" v-model="settings.adminPassword" autocomplete="new-password" placeholder="留空则不修改" class="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"></div>
-          <div v-if="settings.adminPassword"><label class="block text-sm font-medium mb-1">当前密码（验证）</label><input type="password" v-model="settings.currentPassword" autocomplete="current-password" placeholder="请输入当前密码以确认修改" class="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"></div>
+          <div><label class="block text-sm font-medium mb-1">管理用户名</label><input type="text" v-model="settings.adminUsername" maxlength="50" class="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"></div>
+          <div><label class="block text-sm font-medium mb-1">修改密码</label><input type="password" v-model="settings.adminPassword" autocomplete="new-password" minlength="8" maxlength="128" placeholder="留空则不修改（8–128 字符）" class="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"></div>
+          <div v-if="settings.adminPassword || (settings.adminUsername && settings.adminUsername !== adminUsernameOriginal)"><label class="block text-sm font-medium mb-1">当前密码（验证）</label><input type="password" v-model="settings.currentPassword" autocomplete="current-password" placeholder="修改用户名或密码时，请输入当前密码以确认" class="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"><p class="mt-1 text-xs text-slate-400">修改管理员用户名或密码都需要当前密码；用户名未改动且密码留空时无需填写。</p></div>
         </div>
       </div>
       <div class="space-y-4">
@@ -243,9 +243,9 @@
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div class="sm:col-span-2"><label class="text-sm font-medium">服务器名称</label><input type="text" v-model="serverForm.name" class="w-full px-4 py-2 border rounded-lg outline-none"></div>
           <div class="sm:col-span-2"><label class="text-sm font-medium">地址 (URL)</label><input type="text" v-model="serverForm.url" class="w-full px-4 py-2 border rounded-lg outline-none"></div>
-          <div class="sm:col-span-2"><label class="text-sm font-medium">推流域名 (留空=与地址相同)</label><input type="text" v-model="serverForm.streamingUrl" placeholder="https://stream.example.com" class="w-full px-4 py-2 border rounded-lg outline-none"></div>
+          <div class="sm:col-span-2"><label class="text-sm font-medium">推流地址（每行一个，可留空）</label><textarea v-model="serverForm.streamingUrlsText" rows="2" placeholder="https://stream.example.com&#10;https://backup.example.com（备用线路）" class="w-full px-4 py-2 border rounded-lg outline-none font-mono text-sm"></textarea><p class="mt-1 text-xs text-slate-400">第 1 个为主线路，其余为备用线路；留空 = 与地址相同。所有线路必须指向同一台 Emby 服务器。代理模式会在主线路连接失败时自动切换备用线路；直连模式按线路健康状态选择。</p></div>
           <div><label class="text-sm font-medium">认证方式</label><select v-model="serverForm.authType" class="w-full px-4 py-2 border rounded-lg outline-none"><option value="password">用户名/密码</option><option value="apiKey">API Key</option></select></div>
-          <div><label class="text-sm font-medium">播放模式</label><select v-model="serverForm.playbackMode" class="w-full px-4 py-2 border rounded-lg outline-none"><option value="proxy">代理模式</option><option value="redirect">直连模式</option></select><p v-if="serverForm.playbackMode === 'redirect'" class="mt-1 text-xs text-amber-600">⚠ 直连模式会暴露上游 Token</p></div>
+          <div><label class="text-sm font-medium">播放模式</label><select v-model="serverForm.playbackMode" class="w-full px-4 py-2 border rounded-lg outline-none"><option value="proxy">代理模式</option><option value="redirect">直连模式</option></select><p v-if="serverForm.playbackMode === 'redirect'" class="mt-1 text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded p-2">⚠ <b>直连播放模式的安全风险：</b>直连播放模式会把上游账号凭据写入 302 跳转链接，<b>任何能播放的用户都可从中提取凭据</b>并绕过本代理直连上游（相当于上游管理员权限）。请为该上游使用<b>专用的受限账号</b>（仅授予必要的媒体库播放权限、不授予管理权限，不要复用上游管理员账号），或改用代理模式。</p></div>
           <div><label class="text-sm font-medium">UA 伪装</label><select v-model="serverForm.spoofClient" class="w-full px-4 py-2 border rounded-lg outline-none"><option value="none">无</option><option value="passthrough">透传客户端</option><option value="infuse">Infuse</option><option value="custom">自定义</option></select></div>
           <div><label class="text-sm font-medium">跟随上游重定向</label><select v-model="serverForm.followRedirects" class="w-full px-4 py-2 border rounded-lg outline-none"><option :value="true">跟随（默认）</option><option :value="false">不跟随</option></select><p class="mt-1 text-xs text-slate-400">上游返回 301/302/303/307/308 时是否自动跟到新地址。选择「不跟随」后按上游错误处理，不会把上游的重定向地址交给客户端。</p></div>
           <div><label class="text-sm font-medium">使用网络代理</label><select v-model="serverForm.proxyId" class="w-full px-4 py-2 border rounded-lg outline-none"><option :value="null">不使用</option><option v-for="p in proxyList" :key="p.id" :value="p.id">{{ p.name }}</option></select></div>
@@ -276,13 +276,13 @@
       <div class="flex justify-between items-center text-xl font-bold"><h3>{{ editUserId ? '编辑用户' : '添加用户' }}</h3><button @click="showUserModal = false" class="text-slate-400"><i data-lucide="x" class="w-6 h-6"></i></button></div>
       <div class="space-y-4">
         <div><label class="text-sm font-medium">用户名</label><input type="text" v-model="userForm.username" class="w-full px-4 py-2 border rounded-lg outline-none"></div>
-        <div><label class="text-sm font-medium">密码</label><input type="password" v-model="userForm.password" :placeholder="editUserId ? '留空不修改' : ''" class="w-full px-4 py-2 border rounded-lg outline-none"></div>
+        <div><label class="text-sm font-medium">密码</label><input type="password" v-model="userForm.password" minlength="8" maxlength="128" :placeholder="editUserId ? '留空不修改' : '8–128 字符'" class="w-full px-4 py-2 border rounded-lg outline-none"><p class="mt-1 text-xs text-slate-400">长度需为 8–128 字符{{ editUserId ? '；留空表示不修改' : '' }}。</p></div>
         <div v-if="editUserId" class="flex items-center space-x-2"><input type="checkbox" v-model="userForm.enabled" class="w-4 h-4 rounded border-slate-300 text-blue-600"><label class="text-sm font-medium">启用</label></div>
         <div><label class="text-sm font-medium block mb-2">允许访问的服务器</label>
           <p class="text-xs text-slate-400 mb-2">不勾选任何服务器表示允许访问全部</p>
           <div class="space-y-2 max-h-48 overflow-y-auto">
-            <label v-for="s in upstreamList" :key="s.index" class="flex items-center space-x-2 cursor-pointer hover:bg-slate-50 p-1 rounded">
-              <input type="checkbox" :value="s.index" v-model="userForm.allowedServers" class="w-4 h-4 rounded border-slate-300 text-blue-600">
+            <label v-for="s in upstreamList" :key="s.id || s.index" class="flex items-center space-x-2 cursor-pointer hover:bg-slate-50 p-1 rounded">
+              <input type="checkbox" :value="s.id" v-model="userForm.allowedServers" class="w-4 h-4 rounded border-slate-300 text-blue-600">
               <span class="text-sm">{{ s.name }}</span>
               <span :class="s.online ? 'text-green-500' : 'text-red-400'" class="text-xs">({{ s.online ? '在线' : '离线' }})</span>
             </label>

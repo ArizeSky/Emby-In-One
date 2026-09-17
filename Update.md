@@ -1,10 +1,50 @@
 # Emby-In-One 更新日志
 
+## V1.4.5（多推流线路支持）
+
+发布日期：2026-09-17
+
+> 本版为「多推流地址」功能版本：上游可配置**多条有序推流线路**（主线路 + 备用线路），并修复一个代理模式下 HLS 播放的阻塞性缺陷。
+
+### ⚠️ 升级须知
+
+- **代理模式 HLS 清单重写行为修复**：此前 Go 版把 HLS 清单里的分片 URL 重写为**上游主机的绝对地址**（携带虚拟 ID 与代理 token，客户端实际无法使用，HLS 转码播放会失败）。现恢复为**代理相对路径**——分片请求回到本代理，与 Node 版 V1.2 的既定行为一致。已配置反向代理 / 公网域名的部署无需任何改动。
+- 旧配置里的单条 `streamingUrl` 键继续有效，保存时自动并入新的有序列表；无需手动迁移。
+
+### 新功能：多推流线路（`streamingUrls`）
+
+上游配置新增 `streamingUrls` 有序列表（管理面板为多行输入框，每行一条，也支持逗号分隔）：第 1 条为主线路，其余为备用线路。所有线路必须指向**同一台** Emby 服务器——多条线路是到同一服务器的多条路由，不是镜像集群（转码会话存在服务器本地，跨镜像换线路会导致 404）。
+
+- **代理模式——连接级故障转移**：主线路连接失败（连接拒绝 / 超时 / TLS 错误）时自动改用备用线路拉流，客户端无感知；上游返回的任何 HTTP 状态（含 404/403，例如转码会话尚未就绪）**不**视为线路故障，不触发切换
+- **直连模式——线路健康选择**：每个健康检查周期对推流线路做连接级存活探测（`GET /Videos/probe`，不带任何凭据）。**任何 HTTP 响应都算存活**——包括只反代 `/Videos/`、`/Audio/` 的分流线路返回的 403/404，不会被误杀；只有 DNS / TCP / TLS 失败才判死。被标记死亡的线路 60 秒内不再选用，之后自动恢复候选；全部被标记死时仍按配置顺序尝试（探测误判不会导致无线路可用）
+- 302 直连发出后流量不经过代理，播放中途的线路故障由播放器重新拉取清单时自然切换
+- 单条线路配置（或留空 = 与 `url` 相同）行为与旧版完全一致
+
+### Bug 修复
+
+- **代理模式 HLS 清单重写回归（阻塞性）**：`RewriteM3U8ForItem` 输出的分片 URL 恢复为代理相对路径（虚拟 ID + 代理 token），上游主机名与上游 token 不再出现在客户端可见的清单中；无法路由的分片行（非 `/Videos/{id}` / `/Audio/{id}` 形态）原样透传但剥离上游凭据；上游部署在子路径（如 `/emby`）时该前缀不再泄漏进代理路径。测试同步补上主机名断言（旧断言只查子串、恰好被 `127.0.0.1` 测试地址绕过）
+
+### 涉及文件
+
+| 文件 | 修改内容 |
+|------|----------|
+| `internal/backend/streamproxy.go` | HLS 清单重写改为代理相对路径；剥离不可路由行的凭据；丢弃上游路径前缀 |
+| `internal/backend/config.go` | `StreamingURLs` 有序列表：流式序列解析、渲染、旧键迁移去重、快照深拷贝 |
+| `internal/backend/upstream.go` | `StreamBaseURLs` 候选与死亡标记；`doRequestForMode` 拆分单次执行并在 stream 模式按候选故障转移；`BuildURLForMode` 选首个存活线路 |
+| `internal/backend/stream_probe.go`（新增） | 连接级存活探测：任何 HTTP 响应即存活 |
+| `internal/backend/healthcheck.go` | 健康检查周期接入线路探测（在线上游） |
+| `internal/backend/admin_validation.go` / `handlers_admin.go` | `streamingUrls` 输入归一化（换行/逗号）、逐条校验、列表回显 |
+| `public/admin.html` / `public/admin.js` | 推流地址多行输入框，数组与文本互转 |
+| `internal/backend/streaming_urls_test.go`（新增） | 故障转移、HTTP 状态不触发切换、探测语义（403 存活）、redirect 选线、HLS 集成、配置往返 |
+| `internal/backend/streamproxy_test.go` / `media_test.go` | 清单重写断言更新为代理相对路径 + 主机名守卫 |
+
+---
+
 ## V1.4.4
 
 发布日期：2026-09-15
 
-> V1.4.4 为 V1.4.3 的累积更新，汇总一次全项目审查的修复产出（15 项）与后续跟进项：内容访问控制与 SSRF 加固、普通用户本地观看状态筛选落地、无 `ParentId` 聚合列表的分页缺陷修复、虚拟用户 ID 透传缺陷修复、仓库行尾统一，以及管理面板前端依赖自托管与 CSP 收紧。**管理面板的资源加载方式、安全策略与普通用户的响应身份有变化，升级前请先读「升级须知」。**
+> V1.4.4 为 V1.4.3 的累积更新，汇总一次全项目审查的修复产出（15 项）与后续跟进项：**上游服务解耦数组下标全面采用持久化唯一 `server_id`**、内容访问控制与 SSRF 加固、普通用户本地观看状态筛选落地、无 `ParentId` 聚合列表的分页缺陷修复、虚拟用户 ID 透传缺陷修复、仓库行尾统一，以及管理面板前端依赖自托管与 CSP 收紧。**管理面板的资源加载方式、安全策略与普通用户的响应身份有变化，升级前请先读「升级须知」。**
 
 ### ⚠️ 升级须知
 
@@ -24,6 +64,15 @@
 - **敏感文件权限**：新增 `privatefile.go`，配置与 token 文件在 Unix/Linux 上按 `0600` 写入；SQLite 建库后同步收紧 `-wal` / `-shm` 权限
 - **管理 API 审计日志**：非 GET 请求与全部 4xx/5xx 均记录操作者身份（无效 token 记为 `unknown token`，非管理员标注角色），**绝不记录请求体与查询参数**——其中含密码与 API Key
 - **管理面板 CSP 收紧**：详见「前端依赖自托管与 CSP 收紧」
+
+### 架构升级：上游解耦数组下标，全面采用持久化唯一 server_id（全库零移位重排与外键级联）
+
+此前 `mappings.db` 和 `user_servers`、`user_watch_progress` 使用服务器在列表中的**数组位置下标（`server_index`）**寻址。这种设计带来严重的架构耦合与脆弱性：每当删除或移动上游服务器时，系统都需要对多张表进行复杂的全库位移与回滚“手术”，一旦进程在配置变更与数据操作之间崩溃，将导致映射与授权静默错位。本次彻底淘汰了数组下标，全面重构为**持久化、唯一的字符串标识符 `server_id`**：
+
+- **持久化 ID 自动分配与配置保存**：`UpstreamConfig` 新增 `ID string`（序列化为 YAML 中的 `id:` 字段）。系统启动加载配置时，若发现存量上游缺失 ID，自动为其分配 8 字节 Hex 随机字符串并原子持久化回写 `config.yaml`。上游重命名、换 URL、调序均不改变 ID，彻底免疫历史孤儿化痛点。
+- **SQLite 数据库单事务平滑原子迁移**：系统启动检测到旧 schema 时，在单一事务内对 `id_mappings`、`id_additional_instances`、`user_servers`、`user_watch_progress` 全部 4 张表执行平滑迁移，自动把旧下标转换为对应 `server_id`；迁移过程对全部字段增加容错与 `COALESCE` 防护，杜绝历史 NULL 值触发约束而静默丢失数据；同时保留 `user_servers` 关联用户的级联外键（`ON DELETE CASCADE`）。
+- **彻底根除“位移手术”，重排变为纯内存零开销**：从 `idstore.go` 和 `user_store.go` 中彻底删除了全部 8 个脆弱的移位与回滚函数（`ShiftServerIndices`、`RemoveByServerIndex`、`ReorderServerIndices` 等）；上游服务器排序彻底脱离数据库变更（Zero DB Mutation），实现平滑无感重排；删除上游统一由 `RemoveByServerID` 与 `RemoveServerGrants` 按 ID 级联清理对应映射与授权。
+- **关联已知限制清空**：彻底解决了此前因 `user_watch_progress` 副本下标未同步而导致的排序偶发播放错位问题。
 
 ### 新功能：普通用户列表筛选改为本地状态
 
@@ -124,6 +173,9 @@ object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'
 - 该批四处均做**变异验证**：设置页保存改回不重建上游池 → 四个超时断言全部失败；移除 `applyDeclaredAuthType` → 两个方向的切换都退回 400；排序只同步 ID 映射 → 权限串回 "A"；索引只改内存不落库 → 重启后的持久化断言失败
 - 该批全量：`go build ./...` / `go vet ./...` / `gofmt` 干净；`go test ./... -count=1` 全绿；`go test -race ./internal/backend -count=1` → **537.7s，exit 0**，无 DATA RACE
 - 关键修复均做**变异验证**（故意破坏 → 确认测试失败 → 还原），覆盖：CSP 放回 `'unsafe-inline'`、样式表指回 CDN、面板资源改名、磁盘/内嵌回退方向反转、移除反斜杠守卫、移除 `/admin/{$}` 精确路由（确认 `/admin/` 退回目录列表时测试失败）
+- **上游解耦持久化 `server_id` 重构验证**：
+  - 新增测试：`server_id_migration_test.go`（旧版 SQLite 数据库原子平滑迁移与字段兼容防护）、`server_id_cascade_test.go`（删除上游时的 ID 映射与用户授权级联清理）、`server_id_reorder_test.go`（上游排序零数据库开销与映射授权稳定性）
+  - 全量回归：`go test ./...` 100% 通过（ok 28.5s）；`go vet ./...` 0 错误 0 告警；二进制构建成功
 
 ### 已知限制
 
@@ -140,7 +192,6 @@ object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'
 - **raw body 不是「物理不可改写」**：JSON 声明以外的原始字节按原样转发（含前后空白），已知格式之外的 UserId 本轮不做适配
 - **身份来源覆盖有限**：临时 session ID、已删除标识、重置数据库前的缓存值与过期 token 不在查询覆盖内
 - **面板「默认播放模式」对已有上游无效（本次未修）**：全局模式只在**新建上游**时作为初始值写入（加载期 `normalizeUpstream` 把全局值填进每个上游），此后该上游的 `PlaybackMode` 非空，`streamPlaybackMode` 的「回退到全局」分支永远走不到；设置页保存又不重建上游池，因此改全局模式**既不立刻生效、重启也不生效**。更麻烦的是这次保存会把当时的旧模式当成「显式覆盖」写进每个上游（序列化条件 `upstream.PlaybackMode != cfg.Playback.Mode`），等于把全局设置**永久钉死**。要改某台上游的模式，请用该服务器的「播放模式」下拉（**即时生效**）。彻底修法需要区分「显式设置」与「继承全局」（空值=继承、校验允许空、序列化只写显式值），留待后续版本；新增服务器对话框的「播放模式」下拉目前也固定显示「代理模式」，与全局默认无关，同属这一处
-- **上游排序同样不会同步观看记录里的 `server_index`（本次未修）**：`user_watch_progress` 表按 `(proxy_user_id, virtual_item_id)` 主键，另存一份 `server_index` 副本，读路径 `resolveWatchItemServer` 会**先用它**（只有当那台上游离线时才回退到 ID 映射与其他实例）。排序后这份副本同样会指向另一台上游，于是「继续观看」可能拿 A 的地址去要 B 的条目 ID。它比权限串位轻——条目重新播放时会写回新下标，且离线时会经 IDStore 自愈——但性质相同。修法与本次一致（补一个 `WatchStore` 的索引重映射并挂进 `App.remapServerIndices`），留待后续版本
 - **删除网络代理不会清理上游对它的引用**：上游配置里的 `proxyId` 会留下悬空值，运行时静默回退为直连（只写一条日志），面板列表显示「不使用」，但配置文件里始终留着那个已删除的 id
 
 ### 文档与版本同步

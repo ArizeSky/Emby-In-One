@@ -4,6 +4,7 @@ package backend
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -11,11 +12,45 @@ import (
 )
 
 type tokenInfo struct {
-	UserID         string `json:"userId"`
-	Username       string `json:"username"`
-	Role           string `json:"role"`
-	AllowedServers []int  `json:"allowedServers,omitempty"`
-	CreatedAt      int64  `json:"createdAt"`
+	UserID         string   `json:"userId"`
+	Username       string   `json:"username"`
+	Role           string   `json:"role"`
+	AllowedServers []string `json:"allowedServers,omitempty"`
+	CreatedAt      int64    `json:"createdAt"`
+}
+
+func (t *tokenInfo) UnmarshalJSON(data []byte) error {
+	type rawTokenInfo struct {
+		UserID         string          `json:"userId"`
+		Username       string          `json:"username"`
+		Role           string          `json:"role"`
+		AllowedServers json.RawMessage `json:"allowedServers,omitempty"`
+		CreatedAt      int64           `json:"createdAt"`
+	}
+	var raw rawTokenInfo
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	t.UserID = raw.UserID
+	t.Username = raw.Username
+	t.Role = raw.Role
+	t.CreatedAt = raw.CreatedAt
+
+	if len(raw.AllowedServers) > 0 && string(raw.AllowedServers) != "null" {
+		var strServers []string
+		if err := json.Unmarshal(raw.AllowedServers, &strServers); err == nil {
+			t.AllowedServers = strServers
+		} else {
+			var intServers []int
+			if err := json.Unmarshal(raw.AllowedServers, &intServers); err == nil {
+				t.AllowedServers = make([]string, len(intServers))
+				for i, idx := range intServers {
+					t.AllowedServers[i] = fmt.Sprintf("server-%d", idx)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 type AuthManager struct {
@@ -34,6 +69,10 @@ func NewAuthManager(configStore *ConfigStore, identity *ClientIdentityService, l
 	if tokenFile == "" || tokenFile == "." || tokenFile == string(filepath.Separator) {
 		tokenFile = filepath.Join(defaultDataDir(), "tokens.json")
 	}
+	// Warm the timing equalizer: leaving it to first use would make the very first
+	// unknown-username login the slowest one, which is itself a signal.
+	dummyPasswordHash()
+
 	manager := &AuthManager{
 		configStore: configStore,
 		identity:    identity,
@@ -94,11 +133,20 @@ func (m *AuthManager) load() error {
 		_ = json.Unmarshal(rawProxy, &m.proxyUserID)
 		delete(payload, "_proxyUserId")
 	}
+	cfg := m.configStore.Snapshot()
 	for token, rawToken := range payload {
 		var info tokenInfo
 		if err := json.Unmarshal(rawToken, &info); err == nil {
 			if info.Role == "" && info.UserID == m.proxyUserID {
 				info.Role = "admin"
+			}
+			for i, s := range info.AllowedServers {
+				var oldIdx int
+				if n, _ := fmt.Sscanf(s, "server-%d", &oldIdx); n == 1 {
+					if oldIdx >= 0 && oldIdx < len(cfg.Upstream) && cfg.Upstream[oldIdx].ID != "" {
+						info.AllowedServers[i] = cfg.Upstream[oldIdx].ID
+					}
+				}
 			}
 			m.tokens[token] = info
 		}
@@ -121,12 +169,18 @@ func (m *AuthManager) save() error {
 	if err != nil {
 		return err
 	}
-	return writeFileAtomically(m.tokenFile, encoded, PrivateFileMode())
+	return WriteFileAtomic(m.tokenFile, encoded, PrivateFileMode())
 }
 
 func (m *AuthManager) Authenticate(username, password string) (map[string]any, bool, error) {
 	cfg := m.configStore.Snapshot()
-	if username != cfg.Admin.Username || !VerifyPassword(password, cfg.Admin.Password) {
+	if username != cfg.Admin.Username {
+		// Spend the same scrypt time a real check would, so the response does not confirm
+		// which account name the administrator uses.
+		spendVerifyTime(password)
+		return nil, false, nil
+	}
+	if !VerifyPassword(password, cfg.Admin.Password) {
 		return nil, false, nil
 	}
 	token := randomHex(16)
@@ -245,7 +299,7 @@ func (m *AuthManager) AuthenticateUser(user *User) (map[string]any, string, erro
 		UserID:         user.ID,
 		Username:       user.Username,
 		Role:           "user",
-		AllowedServers: append([]int(nil), user.AllowedServers...),
+		AllowedServers: append([]string(nil), user.AllowedServers...),
 		CreatedAt:      time.Now().UnixMilli(),
 	}
 	m.mu.Unlock()

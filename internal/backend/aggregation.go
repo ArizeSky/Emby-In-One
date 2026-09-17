@@ -52,7 +52,7 @@ func (a *App) aggregateUpstreams(parentCtx context.Context, cfg aggregationConfi
 		select {
 		case res := <-resultCh:
 			received++
-			if len(res.result.Items) > 0 || res.result.ServerIndex > 0 {
+			if res.result.Err == nil {
 				collected = append(collected, res.result)
 			}
 			if graceTimer == nil && len(collected) > 0 && cfg.gracePeriod > 0 {
@@ -106,9 +106,9 @@ func (a *App) registerBackgroundIDs(result upstreamItemsResult) {
 	cfg := a.ConfigStore.Snapshot()
 	for _, item := range result.Items {
 		if originalID, ok := item["Id"].(string); ok && originalID != "" {
-			a.IDStore.GetOrCreateVirtualID(originalID, result.ServerIndex)
+			a.IDStore.GetOrCreateVirtualID(originalID, result.ServerID)
 		}
-		rewriteResponseIDs(item, result.ServerIndex, a.IDStore, cfg.Server.ID, a.Auth.ProxyUserID())
+		rewriteResponseIDs(item, result.ServerID, a.IDStore, cfg.Server.ID, a.Auth.ProxyUserID())
 	}
 }
 

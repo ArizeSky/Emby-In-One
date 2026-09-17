@@ -73,8 +73,8 @@ func TestItemsResumeFallsBackAcrossSeriesInstances(t *testing.T) {
 
 	withTempAppConfig(t, config, func(app *App, handler http.Handler) {
 		token := loginToken(t, handler, "secret")
-		virtualSeries := app.IDStore.GetOrCreateVirtualID("series-a", 0)
-		app.IDStore.AssociateAdditionalInstance(virtualSeries, "series-b", 1)
+		virtualSeries := app.IDStore.GetOrCreateVirtualID("series-a", app.Upstream.Clients()[0].ID)
+		app.IDStore.AssociateAdditionalInstance(virtualSeries, "series-b", app.Upstream.Clients()[1].ID)
 
 		rr := doJSONRequest(t, handler, http.MethodGet, "/Users/"+app.Auth.ProxyUserID()+"/Items/Resume?ParentId="+virtualSeries, nil, token)
 		if rr.Code != http.StatusOK {
@@ -159,8 +159,8 @@ func TestShowsNextUpUsesPrimarySeriesResultWithoutQueryingSecondary(t *testing.T
 
 	withTempAppConfig(t, config, func(app *App, handler http.Handler) {
 		token := loginToken(t, handler, "secret")
-		virtualSeries := app.IDStore.GetOrCreateVirtualID("series-a", 0)
-		app.IDStore.AssociateAdditionalInstance(virtualSeries, "series-b", 1)
+		virtualSeries := app.IDStore.GetOrCreateVirtualID("series-a", app.Upstream.Clients()[0].ID)
+		app.IDStore.AssociateAdditionalInstance(virtualSeries, "series-b", app.Upstream.Clients()[1].ID)
 
 		rr := doJSONRequest(t, handler, http.MethodGet, "/Shows/NextUp?SeriesId="+virtualSeries, nil, token)
 		if rr.Code != http.StatusOK {
@@ -218,7 +218,7 @@ func TestPlaybackInfoAndMasterPlaylistProxy(t *testing.T) {
 
 	withTempAppConfig(t, config, func(app *App, handler http.Handler) {
 		token := loginToken(t, handler, "secret")
-		virtualEpisode := app.IDStore.GetOrCreateVirtualID("episode-1", 0)
+		virtualEpisode := app.IDStore.GetOrCreateVirtualID("episode-1", app.Upstream.Clients()[0].ID)
 
 		playbackRR := doJSONRequest(t, handler, http.MethodGet, "/Items/"+virtualEpisode+"/PlaybackInfo", nil, token)
 		if playbackRR.Code != http.StatusOK {
@@ -249,14 +249,19 @@ func TestPlaybackInfoAndMasterPlaylistProxy(t *testing.T) {
 			t.Fatalf("playlist status = %d, body=%s", playlistRR.Code, playlistRR.Body.String())
 		}
 		body := playlistRR.Body.String()
-		if strings.Contains(strings.ToLower(body), "localhost") {
-			t.Fatalf("playlist should not contain localhost: %s", body)
+		if strings.Contains(strings.ToLower(body), "localhost") || strings.Contains(body, "127.0.0.1") {
+			t.Fatalf("playlist should not contain a host: %s", body)
 		}
 		if !strings.Contains(body, "/Videos/"+virtualEpisode+"/segment1.ts?api_key="+token) {
 			t.Fatalf("playlist missing rewritten relative segment path: %s", body)
 		}
-		if !strings.Contains(body, "cdn.example") || strings.Contains(body, "api_key=upstream-token") {
-			t.Fatalf("playlist missing rewritten absolute segment path or still has upstream token: %s", body)
+		// A segment that arrived as an absolute CDN URL must also come back as a
+		// proxy-relative path carrying the proxy token — never the upstream host.
+		if !strings.Contains(body, "/Videos/"+virtualEpisode+"/hls1/main/seg.ts?") || strings.Contains(body, "cdn.example") {
+			t.Fatalf("playlist missing rewritten absolute segment path or still has upstream host: %s", body)
+		}
+		if strings.Contains(body, "api_key=upstream-token") {
+			t.Fatalf("playlist still has upstream token: %s", body)
 		}
 
 		segmentRR := doJSONRequest(t, handler, http.MethodGet, "/Videos/"+virtualEpisode+"/segment1.ts?api_key="+token, nil, "")
@@ -298,7 +303,7 @@ func TestPlaybackInfoRewritesSubtitleDeliveryURLForASSTracks(t *testing.T) {
 
 	withTempAppConfig(t, config, func(app *App, handler http.Handler) {
 		token := loginToken(t, handler, "secret")
-		virtualEpisode := app.IDStore.GetOrCreateVirtualID("episode-1", 0)
+		virtualEpisode := app.IDStore.GetOrCreateVirtualID("episode-1", app.Upstream.Clients()[0].ID)
 
 		playbackRR := doJSONRequest(t, handler, http.MethodGet, "/Items/"+virtualEpisode+"/PlaybackInfo", nil, token)
 		if playbackRR.Code != http.StatusOK {

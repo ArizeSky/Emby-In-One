@@ -28,7 +28,7 @@ func TestFallbackConvertsHTMLUpstreamErrorToJSON502(t *testing.T) {
 
 	withTempAppPrepared(t, config, nil, func(app *App, handler http.Handler, dir string) {
 		token := loginToken(t, handler, "secret")
-		virtualID := app.IDStore.GetOrCreateVirtualID("item-a", 0)
+		virtualID := app.IDStore.GetOrCreateVirtualID("item-a", app.Upstream.Clients()[0].ID)
 		rr := doJSONRequest(t, handler, http.MethodGet, "/CustomHTML/"+virtualID, nil, token)
 		if rr.Code != http.StatusBadGateway {
 			t.Fatalf("fallback status = %d, want 502 body=%s", rr.Code, rr.Body.String())
@@ -68,7 +68,7 @@ func TestFallbackDoesNotBlockSVGOrXMLResponses(t *testing.T) {
 
 	withTempAppPrepared(t, config, nil, func(app *App, handler http.Handler, dir string) {
 		token := loginToken(t, handler, "secret")
-		virtualID := app.IDStore.GetOrCreateVirtualID("item-a", 0)
+		virtualID := app.IDStore.GetOrCreateVirtualID("item-a", app.Upstream.Clients()[0].ID)
 		rr := doJSONRequest(t, handler, http.MethodGet, "/CustomHTML/"+virtualID+"/Images/Primary", nil, token)
 		if rr.Code != http.StatusOK {
 			t.Fatalf("svg fallback status = %d, want 200 body=%s", rr.Code, rr.Body.String())

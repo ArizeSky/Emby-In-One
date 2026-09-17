@@ -31,17 +31,19 @@ func TestResolveRouteIDFallbackToOtherInstance(t *testing.T) {
 
 	config := dualUpstreamConfig(srvA.URL, srvB.URL)
 	withTempAppConfig(t, config, func(app *App, handler http.Handler) {
+		s0 := app.Upstream.Clients()[0].ID
+		s1 := app.Upstream.Clients()[1].ID
 		// Create virtual ID on server 0, associate server 1 as OtherInstance
-		virtualID := app.IDStore.GetOrCreateVirtualID("movie-a", 0)
-		app.IDStore.AssociateAdditionalInstance(virtualID, "movie-b", 1)
+		virtualID := app.IDStore.GetOrCreateVirtualID("movie-a", s0)
+		app.IDStore.AssociateAdditionalInstance(virtualID, "movie-b", s1)
 
 		// Both online: primary wins
 		res := app.resolveRouteID(virtualID)
 		if res == nil {
 			t.Fatal("resolveRouteID returned nil with both servers online")
 		}
-		if res.ServerIndex != 0 || res.OriginalID != "movie-a" {
-			t.Fatalf("expected server=0 orig=movie-a, got server=%d orig=%s", res.ServerIndex, res.OriginalID)
+		if res.ServerID != s0 || res.OriginalID != "movie-a" {
+			t.Fatalf("expected server=%s orig=movie-a, got server=%s orig=%s", s0, res.ServerID, res.OriginalID)
 		}
 
 		// Set server 0 offline
@@ -51,8 +53,8 @@ func TestResolveRouteIDFallbackToOtherInstance(t *testing.T) {
 		if res2 == nil {
 			t.Fatal("resolveRouteID returned nil after primary offline")
 		}
-		if res2.ServerIndex != 1 || res2.OriginalID != "movie-b" {
-			t.Fatalf("fallback: expected server=1 orig=movie-b, got server=%d orig=%s", res2.ServerIndex, res2.OriginalID)
+		if res2.ServerID != s1 || res2.OriginalID != "movie-b" {
+			t.Fatalf("fallback: expected server=%s orig=movie-b, got server=%s orig=%s", s1, res2.ServerID, res2.OriginalID)
 		}
 
 		// Both offline: nil
@@ -88,30 +90,32 @@ func TestResolveWatchItemServerFallback(t *testing.T) {
 
 	config := dualUpstreamConfig(srvA.URL, srvB.URL)
 	withTempAppConfig(t, config, func(app *App, handler http.Handler) {
-		virtualID := app.IDStore.GetOrCreateVirtualID("movie-a", 0)
-		app.IDStore.AssociateAdditionalInstance(virtualID, "movie-b", 1)
+		s0 := app.Upstream.Clients()[0].ID
+		s1 := app.Upstream.Clients()[1].ID
+		virtualID := app.IDStore.GetOrCreateVirtualID("movie-a", s0)
+		app.IDStore.AssociateAdditionalInstance(virtualID, "movie-b", s1)
 
 		wp := &WatchProgress{
 			VirtualItemID:  virtualID,
-			ServerIndex:    0,
+			ServerID:       s0,
 			OriginalItemID: "movie-a",
 		}
 
 		// Primary online: returns server 0
-		idx, origID, ok := app.resolveWatchItemServer(wp)
-		if !ok || idx != 0 || origID != "movie-a" {
-			t.Fatalf("primary online: idx=%d origID=%s ok=%v", idx, origID, ok)
+		serverID, origID, ok := app.resolveWatchItemServer(wp)
+		if !ok || serverID != s0 || origID != "movie-a" {
+			t.Fatalf("primary online: serverID=%s origID=%s ok=%v", serverID, origID, ok)
 		}
 
 		// Set server 0 offline
 		app.Upstream.GetClient(0).setOffline("test offline")
 
-		idx2, origID2, ok2 := app.resolveWatchItemServer(wp)
+		serverID2, origID2, ok2 := app.resolveWatchItemServer(wp)
 		if !ok2 {
 			t.Fatal("fallback failed: resolveWatchItemServer returned ok=false")
 		}
-		if idx2 != 1 || origID2 != "movie-b" {
-			t.Fatalf("fallback: expected server=1 orig=movie-b, got server=%d orig=%s", idx2, origID2)
+		if serverID2 != s1 || origID2 != "movie-b" {
+			t.Fatalf("fallback: expected server=%s orig=movie-b, got server=%s orig=%s", s1, serverID2, origID2)
 		}
 
 		// Both offline
@@ -147,29 +151,31 @@ func TestResolveSeriesServerFallback(t *testing.T) {
 
 	config := dualUpstreamConfig(srvA.URL, srvB.URL)
 	withTempAppConfig(t, config, func(app *App, handler http.Handler) {
-		seriesVID := app.IDStore.GetOrCreateVirtualID("series-a", 0)
-		app.IDStore.AssociateAdditionalInstance(seriesVID, "series-b", 1)
+		s0 := app.Upstream.Clients()[0].ID
+		s1 := app.Upstream.Clients()[1].ID
+		seriesVID := app.IDStore.GetOrCreateVirtualID("series-a", s0)
+		app.IDStore.AssociateAdditionalInstance(seriesVID, "series-b", s1)
 
 		sp := &WatchProgress{
 			SeriesVirtualID:  seriesVID,
 			SeriesOriginalID: "series-a",
-			ServerIndex:      0,
+			ServerID:         s0,
 		}
 
 		// Primary online
-		idx, origID, client := app.resolveSeriesServer(sp)
-		if client == nil || idx != 0 || origID != "series-a" {
-			t.Fatalf("primary online: idx=%d origID=%s client=%v", idx, origID, client)
+		serverID, origID, client := app.resolveSeriesServer(sp)
+		if client == nil || serverID != s0 || origID != "series-a" {
+			t.Fatalf("primary online: serverID=%s origID=%s client=%v", serverID, origID, client)
 		}
 
 		// Server 0 offline → fallback to 1
 		app.Upstream.GetClient(0).setOffline("test offline")
-		idx2, origID2, client2 := app.resolveSeriesServer(sp)
+		serverID2, origID2, client2 := app.resolveSeriesServer(sp)
 		if client2 == nil {
 			t.Fatal("fallback failed: resolveSeriesServer returned nil client")
 		}
-		if idx2 != 1 || origID2 != "series-b" {
-			t.Fatalf("fallback: expected server=1 orig=series-b, got server=%d orig=%s", idx2, origID2)
+		if serverID2 != s1 || origID2 != "series-b" {
+			t.Fatalf("fallback: expected server=%s orig=series-b, got server=%s orig=%s", s1, serverID2, origID2)
 		}
 
 		// Both offline
@@ -235,8 +241,8 @@ func TestResumeEndpointOfflineFallback(t *testing.T) {
 		childToken := loginTokenAs(t, handler, "child", "child123")
 
 		// Create virtual ID and associate to both servers
-		virtualID := app.IDStore.GetOrCreateVirtualID("movie-a", 0)
-		app.IDStore.AssociateAdditionalInstance(virtualID, "movie-b", 1)
+		virtualID := app.IDStore.GetOrCreateVirtualID("movie-a", app.Upstream.Clients()[0].ID)
+		app.IDStore.AssociateAdditionalInstance(virtualID, "movie-b", app.Upstream.Clients()[1].ID)
 
 		// Record watch progress on server 0 via session
 		rr = doAuthJSON(t, handler, http.MethodPost, "/Sessions/Playing",

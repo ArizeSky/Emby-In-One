@@ -58,7 +58,7 @@ func TestPlaybackInfoForwardsUpstreamUserID(t *testing.T) {
 
 	withTempAppConfig(t, singleUpstreamConfig(upstream.URL), func(app *App, handler http.Handler) {
 		token := loginToken(t, handler, "secret")
-		virtualEpisode := app.IDStore.GetOrCreateVirtualID("episode-1", 0)
+		virtualEpisode := app.IDStore.GetOrCreateVirtualID("episode-1", app.Upstream.Clients()[0].ID)
 		proxyUserID := app.Auth.ProxyUserID()
 
 		// The client sends EIO's own user ID, in both the query and the body.

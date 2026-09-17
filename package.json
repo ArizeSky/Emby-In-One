@@ -1,12 +1,8 @@
 {
   "name": "emby-in-one",
   "version": "1.0.0",
-  "description": "Emby multi-server aggregation proxy",
-  "main": "src/index.js",
+  "description": "Emby multi-server aggregation proxy (Go). The panel build lives here; the legacy Node implementation is under legacy/.",
   "scripts": {
-    "start": "node src/index.js",
-    "dev": "node --watch src/index.js",
-    "test": "node --test --test-isolation=none",
     "build:panel": "npx --yes tailwindcss@3.4.17 -c tailwind.config.js -i assets/panel.css -o public/vendor/tailwind.css --minify"
   },
   "keywords": [
@@ -15,14 +11,5 @@
     "aggregator"
   ],
   "license": "GPL-3.0",
-  "dependencies": {
-    "axios": "^1.7.0",
-    "better-sqlite3": "^11.0.0",
-    "express": "^4.21.0",
-    "express-rate-limit": "^8.3.1",
-    "js-yaml": "^4.1.0",
-    "uuid": "^10.0.0",
-    "winston": "^3.14.0",
-    "ws": "^8.18.0"
-  }
+  "private": true
 }

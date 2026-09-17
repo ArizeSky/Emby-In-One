@@ -15,7 +15,7 @@ var fallbackVirtualIDPattern = regexp.MustCompile(`(?i)[a-f0-9]{32}`)
 
 func (a *App) handleFallbackProxy(w http.ResponseWriter, r *http.Request) {
 	reqCtx := requestContextFrom(r.Context())
-	targetClient, rewrittenPath, serverIndex, query, ambiguous := a.resolveFallbackTarget(r, reqCtx)
+	targetClient, rewrittenPath, serverID, query, ambiguous := a.resolveFallbackTarget(r, reqCtx)
 	if targetClient == nil {
 		if ambiguous {
 			if a.Logger != nil {
@@ -57,7 +57,14 @@ func (a *App) handleFallbackProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
-	copySelectedHeaders(w.Header(), resp.Header, []string{"Content-Type", "Content-Length", "Content-Range", "Accept-Ranges", "Cache-Control", "ETag", "Last-Modified", "Content-Disposition"})
+	// Content-Length is deliberately not copied here. Every buffered path below
+	// re-serializes the payload (JSON is re-encoded after ID rewriting, HTML errors are
+	// replaced), so the upstream length no longer describes what we are about to write.
+	// net/http honours an explicitly set Content-Length verbatim: a longer body gets
+	// silently truncated and a shorter one leaves the client waiting for bytes that
+	// never arrive. Each path below is responsible for its own length: the byte-exact
+	// passthrough re-copies it, the buffered paths let net/http compute it.
+	copySelectedHeaders(w.Header(), resp.Header, []string{"Content-Type", "Content-Range", "Accept-Ranges", "Cache-Control", "ETag", "Last-Modified", "Content-Disposition"})
 	contentType := resp.Header.Get("Content-Type")
 
 	// For successful responses with binary (non-text, non-JSON) content types,
@@ -66,6 +73,11 @@ func (a *App) handleFallbackProxy(w http.ResponseWriter, r *http.Request) {
 	mediaLower := strings.ToLower(contentType)
 	if resp.StatusCode < http.StatusBadRequest && contentType != "" &&
 		!isJSONContentType(contentType) && !strings.HasPrefix(mediaLower, "text/") {
+		// io.Copy forwards the upstream bytes untouched, so the upstream length still
+		// applies and can be passed through for exact framing.
+		if contentLength := resp.Header.Get("Content-Length"); contentLength != "" {
+			w.Header().Set("Content-Length", contentLength)
+		}
 		w.WriteHeader(resp.StatusCode)
 		_, _ = io.Copy(w, resp.Body)
 		return
@@ -93,7 +105,7 @@ func (a *App) handleFallbackProxy(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		cfg := a.ConfigStore.Snapshot()
-		rewriteResponseIDs(payload, serverIndex, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
+		rewriteResponseIDs(payload, serverID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 		writeJSON(w, resp.StatusCode, payload)
 		return
 	}
@@ -101,29 +113,29 @@ func (a *App) handleFallbackProxy(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(bodyBytes)
 }
 
-func (a *App) resolveFallbackTarget(r *http.Request, reqCtx *RequestContext) (*UpstreamClient, string, int, url.Values, bool) {
+func (a *App) resolveFallbackTarget(r *http.Request, reqCtx *RequestContext) (*UpstreamClient, string, string, url.Values, bool) {
 	query := cloneValues(r.URL.Query())
 	rewrittenPath := r.URL.Path
-	serverIndex := -1
+	serverID := ""
 	var targetClient *UpstreamClient
 
 	for _, candidate := range fallbackVirtualIDPattern.FindAllString(r.URL.Path, -1) {
 		if resolved := a.IDStore.ResolveVirtualID(candidate); resolved != nil {
 			// Try primary
-			if a.isServerAllowed(reqCtx, resolved.ServerIndex) {
-				if client := a.Upstream.GetClient(resolved.ServerIndex); client != nil && client.IsOnline() {
+			if a.isServerAllowed(reqCtx, resolved.ServerID) {
+				if client := a.Upstream.ClientByID(resolved.ServerID); client != nil && client.IsOnline() {
 					targetClient = client
-					serverIndex = resolved.ServerIndex
+					serverID = resolved.ServerID
 					rewrittenPath = strings.ReplaceAll(rewrittenPath, candidate, resolved.OriginalID)
 					break
 				}
 			}
 			// Primary offline — try OtherInstances
 			for _, other := range resolved.OtherInstances {
-				if a.isServerAllowed(reqCtx, other.ServerIndex) {
-					if client := a.Upstream.GetClient(other.ServerIndex); client != nil && client.IsOnline() {
+				if a.isServerAllowed(reqCtx, other.ServerID) {
+					if client := a.Upstream.ClientByID(other.ServerID); client != nil && client.IsOnline() {
 						targetClient = client
-						serverIndex = other.ServerIndex
+						serverID = other.ServerID
 						rewrittenPath = strings.ReplaceAll(rewrittenPath, candidate, other.OriginalID)
 						break
 					}
@@ -135,13 +147,13 @@ func (a *App) resolveFallbackTarget(r *http.Request, reqCtx *RequestContext) (*U
 		}
 	}
 
-	if rewritten, idx, found := rewriteIDQueryValues(query, a.IDStore); found {
+	if rewritten, sid, found := rewriteIDQueryValues(query, a.IDStore); found {
 		query = url.Values(rewritten)
 		if targetClient == nil {
-			if a.isServerAllowed(reqCtx, idx) {
-				if client := a.Upstream.GetClient(idx); client != nil && client.IsOnline() {
+			if a.isServerAllowed(reqCtx, sid) {
+				if client := a.Upstream.ClientByID(sid); client != nil && client.IsOnline() {
 					targetClient = client
-					serverIndex = idx
+					serverID = sid
 				}
 			}
 		}
@@ -152,15 +164,15 @@ func (a *App) resolveFallbackTarget(r *http.Request, reqCtx *RequestContext) (*U
 	if targetClient == nil {
 		online := a.allowedClients(reqCtx)
 		if len(online) == 0 {
-			return nil, rewrittenPath, serverIndex, query, false
+			return nil, rewrittenPath, serverID, query, false
 		}
 		if len(online) > 1 {
-			return nil, rewrittenPath, serverIndex, query, true
+			return nil, rewrittenPath, serverID, query, true
 		}
 		targetClient = online[0]
-		serverIndex = targetClient.ServerIndex
+		serverID = targetClient.ID
 	}
-	return targetClient, rewrittenPath, serverIndex, query, false
+	return targetClient, rewrittenPath, serverID, query, false
 }
 
 // decodeFallbackBody reads the client body once. A JSON-declared body is decoded
@@ -192,6 +204,32 @@ func decodeFallbackBody(r *http.Request) (any, error) {
 func (a *App) performUpstreamRequest(r *http.Request, client *UpstreamClient, method, path string, query url.Values, body any) (*http.Response, error) {
 	reqCtx := requestContextFrom(r.Context())
 	return client.doRequest(r.Context(), reqCtx, method, path, query, body, client.requestHeaders(reqCtx, a.Identity), false)
+}
+
+// playbackLimiterKey reports the key the concurrent-playback limiter uses for this
+// request, or ok == false when no slot applies: admins are exempt, the limiter may be
+// disabled, and a request without a resolved proxy user or server cannot be counted.
+// TryStart and the failure paths that must undo it share this predicate so the two can
+// never drift apart and leave a slot taken that nothing releases.
+func (a *App) playbackLimiterKey(reqCtx *RequestContext, r *http.Request, serverID string) (userID string, ok bool) {
+	if reqCtx == nil || reqCtx.ProxyUser == nil || reqCtx.ProxyUser.Role == "admin" {
+		return "", false
+	}
+	if a.PlaybackLimiter == nil || serverID == "" {
+		return "", false
+	}
+	cfg := a.ConfigStore.Snapshot()
+	found := false
+	for _, u := range cfg.Upstream {
+		if u.ID == serverID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return "", false
+	}
+	return reqCtx.ProxyUser.UserID, true
 }
 
 func isJSONContentType(contentType string) bool {

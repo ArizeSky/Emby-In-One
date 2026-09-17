@@ -29,7 +29,7 @@ func newTestUserStore(t *testing.T) *UserStore {
 func TestUserStoreCreateAndAuthenticate(t *testing.T) {
 	store := newTestUserStore(t)
 
-	user, err := store.Create("alice", "password123", []int{0, 1})
+	user, err := store.Create("alice", "password123", []string{"srv-0", "srv-1"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -75,29 +75,29 @@ func TestUserStoreCreateAndAuthenticate(t *testing.T) {
 func TestUserStoreAllowedServers(t *testing.T) {
 	store := newTestUserStore(t)
 
-	user, err := store.Create("bob", "pass", []int{0, 2})
+	user, err := store.Create("bob", "pass", []string{"srv-0", "srv-2"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if len(user.AllowedServers) != 2 || user.AllowedServers[0] != 0 || user.AllowedServers[1] != 2 {
-		t.Errorf("AllowedServers = %v, want [0 2]", user.AllowedServers)
+	if len(user.AllowedServers) != 2 || user.AllowedServers[0] != "srv-0" || user.AllowedServers[1] != "srv-2" {
+		t.Errorf("AllowedServers = %v, want [srv-0 srv-2]", user.AllowedServers)
 	}
 
 	// Update to only server 1
-	newServers := []int{1}
+	newServers := []string{"srv-1"}
 	if err := store.Update(user.ID, nil, nil, nil, &newServers); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 	got := store.Get(user.ID)
-	if len(got.AllowedServers) != 1 || got.AllowedServers[0] != 1 {
-		t.Errorf("after update AllowedServers = %v, want [1]", got.AllowedServers)
+	if len(got.AllowedServers) != 1 || got.AllowedServers[0] != "srv-1" {
+		t.Errorf("after update AllowedServers = %v, want [srv-1]", got.AllowedServers)
 	}
 }
 
 func TestUserStoreDeleteCascade(t *testing.T) {
 	store := newTestUserStore(t)
 
-	user, err := store.Create("charlie", "pass", []int{0, 1, 2})
+	user, err := store.Create("charlie", "pass", []string{"srv-0", "srv-1", "srv-2"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -144,30 +144,29 @@ func TestUserStoreDisableUser(t *testing.T) {
 	}
 }
 
-func TestUserStoreShiftServers(t *testing.T) {
+func TestUserStoreRemoveServerGrants(t *testing.T) {
 	store := newTestUserStore(t)
 
-	user, err := store.Create("eve", "pass", []int{0, 1, 2})
+	user, err := store.Create("eve", "pass", []string{"srv-0", "srv-1", "srv-2"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
-	// Delete server index 1 → should become [0, 1] (was [0, 1, 2], removed 1, shifted 2→1)
-	store.ShiftServerIndices(1)
+	// Delete server "srv-1" → should become ["srv-0", "srv-2"]
+	if err := store.RemoveServerGrants("srv-1"); err != nil {
+		t.Fatalf("RemoveServerGrants: %v", err)
+	}
 
 	got := store.Get(user.ID)
 	if len(got.AllowedServers) != 2 {
-		t.Fatalf("after shift AllowedServers length = %d, want 2", len(got.AllowedServers))
+		t.Fatalf("after remove AllowedServers length = %d, want 2", len(got.AllowedServers))
 	}
-	if got.AllowedServers[0] != 0 || got.AllowedServers[1] != 1 {
-		t.Errorf("after shift AllowedServers = %v, want [0 1]", got.AllowedServers)
+	if got.AllowedServers[0] != "srv-0" || got.AllowedServers[1] != "srv-2" {
+		t.Errorf("after remove AllowedServers = %v, want [srv-0 srv-2]", got.AllowedServers)
 	}
 }
 
-// A reorder moves the servers, so a permission has to move with them. The
-// deletion counterpart (ShiftServerIndices) already did this; without the
-// reorder half a permission kept its index and silently named another server.
-func TestUserStoreReorderServers(t *testing.T) {
+func TestUserStoreServerIDStable(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
 	db, err := openSQLite(dbPath)
@@ -180,31 +179,23 @@ func TestUserStoreReorderServers(t *testing.T) {
 		t.Fatalf("NewUserStore: %v", err)
 	}
 
-	carol, err := store.Create("carol", "pass", []int{0, 2})
+	carol, err := store.Create("carol", "pass", []string{"srv-0", "srv-2"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	// A user with no restrictions stores no rows at all. That empty list is not
-	// the same as an empty non-nil one, which means "no server allowed", so the
-	// remap must leave it alone.
 	unrestricted, err := store.Create("dave", "pass", nil)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
-	// Move server 0 to the end: [A B C] becomes [B C A].
-	store.ReorderServerIndices(0, 2)
-
 	got := store.Get(carol.ID)
-	if len(got.AllowedServers) != 2 || got.AllowedServers[0] != 1 || got.AllowedServers[1] != 2 {
-		t.Fatalf("AllowedServers = %v, want [1 2] (A and C keep their servers)", got.AllowedServers)
+	if len(got.AllowedServers) != 2 || got.AllowedServers[0] != "srv-0" || got.AllowedServers[1] != "srv-2" {
+		t.Fatalf("AllowedServers = %v, want [srv-0 srv-2]", got.AllowedServers)
 	}
 	if dave := store.Get(unrestricted.ID); dave.AllowedServers != nil {
 		t.Fatalf("a user with no restrictions gained %v", dave.AllowedServers)
 	}
 
-	// The remap has to be written, not only applied in memory: the next start
-	// loads the stored rows and would put the permission back on the wrong server.
 	_ = closeSQLite(db)
 	db2, err := openSQLite(dbPath)
 	if err != nil {
@@ -220,8 +211,8 @@ func TestUserStoreReorderServers(t *testing.T) {
 	if reloaded == nil {
 		t.Fatal("carol disappeared after reopen")
 	}
-	if len(reloaded.AllowedServers) != 2 || reloaded.AllowedServers[0] != 1 || reloaded.AllowedServers[1] != 2 {
-		t.Fatalf("stored AllowedServers = %v, want [1 2]", reloaded.AllowedServers)
+	if len(reloaded.AllowedServers) != 2 || reloaded.AllowedServers[0] != "srv-0" || reloaded.AllowedServers[1] != "srv-2" {
+		t.Fatalf("stored AllowedServers = %v, want [srv-0 srv-2]", reloaded.AllowedServers)
 	}
 }
 
@@ -229,8 +220,8 @@ func TestUserStoreList(t *testing.T) {
 	store := newTestUserStore(t)
 
 	_, _ = store.Create("user1", "pass", nil)
-	_, _ = store.Create("user2", "pass", []int{0})
-	_, _ = store.Create("user3", "pass", []int{0, 1})
+	_, _ = store.Create("user2", "pass", []string{"srv-0"})
+	_, _ = store.Create("user3", "pass", []string{"srv-0", "srv-1"})
 
 	list := store.List()
 	if len(list) != 3 {
@@ -251,7 +242,7 @@ func TestUserStorePersistence(t *testing.T) {
 		t.Fatalf("NewUserStore: %v", err)
 	}
 
-	user, err := store.Create("persist_user", "pass123", []int{0, 2})
+	user, err := store.Create("persist_user", "pass123", []string{"srv-0", "srv-2"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -277,8 +268,8 @@ func TestUserStorePersistence(t *testing.T) {
 	if loaded.Username != "persist_user" {
 		t.Errorf("username = %q, want persist_user", loaded.Username)
 	}
-	if len(loaded.AllowedServers) != 2 || loaded.AllowedServers[0] != 0 || loaded.AllowedServers[1] != 2 {
-		t.Errorf("AllowedServers = %v, want [0 2]", loaded.AllowedServers)
+	if len(loaded.AllowedServers) != 2 || loaded.AllowedServers[0] != "srv-0" || loaded.AllowedServers[1] != "srv-2" {
+		t.Errorf("AllowedServers = %v, want [srv-0 srv-2]", loaded.AllowedServers)
 	}
 }
 

@@ -22,14 +22,17 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Concurrent playback limit check for regular users
-	if reqCtx != nil && reqCtx.ProxyUser != nil && reqCtx.ProxyUser.Role != "admin" && a.PlaybackLimiter != nil {
-		cfg := a.ConfigStore.Snapshot()
-		if resolved.ServerIndex >= 0 && resolved.ServerIndex < len(cfg.Upstream) {
-			maxConcurrent := cfg.Upstream[resolved.ServerIndex].MaxConcurrent
-			if !a.PlaybackLimiter.TryStart(reqCtx.ProxyUser.UserID, resolved.ServerIndex, r.PathValue("itemId"), maxConcurrent) {
-				writeJSON(w, http.StatusTooManyRequests, map[string]any{"message": "已达到最大同时播放数限制"})
-				return
+	if limiterUserID, ok := a.playbackLimiterKey(reqCtx, r, resolved.ServerID); ok {
+		var maxConcurrent int
+		for _, u := range a.ConfigStore.Snapshot().Upstream {
+			if u.ID == resolved.ServerID {
+				maxConcurrent = u.MaxConcurrent
+				break
 			}
+		}
+		if !a.PlaybackLimiter.TryStart(limiterUserID, resolved.ServerID, r.PathValue("itemId"), maxConcurrent) {
+			writeJSON(w, http.StatusTooManyRequests, map[string]any{"message": "已达到最大同时播放数限制"})
+			return
 		}
 	}
 	instances := a.collectAllowedInstances(reqCtx, resolved)
@@ -87,7 +90,7 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 			originalMSID, _ := mediaSource["Id"].(string)
 			virtualMSID := originalMSID
 			if originalMSID != "" {
-				virtualMSID = a.IDStore.GetOrCreateVirtualID(originalMSID, inst.ServerIndex)
+				virtualMSID = a.IDStore.GetOrCreateVirtualID(originalMSID, inst.ServerID)
 				mediaSource["Id"] = virtualMSID
 			}
 			if directURL, ok := mediaSource["DirectStreamUrl"].(string); ok && directURL != "" {
@@ -174,12 +177,19 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 	// Record which server served this virtual item so Sessions/Playing routes back correctly
 	if len(allMediaSources) > 0 {
 		if virtualItemID := r.PathValue("itemId"); virtualItemID != "" {
-			a.IDStore.SetActiveStream(virtualItemID, resolved.ServerIndex)
+			a.IDStore.SetActiveStream(virtualItemID, resolved.ServerID)
 		}
 	}
 	if base == nil {
 		if a.Logger != nil {
 			a.Logger.Errorf("PlaybackInfo: all upstream requests failed for itemId=%s", r.PathValue("itemId"))
+		}
+		// Nothing will play, so release the slot TryStart reserved above. Clients retry
+		// PlaybackInfo on failure, and holding the slot kept the user counted against
+		// the server's capacity for the full heartbeat timeout while they could not
+		// actually start a stream.
+		if limiterUserID, ok := a.playbackLimiterKey(reqCtx, r, resolved.ServerID); ok {
+			a.PlaybackLimiter.Stop(limiterUserID, resolved.ServerID)
 		}
 		writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Failed to fetch playback info from upstream"})
 		return
@@ -190,7 +200,7 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 	cfg := a.ConfigStore.Snapshot()
 	// Rewrite top-level fields (excluding MediaSources which were already virtualised per-server above)
 	delete(base, "MediaSources")
-	rewriteResponseIDs(base, resolved.ServerIndex, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
+	rewriteResponseIDs(base, resolved.ServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 	base["MediaSources"] = make([]any, 0, len(allMediaSources))
 	for _, mediaSource := range allMediaSources {
 		base["MediaSources"] = append(base["MediaSources"].([]any), mediaSource)

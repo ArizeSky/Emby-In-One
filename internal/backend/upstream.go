@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +14,13 @@ import (
 	"time"
 )
 
+// upstreamHeaderTimeout bounds how long an upstream may take to start answering. Without
+// it a streaming request to an upstream that accepted the connection and then went quiet
+// held its goroutine until the client disconnected. It is deliberately generous: this
+// transport is shared with the API requests and the fallback proxy, whose own client
+// timeouts are normally much shorter.
+const upstreamHeaderTimeout = 5 * time.Minute
+
 var sharedTransport = &http.Transport{
 	Proxy:                 http.ProxyFromEnvironment,
 	MaxIdleConns:          64,
@@ -20,6 +28,7 @@ var sharedTransport = &http.Transport{
 	IdleConnTimeout:       90 * time.Second,
 	TLSHandshakeTimeout:   10 * time.Second,
 	ExpectContinueTimeout: 1 * time.Second,
+	ResponseHeaderTimeout: upstreamHeaderTimeout,
 	// Refuse link-local destinations (cloud instance metadata) while keeping
 	// loopback and RFC1918 upstreams reachable.
 	DialContext: upstreamTransportDialer(),
@@ -59,24 +68,30 @@ type rawRequestBody struct {
 }
 
 type UpstreamClient struct {
-	mu            sync.RWMutex
-	ServerIndex   int
-	Name          string
-	BaseURL       string
-	StreamBaseURL string
-	Online        bool
-	UserID        string
-	AccessToken   string
-	LastError     string
-	Config        UpstreamConfig
-	serverKey     string
-	httpClient    *http.Client
-	transport     http.RoundTripper // per-client transport (shared or proxy-specific)
-	logger        *Logger
-	timeouts      TimeoutsConfig
-	recoveryMu    sync.Mutex
-	lastRecovery  time.Time
-	onAuthError   func(c *UpstreamClient)
+	mu             sync.RWMutex
+	ID             string
+	ServerIndex    int
+	Name           string
+	BaseURL        string
+	StreamBaseURL  string   // effective stream base: first live entry of StreamBaseURLs
+	StreamBaseURLs []string // ordered stream bases: [0] primary, [1:] fallbacks
+	Online         bool
+	UserID         string
+	AccessToken    string
+	LastError      string
+	Config         UpstreamConfig
+	serverKey      string
+	httpClient     *http.Client
+	transport      http.RoundTripper // per-client transport (shared or proxy-specific)
+	logger         *Logger
+	timeouts       TimeoutsConfig
+	recoveryMu     sync.Mutex
+	lastRecovery   time.Time
+	onAuthError    func(c *UpstreamClient)
+	// streamFailures tracks per-stream-base connect-level failure times for
+	// liveness marking; guarded by mu. A base marked dead is skipped by
+	// streamBaseCandidates until streamFailureCooldown passes.
+	streamFailures map[string]time.Time
 }
 
 type UpstreamPool struct {
@@ -156,6 +171,25 @@ func (p *UpstreamPool) Reload(cfg Config) {
 	}
 	p.clients = clients
 	p.mu.Unlock()
+
+	// Every reload builds fresh per-proxy transports, and once its client is replaced
+	// nothing else holds a reference to the old one: its pooled connections stayed open
+	// until IdleConnTimeout expired, so each config save left a set of idle sockets behind
+	// for 90 seconds. The shared transport is excluded — it is shared with the fallback
+	// proxy and outlives any single client.
+	stillInUse := make(map[http.RoundTripper]bool, len(clients))
+	for _, client := range clients {
+		stillInUse[client.transport] = true
+	}
+	for _, old := range oldClients {
+		if old == nil || old.transport == nil || old.transport == sharedTransport || stillInUse[old.transport] {
+			continue
+		}
+		if closer, ok := old.transport.(interface{ CloseIdleConnections() }); ok {
+			closer.CloseIdleConnections()
+		}
+	}
+
 	p.restartHealthChecks(cfg.Timeouts)
 }
 
@@ -220,6 +254,7 @@ func buildProxyTransport(proxyURL string, logger *Logger, serverName string) (ht
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
+		ResponseHeaderTimeout: upstreamHeaderTimeout,
 		DialContext:           upstreamTransportDialer(),
 		DisableCompression:    true,
 	}, true
@@ -237,9 +272,9 @@ func newUpstreamClient(cfg Config, upstream UpstreamConfig, index int, logger *L
 		timeouts.HealthCheck = 30000
 	}
 	baseURL := strings.TrimRight(upstream.URL, "/")
-	streamBaseURL := baseURL
-	if strings.TrimSpace(upstream.StreamingURL) != "" {
-		streamBaseURL = strings.TrimRight(strings.TrimSpace(upstream.StreamingURL), "/")
+	streamBases := append([]string(nil), upstream.StreamingURLs...)
+	if len(streamBases) == 0 {
+		streamBases = []string{baseURL}
 	}
 
 	// Resolve proxy: per-upstream transport if proxyId is set, otherwise shared
@@ -260,21 +295,72 @@ func newUpstreamClient(cfg Config, upstream UpstreamConfig, index int, logger *L
 	}
 
 	return &UpstreamClient{
-		ServerIndex:   index,
-		Name:          upstream.Name,
-		BaseURL:       baseURL,
-		StreamBaseURL: streamBaseURL,
-		Config:        upstream,
-		serverKey:     StableUpstreamKey(upstream),
+		ID:             upstream.ID,
+		ServerIndex:    index,
+		Name:           upstream.Name,
+		BaseURL:        baseURL,
+		StreamBaseURL:  streamBases[0],
+		StreamBaseURLs: streamBases,
+		Config:         upstream,
+		serverKey:      StableUpstreamKey(upstream),
 		httpClient: &http.Client{
 			Transport:     transport,
 			Timeout:       time.Duration(timeouts.API) * time.Millisecond,
 			CheckRedirect: redirectPolicy(upstream.FollowRedirects),
 		},
-		transport: transport,
-		logger:    logger,
-		timeouts:  timeouts,
+		transport:      transport,
+		logger:         logger,
+		timeouts:       timeouts,
+		streamFailures: make(map[string]time.Time),
 	}
+}
+
+// streamFailureCooldown is how long a stream base stays marked dead after a
+// connect-level failure or a failed liveness probe. Short enough that a flapped
+// line recovers on the next request; long enough that a dead line is not
+// retried on every segment.
+const streamFailureCooldown = 60 * time.Second
+
+// markStreamBaseFailed records a connect-level failure for one stream base.
+func (c *UpstreamClient) markStreamBaseFailed(base string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.streamFailures == nil {
+		c.streamFailures = make(map[string]time.Time)
+	}
+	c.streamFailures[base] = time.Now()
+}
+
+// markStreamBaseAlive clears the failure mark for one stream base. A successful
+// request or liveness probe through the line proves it works again.
+func (c *UpstreamClient) markStreamBaseAlive(base string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.streamFailures, base)
+}
+
+// streamBaseCandidates returns the stream bases in configured order, skipping
+// those marked dead within the cooldown. When every base is marked dead the
+// full ordered list is returned anyway: a wrong liveness verdict must never
+// leave the upstream with no stream base at all.
+func (c *UpstreamClient) streamBaseCandidates() []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	bases := c.StreamBaseURLs
+	if len(bases) == 0 {
+		return []string{c.StreamBaseURL}
+	}
+	live := make([]string, 0, len(bases))
+	for _, base := range bases {
+		if failed, ok := c.streamFailures[base]; ok && time.Since(failed) < streamFailureCooldown {
+			continue
+		}
+		live = append(live, base)
+	}
+	if len(live) == 0 {
+		return append([]string(nil), bases...)
+	}
+	return live
 }
 
 func (p *UpstreamPool) GetClient(index int) *UpstreamClient {
@@ -284,6 +370,52 @@ func (p *UpstreamPool) GetClient(index int) *UpstreamClient {
 		return nil
 	}
 	return p.clients[index]
+}
+
+func (p *UpstreamPool) ClientByID(id string) *UpstreamClient {
+	if id == "" {
+		return nil
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	for _, client := range p.clients {
+		if client != nil && client.ID == id {
+			return client
+		}
+	}
+	return nil
+}
+
+func (p *UpstreamPool) ReconnectByID(id string) *UpstreamClient {
+	client := p.ClientByID(id)
+	if client == nil {
+		return nil
+	}
+	identity := p.identityService()
+	if !p.canAttemptPassthroughLogin(client) {
+		if p.logger != nil {
+			p.logger.Infof("[%s] Manual reconnect skipped passthrough login — waiting for real client", client.Name)
+		}
+		return client
+	}
+	client.Login(context.Background(), nil, identity)
+	return client
+}
+
+func (p *UpstreamPool) Reconnect(index int) *UpstreamClient {
+	client := p.GetClient(index)
+	if client == nil {
+		return nil
+	}
+	identity := p.identityService()
+	if !p.canAttemptPassthroughLogin(client) {
+		if p.logger != nil {
+			p.logger.Infof("[%s] Manual reconnect skipped passthrough login — waiting for real client", client.Name)
+		}
+		return client
+	}
+	client.Login(context.Background(), nil, identity)
+	return client
 }
 
 func (p *UpstreamPool) Clients() []*UpstreamClient {
@@ -315,23 +447,6 @@ func (p *UpstreamPool) OnlineClients() []*UpstreamClient {
 		}
 	}
 	return out
-}
-
-func (p *UpstreamPool) Reconnect(index int) *UpstreamClient {
-	client := p.GetClient(index)
-	if client == nil {
-		return nil
-	}
-	if !p.canAttemptPassthroughLogin(client) {
-		if p.logger != nil {
-			p.logger.Infof("[%s] Passthrough reconnect skipped — waiting for real client", client.Name)
-		}
-		copyClient := client.snapshot()
-		return &copyClient
-	}
-	client.Login(context.Background(), nil, p.identityService())
-	copyClient := client.snapshot()
-	return &copyClient
 }
 
 func (p *UpstreamPool) identityService() *ClientIdentityService {
@@ -377,20 +492,22 @@ func (c *UpstreamClient) snapshot() UpstreamClient {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return UpstreamClient{
-		ServerIndex:   c.ServerIndex,
-		Name:          c.Name,
-		BaseURL:       c.BaseURL,
-		StreamBaseURL: c.StreamBaseURL,
-		Online:        c.Online,
-		UserID:        c.UserID,
-		AccessToken:   c.AccessToken,
-		LastError:     c.LastError,
-		Config:        c.Config,
-		serverKey:     c.serverKey,
-		httpClient:    c.httpClient,
-		transport:     c.transport,
-		logger:        c.logger,
-		timeouts:      c.timeouts,
+		ID:             c.ID,
+		ServerIndex:    c.ServerIndex,
+		Name:           c.Name,
+		BaseURL:        c.BaseURL,
+		StreamBaseURL:  c.StreamBaseURL,
+		StreamBaseURLs: append([]string(nil), c.StreamBaseURLs...),
+		Online:         c.Online,
+		UserID:         c.UserID,
+		AccessToken:    c.AccessToken,
+		LastError:      c.LastError,
+		Config:         c.Config,
+		serverKey:      c.serverKey,
+		httpClient:     c.httpClient,
+		transport:      c.transport,
+		logger:         c.logger,
+		timeouts:       c.timeouts,
 	}
 }
 
@@ -629,7 +746,13 @@ func (c *UpstreamClient) BuildURLForMode(path string, params url.Values, stream 
 	}
 	base := c.BaseURL
 	if stream {
-		base = c.StreamBaseURL
+		// The redirect hands one URL to the client for the whole playback, so it
+		// must be a line that currently answers: take the first live candidate.
+		if candidates := c.streamBaseCandidates(); len(candidates) > 0 {
+			base = candidates[0]
+		} else {
+			base = c.StreamBaseURL
+		}
 	}
 	fullURL, err := url.Parse(base + path)
 	if err != nil {
@@ -664,6 +787,11 @@ func (c *UpstreamClient) doRequest(ctx context.Context, reqCtx *RequestContext, 
 // an upstream. It freezes one authentication snapshot per request and uses that
 // same snapshot for the URL, the body and the authentication headers, so a user
 // ID can never be paired with another login's token.
+//
+// For stream requests with fallback stream bases configured, a connect-level
+// failure (DNS, TCP, TLS — anything that never produced a response) is retried
+// against the next base. Any HTTP response, including a 4xx or 5xx, stops the
+// attempts: the upstream answered, so the failure is not the line's.
 func (c *UpstreamClient) doRequestForMode(ctx context.Context, reqCtx *RequestContext, method, path string, params url.Values, body any, headers http.Header, stream bool, mode outboundAuthMode) (*http.Response, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -674,11 +802,39 @@ func (c *UpstreamClient) doRequestForMode(ctx context.Context, reqCtx *RequestCo
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
 	}
-	base := c.BaseURL
-	if stream {
-		base = c.StreamBaseURL
+	if !stream {
+		return c.doRequestOnce(ctx, reqCtx, method, path, params, body, headers, stream, mode, c.BaseURL)
 	}
 
+	bases := c.streamBaseCandidates()
+	var lastErr error
+	for _, base := range bases {
+		resp, err := c.doRequestOnce(ctx, reqCtx, method, path, params, body, headers, stream, mode, base)
+		if err == nil {
+			c.markStreamBaseAlive(base)
+			return resp, nil
+		}
+		lastErr = err
+		// A cancelled request is the client going away, not a dead line; and a
+		// preparation error never touched the network. Neither justifies a retry.
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
+		}
+		if _, isPrep := asPreparationError(err); isPrep {
+			return nil, err
+		}
+		c.markStreamBaseFailed(base)
+		if c.logger != nil {
+			c.logger.Warnf("[%s] Stream base %s failed (%s); trying next fallback", c.Name, base, redactURLInError(err))
+		}
+	}
+	return nil, lastErr
+}
+
+// doRequestOnce performs one outbound request against one base URL. It is the
+// body of the pre-fallback doRequestForMode; every identity rule it applies is
+// unchanged.
+func (c *UpstreamClient) doRequestOnce(ctx context.Context, reqCtx *RequestContext, method, path string, params url.Values, body any, headers http.Header, stream bool, mode outboundAuthMode, base string) (*http.Response, error) {
 	auth := c.authSnapshot()
 	policy := resolveOutboundPolicy(path, method, stream, mode, base)
 
@@ -748,6 +904,11 @@ func (c *UpstreamClient) doRequestForMode(ctx context.Context, reqCtx *RequestCo
 	}
 	client := c.httpClient
 	if stream {
+		// Timeout stays 0 on purpose: a stream is supposed to stay open for the length of a
+		// film, and the overall deadline would cut long playback short. What is bounded is
+		// the wait for response headers (transport-level, see upstreamHeaderTimeout)
+		// and the request's own lifetime — the request carries the client's context, so a
+		// client that goes away takes the upstream call with it.
 		client = &http.Client{Transport: c.transport, Timeout: 0, CheckRedirect: redirectPolicy(c.Config.FollowRedirects)}
 	}
 	if c.logger != nil {

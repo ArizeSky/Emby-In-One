@@ -38,7 +38,7 @@ func (a *App) handleShowsNextUp(w http.ResponseWriter, r *http.Request) {
 			}
 			filtered := filterSeriesItems(asItems(payload), originalIDs)
 			if len(filtered) > 0 {
-				a.rewriteItems(filtered, inst.ServerIndex, a.clientFacingUserIDFor(r))
+				a.rewriteItems(filtered, inst.ServerID, a.clientFacingUserIDFor(r))
 				writeJSON(w, http.StatusOK, map[string]any{"Items": filtered, "TotalRecordCount": len(filtered), "StartIndex": 0})
 				return
 			}
@@ -74,12 +74,12 @@ func (a *App) handleLocalNextUp(w http.ResponseWriter, r *http.Request, reqCtx *
 			writeJSON(w, http.StatusOK, empty)
 			return
 		}
-		nextEp := a.fetchNextEpisode(r, reqCtx, resolved.Client, resolved.OriginalID, resolved.ServerIndex, seriesProgress)
+		nextEp := a.fetchNextEpisode(r, reqCtx, resolved.Client, resolved.OriginalID, resolved.ServerID, seriesProgress)
 		if nextEp == nil {
 			writeJSON(w, http.StatusOK, empty)
 			return
 		}
-		rewriteResponseIDs(nextEp, resolved.ServerIndex, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
+		rewriteResponseIDs(nextEp, resolved.ServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 		a.overlayLocalUserDataItems(r, []map[string]any{nextEp})
 		writeJSON(w, http.StatusOK, map[string]any{"Items": []any{nextEp}, "TotalRecordCount": 1, "StartIndex": 0})
 		return
@@ -105,13 +105,13 @@ func (a *App) handleLocalNextUp(w http.ResponseWriter, r *http.Request, reqCtx *
 		if sp.SeriesOriginalID == "" {
 			continue
 		}
-		serverIdx, seriesOrigID, client := a.resolveSeriesServer(&sp)
+		serverID, seriesOrigID, client := a.resolveSeriesServer(&sp)
 		if client == nil {
 			continue
 		}
-		nextEp := a.fetchNextEpisode(r, reqCtx, client, seriesOrigID, serverIdx, &sp)
+		nextEp := a.fetchNextEpisode(r, reqCtx, client, seriesOrigID, serverID, &sp)
 		if nextEp != nil {
-			rewriteResponseIDs(nextEp, serverIdx, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
+			rewriteResponseIDs(nextEp, serverID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 			if id, _ := nextEp["Id"].(string); id != "" {
 				a.overlayLocalUserData(r, id, nextEp)
 			}
@@ -128,36 +128,36 @@ func (a *App) handleLocalNextUp(w http.ResponseWriter, r *http.Request, reqCtx *
 
 // resolveSeriesServer returns an online server/client for a series watch entry.
 // If the recorded server is offline, it tries OtherInstances via IDStore.
-func (a *App) resolveSeriesServer(sp *WatchProgress) (serverIndex int, seriesOriginalID string, client *UpstreamClient) {
-	c := a.Upstream.GetClient(sp.ServerIndex)
+func (a *App) resolveSeriesServer(sp *WatchProgress) (serverID string, seriesOriginalID string, client *UpstreamClient) {
+	c := a.Upstream.ClientByID(sp.ServerID)
 	if c != nil && c.IsOnline() {
-		return sp.ServerIndex, sp.SeriesOriginalID, c
+		return sp.ServerID, sp.SeriesOriginalID, c
 	}
 	if sp.SeriesVirtualID == "" {
-		return 0, "", nil
+		return "", "", nil
 	}
 	resolved := a.IDStore.ResolveVirtualID(sp.SeriesVirtualID)
 	if resolved == nil {
-		return 0, "", nil
+		return "", "", nil
 	}
-	if resolved.ServerIndex != sp.ServerIndex {
-		alt := a.Upstream.GetClient(resolved.ServerIndex)
+	if resolved.ServerID != sp.ServerID {
+		alt := a.Upstream.ClientByID(resolved.ServerID)
 		if alt != nil && alt.IsOnline() {
-			return resolved.ServerIndex, resolved.OriginalID, alt
+			return resolved.ServerID, resolved.OriginalID, alt
 		}
 	}
 	for _, other := range resolved.OtherInstances {
-		alt := a.Upstream.GetClient(other.ServerIndex)
+		alt := a.Upstream.ClientByID(other.ServerID)
 		if alt != nil && alt.IsOnline() {
-			return other.ServerIndex, other.OriginalID, alt
+			return other.ServerID, other.OriginalID, alt
 		}
 	}
-	return 0, "", nil
+	return "", "", nil
 }
 
 // fetchNextEpisode queries the upstream for the next unwatched episode after
 // the user's last played episode in a series.
-func (a *App) fetchNextEpisode(r *http.Request, reqCtx *RequestContext, client *UpstreamClient, seriesOriginalID string, serverIndex int, lastPlayed *WatchProgress) map[string]any {
+func (a *App) fetchNextEpisode(r *http.Request, reqCtx *RequestContext, client *UpstreamClient, seriesOriginalID string, serverID string, lastPlayed *WatchProgress) map[string]any {
 	q := url.Values{}
 	q.Set("Fields", "BasicSyncInfo,CanDelete,PrimaryImageAspectRatio,Overview,DateCreated,MediaSources,Path,SortName,Studios,Taglines,Genres,CommunityRating,OfficialRating,CumulativeRunTimeTicks,Chapters,ProviderIds")
 	q.Set("UserId", client.clientUserID())
@@ -172,6 +172,8 @@ func (a *App) fetchNextEpisode(r *http.Request, reqCtx *RequestContext, client *
 	items := asItems(payload)
 	// Find the first episode after the user's last played one
 	foundCurrent := false
+	var sameSeasonFallback map[string]any
+	fallbackIndex := 0
 	for _, ep := range items {
 		parentIdx, _ := numericInt(ep["ParentIndexNumber"])
 		idx, _ := numericInt(ep["IndexNumber"])
@@ -188,10 +190,23 @@ func (a *App) fetchNextEpisode(r *http.Request, reqCtx *RequestContext, client *
 		if foundCurrent {
 			return ep
 		}
+		// The remembered episode is not in this page — an upstream that renumbered the
+		// season, or a page that stops before reaching it. Remember the first same-season
+		// episode numbered after it instead of walking straight past the season.
+		if parentIdx == lastPlayed.ParentIndexNumber && idx > lastPlayed.IndexNumber {
+			if sameSeasonFallback == nil || idx < fallbackIndex {
+				sameSeasonFallback = ep
+				fallbackIndex = idx
+			}
+			continue
+		}
 		// Handle case where episodes are in a later season
 		if parentIdx > lastPlayed.ParentIndexNumber {
 			return ep
 		}
+	}
+	if sameSeasonFallback != nil {
+		return sameSeasonFallback
 	}
 
 	// If we didn't find a next episode in this season and the current one was played,

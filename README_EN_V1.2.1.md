@@ -10,8 +10,8 @@ Multi-server Emby aggregation proxy — merges libraries from multiple upstream 
 
 [Demo Site](https://emby.cothx.eu.cc/)
 Emby server address: https://emby.cothx.eu.cc/
-Username: admin
-Password: 5T5xF4oMxcnrcCPA
+
+> **Demo credentials are no longer published in this repository.** For security reasons, no plaintext account or password is provided here. To try the demo, contact the maintainer via GitHub [Issues](https://github.com/ArizeSky/Emby-In-One/issues) for a **periodically rotated** temporary account.
 
 ## Preview
 

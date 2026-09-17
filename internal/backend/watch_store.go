@@ -10,7 +10,7 @@ import (
 type WatchProgress struct {
 	ProxyUserID       string
 	VirtualItemID     string
-	ServerIndex       int
+	ServerID          string
 	OriginalItemID    string
 	ItemType          string // "Movie", "Episode", etc.
 	SeriesVirtualID   string // virtual ID of parent series (episodes only)
@@ -44,7 +44,7 @@ func NewWatchStore(db *sqliteDB, logger *Logger) (*WatchStore, error) {
 		CREATE TABLE IF NOT EXISTS user_watch_progress (
 			proxy_user_id TEXT NOT NULL,
 			virtual_item_id TEXT NOT NULL,
-			server_index INTEGER NOT NULL,
+			server_id TEXT NOT NULL,
 			original_item_id TEXT NOT NULL DEFAULT '',
 			item_type TEXT NOT NULL DEFAULT '',
 			series_virtual_id TEXT NOT NULL DEFAULT '',
@@ -91,9 +91,9 @@ func (ws *WatchStore) RecordProgress(p *WatchProgress) error {
 	ws.mu.Lock()
 	defer ws.mu.Unlock()
 	now := time.Now().UnixMilli()
-	return ws.db.execParams(`
+	return ws.db.writeParams(`
 		INSERT INTO user_watch_progress (
-			proxy_user_id, virtual_item_id, server_index, original_item_id,
+			proxy_user_id, virtual_item_id, server_id, original_item_id,
 			item_type, series_virtual_id, series_original_id, series_name,
 			parent_index_number, index_number, name, production_year, provider_tmdb,
 			position_ticks, runtime_ticks, played, is_favorite, last_played
@@ -104,7 +104,7 @@ func (ws *WatchStore) RecordProgress(p *WatchProgress) error {
 			played = CASE WHEN excluded.played = 1 THEN 1 ELSE played END,
 			is_favorite = CASE WHEN excluded.is_favorite = 1 THEN 1 ELSE is_favorite END,
 			last_played = excluded.last_played,
-			server_index = excluded.server_index,
+			server_id = excluded.server_id,
 			original_item_id = CASE WHEN excluded.original_item_id != '' THEN excluded.original_item_id ELSE original_item_id END,
 			item_type = CASE WHEN excluded.item_type != '' THEN excluded.item_type ELSE item_type END,
 			series_virtual_id = CASE WHEN excluded.series_virtual_id != '' THEN excluded.series_virtual_id ELSE series_virtual_id END,
@@ -116,7 +116,7 @@ func (ws *WatchStore) RecordProgress(p *WatchProgress) error {
 			production_year = CASE WHEN excluded.production_year > 0 THEN excluded.production_year ELSE production_year END,
 			provider_tmdb = CASE WHEN excluded.provider_tmdb != '' THEN excluded.provider_tmdb ELSE provider_tmdb END
 	`,
-		p.ProxyUserID, p.VirtualItemID, p.ServerIndex, p.OriginalItemID,
+		p.ProxyUserID, p.VirtualItemID, p.ServerID, p.OriginalItemID,
 		p.ItemType, p.SeriesVirtualID, p.SeriesOriginalID, p.SeriesName,
 		p.ParentIndexNumber, p.IndexNumber, p.Name, p.ProductionYear, p.ProviderTmdb,
 		p.PositionTicks, p.RuntimeTicks, boolToInt(p.Played), boolToInt(p.IsFavorite), now,
@@ -128,7 +128,7 @@ func (ws *WatchStore) UpdatePosition(proxyUserID, virtualItemID string, position
 	ws.mu.Lock()
 	defer ws.mu.Unlock()
 	now := time.Now().UnixMilli()
-	return ws.db.execParams(`
+	return ws.db.writeParams(`
 		UPDATE user_watch_progress SET
 			position_ticks = ?,
 			runtime_ticks = CASE WHEN ? > 0 THEN ? ELSE runtime_ticks END,
@@ -141,9 +141,9 @@ func (ws *WatchStore) UpdatePosition(proxyUserID, virtualItemID string, position
 func (ws *WatchStore) MarkPlayed(proxyUserID, virtualItemID string, played bool) error {
 	ws.mu.Lock()
 	defer ws.mu.Unlock()
-	return ws.db.execParams(`
-		INSERT INTO user_watch_progress (proxy_user_id, virtual_item_id, server_index, played, last_played)
-		VALUES (?, ?, 0, ?, ?)
+	return ws.db.writeParams(`
+		INSERT INTO user_watch_progress (proxy_user_id, virtual_item_id, server_id, played, last_played)
+		VALUES (?, ?, '', ?, ?)
 		ON CONFLICT(proxy_user_id, virtual_item_id) DO UPDATE SET played = excluded.played
 	`, proxyUserID, virtualItemID, boolToInt(played), time.Now().UnixMilli())
 }
@@ -152,9 +152,9 @@ func (ws *WatchStore) MarkPlayed(proxyUserID, virtualItemID string, played bool)
 func (ws *WatchStore) SetFavorite(proxyUserID, virtualItemID string, favorite bool) error {
 	ws.mu.Lock()
 	defer ws.mu.Unlock()
-	return ws.db.execParams(`
-		INSERT INTO user_watch_progress (proxy_user_id, virtual_item_id, server_index, is_favorite, last_played)
-		VALUES (?, ?, 0, ?, ?)
+	return ws.db.writeParams(`
+		INSERT INTO user_watch_progress (proxy_user_id, virtual_item_id, server_id, is_favorite, last_played)
+		VALUES (?, ?, '', ?, ?)
 		ON CONFLICT(proxy_user_id, virtual_item_id) DO UPDATE SET is_favorite = excluded.is_favorite
 	`, proxyUserID, virtualItemID, boolToInt(favorite), time.Now().UnixMilli())
 }
@@ -167,7 +167,7 @@ func (ws *WatchStore) GetResumeItems(proxyUserID string, limit int) ([]WatchProg
 		limit = 20
 	}
 	stmt, err := ws.db.prepare(`
-		SELECT virtual_item_id, server_index, original_item_id, item_type,
+		SELECT virtual_item_id, server_id, original_item_id, item_type,
 			series_virtual_id, series_original_id, series_name,
 			parent_index_number, index_number, name, production_year, provider_tmdb,
 			position_ticks, runtime_ticks, played, is_favorite, last_played
@@ -201,7 +201,7 @@ func (ws *WatchStore) GetFavoriteItems(proxyUserID string) ([]WatchProgress, err
 	ws.mu.Lock()
 	defer ws.mu.Unlock()
 	stmt, err := ws.db.prepare(`
-		SELECT virtual_item_id, server_index, original_item_id, item_type,
+		SELECT virtual_item_id, server_id, original_item_id, item_type,
 			series_virtual_id, series_original_id, series_name,
 			parent_index_number, index_number, name, production_year, provider_tmdb,
 			position_ticks, runtime_ticks, played, is_favorite, last_played
@@ -224,7 +224,7 @@ func (ws *WatchStore) GetPlayedItems(proxyUserID string) ([]WatchProgress, error
 	ws.mu.Lock()
 	defer ws.mu.Unlock()
 	stmt, err := ws.db.prepare(`
-		SELECT virtual_item_id, server_index, original_item_id, item_type,
+		SELECT virtual_item_id, server_id, original_item_id, item_type,
 			series_virtual_id, series_original_id, series_name,
 			parent_index_number, index_number, name, production_year, provider_tmdb,
 			position_ticks, runtime_ticks, played, is_favorite, last_played
@@ -249,7 +249,7 @@ func (ws *WatchStore) GetResumableItems(proxyUserID string) ([]WatchProgress, er
 	ws.mu.Lock()
 	defer ws.mu.Unlock()
 	stmt, err := ws.db.prepare(`
-		SELECT virtual_item_id, server_index, original_item_id, item_type,
+		SELECT virtual_item_id, server_id, original_item_id, item_type,
 			series_virtual_id, series_original_id, series_name,
 			parent_index_number, index_number, name, production_year, provider_tmdb,
 			position_ticks, runtime_ticks, played, is_favorite, last_played
@@ -272,7 +272,7 @@ func (ws *WatchStore) GetProgress(proxyUserID, virtualItemID string) *WatchProgr
 	ws.mu.Lock()
 	defer ws.mu.Unlock()
 	stmt, err := ws.db.prepare(`
-		SELECT virtual_item_id, server_index, original_item_id, item_type,
+		SELECT virtual_item_id, server_id, original_item_id, item_type,
 			series_virtual_id, series_original_id, series_name,
 			parent_index_number, index_number, name, production_year, provider_tmdb,
 			position_ticks, runtime_ticks, played, is_favorite, last_played
@@ -299,7 +299,7 @@ func (ws *WatchStore) GetNextUpSeries(proxyUserID string) ([]WatchProgress, erro
 	ws.mu.Lock()
 	defer ws.mu.Unlock()
 	stmt, err := ws.db.prepare(`
-		SELECT virtual_item_id, server_index, original_item_id, item_type,
+		SELECT virtual_item_id, server_id, original_item_id, item_type,
 			series_virtual_id, series_original_id, series_name,
 			parent_index_number, index_number, name, production_year, provider_tmdb,
 			position_ticks, runtime_ticks, played, is_favorite, last_played
@@ -319,14 +319,20 @@ func (ws *WatchStore) GetNextUpSeries(proxyUserID string) ([]WatchProgress, erro
 	if err != nil {
 		return nil, err
 	}
-	// Deduplicate: keep only the highest-numbered episode per series
+	// Deduplicate: keep only the highest-numbered episode per series. The series identity
+	// is the virtual ID, not the display name — two different series can share a name, and
+	// folding them together would hide one of them from Continue Watching.
 	seen := map[string]bool{}
 	result := make([]WatchProgress, 0)
 	for _, row := range all {
-		if seen[row.SeriesName] {
+		key := row.SeriesVirtualID
+		if key == "" {
+			key = row.SeriesName
+		}
+		if seen[key] {
 			continue
 		}
-		seen[row.SeriesName] = true
+		seen[key] = true
 		result = append(result, row)
 	}
 	return result, nil
@@ -338,7 +344,7 @@ func (ws *WatchStore) GetNextUpForSeries(proxyUserID, seriesVirtualID string) *W
 	ws.mu.Lock()
 	defer ws.mu.Unlock()
 	stmt, err := ws.db.prepare(`
-		SELECT virtual_item_id, server_index, original_item_id, item_type,
+		SELECT virtual_item_id, server_id, original_item_id, item_type,
 			series_virtual_id, series_original_id, series_name,
 			parent_index_number, index_number, name, production_year, provider_tmdb,
 			position_ticks, runtime_ticks, played, is_favorite, last_played
@@ -366,7 +372,17 @@ func (ws *WatchStore) GetNextUpForSeries(proxyUserID, seriesVirtualID string) *W
 func (ws *WatchStore) DeleteUser(proxyUserID string) error {
 	ws.mu.Lock()
 	defer ws.mu.Unlock()
-	return ws.db.execParams(`DELETE FROM user_watch_progress WHERE proxy_user_id = ?`, proxyUserID)
+	return ws.db.writeParams(`DELETE FROM user_watch_progress WHERE proxy_user_id = ?`, proxyUserID)
+}
+
+// DeleteServerData removes all watch data for a deleted server.
+func (ws *WatchStore) DeleteServerData(serverID string) error {
+	if serverID == "" {
+		return nil
+	}
+	ws.mu.Lock()
+	defer ws.mu.Unlock()
+	return ws.db.writeParams(`DELETE FROM user_watch_progress WHERE server_id = ?`, serverID)
 }
 
 func (ws *WatchStore) scanRows(proxyUserID string, stmt *sqliteStmt) ([]WatchProgress, error) {
@@ -382,7 +398,7 @@ func (ws *WatchStore) scanRows(proxyUserID string, stmt *sqliteStmt) ([]WatchPro
 		results = append(results, WatchProgress{
 			ProxyUserID:       proxyUserID,
 			VirtualItemID:     stmt.columnText(0),
-			ServerIndex:       stmt.columnInt(1),
+			ServerID:          stmt.columnText(1),
 			OriginalItemID:    stmt.columnText(2),
 			ItemType:          stmt.columnText(3),
 			SeriesVirtualID:   stmt.columnText(4),

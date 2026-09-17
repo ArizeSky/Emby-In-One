@@ -171,15 +171,15 @@ func (a *App) resolveStreamTarget(w http.ResponseWriter, r *http.Request, resolv
 		return resolved.Client, resolved.OriginalID, true
 	}
 	query.Set("MediaSourceId", mediaSource.OriginalID)
-	if mediaSource.ServerIndex == resolved.ServerIndex {
+	if mediaSource.ServerID == resolved.ServerID {
 		return resolved.Client, resolved.OriginalID, true
 	}
 
-	if !a.isServerAllowed(requestContextFrom(r.Context()), mediaSource.ServerIndex) {
+	if !a.isServerAllowed(requestContextFrom(r.Context()), mediaSource.ServerID) {
 		writeJSON(w, http.StatusForbidden, map[string]any{"message": "Access denied"})
 		return nil, "", false
 	}
-	target := a.Upstream.GetClient(mediaSource.ServerIndex)
+	target := a.Upstream.ClientByID(mediaSource.ServerID)
 	if target == nil || !target.IsOnline() {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Target media source server is unavailable"})
 		return nil, "", false
@@ -187,12 +187,12 @@ func (a *App) resolveStreamTarget(w http.ResponseWriter, r *http.Request, resolv
 	if a.Logger != nil {
 		a.Logger.Infof("Stream: switching to server [%s] for MediaSourceId %s", target.Name, virtualMediaSourceID)
 	}
-	if !a.switchPlaybackSlot(w, r, mediaSource.ServerIndex, resolved.ServerIndex, virtualItemID) {
+	if !a.switchPlaybackSlot(w, r, mediaSource.ServerID, resolved.ServerID, virtualItemID) {
 		return nil, "", false
 	}
 	// Prefer this server's own copy of the item when it has one.
 	for _, other := range resolved.OtherInstances {
-		if other.ServerIndex == mediaSource.ServerIndex {
+		if other.ServerID == mediaSource.ServerID {
 			return target, other.OriginalID, true
 		}
 	}
@@ -202,20 +202,29 @@ func (a *App) resolveStreamTarget(w http.ResponseWriter, r *http.Request, resolv
 // switchPlaybackSlot enforces the concurrency limit on the server that will serve
 // the stream and releases the previously held slot. Writes 429 and returns false
 // when the target server is already at its limit.
-func (a *App) switchPlaybackSlot(w http.ResponseWriter, r *http.Request, targetIndex, previousIndex int, virtualItemID string) bool {
+func (a *App) switchPlaybackSlot(w http.ResponseWriter, r *http.Request, targetID, previousID string, virtualItemID string) bool {
 	reqCtx := requestContextFrom(r.Context())
 	if a.PlaybackLimiter == nil || reqCtx == nil || reqCtx.ProxyUser == nil || reqCtx.ProxyUser.Role == "admin" {
 		return true
 	}
 	cfg := a.ConfigStore.Snapshot()
-	if targetIndex < 0 || targetIndex >= len(cfg.Upstream) {
+	var maxConcurrent int
+	found := false
+	for _, u := range cfg.Upstream {
+		if u.ID == targetID {
+			maxConcurrent = u.MaxConcurrent
+			found = true
+			break
+		}
+	}
+	if !found {
 		return true
 	}
-	if !a.PlaybackLimiter.TryStart(reqCtx.ProxyUser.UserID, targetIndex, virtualItemID, cfg.Upstream[targetIndex].MaxConcurrent) {
+	if !a.PlaybackLimiter.TryStart(reqCtx.ProxyUser.UserID, targetID, virtualItemID, maxConcurrent) {
 		writeJSON(w, http.StatusTooManyRequests, map[string]any{"message": "已达到最大同时播放数限制"})
 		return false
 	}
-	a.PlaybackLimiter.Stop(reqCtx.ProxyUser.UserID, previousIndex)
+	a.PlaybackLimiter.Stop(reqCtx.ProxyUser.UserID, previousID)
 	return true
 }
 
@@ -230,17 +239,17 @@ func (a *App) streamPlaybackMode(client *UpstreamClient) string {
 
 // resolvePlaySessionID rewrites a virtual PlaySessionId in place and reports the
 // upstream server that owns it.
-func (a *App) resolvePlaySessionID(query url.Values) (int, bool) {
+func (a *App) resolvePlaySessionID(query url.Values) (string, bool) {
 	playSessionID := query.Get("PlaySessionId")
 	if playSessionID == "" {
-		return 0, false
+		return "", false
 	}
 	resolved := a.IDStore.ResolveVirtualID(playSessionID)
 	if resolved == nil {
-		return 0, false
+		return "", false
 	}
 	query.Set("PlaySessionId", resolved.OriginalID)
-	return resolved.ServerIndex, true
+	return resolved.ServerID, true
 }
 
 // streamRequestHeaders forwards the client headers needed for seeking and
@@ -282,7 +291,7 @@ func copyStreamResponseHeaders(w http.ResponseWriter, resp *http.Response) {
 
 func (a *App) handleDeleteActiveEncodings(w http.ResponseWriter, r *http.Request) {
 	query := cloneValues(r.URL.Query())
-	serverIndex, found := a.resolvePlaySessionID(query)
+	serverID, found := a.resolvePlaySessionID(query)
 	if !found {
 		for _, client := range a.allowedClients(requestContextFrom(r.Context())) {
 			_ = a.forwardNoContent(r, client, http.MethodDelete, "/Videos/ActiveEncodings", query, nil)
@@ -290,11 +299,11 @@ func (a *App) handleDeleteActiveEncodings(w http.ResponseWriter, r *http.Request
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	if !a.isServerAllowed(requestContextFrom(r.Context()), serverIndex) {
+	if !a.isServerAllowed(requestContextFrom(r.Context()), serverID) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	if client := a.Upstream.GetClient(serverIndex); client != nil && client.IsOnline() {
+	if client := a.Upstream.ClientByID(serverID); client != nil && client.IsOnline() {
 		_ = a.forwardNoContent(r, client, http.MethodDelete, "/Videos/ActiveEncodings", query, nil)
 	}
 	w.WriteHeader(http.StatusNoContent)

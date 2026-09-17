@@ -44,7 +44,7 @@ func TestUserItemsLatestSupportsParentRoutingAndCrossServerMerge(t *testing.T) {
 
 	withTempAppConfig(t, config, func(app *App, handler http.Handler) {
 		token := loginToken(t, handler, "secret")
-		virtualParent := app.IDStore.GetOrCreateVirtualID("parent-a", 0)
+		virtualParent := app.IDStore.GetOrCreateVirtualID("parent-a", app.Upstream.Clients()[0].ID)
 
 		rr := doJSONRequest(t, handler, http.MethodGet, "/Users/"+app.Auth.ProxyUserID()+"/Items/Latest?ParentId="+virtualParent, nil, token)
 		if rr.Code != http.StatusOK {
@@ -118,8 +118,8 @@ func TestUserItemDetailMergesMediaSourcesAcrossInstances(t *testing.T) {
 
 	withTempAppConfig(t, config, func(app *App, handler http.Handler) {
 		token := loginToken(t, handler, "secret")
-		virtualItem := app.IDStore.GetOrCreateVirtualID("item-a", 0)
-		app.IDStore.AssociateAdditionalInstance(virtualItem, "item-b", 1)
+		virtualItem := app.IDStore.GetOrCreateVirtualID("item-a", app.Upstream.Clients()[0].ID)
+		app.IDStore.AssociateAdditionalInstance(virtualItem, "item-b", app.Upstream.Clients()[1].ID)
 
 		rr := doJSONRequest(t, handler, http.MethodGet, "/Users/"+app.Auth.ProxyUserID()+"/Items/"+virtualItem, nil, token)
 		if rr.Code != http.StatusOK {
@@ -181,7 +181,7 @@ func TestItemDetailRelatedRoutesRewriteIDs(t *testing.T) {
 
 	withTempAppConfig(t, config, func(app *App, handler http.Handler) {
 		token := loginToken(t, handler, "secret")
-		virtualItem := app.IDStore.GetOrCreateVirtualID("item-a", 0)
+		virtualItem := app.IDStore.GetOrCreateVirtualID("item-a", app.Upstream.Clients()[0].ID)
 
 		rr := doJSONRequest(t, handler, http.MethodGet, "/Items/"+virtualItem, nil, token)
 		if rr.Code != http.StatusOK {

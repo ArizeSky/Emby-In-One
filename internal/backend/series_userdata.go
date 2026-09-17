@@ -1,9 +1,9 @@
 package backend
 
 type seriesInstance struct {
-	OriginalID  string
-	ServerIndex int
-	Client      *UpstreamClient
+	OriginalID string
+	ServerID   string
+	Client     *UpstreamClient
 }
 
 func buildSeriesInstances(resolved *routeResolution, upstream *UpstreamPool) []seriesInstance {
@@ -12,27 +12,27 @@ func buildSeriesInstances(resolved *routeResolution, upstream *UpstreamPool) []s
 		return instances
 	}
 	instances = append(instances, seriesInstance{
-		OriginalID:  resolved.OriginalID,
-		ServerIndex: resolved.ServerIndex,
-		Client:      resolved.Client,
+		OriginalID: resolved.OriginalID,
+		ServerID:   resolved.ServerID,
+		Client:     resolved.Client,
 	})
 	for _, other := range resolved.OtherInstances {
-		client := upstream.GetClient(other.ServerIndex)
+		client := upstream.ClientByID(other.ServerID)
 		if client == nil || !client.Online {
 			continue
 		}
 		duplicate := false
 		for _, existing := range instances {
-			if existing.ServerIndex == other.ServerIndex && existing.OriginalID == other.OriginalID {
+			if existing.ServerID == other.ServerID && existing.OriginalID == other.OriginalID {
 				duplicate = true
 				break
 			}
 		}
 		if !duplicate {
 			instances = append(instances, seriesInstance{
-				OriginalID:  other.OriginalID,
-				ServerIndex: other.ServerIndex,
-				Client:      client,
+				OriginalID: other.OriginalID,
+				ServerID:   other.ServerID,
+				Client:     client,
 			})
 		}
 	}

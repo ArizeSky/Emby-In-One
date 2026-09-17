@@ -16,6 +16,7 @@ createApp({
       stats: { upstreamCount: 0, upstreamOnline: 0, idMappings: { mappingCount: 0, persistent: true }, upstream: [] },
       upstreamList: [], proxyList: [],
       settings: { serverName: '', playbackMode: 'proxy', adminUsername: '', adminPassword: '', currentPassword: '', timeouts: { api: 30000, global: 15000, login: 10000, healthCheck: 10000, healthInterval: 60000, searchGracePeriod: 3000, metadataGracePeriod: 3000, latestGracePeriod: 0 } },
+      adminUsernameOriginal: '',   // 服务端当前的管理员用户名，用于判断这次保存是否真的改了用户名
       logs: [], isLoadingLogs: false, saveSuccess: false,
       logLevelFilter: 'ALL', logSearch: '',
       showModal: false, editIndex: null, serverForm: {},
@@ -81,23 +82,44 @@ createApp({
     async refreshClientInfo() { try { this.clientInfo = await this.api('/admin/api/client-info'); } catch(e) {} this.$nextTick(()=>lucide.createIcons()); },
     async refreshServers() { try { this.upstreamList = await this.api('/admin/api/upstream'); } catch(e) { this.upstreamList = []; } try { await this.refreshProxies(); } catch(e) {} this.$nextTick(()=>lucide.createIcons()); },
     async refreshProxies() { try { this.proxyList = await this.api('/admin/api/proxies'); } catch(e) { this.proxyList = []; } this.$nextTick(()=>lucide.createIcons()); },
-    async refreshSettings() { try { const s = await this.api('/admin/api/settings'); this.settings = { ...this.settings, ...s, adminPassword: '', currentPassword: '', timeouts: s.timeouts || this.settings.timeouts }; } catch(e) {} },
-    async saveSettings() { try { const res = await this.api('/admin/api/settings', { method:'PUT', body:JSON.stringify(this.settings) }); this.saveSuccess = true; this.settings.adminPassword = ''; this.settings.currentPassword = ''; setTimeout(()=>this.saveSuccess=false,3000); } catch(e) { alert('保存失败：' + (e.message || '未知错误')); } },
+    async refreshSettings() { try { const s = await this.api('/admin/api/settings'); this.settings = { ...this.settings, ...s, adminPassword: '', currentPassword: '', timeouts: s.timeouts || this.settings.timeouts }; this.adminUsernameOriginal = s.adminUsername || ''; } catch(e) {} },
+    async saveSettings() {
+      const nextUsername = (this.settings.adminUsername || '').trim();
+      const usernameChanged = !!nextUsername && nextUsername !== this.adminUsernameOriginal;
+      const passwordChanged = !!this.settings.adminPassword;
+      if ((usernameChanged || passwordChanged) && !this.settings.currentPassword) { alert('修改管理员用户名或密码时，必须输入当前密码'); return; }
+      if (passwordChanged && (this.settings.adminPassword.length < 8 || this.settings.adminPassword.length > 128)) { alert('密码长度必须介于 8 和 128 之间'); return; }
+      try {
+        const res = await this.api('/admin/api/settings', { method:'PUT', body:JSON.stringify(this.settings) });
+        this.saveSuccess = true;
+        this.adminUsernameOriginal = this.settings.adminUsername || this.adminUsernameOriginal;
+        this.settings.adminPassword = ''; this.settings.currentPassword = '';
+        setTimeout(()=>this.saveSuccess=false,3000);
+      } catch(e) { alert('保存失败：' + (e.message || '未知错误')); }
+    },
     async refreshLogs() { this.isLoadingLogs = true; try { this.logs = await this.api('/admin/api/logs?limit=500'); this.$nextTick(() => { const b=this.$refs.logBox; if(b) b.scrollTop=b.scrollHeight; lucide.createIcons(); }); } catch(e) { this.logs = []; } finally { this.isLoadingLogs=false; } },
-    downloadLogs() {
+    async downloadLogs() {
       const t = localStorage.getItem('eio_token');
+      const res = await fetch('/admin/api/logs/download', { headers: t ? { 'X-Emby-Token': t } : {} });
+      if (!res.ok) { alert('下载失败'); return; }
+      const blob = await res.blob();
       const a = document.createElement('a');
-      a.href = '/admin/api/logs/download' + (t ? '?api_key=' + encodeURIComponent(t) : '');
-      a.download = 'emby-in-one.log'; a.click();
+      a.href = URL.createObjectURL(blob);
+      a.download = 'emby-in-one.log';
+      a.click();
+      URL.revokeObjectURL(a.href);
     },
     async clearLogs() { if(!confirm('确认清空所有日志？')) return; try { await this.api('/admin/api/logs', { method:'DELETE' }); this.logs = []; } catch(e) { alert('清空失败：' + (e.message || '未知错误')); } },
     getProxyName(id) { const p = this.proxyList.find(x => x.id === id); return p ? p.name : '不使用'; },
-    openAddServer() { this.editIndex = null; this.serverForm = { name:'', url:'', streamingUrl:'', authType:'password', spoofClient:'none', followRedirects:true, proxyId:null, priorityMetadata:false, maxConcurrent:0, customUserAgent:'', customClient:'', customClientVersion:'', customDeviceName:'', customDeviceId:'' }; this.showModal = true; },
-    editServer(s) { this.editIndex = s.index; this.serverForm = { ...s, password:'', apiKey:'', maxConcurrent: s.maxConcurrent || 0, streamingUrl: s.streamingUrl || '', customUserAgent: s.customUserAgent || '', customClient: s.customClient || '', customClientVersion: s.customClientVersion || '', customDeviceName: s.customDeviceName || '', customDeviceId: s.customDeviceId || '' }; this.showModal = true; },
+    openAddServer() { this.editID = null; this.editIndex = null; this.serverForm = { name:'', url:'', streamingUrlsText:'', authType:'password', spoofClient:'none', followRedirects:true, proxyId:null, priorityMetadata:false, maxConcurrent:0, customUserAgent:'', customClient:'', customClientVersion:'', customDeviceName:'', customDeviceId:'' }; this.showModal = true; },
+    editServer(s) { this.editID = s.id || s.index; this.editIndex = s.index; this.serverForm = { ...s, password:'', apiKey:'', maxConcurrent: s.maxConcurrent || 0, streamingUrlsText: (s.streamingUrls && s.streamingUrls.length ? s.streamingUrls : (s.streamingUrl ? [s.streamingUrl] : [])).join('\n'), customUserAgent: s.customUserAgent || '', customClient: s.customClient || '', customClientVersion: s.customClientVersion || '', customDeviceName: s.customDeviceName || '', customDeviceId: s.customDeviceId || '' }; this.showModal = true; },
     async saveServer() {
-      const m = this.editIndex === null ? 'POST' : 'PUT';
+      const target = this.editID !== null && this.editID !== undefined ? this.editID : this.editIndex;
+      const m = target === null || target === undefined ? 'POST' : 'PUT';
+      const payload = { ...this.serverForm, streamingUrls: (this.serverForm.streamingUrlsText || '').split(/[\n,]/).map(x => x.trim()).filter(x => x !== '') };
+      delete payload.streamingUrlsText;
       try {
-        const res = await this.api('/admin/api/upstream' + (this.editIndex===null?'':'/'+this.editIndex), { method:m, body:JSON.stringify(this.serverForm) });
+        const res = await this.api('/admin/api/upstream' + (target===null||target===undefined?'':'/'+target), { method:m, body:JSON.stringify(payload) });
         if (res.warning) { alert('提示：' + res.warning); }
         this.showModal = false;
         await this.refreshServers();
@@ -106,8 +128,8 @@ createApp({
         alert('保存失败：' + (e.message || '未知错误'));
       }
     },
-    async deleteServer(idx) { if(!confirm('删除服务器？')) return; try { await this.api('/admin/api/upstream/'+idx, { method:'DELETE' }); await this.refreshServers(); } catch(e) { alert('删除失败：' + (e.message || '未知错误')); } },
-    async reconnectServer(idx) { try { await this.api('/admin/api/upstream/'+idx+'/reconnect', { method:'POST' }); await this.refreshServers(); } catch(e) { alert('重连失败：' + (e.message || '未知错误')); } },
+    async deleteServer(id) { if(!confirm('删除服务器？')) return; try { await this.api('/admin/api/upstream/'+id, { method:'DELETE' }); await this.refreshServers(); } catch(e) { alert('删除失败：' + (e.message || '未知错误')); } },
+    async reconnectServer(id) { try { await this.api('/admin/api/upstream/'+id+'/reconnect', { method:'POST' }); await this.refreshServers(); } catch(e) { alert('重连失败：' + (e.message || '未知错误')); } },
     async reorder(from, to) { try { await this.api('/admin/api/upstream/reorder', { method:'POST', body:JSON.stringify({fromIndex:from, toIndex:to}) }); await this.refreshServers(); } catch(e) { alert('排序失败：' + (e.message || '未知错误')); } },
     openAddProxy() { this.proxyForm = { name:'', url:'' }; this.proxyTestState = { loading: false, result: null }; this.showProxyModal = true; },
     async testProxy(proxyUrl, targetUrl) {
@@ -156,12 +178,14 @@ createApp({
         if (this.editUserId) {
           const body = {};
           if (this.userForm.username) body.username = this.userForm.username;
+          if (this.userForm.password && (this.userForm.password.length < 8 || this.userForm.password.length > 128)) { alert('密码长度必须介于 8 和 128 之间'); return; }
           if (this.userForm.password) body.password = this.userForm.password;
           body.enabled = this.userForm.enabled;
           body.allowedServers = this.userForm.allowedServers.length > 0 ? this.userForm.allowedServers : null;
           await this.api('/admin/api/users/' + this.editUserId, { method:'PUT', body:JSON.stringify(body) });
         } else {
           if (!this.userForm.username || !this.userForm.password) { alert('用户名和密码不能为空'); return; }
+          if (this.userForm.password.length < 8 || this.userForm.password.length > 128) { alert('密码长度必须介于 8 和 128 之间'); return; }
           const body = { username:this.userForm.username, password:this.userForm.password, allowedServers: this.userForm.allowedServers.length > 0 ? this.userForm.allowedServers : null };
           await this.api('/admin/api/users', { method:'POST', body:JSON.stringify(body) });
         }

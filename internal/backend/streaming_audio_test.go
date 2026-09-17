@@ -35,8 +35,8 @@ func TestAudioProxyAndActiveEncodings(t *testing.T) {
 
 	withTempAppConfig(t, config, func(app *App, handler http.Handler) {
 		token := loginToken(t, handler, "secret")
-		virtualSong := app.IDStore.GetOrCreateVirtualID("song-a", 0)
-		virtualPlaySession := app.IDStore.GetOrCreateVirtualID("play-a", 0)
+		virtualSong := app.IDStore.GetOrCreateVirtualID("song-a", app.Upstream.Clients()[0].ID)
+		virtualPlaySession := app.IDStore.GetOrCreateVirtualID("play-a", app.Upstream.Clients()[0].ID)
 
 		rr := doJSONRequest(t, handler, http.MethodGet, "/Audio/"+virtualSong+"/stream.mp3", nil, token)
 		if rr.Code != http.StatusOK {

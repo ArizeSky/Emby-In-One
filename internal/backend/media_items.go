@@ -37,15 +37,15 @@ func (a *App) handleItemsCollection(w http.ResponseWriter, r *http.Request) {
 		tasks[i] = upstreamTask{
 			index: i,
 			fn: func(bgCtx context.Context) upstreamItemsResult {
-				serverQuery, ok := translateBatchIDQueryForServer(query, c.ServerIndex, a.IDStore)
+				serverQuery, ok := translateBatchIDQueryForServer(query, c.ID, a.IDStore)
 				if !ok {
-					return upstreamItemsResult{}
+					return upstreamItemsResult{Err: errBatchQueryNotTranslatable}
 				}
 				payload, err := c.RequestJSON(bgCtx, reqCtx, a.Identity, http.MethodGet, "/Items", serverQuery, nil)
 				if err != nil {
-					return upstreamItemsResult{}
+					return upstreamItemsResult{Err: err}
 				}
-				return upstreamItemsResult{ServerIndex: c.ServerIndex, Items: asItems(payload)}
+				return upstreamItemsResult{ServerID: c.ID, Items: asItems(payload)}
 			},
 		}
 	}
@@ -95,7 +95,7 @@ func (a *App) handleUserItems(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadGateway, map[string]any{"message": err.Error()})
 			return
 		}
-		items := a.rewriteItems(asItems(payload), resolved.ServerIndex, a.clientFacingUserIDFor(r))
+		items := a.rewriteItems(asItems(payload), resolved.ServerID, a.clientFacingUserIDFor(r))
 		if localFilter {
 			kept, recency := a.filterItemsByLocalUserState(r, items, filter)
 			localItemSort(kept, r.URL.Query(), recency)
@@ -157,7 +157,7 @@ func (a *App) handleUserItemsLatest(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		items := asItems(payload)
-		a.rewriteItems(items, resolved.ServerIndex, a.clientFacingUserIDFor(r))
+		a.rewriteItems(items, resolved.ServerID, a.clientFacingUserIDFor(r))
 		a.overlayLocalUserDataItems(r, items)
 		writeJSON(w, http.StatusOK, items)
 		return
@@ -180,11 +180,11 @@ func (a *App) handleUserItemsLatest(w http.ResponseWriter, r *http.Request) {
 				instQuery.Set("UserId", c.clientUserID())
 				payload, err := c.RequestJSON(bgCtx, reqCtx, a.Identity, http.MethodGet, "/Users/"+c.clientUserID()+"/Items/Latest", instQuery, nil)
 				if err != nil {
-					return upstreamItemsResult{}
+					return upstreamItemsResult{Err: err}
 				}
 				items := asItems(payload)
-				a.rewriteItems(items, c.ServerIndex, a.clientFacingUserIDFor(r))
-				return upstreamItemsResult{ServerIndex: c.ServerIndex, Items: items}
+				a.rewriteItems(items, c.ID, a.clientFacingUserIDFor(r))
+				return upstreamItemsResult{ServerID: c.ID, Items: items}
 			},
 		}
 	}
@@ -221,14 +221,14 @@ func (a *App) handleUserItemByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		cfg := a.ConfigStore.Snapshot()
-		rewriteResponseIDs(payload, resolved.ServerIndex, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
+		rewriteResponseIDs(payload, resolved.ServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 		a.overlayLocalUserData(r, r.PathValue("itemId"), payload)
 		writeJSON(w, http.StatusOK, payload)
 		return
 	}
 
 	var base map[string]any
-	var baseServerIndex int
+	var baseServerID string
 	allMediaSources := []map[string]any{}
 
 	cfg := a.ConfigStore.Snapshot()
@@ -239,7 +239,7 @@ func (a *App) handleUserItemByID(w http.ResponseWriter, r *http.Request) {
 	bgCtx, bgCancel := context.WithTimeout(context.Background(), globalTimeout)
 
 	type instanceResult struct {
-		serverIndex  int
+		serverID     string
 		data         map[string]any
 		mediaSources []map[string]any
 	}
@@ -263,9 +263,9 @@ func (a *App) handleUserItemByID(w http.ResponseWriter, r *http.Request) {
 			for _, raw := range asItems(map[string]any{"Items": data["MediaSources"]}) {
 				ms := deepCloneMap(raw)
 				if originalID, _ := ms["Id"].(string); originalID != "" {
-					ms["Id"] = a.IDStore.GetOrCreateVirtualID(originalID, si.ServerIndex)
+					ms["Id"] = a.IDStore.GetOrCreateVirtualID(originalID, si.ServerID)
 				}
-				if client := a.Upstream.GetClient(si.ServerIndex); client != nil {
+				if client := a.Upstream.ClientByID(si.ServerID); client != nil {
 					name, _ := ms["Name"].(string)
 					if name == "" {
 						name = "Version"
@@ -274,7 +274,7 @@ func (a *App) handleUserItemByID(w http.ResponseWriter, r *http.Request) {
 				}
 				mediaSources = append(mediaSources, ms)
 			}
-			resultCh <- &instanceResult{serverIndex: si.ServerIndex, data: data, mediaSources: mediaSources}
+			resultCh <- &instanceResult{serverID: si.ServerID, data: data, mediaSources: mediaSources}
 		}(inst)
 	}
 
@@ -289,7 +289,7 @@ func (a *App) handleUserItemByID(w http.ResponseWriter, r *http.Request) {
 			if res != nil {
 				if base == nil {
 					base = deepCloneMap(res.data)
-					baseServerIndex = res.serverIndex
+					baseServerID = res.serverID
 				}
 				allMediaSources = append(allMediaSources, res.mediaSources...)
 				if graceTimer == nil && gracePeriod > 0 {
@@ -315,7 +315,7 @@ metadataDone:
 	// delete-and-restore: prevent rewriteResponseIDs from double-wrapping
 	// already-virtualised MediaSource IDs and creating orphan mappings
 	delete(base, "MediaSources")
-	rewriteResponseIDs(base, baseServerIndex, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
+	rewriteResponseIDs(base, baseServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 	base["MediaSources"] = mediaSources
 	a.overlayLocalUserData(r, r.PathValue("itemId"), base)
 	writeJSON(w, http.StatusOK, base)
@@ -336,7 +336,7 @@ func (a *App) handleItemByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg := a.ConfigStore.Snapshot()
-	rewriteResponseIDs(payload, resolved.ServerIndex, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
+	rewriteResponseIDs(payload, resolved.ServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 	a.overlayLocalUserData(r, r.PathValue("itemId"), payload)
 	writeJSON(w, http.StatusOK, payload)
 }
@@ -358,7 +358,7 @@ func (a *App) handleItemSimilar(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg := a.ConfigStore.Snapshot()
-	rewriteResponseIDs(payload, resolved.ServerIndex, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
+	rewriteResponseIDs(payload, resolved.ServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 	a.overlayLocalUserDataItems(r, asItems(payload))
 	writeJSON(w, http.StatusOK, payload)
 }
@@ -384,7 +384,7 @@ func (a *App) handleItemThemeMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg := a.ConfigStore.Snapshot()
-	rewriteResponseIDs(payload, resolved.ServerIndex, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
+	rewriteResponseIDs(payload, resolved.ServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 	writeJSON(w, http.StatusOK, payload)
 }
 
@@ -409,17 +409,17 @@ func (a *App) fetchItemsAcrossUpstreams(ctx context.Context, reqCtx *RequestCont
 				// Clients only ever hold EIO's virtual user ID, which no upstream knows.
 				serverQuery.Set("UserId", c.clientUserID())
 				if hasBatchIDQuery(serverQuery) {
-					translated, ok := translateBatchIDQueryForServer(serverQuery, c.ServerIndex, a.IDStore)
+					translated, ok := translateBatchIDQueryForServer(serverQuery, c.ID, a.IDStore)
 					if !ok {
-						return upstreamItemsResult{}
+						return upstreamItemsResult{Err: errBatchQueryNotTranslatable}
 					}
 					serverQuery = translated
 				}
 				payload, err := c.RequestJSON(bgCtx, reqCtx, a.Identity, http.MethodGet, strings.Replace(pathTemplate, "%s", c.clientUserID(), 1), serverQuery, body)
 				if err != nil {
-					return upstreamItemsResult{}
+					return upstreamItemsResult{Err: err}
 				}
-				return upstreamItemsResult{ServerIndex: c.ServerIndex, Items: asItems(payload)}
+				return upstreamItemsResult{ServerID: c.ID, Items: asItems(payload)}
 			},
 		}
 	}
@@ -471,19 +471,25 @@ func containsChinese(s string) bool {
 	return false
 }
 
-// isBetterMetadata returns true if the candidate item from candidateIdx has
-// better metadata than the existing item from existingIdx, using the V1.2
+// isBetterMetadata returns true if the candidate item from candidateServerID has
+// better metadata than the existing item from existingServerID, using the V1.2
 // 4-level priority: priorityMetadata flag → Chinese in Overview → longer
-// Overview → lower server index.
-func isBetterMetadata(existing map[string]any, existingIdx int, candidate map[string]any, candidateIdx int, cfg Config) bool {
+// Overview → earlier upstream order.
+func isBetterMetadata(existing map[string]any, existingServerID string, candidate map[string]any, candidateServerID string, cfg Config) bool {
 	// 1. priorityMetadata flag
 	existingPriority := false
 	candidatePriority := false
-	if existingIdx >= 0 && existingIdx < len(cfg.Upstream) {
-		existingPriority = cfg.Upstream[existingIdx].PriorityMetadata
-	}
-	if candidateIdx >= 0 && candidateIdx < len(cfg.Upstream) {
-		candidatePriority = cfg.Upstream[candidateIdx].PriorityMetadata
+	existingOrder := len(cfg.Upstream)
+	candidateOrder := len(cfg.Upstream)
+	for idx, u := range cfg.Upstream {
+		if u.ID == existingServerID {
+			existingPriority = u.PriorityMetadata
+			existingOrder = idx
+		}
+		if u.ID == candidateServerID {
+			candidatePriority = u.PriorityMetadata
+			candidateOrder = idx
+		}
 	}
 	if candidatePriority && !existingPriority {
 		return true
@@ -512,8 +518,8 @@ func isBetterMetadata(existing map[string]any, existingIdx int, candidate map[st
 		return false
 	}
 
-	// 4. Lower server index
-	return candidateIdx < existingIdx
+	// 4. Lower server index (order in cfg.Upstream)
+	return candidateOrder < existingOrder
 }
 
 func (a *App) mergedItemsPayload(results []upstreamItemsResult, clientUserID string) map[string]any {
@@ -535,7 +541,7 @@ func (a *App) mergeRoundRobinItems(results []upstreamItemsResult, clientUserID s
 	type seenEntry struct {
 		virtualID   string
 		mergedIndex int // position in merged slice
-		serverIndex int
+		serverID    string
 	}
 	seen := map[string]*seenEntry{} // dedupKey → entry
 
@@ -555,29 +561,29 @@ func (a *App) mergeRoundRobinItems(results []upstreamItemsResult, clientUserID s
 			key := getItemKey(item)
 			originalID, _ := item["Id"].(string)
 			if key == "" || originalID == "" {
-				rewriteResponseIDs(item, result.ServerIndex, a.IDStore, cfg.Server.ID, clientUserID)
+				rewriteResponseIDs(item, result.ServerID, a.IDStore, cfg.Server.ID, clientUserID)
 				merged = append(merged, item)
 				continue
 			}
 
 			if entry, found := seen[key]; found {
 				// Duplicate: associate as an additional instance of the same item.
-				a.IDStore.AssociateAdditionalInstance(entry.virtualID, originalID, result.ServerIndex)
-				if isBetterMetadata(merged[entry.mergedIndex], entry.serverIndex, item, result.ServerIndex, cfg) {
+				a.IDStore.AssociateAdditionalInstance(entry.virtualID, originalID, result.ServerID)
+				if isBetterMetadata(merged[entry.mergedIndex], entry.serverID, item, result.ServerID, cfg) {
 					delete(item, "Id")
-					rewriteResponseIDs(item, result.ServerIndex, a.IDStore, cfg.Server.ID, clientUserID)
+					rewriteResponseIDs(item, result.ServerID, a.IDStore, cfg.Server.ID, clientUserID)
 					item["Id"] = entry.virtualID
 					merged[entry.mergedIndex] = item
-					entry.serverIndex = result.ServerIndex
+					entry.serverID = result.ServerID
 				}
 				continue
 			}
 
 			// First occurrence: keep the virtual ID, rewrite everything else.
-			virtualID := a.IDStore.GetOrCreateVirtualID(originalID, result.ServerIndex)
-			seen[key] = &seenEntry{virtualID: virtualID, mergedIndex: len(merged), serverIndex: result.ServerIndex}
+			virtualID := a.IDStore.GetOrCreateVirtualID(originalID, result.ServerID)
+			seen[key] = &seenEntry{virtualID: virtualID, mergedIndex: len(merged), serverID: result.ServerID}
 			delete(item, "Id")
-			rewriteResponseIDs(item, result.ServerIndex, a.IDStore, cfg.Server.ID, clientUserID)
+			rewriteResponseIDs(item, result.ServerID, a.IDStore, cfg.Server.ID, clientUserID)
 			item["Id"] = virtualID
 			merged = append(merged, item)
 		}

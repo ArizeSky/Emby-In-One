@@ -14,6 +14,7 @@ import "C"
 import (
 	"errors"
 	"fmt"
+	"sync"
 	"unsafe"
 )
 
@@ -24,6 +25,13 @@ const (
 
 type sqliteDB struct {
 	ptr *C.sqlite3
+
+	// writeMu serializes every write statement and transaction issued on this handle.
+	// All stores share one SQLite connection, and a transaction is connection-scoped:
+	// without this lock an autocommit write issued by another store while a transaction
+	// is open lands inside that transaction and is silently rolled back (or committed
+	// early) with it.
+	writeMu sync.Mutex
 }
 
 type sqliteStmt struct {
@@ -41,7 +49,53 @@ func openSQLite(path string) (*sqliteDB, error) {
 		}
 		return nil, fmt.Errorf("sqlite open: %s", errMsg)
 	}
-	return &sqliteDB{ptr: db}, nil
+	handle := &sqliteDB{ptr: db}
+	// Defense in depth: the write lock above already serializes writers, but a busy
+	// timeout keeps a second connection (or a future one) from failing instantly.
+	if err := handle.exec(`PRAGMA busy_timeout = 5000`); err != nil {
+		_ = closeSQLite(handle)
+		return nil, fmt.Errorf("sqlite busy_timeout: %w", err)
+	}
+	return handle, nil
+}
+
+// withWriteLock runs fn while holding the connection's write lock. Use it for single
+// write statements so they cannot interleave with another store's open transaction.
+func (db *sqliteDB) withWriteLock(fn func() error) error {
+	if db == nil {
+		return errors.New("sqlite: nil database handle")
+	}
+	db.writeMu.Lock()
+	defer db.writeMu.Unlock()
+	return fn()
+}
+
+// withWriteTx runs fn inside BEGIN IMMEDIATE ... COMMIT under the connection's write
+// lock. Every multi-statement write must go through here so other stores cannot slip
+// autocommit statements into (or lose theirs to) our transaction.
+//
+// Lock order is store.mu -> db.writeMu. Nothing inside fn may call back into a store,
+// so writeMu is only ever held for one statement or one transaction.
+func (db *sqliteDB) withWriteTx(fn func() error) error {
+	return db.withWriteLock(func() error {
+		if err := db.exec(`BEGIN IMMEDIATE`); err != nil {
+			return err
+		}
+		if err := fn(); err != nil {
+			_ = db.exec(`ROLLBACK`)
+			return err
+		}
+		if err := db.exec(`COMMIT`); err != nil {
+			_ = db.exec(`ROLLBACK`)
+			return err
+		}
+		return nil
+	})
+}
+
+// writeParams runs a parameterized write statement under the connection write lock.
+func (db *sqliteDB) writeParams(query string, args ...any) error {
+	return db.withWriteLock(func() error { return db.execParams(query, args...) })
 }
 
 func closeSQLite(db *sqliteDB) error {

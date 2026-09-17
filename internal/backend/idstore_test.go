@@ -17,8 +17,8 @@ func TestIDStorePersistsAdditionalInstances(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create store1: %v", err)
 	}
-	virtualID := store1.GetOrCreateVirtualID("series-a", 0)
-	store1.AssociateAdditionalInstance(virtualID, "series-b", 1)
+	virtualID := store1.GetOrCreateVirtualID("series-a", "srv-0")
+	store1.AssociateAdditionalInstance(virtualID, "series-b", "srv-1")
 	_ = store1.Close()
 
 	store2, err := NewIDStore(dir, logger)
@@ -31,7 +31,7 @@ func TestIDStorePersistsAdditionalInstances(t *testing.T) {
 	if resolved == nil || len(resolved.OtherInstances) != 1 {
 		t.Fatalf("resolved = %#v, want one additional instance", resolved)
 	}
-	if resolved.OtherInstances[0].OriginalID != "series-b" || resolved.OtherInstances[0].ServerIndex != 1 {
+	if resolved.OtherInstances[0].OriginalID != "series-b" || resolved.OtherInstances[0].ServerID != "srv-1" {
 		t.Fatalf("additional instance = %#v", resolved.OtherInstances[0])
 	}
 
@@ -40,7 +40,7 @@ func TestIDStorePersistsAdditionalInstances(t *testing.T) {
 	}
 }
 
-func TestIDStoreUpdatesAdditionalInstancesOnShiftAndDelete(t *testing.T) {
+func TestIDStoreUpdatesAdditionalInstancesOnDelete(t *testing.T) {
 	dir := t.TempDir()
 	logger := NewLogger(LogConfig{Level: "error", FileLevel: "error", DataDir: dir})
 	t.Cleanup(func() { _ = logger.Close() })
@@ -51,16 +51,15 @@ func TestIDStoreUpdatesAdditionalInstancesOnShiftAndDelete(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 
-	virtualID := store.GetOrCreateVirtualID("series-a", 0)
-	store.AssociateAdditionalInstance(virtualID, "series-c", 2)
-	store.ShiftServerIndices(1)
+	virtualID := store.GetOrCreateVirtualID("series-a", "srv-0")
+	store.AssociateAdditionalInstance(virtualID, "series-c", "srv-2")
 
 	resolved := store.ResolveVirtualID(virtualID)
-	if resolved.OtherInstances[0].ServerIndex != 1 {
-		t.Fatalf("shifted server index = %d, want 1", resolved.OtherInstances[0].ServerIndex)
+	if resolved.OtherInstances[0].ServerID != "srv-2" {
+		t.Fatalf("other instance server ID = %s, want srv-2", resolved.OtherInstances[0].ServerID)
 	}
 
-	store.RemoveByServerIndex(1)
+	store.RemoveByServerID("srv-2")
 	resolved = store.ResolveVirtualID(virtualID)
 	if len(resolved.OtherInstances) != 0 {
 		t.Fatalf("other instances = %#v, want empty", resolved.OtherInstances)
@@ -93,14 +92,14 @@ func TestEvictExpiredStreamState_CleansActiveStreamServer(t *testing.T) {
 	store, _ := NewIDStore("", nil)
 	defer store.Close()
 
-	store.SetActiveStream("vid-1", 0)
-	store.SetActiveStream("vid-2", 1)
+	store.SetActiveStream("vid-1", "srv-0")
+	store.SetActiveStream("vid-2", "srv-1")
 
 	// Manually expire one entry
 	store.mu.Lock()
 	store.activeStreamServer["vid-1"] = activeStreamEntry{
-		ServerIndex: 0,
-		CreatedAt:   time.Now().Add(-5 * time.Hour),
+		ServerID:  "srv-0",
+		CreatedAt: time.Now().Add(-5 * time.Hour),
 	}
 	store.mu.Unlock()
 

@@ -1,0 +1,12 @@
+.git
+.gitignore
+# 遗留的 Node 实现（V1.2.1）已整体移入 legacy/，Go 镜像完全用不到
+legacy
+node_modules
+package-lock.json
+config
+data
+log
+*.md
+Dockerfile
+docker-compose.yml

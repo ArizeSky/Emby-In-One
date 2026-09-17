@@ -145,58 +145,58 @@ func TestContainsChinese(t *testing.T) {
 func TestIsBetterMetadata(t *testing.T) {
 	cfg := Config{
 		Upstream: []UpstreamConfig{
-			{Name: "Server0", PriorityMetadata: false},
-			{Name: "Server1", PriorityMetadata: true},
-			{Name: "Server2", PriorityMetadata: false},
+			{ID: "srv-0", Name: "Server0", PriorityMetadata: false},
+			{ID: "srv-1", Name: "Server1", PriorityMetadata: true},
+			{ID: "srv-2", Name: "Server2", PriorityMetadata: false},
 		},
 	}
 
 	// Test 1: priorityMetadata flag wins
 	existing := map[string]any{"Overview": "A long English overview text here"}
 	candidate := map[string]any{"Overview": "Short"}
-	if !isBetterMetadata(existing, 0, candidate, 1, cfg) {
+	if !isBetterMetadata(existing, "srv-0", candidate, "srv-1", cfg) {
 		t.Error("server with priorityMetadata=true should win regardless of overview")
 	}
 
 	// Test 2: Chinese overview wins over English
 	existing = map[string]any{"Overview": "A very long English overview that is longer than the Chinese one"}
 	candidate = map[string]any{"Overview": "一部好电影"}
-	if !isBetterMetadata(existing, 0, candidate, 2, cfg) {
+	if !isBetterMetadata(existing, "srv-0", candidate, "srv-2", cfg) {
 		t.Error("Chinese overview should beat English overview")
 	}
 
 	// Reverse: English should not beat Chinese
-	if isBetterMetadata(candidate, 2, existing, 0, cfg) {
+	if isBetterMetadata(candidate, "srv-2", existing, "srv-0", cfg) {
 		t.Error("English overview should not beat Chinese overview")
 	}
 
 	// Test 3: Longer overview wins (both same language)
 	existing = map[string]any{"Overview": "Short"}
 	candidate = map[string]any{"Overview": "A much longer overview with more detail"}
-	if !isBetterMetadata(existing, 0, candidate, 2, cfg) {
+	if !isBetterMetadata(existing, "srv-0", candidate, "srv-2", cfg) {
 		t.Error("longer overview should win when no Chinese difference")
 	}
 
 	// Test 4: Lower server index wins (all else equal)
 	existing = map[string]any{"Overview": "Same"}
 	candidate = map[string]any{"Overview": "Same"}
-	if isBetterMetadata(existing, 0, candidate, 2, cfg) {
+	if isBetterMetadata(existing, "srv-0", candidate, "srv-2", cfg) {
 		t.Error("higher server index should not beat lower server index when all else equal")
 	}
-	if !isBetterMetadata(existing, 2, candidate, 0, cfg) {
+	if !isBetterMetadata(existing, "srv-2", candidate, "srv-0", cfg) {
 		t.Error("lower server index should win when all else equal")
 	}
 
 	// Test 5: Both have priorityMetadata, fall through to Chinese
 	cfg2 := Config{
 		Upstream: []UpstreamConfig{
-			{Name: "S0", PriorityMetadata: true},
-			{Name: "S1", PriorityMetadata: true},
+			{ID: "srv-0", Name: "S0", PriorityMetadata: true},
+			{ID: "srv-1", Name: "S1", PriorityMetadata: true},
 		},
 	}
 	existing = map[string]any{"Overview": "English text"}
 	candidate = map[string]any{"Overview": "中文简介"}
-	if !isBetterMetadata(existing, 0, candidate, 1, cfg2) {
+	if !isBetterMetadata(existing, "srv-0", candidate, "srv-1", cfg2) {
 		t.Error("when both have priorityMetadata, Chinese should still win")
 	}
 }
@@ -216,15 +216,15 @@ upstream: []
 		// Server 1: priorityMetadata=true, shorter overview
 		app.ConfigStore.Mutate(func(cfg *Config) error {
 			cfg.Upstream = []UpstreamConfig{
-				{Name: "S0", PriorityMetadata: false},
-				{Name: "S1", PriorityMetadata: true},
+				{ID: "srv-0", Name: "S0", PriorityMetadata: false},
+				{ID: "srv-1", Name: "S1", PriorityMetadata: true},
 			}
 			return nil
 		})
 
 		results := []upstreamItemsResult{
 			{
-				ServerIndex: 0,
+				ServerID: "srv-0",
 				Items: []map[string]any{
 					{
 						"Id":             "orig-0",
@@ -237,7 +237,7 @@ upstream: []
 				},
 			},
 			{
-				ServerIndex: 1,
+				ServerID: "srv-1",
 				Items: []map[string]any{
 					{
 						"Id":             "orig-1",

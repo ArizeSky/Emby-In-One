@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  go:
+    name: Go build, vet and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      # The SQLite driver is cgo over a vendored amalgamation, so the package only builds
+      # with a working C toolchain (gcc is preinstalled on the runner).
+      - name: Build
+        run: go build ./...
+      - name: Vet
+        run: go vet ./...
+      # -race is not optional here: the ID store, the watch store and the playback limiter
+      # are all shared across request goroutines, and several fixes in this tree are about
+      # that sharing.
+      - name: Test
+        run: go test -race -timeout 20m ./...
+
+  panel:
+    name: Admin panel assets are current
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      # public/vendor/tailwind.css is committed so a source install needs no Node at all.
+      # That only works while it matches the markup it was generated from, so regenerate it
+      # and fail when the committed copy is stale.
+      - name: Rebuild the panel stylesheet
+        run: npm run build:panel
+      - name: Check the committed stylesheet matches
+        run: |
+          if ! git diff --quiet -- public/vendor/tailwind.css; then
+            echo "public/vendor/tailwind.css is stale: run 'npm run build:panel' and commit the result." >&2
+            git diff --stat -- public/vendor/tailwind.css >&2
+            exit 1
+          fi
+
+  scripts:
+    name: Shell scripts parse
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax check
+        run: |
+          for script in install.sh release-install.sh emby-in-one-cli.sh; do
+            bash -n "$script"
+          done
+      # Advisory for now: the install scripts have not been made shellcheck-clean yet, and a
+      # permanently red job teaches people to ignore CI. The syntax check above is the gate.
+      - name: ShellCheck (advisory)
+        continue-on-error: true
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck --severity=error install.sh release-install.sh emby-in-one-cli.sh

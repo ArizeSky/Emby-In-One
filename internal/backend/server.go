@@ -34,7 +34,11 @@ func NewApp() (*App, error) {
 	cfg := configStore.Snapshot()
 	logger := NewLogger(LogConfig{DataDir: cfg.DataDir})
 	logTimeoutNotice(logger, cfg.Timeouts)
-	idStore, err := NewIDStore(cfg.DataDir, logger)
+	upstreamIDs := make([]string, len(cfg.Upstream))
+	for i, u := range cfg.Upstream {
+		upstreamIDs[i] = u.ID
+	}
+	idStore, err := NewIDStore(cfg.DataDir, logger, upstreamIDs...)
 	if err != nil {
 		return nil, err
 	}
@@ -107,10 +111,16 @@ func (a *App) Run() error {
 		Addr:              ":" + intToString(cfg.Server.Port),
 		Handler:           a.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
+		// bodyLimitMiddleware caps a request body at 2 MB but not the time it may take to
+		// arrive, and an idle connection used to be held forever. WriteTimeout stays unset
+		// on purpose: the streaming endpoints write for as long as playback lasts.
+		ReadTimeout: 60 * time.Second,
+		IdleTimeout: 120 * time.Second,
 	}
 
 	// Start periodic stream URL eviction
 	evictCtx, evictCancel := context.WithCancel(context.Background())
+	defer evictCancel()
 	go func() {
 		ticker := time.NewTicker(30 * time.Minute)
 		defer ticker.Stop()
@@ -131,6 +141,7 @@ func (a *App) Run() error {
 	// Graceful shutdown on SIGINT/SIGTERM
 	shutdownCh := make(chan os.Signal, 1)
 	signal.Notify(shutdownCh, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(shutdownCh)
 	go func() {
 		<-shutdownCh
 		a.Logger.Infof("Shutdown signal received, draining connections...")

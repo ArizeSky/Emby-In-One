@@ -17,6 +17,25 @@
 - **Bug 修复**：修复 V1.4.0 发布后用户反馈和实际使用中暴露出来的问题
 - **安装脚本加固**：修复安装与更新流程中的潜在问题，提升各种网络环境和系统环境下的兼容性
 
+### V1.5 待排期的技术债（来自 V1.4.4 全项目审查）
+
+以下条目在 V1.4.5 的修复批次里被有意推迟：它们要么改动面大、要么会改变对外行为，适合单独排期而不是搭车修。
+
+- ~~**映射与授权改用稳定标识**~~（✅ 已在 V1.4.4 完成）：彻底废除脆弱的 `server_index` 位置下标，重构为配置生成的持久化唯一 `server_id`，实现 SQLite 单事务原子平滑迁移与纯内存零开销重排。详见 `Update.md`。
+- **redirect 播放模式的凭据外泄**：直连模式下 302 跳转链接带着上游 AccessToken，用户可提取并绕过代理直连上游。V1.4.5 只做了面板/README 警告与保存时的 Warning 提示。根治要给 redirect 模式签发短时效 URL，或为这类上游强制使用专用受限账号。
+- **代理 token 滑动过期**：代理签发的 AccessToken 目前永不过期，泄露后永久有效。可加可配置的滑动过期（例如 30 天无活动即失效）。
+- **scrypt 参数升级**：当前 N=16384。存储格式是 `salt:hex`、没有版本标记，直接改 N 会让全部存量密码失效。需要先引入格式版本前缀（如 `scrypt2$salt$hex`），对旧格式保留兼容校验，并在登录成功时静默升级。
+- **发布流程必须产出校验和资产**：安装脚本已具备 `.sha256` 校验（二进制、`admin.html`、`admin.js`、`emby-in-one-cli.sh`；Docker 源码归档走 CLI 更新时同样校验），但 V1.4.1–V1.4.3 的 Release 里**一个 `.sha256` 资产都没有**，所以现在的校验全部走"告警放行"分支，等于没生效。发布侧需要补上：
+  ```bash
+  for f in Emby-In-One-linux-* Emby-In-One-docker-* admin.html admin.js emby-in-one-cli.sh release-install.sh; do
+    sha256sum "$f" > "$f.sha256"
+  done
+  ```
+  三个附带发现：**(a)** `release-install.sh` 本身从未作为 Release 资产上传（清单里只有 admin.html / admin.js / emby-in-one-cli.sh / docker 归档 / 各架构二进制），所以 CLI 在线更新"按 tag 取 Release 里的脚本"这条主路径对现有 Release 会 404，实际走的是同 tag 的仓库快照兜底（仍是版本锁定，不跟随 main）；把它也上传为资产即可让主路径生效。注意**没有任何消费方校验安装器脚本本身**——即使上传了 `.sha256`，CLI 拉取它时也不做校验，如需闭环要在 CLI 侧补一步。**(b)** `install.sh` 的源码 tarball 路径仍无校验：实测 `codeload` 的 `ETag` 既不是归档字节的哈希也不是 tar 载荷的哈希（三个值互不相同），GitHub 不提供源码归档的 digest，且浮动分支无法预先发布哈希。可行的做法是把源码安装改成**下载 Release 自带的 `Emby-In-One-docker-<tag>.tar.gz` 并复用现有 `verify_sha256`**（约 5 行），前提是发布侧为它产出 `.sha256`；这同时意味着源码安装从"跟随 main"变为"固定到最新 Release"——是一个需要维护者拍板的产品决策，因此没有擅自改。**(c)** CLI 的 Docker 模式在线更新原本也拉 main tarball 且无校验，V1.4.5 验收时已改为下载最新 Release 的 docker 归档并走 `verify_download` 校验（与菜单 [15] 同一代码路径）；`release-install.sh` 中 admin.html / admin.js / cli.sh 的"main 分支无校验回退"也已在验收时移除（Release 缺产物时回退内嵌面板 / 保留磁盘旧副本）。
+- **演示站密码轮换**：README 中原演示站凭据（`admin / 5T5xF4oMxcnrcCPA`）已永久留在 git 历史与所有 fork 里，仅从正文移除不够。**必须在演示站侧轮换该密码**，并确认它没有被复用到其他部署；README 现在承诺"经 Issues 发放定期轮换的临时账号"，轮换机制需要真正落地。
+- **Sessions/Playing 与 Progress 上游失败时的本地记录**（审查清单 P3 最后一项，**未做**）：这两条路径在上游上报失败时仍返回 204 并把进度写进本地库，与上游分叉。没有照做是因为两种改法都有代价：跳过本地记录会在上游短暂抖动时丢掉用户的观看位置，而"区分上游确认/仅本地"需要给 `user_watch_progress` 加一列并贯穿所有读取路径。属于需要产品取舍的改动，留给专门的版本。
+- **图片端点免认证的收紧**：`/Items/{id}/Images/{type}` 依赖"128 位随机虚拟 ID 即能力 URL"，任何拿到 URL 的人都能取图。如需更强控制，可改为短时效签名 URL。
+
 ---
 
 ## ✅ V1.4.0（已完成）：多用户管理、独立观看历史与播放限制
