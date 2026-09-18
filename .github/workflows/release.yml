@@ -78,8 +78,10 @@ jobs:
           # 不依赖目标机器的 glibc 版本与 NSS 动态库。
           build() {
             local goarch="$1" cc="$2" goarm="${3:-}"
+            # -buildvcs=false: 容器 job 的工作区属主与运行用户不一致，go 的
+            # VCS 戳记调 git 会以 128 拒绝；版本号已由 -X 注入，无需戳记。
             CGO_ENABLED=1 CC="$cc" GOARM="$goarm" GOOS=linux GOARCH="$goarch" \
-              go build -trimpath -tags "netgo osusergo" \
+              go build -trimpath -buildvcs=false -tags "netgo osusergo" \
               -ldflags "-s -w -X main.Version=${VERSION} -extldflags -static" \
               -o "dist/Emby-In-One-linux-${goarch}-${VERSION}" ./cmd/emby-in-one
           }
@@ -117,6 +119,9 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="v${TAG#V}"
+          # 容器 job 的工作区属主与运行用户不一致，git archive 前先声明信任
+          # （go build 的 VCS 戳记就是栽在这个属主差异上，见上一步注释）。
+          git config --global --add safe.directory "${GITHUB_WORKSPACE}"
           # emby-in-one-cli.sh 的 Docker 模式在线更新按此清单解包部署
           # （cmd / internal / third_party / public / go.mod + Dockerfile 等）。
           # git archive 只含已提交文件，并按 .gitattributes 统一为 LF 行尾。
