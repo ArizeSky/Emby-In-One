@@ -37,6 +37,11 @@ jobs:
     # 出自同一套 Go / 工具链。SQLite 是 vendored cgo，交叉编译依赖各目标的
     # C 交叉编译器（Debian bookworm 全部提供）。
     container: golang:1.23-bookworm
+    # 容器 job 的默认 shell 是 sh（dash），不支持 set -o pipefail 与 [[ ]]；
+    # 下面的构建脚本全部按 bash 编写，必须显式指定 bash。
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
 
