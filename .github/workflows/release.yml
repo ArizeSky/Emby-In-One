@@ -1,0 +1,203 @@
+name: Release
+
+# 推送大写 V 开头的版本 tag（如 V1.4.4）即触发完整发布：
+#   1. 六架构静态链接的 Linux 二进制（release-install.sh 的 detect_arch 全集）
+#   2. 面板与脚本资产（admin.html / admin.js / emby-in-one-cli.sh / release-install.sh）
+#   3. Docker 模式在线更新用的源码包 Emby-In-One-docker-<v版本>.tar.gz
+#   4. 以上每个资产的 .sha256（V1.4.4 起安装/更新脚本强制走校验，缺文件则告警放行）
+#   5. 从 Update.md 提取对应版本的更新日志，创建 GitHub Release 并上传全部资产
+#
+# 命名约定（release-install.sh / emby-in-one-cli.sh 按此拼 URL，错了会 404）：
+#   tag 与 Release 标题用大写 V（V1.4.4），资产文件名内的版本用小写 v（v1.4.4）。
+on:
+  push:
+    tags: ['V[0-9]*']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+# 本工作流只在 GitHub 的 ArizeSky/Emby-In-One 上执行：
+# 仓库会镜像到 Gitea（MineNine/Emby-In-One），若 Gitea Actions 已启用，
+# 同步过去的 V 开头 tag 也会触发本文件——两个 job 的 if 守卫会让它
+# 在 Gitea 上直接跳过，发布只在 GitHub 进行。
+jobs:
+  build:
+    name: Build release assets
+    if: github.repository == 'ArizeSky/Emby-In-One'
+    runs-on: ubuntu-latest
+    # 与 Dockerfile 的 builder 阶段同一基础镜像：发布二进制与 Docker 自建产物
+    # 出自同一套 Go / 工具链。SQLite 是 vendored cgo，交叉编译依赖各目标的
+    # C 交叉编译器（Debian bookworm 全部提供）。
+    container: golang:1.23-bookworm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cross toolchains
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential \
+            file \
+            gcc-aarch64-linux-gnu \
+            gcc-arm-linux-gnueabihf \
+            gcc-mips-linux-gnu \
+            gcc-mipsel-linux-gnu \
+            gcc-riscv64-linux-gnu
+
+      - name: Vet
+        run: go vet ./...
+
+      # -race 的完整门禁在 ci.yml（push 到 main 时跑）；发布构建只做无插桩的
+      # 快速回归，避免每次发布都多等一遍竞态检测的时间。
+      - name: Test
+        run: go test -timeout 15m ./...
+
+      - name: Build static binaries for all supported architectures
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="v${TAG#V}"
+          mkdir -p dist
+          # arm 为 armv7 硬浮点（Debian armhf 基线，覆盖树莓派 2 及以上）；
+          # armv6（树莓派一代 / Zero）不在预编译范围内。
+          # netgo + osusergo + -extldflags -static：纯静态、自带 DNS/用户解析，
+          # 不依赖目标机器的 glibc 版本与 NSS 动态库。
+          build() {
+            local goarch="$1" cc="$2" goarm="${3:-}"
+            CGO_ENABLED=1 CC="$cc" GOARM="$goarm" GOOS=linux GOARCH="$goarch" \
+              go build -trimpath -tags "netgo osusergo" \
+              -ldflags "-s -w -X main.Version=${VERSION} -extldflags -static" \
+              -o "dist/Emby-In-One-linux-${goarch}-${VERSION}" ./cmd/emby-in-one
+          }
+          build amd64   gcc
+          build arm64   aarch64-linux-gnu-gcc
+          build arm     arm-linux-gnueabihf-gcc 7
+          build mips    mips-linux-gnu-gcc
+          build mipsle  mipsel-linux-gnu-gcc
+          build riscv64 riscv64-linux-gnu-gcc
+
+      - name: Smoke test and verify static linking
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="v${TAG#V}"
+          # 容器本身是 linux/amd64，可以直接执行一次 --version 验证产物
+          "./dist/Emby-In-One-linux-amd64-${VERSION}" --version
+          for f in dist/Emby-In-One-linux-*; do
+            if ! file "$f" | grep -q "statically linked"; then
+              echo "::error::${f} 不是静态链接" >&2
+              file "$f" >&2
+              exit 1
+            fi
+          done
+
+      - name: Stage panel and script assets
+        run: |
+          cp public/admin.html public/admin.js dist/
+          cp emby-in-one-cli.sh release-install.sh dist/
+
+      - name: Build Docker source archive
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="v${TAG#V}"
+          # emby-in-one-cli.sh 的 Docker 模式在线更新按此清单解包部署
+          # （cmd / internal / third_party / public / go.mod + Dockerfile 等）。
+          # git archive 只含已提交文件，并按 .gitattributes 统一为 LF 行尾。
+          git archive --format=tar.gz --prefix="emby-in-one/" \
+            -o "dist/Emby-In-One-docker-${VERSION}.tar.gz" HEAD \
+            cmd internal third_party public go.mod \
+            Dockerfile .dockerignore docker-compose.yml \
+            emby-in-one-cli.sh \
+            README.md README_EN.md Update.md LICENSE
+
+      - name: Generate .sha256 for every asset
+        run: |
+          set -euo pipefail
+          cd dist
+          # 校验和文件里记录的是裸文件名（sha256sum 的第二列），
+          # 与 release-install.sh verify_sha256 按 URL 末段匹配的解析方式一致。
+          for f in *; do
+            [[ "$f" == *.sha256 ]] && continue
+            sha256sum "$f" > "${f}.sha256"
+          done
+          ls -l
+
+      - name: Extract release notes from Update.md
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="v${TAG#V}"
+          # 取 Update.md 里 "## <TAG>" 小节直到下一个 "## " 标题为止；
+          # 边界排除数字与点，避免 V1.4.4 误匹配 V1.4.40。
+          awk -v tag="$TAG" '
+            $0 ~ "^## " tag "([^0-9.]|$)" { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+          ' Update.md > section.md
+          if ! grep -q '[^[:space:]]' section.md; then
+            echo "::error::Update.md 中没有找到 ${TAG} 的更新日志章节，发布中止" >&2
+            exit 1
+          fi
+          {
+            echo "# Emby In One ${TAG}"
+            echo
+            echo "## 安装 / 升级（二进制 · systemd）"
+            echo
+            echo '```bash'
+            echo "curl -fsSL -o release-install.sh https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/release-install.sh"
+            echo 'sudo bash release-install.sh'
+            echo '```'
+            echo
+            echo "已安装用户可在 SSH 菜单（\`emby-in-one\` 命令）中选择在线更新；Docker 部署的在线更新使用本页的 Emby-In-One-docker-${VERSION}.tar.gz。"
+            echo
+            echo "---"
+            echo
+            cat section.md
+          } > release-notes.md
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          path: |
+            dist/
+            release-notes.md
+          if-no-files-found: error
+          retention-days: 5
+
+  publish:
+    name: Create GitHub release
+    if: github.repository == 'ArizeSky/Emby-In-One'
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-assets
+
+      - name: Create release and upload assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # 幂等：重跑失败的发布时 Release 可能已创建，改为补传/覆盖资产。
+          # release-notes.md 只作为正文，不作为资产上传。
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber dist/*
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "$TAG" \
+              --notes-file release-notes.md \
+              dist/*
+          fi
+          echo "已发布资产："
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name'
