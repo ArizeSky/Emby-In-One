@@ -9,6 +9,10 @@ name: Release
 #
 # 命名约定（release-install.sh / emby-in-one-cli.sh 按此拼 URL，错了会 404）：
 #   tag 与 Release 标题用大写 V（V1.4.4），资产文件名内的版本用小写 v（v1.4.4）。
+#
+# 预发布：tag 带后缀（V1.4.5-rc1 / V1.4.5-beta.1）自动发布为 Pre-release，
+#   releases/latest 仍指向上一个正式版，不带参数的安装/在线更新不会拿到预发布；
+#   更新日志没有专属章节时回退到基础版本章节（V1.4.5-rc1 → V1.4.5）。
 on:
   push:
     tags: ['V[0-9]*']
@@ -136,28 +140,61 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="v${TAG#V}"
-          # 取 Update.md 里 "## <TAG>" 小节直到下一个 "## " 标题为止；
+          # 预发布判定：tag 带后缀（如 V1.4.5-rc1）即预发布。
+          PRERELEASE=false
+          BASE_TAG="$TAG"
+          if [[ "$TAG" == *-* ]]; then
+            PRERELEASE=true
+            BASE_TAG="${TAG%%-*}"
+          fi
+          # 取 Update.md 里 "## <tag>" 小节直到下一个 "## " 标题为止；
           # 边界排除数字与点，避免 V1.4.4 误匹配 V1.4.40。
-          awk -v tag="$TAG" '
-            $0 ~ "^## " tag "([^0-9.]|$)" { found = 1; next }
-            found && /^## / { exit }
-            found { print }
-          ' Update.md > section.md
+          extract_section() {
+            awk -v tag="$1" '
+              $0 ~ "^## " tag "([^0-9.]|$)" { found = 1; next }
+              found && /^## / { exit }
+              found { print }
+            ' Update.md
+          }
+          # 优先取与 tag 完全一致的章节；预发布没有专属章节时回退到
+          # 去掉后缀的基础版本章节。
+          FELLBACK=false
+          extract_section "$TAG" > section.md
+          if ! grep -q '[^[:space:]]' section.md && [[ "$PRERELEASE" == true ]]; then
+            extract_section "$BASE_TAG" > section.md
+            FELLBACK=true
+          fi
           if ! grep -q '[^[:space:]]' section.md; then
-            echo "::error::Update.md 中没有找到 ${TAG} 的更新日志章节，发布中止" >&2
+            echo "::error::Update.md 中没有找到 ${TAG}（或基础版本 ${BASE_TAG}）的更新日志章节，发布中止" >&2
             exit 1
           fi
           {
             echo "# Emby In One ${TAG}"
             echo
+            if [[ "$PRERELEASE" == true ]]; then
+              echo "> ⚠️ **预发布版本**，供测试尝鲜；不带参数的安装脚本仍会安装最新稳定版。"
+              if [[ "$FELLBACK" == true ]]; then
+                echo "> 更新日志取自 ${BASE_TAG} 章节。"
+              fi
+              echo
+            fi
             echo "## 安装 / 升级（二进制 · systemd）"
             echo
             echo '```bash'
             echo "curl -fsSL -o release-install.sh https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/release-install.sh"
-            echo 'sudo bash release-install.sh'
+            if [[ "$PRERELEASE" == true ]]; then
+              # 预发布不是 releases/latest，安装时必须显式指定版本
+              echo "sudo bash release-install.sh ${TAG}"
+            else
+              echo 'sudo bash release-install.sh'
+            fi
             echo '```'
             echo
-            echo "已安装用户可在 SSH 菜单（\`emby-in-one\` 命令）中选择在线更新；Docker 部署的在线更新使用本页的 Emby-In-One-docker-${VERSION}.tar.gz。"
+            if [[ "$PRERELEASE" == true ]]; then
+              echo "SSH 菜单的在线更新只会升级到最新稳定版；安装本预发布需用上面的命令显式指定版本，Docker 模式可用菜单 [15] 指定 ${TAG} 重建。"
+            else
+              echo "已安装用户可在 SSH 菜单（\`emby-in-one\` 命令）中选择在线更新；Docker 部署的在线更新使用本页的 Emby-In-One-docker-${VERSION}.tar.gz。"
+            fi
             echo
             echo "---"
             echo
@@ -189,6 +226,12 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
+          # 带后缀的 tag（V1.4.5-rc1）发布为 Pre-release：releases/latest 仍指向
+          # 上一个正式版，不带参数的安装/在线更新不会拿到预发布。
+          PRERELEASE_ARGS=()
+          if [[ "$TAG" == *-* ]]; then
+            PRERELEASE_ARGS+=(--prerelease)
+          fi
           # 幂等：重跑失败的发布时 Release 可能已创建，改为补传/覆盖资产。
           # release-notes.md 只作为正文，不作为资产上传。
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
@@ -197,6 +240,7 @@ jobs:
             gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
               --title "$TAG" \
               --notes-file release-notes.md \
+              "${PRERELEASE_ARGS[@]}" \
               dist/*
           fi
           echo "已发布资产："
