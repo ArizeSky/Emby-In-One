@@ -38,6 +38,10 @@ func WriteFileAtomic(path string, data []byte, mode os.FileMode) error {
 		_ = os.Remove(tmpPath)
 		return err
 	}
+	// A root-run CLI (the SSH menu's --reset-password) must not leave the
+	// renamed file root-owned: the service runs as an unprivileged user and
+	// would fail to read its config on the next start.
+	preserveOwner(tmpPath, path)
 	if err := replaceFile(tmpPath, path); err != nil {
 		_ = os.Remove(tmpPath)
 		return err

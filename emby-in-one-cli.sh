@@ -140,6 +140,29 @@ reset_password_via_cli() {
   fi
 }
 
+# ── root 写入后还原属主 ──
+# 本菜单以 root 运行，而服务以专用用户（binary 模式，见 systemd unit 的 User=）
+# 或 uid 1000（docker 模式，见 docker-compose.yml 的 user 字段）运行。
+# root 重写 config/tokens/二进制后若不还原属主，服务重启即因读权限被拒而崩溃。
+restore_ownership() {
+  if [[ "$DEPLOY_MODE" == "binary" ]]; then
+    local owner=""
+    if command -v systemctl >/dev/null 2>&1; then
+      owner=$(systemctl show -p User --value "${SERVICE_NAME}" 2>/dev/null)
+    fi
+    # 非 systemd 部署退回目录属主；root 属主（旧式 root 部署）无需还原
+    if [[ -z "$owner" ]] && command -v stat >/dev/null 2>&1; then
+      owner=$(stat -c '%U' "${PROJECT_DIR}" 2>/dev/null)
+    fi
+    if [[ -z "$owner" || "$owner" == "root" ]]; then
+      return 0
+    fi
+    chown -R "${owner}:${owner}" "${PROJECT_DIR}" 2>/dev/null || true
+  else
+    chown -R 1000:1000 "${PROJECT_DIR}/config" "${PROJECT_DIR}/data" 2>/dev/null || true
+  fi
+}
+
 # ── 按任意键返回 ──
 pause_return() {
   echo ""
@@ -605,6 +628,9 @@ download_and_install_binary() {
     done
   fi
 
+  # root 下载的二进制/面板文件同样要还原属主，保持与服务运行用户一致
+  restore_ownership
+
   # 重启服务
   if [[ "$was_running" == true ]]; then
     echo -e "${YELLOW}▶ 正在重启服务...${NC}"
@@ -824,6 +850,8 @@ do_change_username() {
   fi
   awk -v val="$new_username" '/^  username:/{print "  username: \x27" val "\x27"; next}1' "${PROJECT_DIR}/config/config.yaml" > "${PROJECT_DIR}/config/config.yaml.tmp" && mv "${PROJECT_DIR}/config/config.yaml.tmp" "${PROJECT_DIR}/config/config.yaml"
   chmod 600 "${PROJECT_DIR}/config/config.yaml" 2>/dev/null || true
+  # awk+mv 以 root 重写了 config.yaml，必须把属主还原给服务用户
+  restore_ownership
   echo ""
   echo -e "${GREEN}✔ 用户名已修改为: ${new_username}${NC}"
   echo -e "${YELLOW}▶ 正在重启服务使配置生效...${NC}"
@@ -864,6 +892,9 @@ do_change_password() {
       echo -e "${DIM}  docker compose -f ${PROJECT_DIR}/docker-compose.yml run --rm -T emby-in-one /app/emby-in-one --reset-password - --force${NC}"
     fi
   fi
+  # 无论成败都还原属主: 旧版二进制以 root 重写 config/tokens 后不会自己恢复属主，
+  # 不还原的话服务一启动就因 permission denied 崩溃循环
+  restore_ownership
   echo -e "${YELLOW}▶ 正在启动服务...${NC}"
   if [[ "$DEPLOY_MODE" == "binary" ]]; then
     systemctl start "${SERVICE_NAME}" >/dev/null 2>&1 || true

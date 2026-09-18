@@ -37,3 +37,6 @@ coverage.out
 
 # ---- Local source snapshots (never publish these) ----
 *.zip
+
+# ---- Local smoke-test helpers (contain server credentials) ----
+.smoke/
