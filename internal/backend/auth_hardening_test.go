@@ -92,7 +92,10 @@ func TestConfigSaveUsesAtomicReplace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read config after save: %v", err)
 	}
-	if !strings.Contains(string(raw), `name: "Atomic Name"`) {
+	// yamlStr renders scalars single-quoted; this test never ran on Windows
+	// (skipped above), so the stale double-quote expectation only surfaced
+	// on the first Linux CI run.
+	if !strings.Contains(string(raw), `name: 'Atomic Name'`) {
 		t.Fatalf("updated config missing server name: %s", string(raw))
 	}
 }
