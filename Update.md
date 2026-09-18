@@ -222,23 +222,29 @@ object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'
 | `internal/backend/library_filter_test.go`（新增） | 5 个端点过滤命中/未命中、ParentId 路径不过滤、无 DB 降级 |
 | `internal/backend/admin_home_libraries_test.go`（新增） | 库列表端点与 TTL/离线回退、Patch 语义（缺席/null/空数组）、用户更新回显、删除联动、权限 403 |
 
-### 修复：安装脚本与 SSH 菜单在三处场景下的致命问题
+### 修复：安装脚本与 SSH 菜单的多处致命与隐患问题
 
 - **全新安装失败（`无法创建专用运行用户 eio` 后回滚）**：安装脚本先用 `groupadd` 建了同名组，随后 `useradd` 未带 `-g`，其默认行为是再建一个同名用户组，撞上已存在的组即失败（真实报错 `group eio exists - if you want to add this user to that group, use -g.` 被 `2>/dev/null` 吞掉，只显示笼统的"无法创建"）。现组已存在时显式传 `-g`，组不存在时仍由 `useradd` 自建
 - **无版本参数一键安装卡在旧稳定版的校验环节**：V1.4.4 正式版发布前，不指定版本的安装会经 `releases/latest` 解析到 V1.4.3，而 `.sha256` 校验和产物自 V1.4.4-rc1 起才随 Release 发布——旧版 Release 无校验和可校验。现对 V1.4.3 及以下版本默认跳过完整性校验（输出一条明确警告），保证一键安装可用；V1.4.4-rc1 及以上版本仍强制校验
 - **SSH 菜单改密码/改账号后服务崩溃循环（`open config/config.yaml: permission denied`）**：菜单以 root 运行，而服务以专用用户 `eio`（binary 部署）或 uid 1000（Docker 部署）运行。选项 8（改密码）经内置 `--reset-password` 重写 `config.yaml` 与 `tokens.json`、选项 9（改账号）经 `awk+mv` 重写 `config.yaml`，root 重写后文件属主变为 root，服务重启即因读权限被拒而崩溃循环。两层修复：
   - **二进制层（治本）**：`WriteFileAtomic` 以 root 运行时在 rename 前把原文件的 uid/gid 转移到临时文件，原子写不再改变属主——覆盖 `--reset-password` 与运行期全部落盘路径
   - **菜单脚本层（兼容已部署的旧版二进制）**：新增 `restore_ownership`，选项 8/9 与在线更新写入后按 systemd unit 的 `User=`（无 systemd 时退回目录属主）还原属主；Docker 模式还原为 `1000:1000`
+- **SSH 菜单「在线更新（最新版）」会把预发布版本降级**：更新目标取自 GitHub `releases/latest`（不含预发布），V1.4.4 正式版发布前那是 V1.4.3——在 rc1 上执行更新会把二进制换回 V1.4.3。现更新前做版本比较（新增 `version_lt`，忽略 `V`/`v` 前缀与 `-rc` 后缀按点分段数值比较）：目标低于当前即拒绝（不降级），相同则提示已是最新；且安装脚本改为优先从**目标版本**的 Release 获取（与要装的版本配套、含该版本修复），磁盘旧副本仅作离线兜底，版本号显式传参不再二次解析
+- **install.sh 对 standalone docker-compose 的兼容缺口**：脚本自己的 Compose 兜底安装路径装的是 standalone `docker-compose` 二进制，后续却无条件使用插件语法 `docker compose`，仅有 standalone 的机器上必然失败回滚。现与 SSH 菜单一致：`compose_cmd` 插件优先、standalone 兜底（构建/启动/回滚三处全部接入）
+- **release-install.sh 在 Docker 部署上并行安装**：安装目录为 Docker 布局（有 docker-compose.yml、无二进制）且容器正在运行时，并行装二进制服务会抢 8096 端口——现检测到运行中的容器直接中止并给出指引；容器未运行则提示后继续（支持从 Docker 切换到二进制部署）
+- **SSH 菜单改管理员账号的竞态**：选项 9 此前在服务运行中直接重写 `config.yaml`（运行中的服务可能用内存里的旧配置回写覆盖改动），且无论之前服务是否在跑都会被重启。现与选项 8 一致：先停服务再改，之前在跑才重启
+- **杂项加固**：安装脚本回滚时清理**本次创建**的 `eio` 用户/组（安装前已存在的不动）；SSH 菜单卸载 binary 部署时删除专用运行用户与用户组；`get_admin_token` 的 awk 匹配收紧到 4 空格缩进的 `role` 字段，避免未来 tokens.json 出现嵌套对象时误取非管理员 token
 
 **涉及文件（安装与菜单修复）**
 
 | 文件 | 修改内容 |
 |------|----------|
-| `release-install.sh` | 组已存在时 `useradd` 显式 `-g`，修复全新安装必失败；新增 `version_lte` 版本比较，V1.4.3 及以下默认跳过 sha256 校验（旧 Release 无校验和产物） |
+| `release-install.sh` | 组已存在时 `useradd` 显式 `-g`，修复全新安装必失败；新增 `version_lte` 版本比较，V1.4.3 及以下默认跳过 sha256 校验（旧 Release 无校验和产物）；Docker 部署检测（容器运行中中止）；回滚清理本次创建的用户/组 |
 | `internal/backend/atomicfile.go` | `WriteFileAtomic` rename 前调用 `preserveOwner` |
 | `internal/backend/atomicfile_owner_unix.go`（新增）/ `atomicfile_owner_windows.go`（新增） | 属主保留的平台实现（Windows 为空操作） |
 | `internal/backend/atomicfile_owner_unix_test.go`（新增） | root 下跨用户属主保留的回归测试（非 root 自动跳过） |
-| `emby-in-one-cli.sh` | 新增 `restore_ownership` 并接入选项 8/9 与二进制在线更新 |
+| `emby-in-one-cli.sh` | 新增 `restore_ownership` 并接入选项 8/9 与二进制在线更新；新增 `version_lt` 降级拦截，选项 4 改为从目标版本取脚本并显式传参；选项 9 先停服务再改；卸载清理 `eio` 用户/组；`get_admin_token` awk 收紧 |
+| `install.sh` | 新增 `compose_cmd`（插件优先/standalone 兜底），构建/启动/回滚三处接入 |
 
 ---
 

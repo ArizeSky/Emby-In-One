@@ -91,9 +91,11 @@ get_admin_token() {
   #   "hextoken": {
   #     ...
   #     "role": "admin",
+  # role 字段固定为 4 空格缩进（token 对象自身的字段），按缩进锚定，
+  # 避免未来出现嵌套对象时误取非管理员 token。
   awk -F'"' '
     /^  "[0-9a-fA-F]+".*\{/ { key=$2 }
-    /"role".*"admin"/ { if (key != "") { print key; exit } }
+    /^    "role": *"admin"/ { if (key != "") { print key; exit } }
   ' "$token_file"
 }
 
@@ -123,6 +125,23 @@ latest_release_tag() {
     tag="V${tag#v}"; tag="V${tag#V}"
   fi
   echo "${tag}"
+}
+
+# ── 版本比较：$1 < $2 ──
+# 忽略 V/v 前缀与 -rc1 等预发布后缀，按点分段数值比较（最多三段，缺段按 0）。
+# 相等返回 1（非小于）；用于更新前拦截"把更高的运行版本降级成更低的稳定版"。
+version_lt() {
+  local a="${1#[Vv]}" b="${2#[Vv]}"
+  a="${a%%-*}"; b="${b%%-*}"
+  local A B i x y
+  IFS='.' read -r -a A <<< "$a"
+  IFS='.' read -r -a B <<< "$b"
+  for i in 0 1 2; do
+    x=$((10#${A[i]:-0})); y=$((10#${B[i]:-0}))
+    (( x < y )) && return 0
+    (( x > y )) && return 1
+  done
+  return 1
 }
 
 reset_password_via_cli() {
@@ -251,56 +270,63 @@ do_stop() {
 }
 
 do_update() {
+  # 目标始终是"最新稳定版"（GitHub releases/latest 不含预发布）。
+  # 更新前先做版本比较：禁止把更高的运行版本（如 rc1 预发布）降级成更低的稳定版。
+  local current target
+  current=$(running_version_tag)
+  target=$(latest_release_tag)
+  if [[ -z "${target}" ]]; then
+    echo -e "${RED}✘ 无法获取最新 Release 版本号，请检查网络（或改用菜单选项 [15] 指定版本）${NC}"
+    return 1
+  fi
+  if [[ -n "${current}" && "${target}" == "${current}" ]]; then
+    echo -e "${GREEN}✔ 已是最新版本 ${target}，无需更新${NC}"
+    return 0
+  fi
+  if [[ -n "${current}" ]] && version_lt "${target}" "${current}"; then
+    echo -e "${YELLOW}⚠ 当前运行版本 ${current} 已高于最新稳定版 ${target}，已取消更新（不降级）${NC}"
+    echo -e "${DIM}  预发布版本不会出现在最新稳定版里；如需安装其他版本请用菜单选项 [15]${NC}"
+    return 1
+  fi
+
   if [[ "$DEPLOY_MODE" == "binary" ]]; then
     # ── Binary 模式：通过 release-install.sh 更新 ──
-    echo -e "${CYAN}▶ 正在通过 release-install.sh 更新服务...${NC}"
+    echo -e "${CYAN}▶ 正在通过 release-install.sh 更新到 ${target}...${NC}"
     echo ""
-    local tmp_script="" installer="" tag
-    if [[ -f "${PROJECT_DIR}/release-install.sh" ]]; then
-      # 1) 优先复用磁盘上已安装的脚本（release-install.sh 安装时会留在安装目录）
-      installer="${PROJECT_DIR}/release-install.sh"
-      echo -e "  ${DIM}使用已安装的 ${installer}${NC}"
-    else
-      # 2) 其次按当前运行版本的 tag 拉取，不再跟随 main 分支
-      tag=$(running_version_tag)
-      tmp_script="/tmp/emby-in-one-release-install-$$.sh"
-      echo -e "  ${DIM}从 Release ${tag} 获取更新脚本...${NC}"
-      if ! curl -fsSL --max-time 30 -o "${tmp_script}" \
-        "https://github.com/${GITHUB_REPO}/releases/download/${tag}/release-install.sh"; then
-        # Release 未附带该脚本时退到同一 tag 的仓库快照（仍是版本锁定，不是 main）
-        if ! curl -fsSL --max-time 30 -o "${tmp_script}" \
-          "https://raw.githubusercontent.com/${GITHUB_REPO}/${tag}/release-install.sh"; then
-          rm -f "${tmp_script}"
-          echo -e "${RED}✘ 获取更新脚本失败（Release ${tag} 可能未附带 release-install.sh）${NC}"
-          echo -e "${DIM}  可改用菜单选项 [15] 指定版本更新${NC}"
-          return 1
-        fi
-      fi
+    local tmp_script="" installer=""
+    tmp_script="/tmp/emby-in-one-release-install-$$.sh"
+    # 优先取目标版本自带的安装脚本（与要安装的版本配套、包含该版本的修复），
+    # 其次取目标 tag 的仓库快照；磁盘上的旧副本仅作离线兜底。
+    # 版本号显式传参，安装脚本不再自行二次解析。
+    if curl -fsSL --max-time 30 -o "${tmp_script}" \
+        "https://github.com/${GITHUB_REPO}/releases/download/${target}/release-install.sh" \
+      || curl -fsSL --max-time 30 -o "${tmp_script}" \
+        "https://raw.githubusercontent.com/${GITHUB_REPO}/${target}/release-install.sh"; then
       installer="${tmp_script}"
-    fi
-    bash "${installer}"
-    local rc=$?
-    if [[ -n "$tmp_script" ]]; then
+      echo -e "  ${DIM}已获取 ${target} 的安装脚本${NC}"
+    elif [[ -f "${PROJECT_DIR}/release-install.sh" ]]; then
+      installer="${PROJECT_DIR}/release-install.sh"
+      echo -e "  ${DIM}网络获取失败，使用已安装的 ${installer}${NC}"
+    else
       rm -f "${tmp_script}"
+      echo -e "${RED}✘ 获取更新脚本失败（Release ${target} 可能未附带 release-install.sh）${NC}"
+      echo -e "${DIM}  可改用菜单选项 [15] 指定版本更新${NC}"
+      return 1
     fi
+    bash "${installer}" "${target}"
+    local rc=$?
+    rm -f "${tmp_script}"
     if [[ $rc -ne 0 ]]; then
       echo -e "${RED}✘ 更新脚本执行失败 (退出码 ${rc})${NC}"
       return 1
     fi
   else
-    # ── Docker 模式：下载最新 Release 的源码包（带校验和）并重新构建 ──
-    echo -e "${CYAN}▶ 正在获取最新 Release 并重新构建...${NC}"
+    # ── Docker 模式：下载目标 Release 的源码包（带校验和）并重新构建 ──
+    echo -e "${CYAN}▶ 正在获取 Release ${target} 并重新构建...${NC}"
     echo ""
     # 不再拉 main 分支 tarball：该路径无校验和，且内容与运行版本不对应。
     # Release 的 docker 源码包走 download_and_install_docker 的 sha256 校验。
-    local latest_tag
-    latest_tag=$(latest_release_tag)
-    if [[ -z "${latest_tag}" ]]; then
-      echo -e "${RED}✘ 无法获取最新 Release 版本号，请检查网络（或改用菜单选项 [15] 指定版本）${NC}"
-      return 1
-    fi
-    echo -e "  ${DIM}最新 Release: ${latest_tag}${NC}"
-    download_and_install_docker "${latest_tag}" || return 1
+    download_and_install_docker "${target}" || return 1
   fi
   echo ""
   echo -e "${GREEN}✔ 服务已更新${NC}"
@@ -848,17 +874,37 @@ do_change_username() {
     echo -e "${RED}用户名只能包含字母、数字、下划线和连字符${NC}"
     return
   fi
+  # 与选项 8 一致：改配置前先停服务，避免运行中的服务把内存里的旧配置
+  # 回写覆盖掉刚改的用户名；之前是否在跑，改完就恢复到什么状态
+  local was_running=false
+  if [[ "$DEPLOY_MODE" == "binary" ]]; then
+    if systemctl is-active --quiet "${SERVICE_NAME}" 2>/dev/null; then
+      was_running=true
+      echo -e "${YELLOW}▶ 正在停止服务...${NC}"
+      systemctl stop "${SERVICE_NAME}" >/dev/null 2>&1 || true
+    fi
+  else
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'emby-in-one'; then
+      was_running=true
+      echo -e "${YELLOW}▶ 正在停止容器...${NC}"
+      ( cd "${PROJECT_DIR}" && compose_cmd stop ) >/dev/null 2>&1 || true
+    fi
+  fi
   awk -v val="$new_username" '/^  username:/{print "  username: \x27" val "\x27"; next}1' "${PROJECT_DIR}/config/config.yaml" > "${PROJECT_DIR}/config/config.yaml.tmp" && mv "${PROJECT_DIR}/config/config.yaml.tmp" "${PROJECT_DIR}/config/config.yaml"
   chmod 600 "${PROJECT_DIR}/config/config.yaml" 2>/dev/null || true
   # awk+mv 以 root 重写了 config.yaml，必须把属主还原给服务用户
   restore_ownership
   echo ""
   echo -e "${GREEN}✔ 用户名已修改为: ${new_username}${NC}"
-  echo -e "${YELLOW}▶ 正在重启服务使配置生效...${NC}"
-  if [[ "$DEPLOY_MODE" == "binary" ]]; then
-    systemctl restart "${SERVICE_NAME}"
+  if [[ "$was_running" == true ]]; then
+    echo -e "${YELLOW}▶ 正在启动服务使配置生效...${NC}"
+    if [[ "$DEPLOY_MODE" == "binary" ]]; then
+      systemctl start "${SERVICE_NAME}"
+    else
+      ( cd "${PROJECT_DIR}" && compose_cmd up -d )
+    fi
   else
-    cd "${PROJECT_DIR}" && compose_cmd restart
+    echo -e "${DIM}  服务此前未在运行，不自动启动；下次启动时新用户名生效${NC}"
   fi
   echo -e "${GREEN}✔ 完成${NC}"
 }
@@ -1088,6 +1134,14 @@ do_uninstall() {
     systemctl disable "${SERVICE_NAME}" 2>/dev/null || true
     rm -f "/etc/systemd/system/${SERVICE_NAME}.service"
     systemctl daemon-reload 2>/dev/null || true
+    # 清理专用运行用户与用户组（release-install.sh 创建；Docker 部署不使用主机用户）
+    if id -u eio &>/dev/null; then
+      echo -e "${YELLOW}▶ 正在删除专用运行用户 eio...${NC}"
+      userdel eio 2>/dev/null || true
+    fi
+    if getent group eio &>/dev/null; then
+      groupdel eio 2>/dev/null || true
+    fi
   else
     echo -e "${YELLOW}▶ 正在停止并删除容器和镜像...${NC}"
     cd "${PROJECT_DIR}" && compose_cmd down --rmi all 2>/dev/null
