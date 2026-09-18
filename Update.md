@@ -1,104 +1,10 @@
 # Emby-In-One 更新日志
 
-## V1.4.6（每用户首页库隐藏）
-
-发布日期：2026-09-18
-
-> 本版为「首页库隐藏」功能版本：管理员可为**每个用户（含管理员自己）**单独配置哪些媒体库不在 Emby 客户端首页显示，解决多上游聚合后首页库过多的问题。
-
-### 新功能：每用户独立的首页库隐藏
-
-- **按库勾选，按服务器分组**：管理面板"用户管理"页新增配置入口——每个用户的编辑弹窗内含"首页隐藏库"区块（按服务器分组列出库，每组带全选/全不选）；页面顶部的"管理员（我）"卡片可配置管理员自己的首页。勾掉一台服务器的全部库 = 该服务器从该用户首页整体消失
-- **只隐藏首页库入口**：搜索、"最新添加"行、继续观看、接下来观看、播放、详情全部不受影响，被隐藏库的内容保持可达（已知局限：隐藏库的**新增内容仍会出现在"最新添加"行**，因 `/Items/Latest` 响应不携带库归属，逐条查询开销不可接受）
-- **过滤覆盖 5 个列库端点**：`/Users/{id}/Views`（主路径）、`/Library/MediaFolders`、`/Library/VirtualFolders`、`/Library/SelectableRemoteLibraries`，以及 `/Users/{id}/Items` 根目录浏览（部分客户端如 Kodi Emby 插件经此旁路列库，按 `UserView`/`CollectionFolder` 类型过滤）
-- **实时生效**：隐藏配置不写入 Token（Token 永不过期，快照会导致改配置后必须重新登录），每次请求实时读取内存快照，保存后下一次刷新首页即生效
-- **保存契约（Patch 语义）**：提交中某服务器的 key 存在（含空数组 = 全部取消隐藏）则更新该服务器；key 缺席或为 `null` 则完全不触碰——离线服务器的已存配置由此天然保留，不会被误清空
-- **库列表 TTL 缓存**：管理面板拉取上游库列表带 10 分钟内存缓存（`?refresh=1` 强制刷新）；服务器离线时回退到缓存副本，无缓存才报错。上游修改连接信息或删除时缓存自动失效
-- **数据清理联动**：删除上游服务器 / 删除用户时自动清理对应的隐藏记录；收窄用户"允许服务器"时同步清理不再可访问服务器的记录（空列表 = 全部允许，不触发清理）
-
-### 技术实现
-
-- 存储为共享 SQLite 库新表 `user_hidden_libraries(user_id, server_id, library_id)`，一行一条隐藏记录，无二级索引（复合主键前缀即索引）；管理员配置存于保留常量 `__admin__`（与易失的 `tokens.json` 解耦，用户 ID 为 32 位十六进制永不碰撞）
-- 内存缓存采用 COW（`atomic.Pointer` 全量快照）：读路径零锁，写路径先提交 SQLite 事务再深拷贝换快照，任何路径不得原地修改已发布快照
-- 过滤发生在 ID 虚拟化之前（此时 `item.Id` 仍是上游原始库 ID，即配置存储的键）
-
-### 涉及文件
-
-| 文件 | 修改内容 |
-|------|----------|
-| `internal/backend/library_visibility.go`（新增） | 存储层：建表、COW 快照、Patch 写入、清理联动、`__admin__` 映射 |
-| `internal/backend/library_filter.go`（新增） | 请求期过滤助手（5 个过滤点共用，含库类型判定） |
-| `internal/backend/handlers_admin_home_libraries.go`（新增） | 管理 API：上游库列表（TTL 缓存）、管理员自助读写、Patch 语义应用 |
-| `internal/backend/handlers_user.go` | `handleUserViews` 过滤（主路径） |
-| `internal/backend/library_image.go` | `handleLibraryNamedArray` / `handleLibraryMediaFolders` 过滤 |
-| `internal/backend/media_items.go` | `handleUserItems` 根目录旁路过滤（仅无 ParentId 分支） |
-| `internal/backend/handlers_admin.go` | 用户列表回显 `hiddenLibraries`、用户更新接受 Patch 载荷并联动清理、上游更新/删除时缓存失效与记录清理 |
-| `internal/backend/server.go` / `routes.go` | App 装配与新路由注册 |
-| `public/admin.html` / `public/admin.js` | "管理员（我）"卡片、用户弹窗库勾选区块（仅编辑时显示）、管理员自助弹窗、离线组保留提示 |
-| `internal/backend/library_visibility_test.go`（新增） | 存储层：增删改、Patch 清空、持久化、清理、COW 并发（-race） |
-| `internal/backend/library_filter_test.go`（新增） | 5 个端点过滤命中/未命中、ParentId 路径不过滤、无 DB 降级 |
-| `internal/backend/admin_home_libraries_test.go`（新增） | 库列表端点与 TTL/离线回退、Patch 语义（缺席/null/空数组）、用户更新回显、删除联动、权限 403 |
-
-### 修复：安装脚本与 SSH 菜单在非 root 服务下的两处致命问题
-
-- **全新安装失败（`无法创建专用运行用户 eio` 后回滚）**：安装脚本先用 `groupadd` 建了同名组，随后 `useradd` 未带 `-g`，其默认行为是再建一个同名用户组，撞上已存在的组即失败（真实报错 `group eio exists - if you want to add this user to that group, use -g.` 被 `2>/dev/null` 吞掉，只显示笼统的"无法创建"）。现组已存在时显式传 `-g`，组不存在时仍由 `useradd` 自建
-- **SSH 菜单改密码/改账号后服务崩溃循环（`open config/config.yaml: permission denied`）**：菜单以 root 运行，而服务以专用用户 `eio`（binary 部署）或 uid 1000（Docker 部署）运行。选项 8（改密码）经内置 `--reset-password` 重写 `config.yaml` 与 `tokens.json`、选项 9（改账号）经 `awk+mv` 重写 `config.yaml`，root 重写后文件属主变为 root，服务重启即因读权限被拒而崩溃循环。两层修复：
-  - **二进制层（治本）**：`WriteFileAtomic` 以 root 运行时在 rename 前把原文件的 uid/gid 转移到临时文件，原子写不再改变属主——覆盖 `--reset-password` 与运行期全部落盘路径
-  - **菜单脚本层（兼容已部署的旧版二进制）**：新增 `restore_ownership`，选项 8/9 与在线更新写入后按 systemd unit 的 `User=`（无 systemd 时退回目录属主）还原属主；Docker 模式还原为 `1000:1000`
-
-| 文件 | 修改内容 |
-|------|----------|
-| `release-install.sh` | 组已存在时 `useradd` 显式 `-g`，修复全新安装必失败 |
-| `internal/backend/atomicfile.go` | `WriteFileAtomic` rename 前调用 `preserveOwner` |
-| `internal/backend/atomicfile_owner_unix.go`（新增）/ `atomicfile_owner_windows.go`（新增） | 属主保留的平台实现（Windows 为空操作） |
-| `internal/backend/atomicfile_owner_unix_test.go`（新增） | root 下跨用户属主保留的回归测试（非 root 自动跳过） |
-| `emby-in-one-cli.sh` | 新增 `restore_ownership` 并接入选项 8/9 与二进制在线更新 |
-
-## V1.4.5（多推流线路支持）
-
-发布日期：2026-09-17
-
-> 本版为「多推流地址」功能版本：上游可配置**多条有序推流线路**（主线路 + 备用线路），并修复一个代理模式下 HLS 播放的阻塞性缺陷。
-
-### ⚠️ 升级须知
-
-- **代理模式 HLS 清单重写行为修复**：此前 Go 版把 HLS 清单里的分片 URL 重写为**上游主机的绝对地址**（携带虚拟 ID 与代理 token，客户端实际无法使用，HLS 转码播放会失败）。现恢复为**代理相对路径**——分片请求回到本代理，与 Node 版 V1.2 的既定行为一致。已配置反向代理 / 公网域名的部署无需任何改动。
-- 旧配置里的单条 `streamingUrl` 键继续有效，保存时自动并入新的有序列表；无需手动迁移。
-
-### 新功能：多推流线路（`streamingUrls`）
-
-上游配置新增 `streamingUrls` 有序列表（管理面板为多行输入框，每行一条，也支持逗号分隔）：第 1 条为主线路，其余为备用线路。所有线路必须指向**同一台** Emby 服务器——多条线路是到同一服务器的多条路由，不是镜像集群（转码会话存在服务器本地，跨镜像换线路会导致 404）。
-
-- **代理模式——连接级故障转移**：主线路连接失败（连接拒绝 / 超时 / TLS 错误）时自动改用备用线路拉流，客户端无感知；上游返回的任何 HTTP 状态（含 404/403，例如转码会话尚未就绪）**不**视为线路故障，不触发切换
-- **直连模式——线路健康选择**：每个健康检查周期对推流线路做连接级存活探测（`GET /Videos/probe`，不带任何凭据）。**任何 HTTP 响应都算存活**——包括只反代 `/Videos/`、`/Audio/` 的分流线路返回的 403/404，不会被误杀；只有 DNS / TCP / TLS 失败才判死。被标记死亡的线路 60 秒内不再选用，之后自动恢复候选；全部被标记死时仍按配置顺序尝试（探测误判不会导致无线路可用）
-- 302 直连发出后流量不经过代理，播放中途的线路故障由播放器重新拉取清单时自然切换
-- 单条线路配置（或留空 = 与 `url` 相同）行为与旧版完全一致
-
-### Bug 修复
-
-- **代理模式 HLS 清单重写回归（阻塞性）**：`RewriteM3U8ForItem` 输出的分片 URL 恢复为代理相对路径（虚拟 ID + 代理 token），上游主机名与上游 token 不再出现在客户端可见的清单中；无法路由的分片行（非 `/Videos/{id}` / `/Audio/{id}` 形态）原样透传但剥离上游凭据；上游部署在子路径（如 `/emby`）时该前缀不再泄漏进代理路径。测试同步补上主机名断言（旧断言只查子串、恰好被 `127.0.0.1` 测试地址绕过）
-
-### 涉及文件
-
-| 文件 | 修改内容 |
-|------|----------|
-| `internal/backend/streamproxy.go` | HLS 清单重写改为代理相对路径；剥离不可路由行的凭据；丢弃上游路径前缀 |
-| `internal/backend/config.go` | `StreamingURLs` 有序列表：流式序列解析、渲染、旧键迁移去重、快照深拷贝 |
-| `internal/backend/upstream.go` | `StreamBaseURLs` 候选与死亡标记；`doRequestForMode` 拆分单次执行并在 stream 模式按候选故障转移；`BuildURLForMode` 选首个存活线路 |
-| `internal/backend/stream_probe.go`（新增） | 连接级存活探测：任何 HTTP 响应即存活 |
-| `internal/backend/healthcheck.go` | 健康检查周期接入线路探测（在线上游） |
-| `internal/backend/admin_validation.go` / `handlers_admin.go` | `streamingUrls` 输入归一化（换行/逗号）、逐条校验、列表回显 |
-| `public/admin.html` / `public/admin.js` | 推流地址多行输入框，数组与文本互转 |
-| `internal/backend/streaming_urls_test.go`（新增） | 故障转移、HTTP 状态不触发切换、探测语义（403 存活）、redirect 选线、HLS 集成、配置往返 |
-| `internal/backend/streamproxy_test.go` / `media_test.go` | 清单重写断言更新为代理相对路径 + 主机名守卫 |
-
----
-
 ## V1.4.4
 
 发布日期：2026-09-18（V1.4.4-rc1 预发布；正式版日期待定）
 
-> V1.4.4 为 V1.4.3 的累积更新，汇总一次全项目审查的修复产出（15 项）与后续跟进项：**上游服务解耦数组下标全面采用持久化唯一 `server_id`**、内容访问控制与 SSRF 加固、普通用户本地观看状态筛选落地、无 `ParentId` 聚合列表的分页缺陷修复、虚拟用户 ID 透传缺陷修复、仓库行尾统一，以及管理面板前端依赖自托管与 CSP 收紧。**管理面板的资源加载方式、安全策略与普通用户的响应身份有变化，升级前请先读「升级须知」。**
+> V1.4.4 为 V1.4.3 的累积更新，汇总一次全项目审查的修复产出（15 项）与后续跟进项：**上游服务解耦数组下标全面采用持久化唯一 `server_id`**、内容访问控制与 SSRF 加固、普通用户本地观看状态筛选落地、无 `ParentId` 聚合列表的分页缺陷修复、虚拟用户 ID 透传缺陷修复、仓库行尾统一，以及管理面板前端依赖自托管与 CSP 收紧；rc1 预发布期间继续并入：**多推流线路（主线路 + 备用线路）**、**每用户首页库隐藏**，以及安装脚本与 SSH 菜单在非 root 服务下的两处致命问题修复。**管理面板的资源加载方式、安全策略与普通用户的响应身份有变化，升级前请先读「升级须知」。**
 
 ### ⚠️ 升级须知
 
@@ -107,6 +13,8 @@
 - **`public/vendor/` 不需要存在于磁盘**。安装脚本不会创建它，面板会自动回退到二进制内嵌的 vendor 资源。
 - **普通用户响应中的用户 ID 取值变化**：`Views`、`PlaybackInfo`、媒体列表、`UserData`、收藏等「当前用户」响应，此前统一填全局管理员占位 ID，现在填该普通用户自己的本地 ID。这是**一致性修复**，不是新增故障；**不需要清客户端缓存**（旧 ID 与本地 ID 都被当作当前用户别名接受，见「虚拟用户 ID 透传缺陷修复」）。
 - **四个筛选项对普通用户仍是上游语义**，见「已知限制」。
+- **代理模式 HLS 清单重写行为修复**：此前 Go 版把 HLS 清单里的分片 URL 重写为**上游主机的绝对地址**（携带虚拟 ID 与代理 token，客户端实际无法使用，HLS 转码播放会失败）。现恢复为**代理相对路径**——分片请求回到本代理，与 Node 版 V1.2 的既定行为一致。已配置反向代理 / 公网域名的部署无需任何改动。
+- **推流线路旧配置无需迁移**：旧配置里的单条 `streamingUrl` 键继续有效，保存时自动并入新的有序列表。
 
 ### 安全增强
 
@@ -253,6 +161,83 @@ object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'
 - `README.md` / `README_EN.md`：当前版本与推荐部署版本同步更新为 **V1.4.4**；补充 `trustProxy` 使用前提与 nginx 配置片段、日志轮转说明、超时参考与「上游服务器显示离线 / 登录超时」FAQ；`followRedirects` 的注释写清实际覆盖的状态码与关闭后的行为
 - `docker-compose.yml` / `install.sh` / `emby-in-one-cli.sh`：默认构建版本与 CLI 展示版本同步更新为 **V1.4.4**
 - `Update Plan.md`：当前稳定版本同步更新为 **V1.4.4**
+
+### 新功能：多推流线路（`streamingUrls`）
+
+上游配置新增 `streamingUrls` 有序列表（管理面板为多行输入框，每行一条，也支持逗号分隔）：第 1 条为主线路，其余为备用线路。所有线路必须指向**同一台** Emby 服务器——多条线路是到同一服务器的多条路由，不是镜像集群（转码会话存在服务器本地，跨镜像换线路会导致 404）。
+
+- **代理模式——连接级故障转移**：主线路连接失败（连接拒绝 / 超时 / TLS 错误）时自动改用备用线路拉流，客户端无感知；上游返回的任何 HTTP 状态（含 404/403，例如转码会话尚未就绪）**不**视为线路故障，不触发切换
+- **直连模式——线路健康选择**：每个健康检查周期对推流线路做连接级存活探测（`GET /Videos/probe`，不带任何凭据）。**任何 HTTP 响应都算存活**——包括只反代 `/Videos/`、`/Audio/` 的分流线路返回的 403/404，不会被误杀；只有 DNS / TCP / TLS 失败才判死。被标记死亡的线路 60 秒内不再选用，之后自动恢复候选；全部被标记死时仍按配置顺序尝试（探测误判不会导致无线路可用）
+- 302 直连发出后流量不经过代理，播放中途的线路故障由播放器重新拉取清单时自然切换
+- 单条线路配置（或留空 = 与 `url` 相同）行为与旧版完全一致
+
+**代理模式 HLS 清单重写修复（阻塞性）**：`RewriteM3U8ForItem` 输出的分片 URL 恢复为代理相对路径（虚拟 ID + 代理 token），上游主机名与上游 token 不再出现在客户端可见的清单中；无法路由的分片行（非 `/Videos/{id}` / `/Audio/{id}` 形态）原样透传但剥离上游凭据；上游部署在子路径（如 `/emby`）时该前缀不再泄漏进代理路径。测试同步补上主机名断言（旧断言只查子串、恰好被 `127.0.0.1` 测试地址绕过）
+
+**涉及文件（多推流线路）**
+
+| 文件 | 修改内容 |
+|------|----------|
+| `internal/backend/streamproxy.go` | HLS 清单重写改为代理相对路径；剥离不可路由行的凭据；丢弃上游路径前缀 |
+| `internal/backend/config.go` | `StreamingURLs` 有序列表：流式序列解析、渲染、旧键迁移去重、快照深拷贝 |
+| `internal/backend/upstream.go` | `StreamBaseURLs` 候选与死亡标记；`doRequestForMode` 拆分单次执行并在 stream 模式按候选故障转移；`BuildURLForMode` 选首个存活线路 |
+| `internal/backend/stream_probe.go`（新增） | 连接级存活探测：任何 HTTP 响应即存活 |
+| `internal/backend/healthcheck.go` | 健康检查周期接入线路探测（在线上游） |
+| `internal/backend/admin_validation.go` / `handlers_admin.go` | `streamingUrls` 输入归一化（换行/逗号）、逐条校验、列表回显 |
+| `public/admin.html` / `public/admin.js` | 推流地址多行输入框，数组与文本互转 |
+| `internal/backend/streaming_urls_test.go`（新增） | 故障转移、HTTP 状态不触发切换、探测语义（403 存活）、redirect 选线、HLS 集成、配置往返 |
+| `internal/backend/streamproxy_test.go` / `media_test.go` | 清单重写断言更新为代理相对路径 + 主机名守卫 |
+
+### 新功能：每用户独立的首页库隐藏
+
+管理员可为**每个用户（含管理员自己）**单独配置哪些媒体库不在 Emby 客户端首页显示，解决多上游聚合后首页库过多的问题。
+
+- **按库勾选，按服务器分组**：管理面板"用户管理"页新增配置入口——每个用户的编辑弹窗内含"首页隐藏库"区块（按服务器分组列出库，每组带全选/全不选）；页面顶部的"管理员（我）"卡片可配置管理员自己的首页。勾掉一台服务器的全部库 = 该服务器从该用户首页整体消失
+- **只隐藏首页库入口**：搜索、"最新添加"行、继续观看、接下来观看、播放、详情全部不受影响，被隐藏库的内容保持可达（已知局限：隐藏库的**新增内容仍会出现在"最新添加"行**，因 `/Items/Latest` 响应不携带库归属，逐条查询开销不可接受）
+- **过滤覆盖 5 个列库端点**：`/Users/{id}/Views`（主路径）、`/Library/MediaFolders`、`/Library/VirtualFolders`、`/Library/SelectableRemoteLibraries`，以及 `/Users/{id}/Items` 根目录浏览（部分客户端如 Kodi Emby 插件经此旁路列库，按 `UserView`/`CollectionFolder` 类型过滤）
+- **实时生效**：隐藏配置不写入 Token（Token 永不过期，快照会导致改配置后必须重新登录），每次请求实时读取内存快照，保存后下一次刷新首页即生效
+- **保存契约（Patch 语义）**：提交中某服务器的 key 存在（含空数组 = 全部取消隐藏）则更新该服务器；key 缺席或为 `null` 则完全不触碰——离线服务器的已存配置由此天然保留，不会被误清空
+- **库列表 TTL 缓存**：管理面板拉取上游库列表带 10 分钟内存缓存（`?refresh=1` 强制刷新）；服务器离线时回退到缓存副本，无缓存才报错。上游修改连接信息或删除时缓存自动失效
+- **数据清理联动**：删除上游服务器 / 删除用户时自动清理对应的隐藏记录；收窄用户"允许服务器"时同步清理不再可访问服务器的记录（空列表 = 全部允许，不触发清理）
+
+**技术实现（首页库隐藏）**
+
+- 存储为共享 SQLite 库新表 `user_hidden_libraries(user_id, server_id, library_id)`，一行一条隐藏记录，无二级索引（复合主键前缀即索引）；管理员配置存于保留常量 `__admin__`（与易失的 `tokens.json` 解耦，用户 ID 为 32 位十六进制永不碰撞）
+- 内存缓存采用 COW（`atomic.Pointer` 全量快照）：读路径零锁，写路径先提交 SQLite 事务再深拷贝换快照，任何路径不得原地修改已发布快照
+- 过滤发生在 ID 虚拟化之前（此时 `item.Id` 仍是上游原始库 ID，即配置存储的键）
+
+**涉及文件（首页库隐藏）**
+
+| 文件 | 修改内容 |
+|------|----------|
+| `internal/backend/library_visibility.go`（新增） | 存储层：建表、COW 快照、Patch 写入、清理联动、`__admin__` 映射 |
+| `internal/backend/library_filter.go`（新增） | 请求期过滤助手（5 个过滤点共用，含库类型判定） |
+| `internal/backend/handlers_admin_home_libraries.go`（新增） | 管理 API：上游库列表（TTL 缓存）、管理员自助读写、Patch 语义应用 |
+| `internal/backend/handlers_user.go` | `handleUserViews` 过滤（主路径） |
+| `internal/backend/library_image.go` | `handleLibraryNamedArray` / `handleLibraryMediaFolders` 过滤 |
+| `internal/backend/media_items.go` | `handleUserItems` 根目录旁路过滤（仅无 ParentId 分支） |
+| `internal/backend/handlers_admin.go` | 用户列表回显 `hiddenLibraries`、用户更新接受 Patch 载荷并联动清理、上游更新/删除时缓存失效与记录清理 |
+| `internal/backend/server.go` / `routes.go` | App 装配与新路由注册 |
+| `public/admin.html` / `public/admin.js` | "管理员（我）"卡片、用户弹窗库勾选区块（仅编辑时显示）、管理员自助弹窗、离线组保留提示 |
+| `internal/backend/library_visibility_test.go`（新增） | 存储层：增删改、Patch 清空、持久化、清理、COW 并发（-race） |
+| `internal/backend/library_filter_test.go`（新增） | 5 个端点过滤命中/未命中、ParentId 路径不过滤、无 DB 降级 |
+| `internal/backend/admin_home_libraries_test.go`（新增） | 库列表端点与 TTL/离线回退、Patch 语义（缺席/null/空数组）、用户更新回显、删除联动、权限 403 |
+
+### 修复：安装脚本与 SSH 菜单在非 root 服务下的两处致命问题
+
+- **全新安装失败（`无法创建专用运行用户 eio` 后回滚）**：安装脚本先用 `groupadd` 建了同名组，随后 `useradd` 未带 `-g`，其默认行为是再建一个同名用户组，撞上已存在的组即失败（真实报错 `group eio exists - if you want to add this user to that group, use -g.` 被 `2>/dev/null` 吞掉，只显示笼统的"无法创建"）。现组已存在时显式传 `-g`，组不存在时仍由 `useradd` 自建
+- **SSH 菜单改密码/改账号后服务崩溃循环（`open config/config.yaml: permission denied`）**：菜单以 root 运行，而服务以专用用户 `eio`（binary 部署）或 uid 1000（Docker 部署）运行。选项 8（改密码）经内置 `--reset-password` 重写 `config.yaml` 与 `tokens.json`、选项 9（改账号）经 `awk+mv` 重写 `config.yaml`，root 重写后文件属主变为 root，服务重启即因读权限被拒而崩溃循环。两层修复：
+  - **二进制层（治本）**：`WriteFileAtomic` 以 root 运行时在 rename 前把原文件的 uid/gid 转移到临时文件，原子写不再改变属主——覆盖 `--reset-password` 与运行期全部落盘路径
+  - **菜单脚本层（兼容已部署的旧版二进制）**：新增 `restore_ownership`，选项 8/9 与在线更新写入后按 systemd unit 的 `User=`（无 systemd 时退回目录属主）还原属主；Docker 模式还原为 `1000:1000`
+
+**涉及文件（安装与菜单修复）**
+
+| 文件 | 修改内容 |
+|------|----------|
+| `release-install.sh` | 组已存在时 `useradd` 显式 `-g`，修复全新安装必失败 |
+| `internal/backend/atomicfile.go` | `WriteFileAtomic` rename 前调用 `preserveOwner` |
+| `internal/backend/atomicfile_owner_unix.go`（新增）/ `atomicfile_owner_windows.go`（新增） | 属主保留的平台实现（Windows 为空操作） |
+| `internal/backend/atomicfile_owner_unix_test.go`（新增） | root 下跨用户属主保留的回归测试（非 root 自动跳过） |
+| `emby-in-one-cli.sh` | 新增 `restore_ownership` 并接入选项 8/9 与二进制在线更新 |
 
 ---
 
