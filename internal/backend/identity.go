@@ -42,8 +42,8 @@ func NewClientIdentityService() *ClientIdentityService {
 	return newClientIdentityService(nil)
 }
 
-func NewClientIdentityServiceFromDetectedConfig() *ClientIdentityService {
-	return newClientIdentityService(newIdentityPersistenceFromDetectedConfig())
+func NewClientIdentityServiceFromDetectedConfig(logger *Logger) *ClientIdentityService {
+	return newClientIdentityService(newIdentityPersistenceFromDetectedConfig(logger))
 }
 
 func newClientIdentityService(persistence *IdentityPersistence) *ClientIdentityService {
@@ -106,6 +106,9 @@ func (s *ClientIdentityService) DeleteCaptured(token string) {
 	delete(s.entries, token)
 }
 
+// Clear resets every in-memory capture and also detaches persistence for good.
+// It exists for tests that need an isolated service; production code never
+// calls it.
 func (s *ClientIdentityService) Clear() {
 	s.mu.Lock()
 	s.entries = map[string]capturedEntry{}

@@ -597,50 +597,11 @@ func prepareOutboundHeaders(headers http.Header, reqCtx *RequestContext, auth up
 		}
 	}
 
-	// A per-request identity the caller built from this same auth snapshot (a
-	// passthrough identity resolved for this client, or the configured API key) is
-	// already consistent: it is re-sanitized, never rebuilt from the device
-	// profile, because rebuilding would replace the client's real device identity
-	// or the upstream API key.
-	if mode == authModeNormal && explicitAuthHeader(prepared) {
-		return sanitizeCompoundAuthorization(prepared)
-	}
-
 	if mode != authModePasswordLogin && auth.AccessToken != "" {
 		prepared.Set("X-Emby-Token", auth.AccessToken)
 	}
 	prepared.Set("X-Emby-Authorization", canonicalAuthorizationHeader(auth.UserID, deviceName, deviceID, version, client))
 	return prepared
-}
-
-// explicitAuthHeader reports whether the caller already installed a credential
-// header that this preparation must not rebuild.
-func explicitAuthHeader(headers http.Header) bool {
-	return headers.Get("X-Emby-Token") != "" || headers.Get("X-MediaBrowser-Token") != "" ||
-		headers.Get("X-Emby-Authorization") != "" || headers.Get("Authorization") != ""
-}
-
-// sanitizeCompoundAuthorization removes the identity-bearing parameters from a
-// caller-supplied compound authorization header while keeping its device
-// parameters. The credential header is then rebuilt from the parameters that
-// remain, so a captured UserId or Token cannot travel inside it.
-func sanitizeCompoundAuthorization(headers http.Header) http.Header {
-	compound := headers.Get("X-Emby-Authorization")
-	if compound == "" {
-		compound = headers.Get("Authorization")
-	}
-	headers.Del("Authorization")
-	headers.Del("X-Emby-Authorization")
-	if compound == "" {
-		return headers
-	}
-	parsed, ok := parseAuthorizationIdentityStrict(compound)
-	if !ok {
-		return headers
-	}
-	headers.Set("X-Emby-Authorization", canonicalAuthorizationHeader("",
-		parsed["Device"], parsed["DeviceId"], parsed["Version"], parsed["Client"]))
-	return headers
 }
 
 // clientFacingUserIDFor returns the response identity for a handler's request.

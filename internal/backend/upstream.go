@@ -892,7 +892,9 @@ func (c *UpstreamClient) doRequestOnce(ctx context.Context, reqCtx *RequestConte
 	if headers != nil {
 		requestHeaders = prepareOutboundHeaders(headers, reqCtx, auth, mode)
 	} else {
-		requestHeaders = c.requestHeaders(reqCtx, nil)
+		// Defensive branch: no caller passes nil today. The process-wide service
+		// keeps a passthrough upstream from degrading to the spoof profile here.
+		requestHeaders = c.requestHeaders(reqCtx, activeIdentityService())
 	}
 	if bodyContentType != "" && requestHeaders.Get("Content-Type") == "" {
 		requestHeaders.Set("Content-Type", bodyContentType)

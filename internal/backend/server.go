@@ -44,7 +44,7 @@ func NewApp() (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	identity := NewClientIdentityServiceFromDetectedConfig()
+	identity := NewClientIdentityServiceFromDetectedConfig(logger)
 	auth, err := NewAuthManager(configStore, identity, logger)
 	if err != nil {
 		return nil, err

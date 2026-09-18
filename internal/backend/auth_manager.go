@@ -272,7 +272,9 @@ func (m *AuthManager) RevokeToken(token string) bool {
 	}
 	m.mu.Unlock()
 	if ok {
-		m.identity.DeleteCaptured(token)
+		if m.identity != nil {
+			m.identity.DeleteCaptured(token)
+		}
 		_ = m.save()
 	}
 	return ok
@@ -286,7 +288,9 @@ func (m *AuthManager) RevokeAllTokens() {
 	m.tokens = make(map[string]tokenInfo)
 	m.mu.Unlock()
 	for token := range old {
-		m.identity.DeleteCaptured(token)
+		if m.identity != nil {
+			m.identity.DeleteCaptured(token)
+		}
 	}
 	_ = m.save()
 }

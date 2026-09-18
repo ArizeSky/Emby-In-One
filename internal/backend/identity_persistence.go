@@ -42,13 +42,13 @@ func NewIdentityPersistence(dataDir string, logger *Logger) *IdentityPersistence
 	}
 }
 
-func newIdentityPersistenceFromDetectedConfig() *IdentityPersistence {
+func newIdentityPersistenceFromDetectedConfig(logger *Logger) *IdentityPersistence {
 	store, err := LoadConfigStore()
 	if err != nil {
 		return nil
 	}
 	cfg := store.Snapshot()
-	return NewIdentityPersistence(cfg.DataDir, nil)
+	return NewIdentityPersistence(cfg.DataDir, logger)
 }
 
 func StableUpstreamKey(upstream UpstreamConfig) string {
@@ -147,7 +147,12 @@ func (p *IdentityPersistence) loadLocked() (identityPersistenceSnapshot, error) 
 		return snapshot, nil
 	}
 	if err := json.Unmarshal(raw, &snapshot); err != nil {
-		return snapshot, err
+		// A corrupt capture file used to fail every later save too, permanently
+		// blocking identity persistence until the file was deleted by hand. The
+		// file holds device fields only, so it is safe to discard and let the next
+		// save rewrite it.
+		p.warnf("captured headers file %s is corrupt (%v); resetting it", p.path, err)
+		return identityPersistenceSnapshot{Version: 1, LastSuccessByServer: map[string]persistedCapturedHeaders{}}, nil
 	}
 	if snapshot.Version == 0 {
 		snapshot.Version = 1

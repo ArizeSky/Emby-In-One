@@ -4,7 +4,7 @@
 
 发布日期：2026-09-18（V1.4.4-rc1 预发布；正式版日期待定）
 
-> V1.4.4 为 V1.4.3 的累积更新，汇总一次全项目审查的修复产出（15 项）与后续跟进项：**上游服务解耦数组下标全面采用持久化唯一 `server_id`**、内容访问控制与 SSRF 加固、普通用户本地观看状态筛选落地、无 `ParentId` 聚合列表的分页缺陷修复、虚拟用户 ID 透传缺陷修复、仓库行尾统一，以及管理面板前端依赖自托管与 CSP 收紧；rc1 预发布期间继续并入：**多推流线路（主线路 + 备用线路）**、**每用户首页库隐藏**，以及安装脚本与 SSH 菜单在非 root 服务下的两处致命问题修复。**管理面板的资源加载方式、安全策略与普通用户的响应身份有变化，升级前请先读「升级须知」。**
+> V1.4.4 为 V1.4.3 的累积更新，汇总一次全项目审查的修复产出（15 项）与后续跟进项：**上游服务解耦数组下标全面采用持久化唯一 `server_id`**、内容访问控制与 SSRF 加固、普通用户本地观看状态筛选落地、无 `ParentId` 聚合列表的分页缺陷修复、虚拟用户 ID 透传缺陷修复、仓库行尾统一，以及管理面板前端依赖自托管与 CSP 收紧；rc1 预发布期间继续并入：**多推流线路（主线路 + 备用线路）**、**每用户首页库隐藏**、安装脚本与 SSH 菜单在非 root 服务下的两处致命问题修复，以及透传（passthrough）功能专项审查的代码修复。**管理面板的资源加载方式、安全策略与普通用户的响应身份有变化，升级前请先读「升级须知」。**
 
 ### ⚠️ 升级须知
 
@@ -245,6 +245,29 @@ object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'
 | `internal/backend/atomicfile_owner_unix_test.go`（新增） | root 下跨用户属主保留的回归测试（非 root 自动跳过） |
 | `emby-in-one-cli.sh` | 新增 `restore_ownership` 并接入选项 8/9 与二进制在线更新；新增 `version_lt` 降级拦截，选项 4 改为从目标版本取脚本并显式传参；选项 9 先停服务再改；卸载清理 `eio` 用户/组；`get_admin_token` awk 收紧 |
 | `install.sh` | 新增 `compose_cmd`（插件优先/standalone 兜底），构建/启动/回滚三处接入 |
+
+### 修复：透传（passthrough）功能专项审查
+
+对透传客户端身份功能做了一次全链路审查（捕获、清洗、复合头解析、出站策略、持久化、串流/兜底/图片路径），核心链路确认无恙；以下为本次修复项：
+
+- **出站头准备的死代码**：`prepareOutboundHeaders` 中"调用方已装好凭据头则只重清洗、不重建"的分支，是在删除 `Authorization` / `X-Emby-Authorization` / `X-Emby-Token` / `X-MediaBrowser-Token` **之后**才检查这四个头，恒为假、从未执行，注释描述的行为与实际不符。该分支连同只为它服务的 `explicitAuthHeader` / `sanitizeCompoundAuthorization` 一并删除。实际执行的重建路径行为不变（设备参数在删除前读取、凭据与 UserId 来自同一 `authSnapshot`），纯死代码清理
+- **损坏的 `captured-headers.json` 会永久阻断身份持久化**：文件 JSON 解析失败后，此后的每次保存（读-改-写）都在同一处失败，直到人工删除文件才能恢复；现解析失败时记录告警并按空快照继续，下一次保存即把文件重写为合法内容（该文件只含设备字段、无凭据，丢弃安全）
+- **持久化告警接线**：`NewClientIdentityServiceFromDetectedConfig` 此前固定传 nil logger，生产路径下身份持久化的 WARN 恒为静默；现接收 `NewApp` 已创建的 logger
+- **防御分支的身份退化**：`doRequestOnce` 的 `headers == nil` 兜底分支此前传 nil 身份服务，passthrough 上游会在此分支退化为 Infuse 伪装身份；现改用进程级 `activeIdentityService()`（当前无调用方传 nil，纯防御加固）
+- **一致性小项**：`RevokeToken` / `RevokeAllTokens` 调用 `DeleteCaptured` 补 nil 守卫（与 `RevokeTokensByUserID` 对齐）；`Clear()` 注明为测试专用（会永久脱离持久化）
+- **确认两项行为为既定设计、本次未改动**：普通用户登录不捕获客户端身份（仅管理员登录采集，避免上游记录过多设备、固定身份防风控）；`HasCapturedHeaders` 只认"已验证"身份（token 级捕获不算，健康检查不会拿未验证身份反复撞上游登录）
+
+**涉及文件（透传审查修复）**
+
+| 文件 | 修改内容 |
+|------|----------|
+| `internal/backend/outbound_identity.go` | 删除恒假的 explicitAuthHeader 分支及 `explicitAuthHeader` / `sanitizeCompoundAuthorization` 两个死函数 |
+| `internal/backend/identity_persistence.go` | 损坏捕获文件自愈（告警 + 空快照继续）；`newIdentityPersistenceFromDetectedConfig` 接收 logger |
+| `internal/backend/identity.go` | `NewClientIdentityServiceFromDetectedConfig` 接收 logger；`Clear()` 标注测试专用 |
+| `internal/backend/server.go` | 装配处向身份服务传入 logger |
+| `internal/backend/upstream.go` | `headers == nil` 防御分支改用 `activeIdentityService()` |
+| `internal/backend/auth_manager.go` | `RevokeToken` / `RevokeAllTokens` 的 `DeleteCaptured` 补 nil 守卫 |
+| `internal/backend/identity_persistence_test.go` | 两个 corrupt-file 测试改写为自愈断言（保存成功 + 文件被修复为合法 JSON 且含新条目） |
 
 ---
 

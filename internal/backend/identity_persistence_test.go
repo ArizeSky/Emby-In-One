@@ -314,7 +314,7 @@ func TestPersistedLastSuccessRestoresAfterRestart(t *testing.T) {
 	}
 }
 
-func TestSaveLatestCaptured_ReturnsErrorOnCorruptFile(t *testing.T) {
+func TestSaveLatestCaptured_RepairsCorruptFile(t *testing.T) {
 	dir := t.TempDir()
 	p := NewIdentityPersistence(dir, nil)
 
@@ -323,13 +323,23 @@ func TestSaveLatestCaptured_ReturnsErrorOnCorruptFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := p.SaveLatestCaptured(http.Header{"X-Test": {"val"}}, "")
-	if err == nil {
-		t.Fatal("expected error when persistence file is corrupt, got nil")
+	if err := p.SaveLatestCaptured(http.Header{"X-Emby-Client": {"Infuse"}}, ""); err != nil {
+		t.Fatalf("save should repair a corrupt file, got %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot identityPersistenceSnapshot
+	if err := json.Unmarshal(raw, &snapshot); err != nil {
+		t.Fatalf("repaired file is not valid JSON: %v", err)
+	}
+	if snapshot.LatestCaptured == nil || snapshot.LatestCaptured.Headers.Get("X-Emby-Client") != "Infuse" {
+		t.Fatalf("repaired file lost the saved entry: %s", raw)
 	}
 }
 
-func TestSaveLastSuccess_ReturnsErrorOnCorruptFile(t *testing.T) {
+func TestSaveLastSuccess_RepairsCorruptFile(t *testing.T) {
 	dir := t.TempDir()
 	p := NewIdentityPersistence(dir, nil)
 
@@ -338,9 +348,19 @@ func TestSaveLastSuccess_ReturnsErrorOnCorruptFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := p.SaveLastSuccess("server-key", http.Header{"X-Test": {"val"}}, "")
-	if err == nil {
-		t.Fatal("expected error when persistence file is corrupt, got nil")
+	if err := p.SaveLastSuccess("server-key", http.Header{"X-Emby-Client": {"Infuse"}}, ""); err != nil {
+		t.Fatalf("save should repair a corrupt file, got %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot identityPersistenceSnapshot
+	if err := json.Unmarshal(raw, &snapshot); err != nil {
+		t.Fatalf("repaired file is not valid JSON: %v", err)
+	}
+	if persisted, ok := snapshot.LastSuccessByServer["server-key"]; !ok || persisted.Headers.Get("X-Emby-Client") != "Infuse" {
+		t.Fatalf("repaired file lost the saved entry: %s", raw)
 	}
 }
 
