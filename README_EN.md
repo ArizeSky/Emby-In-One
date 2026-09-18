@@ -56,6 +56,7 @@ Emby Connection Address: https://emby.cothx.eu.cc/
 ## Features Overview
 
 - **Multi-User Management** — Supports creating regular users, each independently configurable with an accessible set of upstream servers; Admins can manage users via Admin panel, REST API, and SSH menu.
+- **Per-User Home Library Hiding** — Admins can pick, per user (including themselves), which media libraries are hidden from the Emby client home screen (grouped by server, whole-server hiding supported); only the home entries are hidden — search, Latest Additions and Continue Watching stay unaffected, and changes take effect on the next refresh.
 - **Independent User Accounts** — Regular users possess independent watch progress, played status, favorites, and "Continue Watching / Next Up", isolated from other users and upstream shared accounts; Admins retain original upstream behavior. (Queries that **filter** lists by "Favorite / Played / Resumable" are answered from those same local records; a few filters such as "Unplayed" are still decided by the upstream account — see [Independent Watch History](#independent-watch-history))
 - **Concurrent Playback Limits** — Each upstream server can configure a maximum concurrent playback count (`maxConcurrent`). Playback requests exceeding this limit return 429; Auto-releases based on heartbeat timeout.
 - **Role-Based Access Control** — Admins have full access to all servers and the management panel; Regular users can only access their assigned servers and cannot access the admin API.

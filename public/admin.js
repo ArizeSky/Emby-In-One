@@ -22,7 +22,8 @@ createApp({
       showModal: false, editIndex: null, serverForm: {},
       showProxyModal: false, proxyForm: { name: '', url: '' },
       proxyTestState: { loading: false, result: null },
-      userList: [], showUserModal: false, editUserId: null, userForm: { username: '', password: '', enabled: true, allowedServers: [] }
+      userList: [], showUserModal: false, editUserId: null, userForm: { username: '', password: '', enabled: true, allowedServers: [] },
+      userLibraryGroups: [], adminHomeOpen: false, adminLibraryGroups: [], libraryGroupsLoading: false
     };
   },
   computed: { pageTitle() { return this.pages.find(p => p.id === this.currentPage)?.name || '管理面板'; },
@@ -171,8 +172,24 @@ createApp({
     async saveProxy() { try { await this.api('/admin/api/proxies', { method:'POST', body:JSON.stringify(this.proxyForm) }); this.showProxyModal = false; await this.refreshProxies(); } catch(e) { alert('添加失败：' + (e.message || '未知错误')); } },
     async deleteProxy(id) { if(!confirm('删除代理？')) return; try { await this.api('/admin/api/proxies/'+id, { method:'DELETE' }); await this.refreshProxies(); } catch(e) { alert('删除失败：' + (e.message || '未知错误')); } },
     async refreshUsers() { try { this.userList = await this.api('/admin/api/users'); } catch(e) { this.userList = []; } try { this.upstreamList = await this.api('/admin/api/upstream'); } catch(e) {} this.$nextTick(()=>lucide.createIcons()); },
-    openAddUser() { this.editUserId = null; this.userForm = { username:'', password:'', enabled:true, allowedServers:[] }; this.showUserModal = true; this.$nextTick(()=>lucide.createIcons()); },
-    editUser(u) { this.editUserId = u.id; this.userForm = { username:u.username, password:'', enabled:u.enabled, allowedServers: u.allowedServers ? [...u.allowedServers] : [] }; this.showUserModal = true; this.$nextTick(()=>lucide.createIcons()); },
+    openAddUser() { this.editUserId = null; this.userForm = { username:'', password:'', enabled:true, allowedServers:[] }; this.userLibraryGroups = []; this.showUserModal = true; this.$nextTick(()=>lucide.createIcons()); },
+    async editUser(u) {
+      this.editUserId = u.id;
+      this.userForm = { username:u.username, password:'', enabled:u.enabled, allowedServers: u.allowedServers ? [...u.allowedServers] : [] };
+      this.showUserModal = true;
+      this.userLibraryGroups = [];
+      this.libraryGroupsLoading = true;
+      try {
+        // 只列出该用户有权访问的服务器；未限制（全部）时列出全部。
+        const scope = this.userForm.allowedServers.length > 0
+          ? this.upstreamList.filter(s => this.userForm.allowedServers.includes(s.id))
+          : this.upstreamList;
+        this.userLibraryGroups = await this.loadLibraryGroups(scope, u.hiddenLibraries);
+      } finally {
+        this.libraryGroupsLoading = false;
+        this.$nextTick(()=>lucide.createIcons());
+      }
+    },
     async saveUser() {
       try {
         if (this.editUserId) {
@@ -182,6 +199,8 @@ createApp({
           if (this.userForm.password) body.password = this.userForm.password;
           body.enabled = this.userForm.enabled;
           body.allowedServers = this.userForm.allowedServers.length > 0 ? this.userForm.allowedServers : null;
+          // 离线服务器不提交 key（后端保持原配置），在线服务器提交勾选结果（含空数组 = 全部显示）。
+          body.hiddenLibraries = this.groupHiddenPayload(this.userLibraryGroups);
           await this.api('/admin/api/users/' + this.editUserId, { method:'PUT', body:JSON.stringify(body) });
         } else {
           if (!this.userForm.username || !this.userForm.password) { alert('用户名和密码不能为空'); return; }
@@ -190,6 +209,48 @@ createApp({
           await this.api('/admin/api/users', { method:'POST', body:JSON.stringify(body) });
         }
         this.showUserModal = false; await this.refreshUsers();
+      } catch(e) { alert('保存失败：' + (e.message || '未知错误')); }
+    },
+    async loadLibraryGroups(servers, hidden) {
+      hidden = hidden || {};
+      return Promise.all(servers.map(async (s) => {
+        const stored = (hidden[s.id] || []).slice();
+        try {
+          const libraries = await this.api('/admin/api/upstream/' + (s.id || s.index) + '/libraries');
+          // 在线服务器只保留仍存在的库 ID：上游已删除的库在保存时自然清除。
+          return { serverId: s.id, name: s.name, online: true, libraries: libraries, hiddenIds: stored.filter(id => libraries.some(l => l.id === id)) };
+        } catch (e) {
+          // 离线服务器保留已存 ID 供显示计数；保存时不提交该组 key。
+          return { serverId: s.id, name: s.name, online: false, libraries: [], hiddenIds: stored };
+        }
+      }));
+    },
+    toggleGroupAll(g, val) { g.hiddenIds = val ? g.libraries.map(l => l.id) : []; },
+    isGroupAllHidden(g) { return g.libraries.length > 0 && g.libraries.every(l => g.hiddenIds.includes(l.id)); },
+    groupHiddenPayload(groups) {
+      const payload = {};
+      for (const g of groups) {
+        if (!g.online) continue; // 离线组不提交 key，后端不触碰其已存配置
+        payload[g.serverId] = g.hiddenIds.slice();
+      }
+      return payload;
+    },
+    async openAdminHome() {
+      this.adminHomeOpen = true;
+      this.adminLibraryGroups = [];
+      this.libraryGroupsLoading = true;
+      try {
+        const hidden = (await this.api('/admin/api/home-libraries')).hidden || {};
+        this.adminLibraryGroups = await this.loadLibraryGroups(this.upstreamList, hidden);
+      } finally {
+        this.libraryGroupsLoading = false;
+        this.$nextTick(()=>lucide.createIcons());
+      }
+    },
+    async saveAdminHome() {
+      try {
+        await this.api('/admin/api/home-libraries', { method:'PUT', body:JSON.stringify({ hidden: this.groupHiddenPayload(this.adminLibraryGroups) }) });
+        this.adminHomeOpen = false;
       } catch(e) { alert('保存失败：' + (e.message || '未知错误')); }
     },
     async toggleUser(u) { try { const enabled = !u.enabled; await this.api('/admin/api/users/' + u.id, { method:'PUT', body:JSON.stringify({enabled}) }); await this.refreshUsers(); } catch(e) { alert('操作失败：' + (e.message || '未知错误')); } },

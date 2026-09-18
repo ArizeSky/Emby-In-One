@@ -112,6 +112,13 @@ func (a *App) handleUserItems(w http.ResponseWriter, r *http.Request) {
 		requestMergedCandidateSet(query)
 	}
 	results := a.fetchItemsAcrossUpstreams(r.Context(), requestContextFrom(r.Context()), "/Users/%s/Items", query, nil)
+	// Root-level listings include the library views themselves; some clients
+	// browse the root through this endpoint instead of /Users/{id}/Views, so
+	// hidden libraries must be dropped here too. Content items are never
+	// touched — dropHiddenLibraryViews matches on the library item types only.
+	if hidden := a.hiddenLibrariesFor(requestContextFrom(r.Context())); len(hidden) > 0 {
+		dropHiddenLibraryViews(results, hidden)
+	}
 	merged := a.mergedItemsPayload(results, a.clientFacingUserIDFor(r))
 	if items, ok := merged["Items"].([]any); ok {
 		asMaps := make([]map[string]any, 0, len(items))

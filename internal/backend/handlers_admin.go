@@ -212,6 +212,9 @@ func (a *App) handleAdminUpstreamUpdate(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
+	// The saved connection details may point somewhere else now; a cached
+	// library list from the old target must not keep answering.
+	a.invalidateUpstreamLibraryCache(draft.ID)
 	online := validation.Online
 	if client := a.Upstream.ClientByID(draft.ID); client != nil {
 		online = client.IsOnline()
@@ -287,6 +290,12 @@ func (a *App) handleAdminUpstreamDelete(w http.ResponseWriter, r *http.Request) 
 			a.Logger.Errorf("delete upstream %s: delete watch progress: %v", serverID, err)
 		}
 	}
+	if a.HiddenLibraries != nil && serverID != "" {
+		if err := a.HiddenLibraries.RemoveServer(serverID); err != nil && a.Logger != nil {
+			a.Logger.Errorf("delete upstream %s: remove hidden libraries: %v", serverID, err)
+		}
+	}
+	a.invalidateUpstreamLibraryCache(serverID)
 
 	writeJSON(w, http.StatusOK, map[string]any{"success": true})
 }
@@ -601,6 +610,7 @@ func (a *App) handleAdminUsersList(w http.ResponseWriter, r *http.Request) {
 			"username":       u.Username,
 			"enabled":        u.Enabled,
 			"allowedServers": u.AllowedServers,
+			"hiddenLibraries": a.hiddenLibrariesJSONFor(u.ID),
 			"serverNames":    serverNames,
 			"createdAt":      u.CreatedAt,
 		})
@@ -654,10 +664,11 @@ func (a *App) handleAdminUsersUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	id := r.PathValue("id")
 	var input struct {
-		Username       *string   `json:"username"`
-		Password       *string   `json:"password"`
-		Enabled        *bool     `json:"enabled"`
-		AllowedServers *[]string `json:"allowedServers"`
+		Username         *string              `json:"username"`
+		Password         *string              `json:"password"`
+		Enabled          *bool                `json:"enabled"`
+		AllowedServers   *[]string           `json:"allowedServers"`
+		HiddenLibraries  map[string]*[]string `json:"hiddenLibraries"`
 	}
 	if err := decodeJSONBody(r, &input); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "Invalid request body"})
@@ -680,6 +691,29 @@ func (a *App) handleAdminUsersUpdate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
+	if a.HiddenLibraries != nil {
+		if input.HiddenLibraries != nil {
+			if err := a.applyHiddenLibrariesPatch(id, input.HiddenLibraries); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+				return
+			}
+		}
+		// Prune only under an explicit non-empty server list: an empty
+		// AllowedServers means "all servers" in this project's permission
+		// model, and pruning under it would wipe the user's whole config.
+		if input.AllowedServers != nil && len(*input.AllowedServers) > 0 {
+			allowed := make(map[string]bool, len(*input.AllowedServers))
+			for _, serverID := range *input.AllowedServers {
+				allowed[serverID] = true
+			}
+			if err := a.HiddenLibraries.PruneUserServers(id, func(serverID string) bool { return allowed[serverID] }); err != nil && a.Logger != nil {
+				a.Logger.Errorf("prune hidden libraries for user %s: %v", id, err)
+			}
+		}
+	} else if len(input.HiddenLibraries) > 0 {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "数据库不可用，首页库隐藏未启用"})
+		return
+	}
 	if input.Enabled != nil && !*input.Enabled {
 		a.Auth.RevokeTokensByUserID(id)
 	}
@@ -695,6 +729,11 @@ func (a *App) handleAdminUsersDelete(w http.ResponseWriter, r *http.Request) {
 	if err := a.UserStore.Delete(id); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
+	}
+	if a.HiddenLibraries != nil {
+		if err := a.HiddenLibraries.RemoveUser(id); err != nil && a.Logger != nil {
+			a.Logger.Errorf("delete user %s: remove hidden libraries: %v", id, err)
+		}
 	}
 	a.Auth.RevokeTokensByUserID(id)
 	if a.WatchStore != nil {

@@ -125,6 +125,7 @@ func (a *App) handleUserViews(w http.ResponseWriter, r *http.Request) {
 	onlineClients := a.allowedClients(reqCtx)
 	cfg := a.ConfigStore.Snapshot()
 	multiSource := len(onlineClients) > 1
+	hidden := a.hiddenLibrariesFor(reqCtx)
 
 	groups := fanOutClients(onlineClients, func(c *UpstreamClient) []map[string]any {
 		query := cloneValues(r.URL.Query())
@@ -135,6 +136,9 @@ func (a *App) handleUserViews(w http.ResponseWriter, r *http.Request) {
 		}
 		var items []map[string]any
 		for _, item := range asItems(payload) {
+			if isHiddenLibraryItem(hidden, c.ID, item) {
+				continue
+			}
 			rewritten := deepCloneMap(item)
 			rewriteResponseIDs(rewritten, c.ID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 			if multiSource {

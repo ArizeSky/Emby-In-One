@@ -21,6 +21,8 @@ type App struct {
 	Upstream        *UpstreamPool
 	UserStore       *UserStore
 	WatchStore      *WatchStore
+	HiddenLibraries *HiddenLibraryStore
+	libraryCache    *upstreamLibraryCache
 	PlaybackLimiter *PlaybackLimiter
 	loginLimiter    loginRateLimiter
 	noticeThrottle  noticeThrottle
@@ -52,6 +54,7 @@ func NewApp() (*App, error) {
 
 	var userStore *UserStore
 	var watchStore *WatchStore
+	var hiddenLibraries *HiddenLibraryStore
 	if db := idStore.DB(); db != nil {
 		us, err := NewUserStore(db, logger)
 		if err != nil {
@@ -65,6 +68,12 @@ func NewApp() (*App, error) {
 		} else {
 			watchStore = wst
 		}
+		hls, err := NewHiddenLibraryStore(db, logger)
+		if err != nil {
+			logger.Warnf("HiddenLibraryStore init failed: %v (home library hiding disabled)", err)
+		} else {
+			hiddenLibraries = hls
+		}
 	}
 
 	return &App{
@@ -76,6 +85,8 @@ func NewApp() (*App, error) {
 		Upstream:        upstream,
 		UserStore:       userStore,
 		WatchStore:      watchStore,
+		HiddenLibraries: hiddenLibraries,
+		libraryCache:    newUpstreamLibraryCache(),
 		PlaybackLimiter: NewPlaybackLimiter(),
 	}, nil
 }

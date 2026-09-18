@@ -1,5 +1,44 @@
 # Emby-In-One 更新日志
 
+## V1.4.6（每用户首页库隐藏）
+
+发布日期：2026-09-18
+
+> 本版为「首页库隐藏」功能版本：管理员可为**每个用户（含管理员自己）**单独配置哪些媒体库不在 Emby 客户端首页显示，解决多上游聚合后首页库过多的问题。
+
+### 新功能：每用户独立的首页库隐藏
+
+- **按库勾选，按服务器分组**：管理面板"用户管理"页新增配置入口——每个用户的编辑弹窗内含"首页隐藏库"区块（按服务器分组列出库，每组带全选/全不选）；页面顶部的"管理员（我）"卡片可配置管理员自己的首页。勾掉一台服务器的全部库 = 该服务器从该用户首页整体消失
+- **只隐藏首页库入口**：搜索、"最新添加"行、继续观看、接下来观看、播放、详情全部不受影响，被隐藏库的内容保持可达（已知局限：隐藏库的**新增内容仍会出现在"最新添加"行**，因 `/Items/Latest` 响应不携带库归属，逐条查询开销不可接受）
+- **过滤覆盖 5 个列库端点**：`/Users/{id}/Views`（主路径）、`/Library/MediaFolders`、`/Library/VirtualFolders`、`/Library/SelectableRemoteLibraries`，以及 `/Users/{id}/Items` 根目录浏览（部分客户端如 Kodi Emby 插件经此旁路列库，按 `UserView`/`CollectionFolder` 类型过滤）
+- **实时生效**：隐藏配置不写入 Token（Token 永不过期，快照会导致改配置后必须重新登录），每次请求实时读取内存快照，保存后下一次刷新首页即生效
+- **保存契约（Patch 语义）**：提交中某服务器的 key 存在（含空数组 = 全部取消隐藏）则更新该服务器；key 缺席或为 `null` 则完全不触碰——离线服务器的已存配置由此天然保留，不会被误清空
+- **库列表 TTL 缓存**：管理面板拉取上游库列表带 10 分钟内存缓存（`?refresh=1` 强制刷新）；服务器离线时回退到缓存副本，无缓存才报错。上游修改连接信息或删除时缓存自动失效
+- **数据清理联动**：删除上游服务器 / 删除用户时自动清理对应的隐藏记录；收窄用户"允许服务器"时同步清理不再可访问服务器的记录（空列表 = 全部允许，不触发清理）
+
+### 技术实现
+
+- 存储为共享 SQLite 库新表 `user_hidden_libraries(user_id, server_id, library_id)`，一行一条隐藏记录，无二级索引（复合主键前缀即索引）；管理员配置存于保留常量 `__admin__`（与易失的 `tokens.json` 解耦，用户 ID 为 32 位十六进制永不碰撞）
+- 内存缓存采用 COW（`atomic.Pointer` 全量快照）：读路径零锁，写路径先提交 SQLite 事务再深拷贝换快照，任何路径不得原地修改已发布快照
+- 过滤发生在 ID 虚拟化之前（此时 `item.Id` 仍是上游原始库 ID，即配置存储的键）
+
+### 涉及文件
+
+| 文件 | 修改内容 |
+|------|----------|
+| `internal/backend/library_visibility.go`（新增） | 存储层：建表、COW 快照、Patch 写入、清理联动、`__admin__` 映射 |
+| `internal/backend/library_filter.go`（新增） | 请求期过滤助手（5 个过滤点共用，含库类型判定） |
+| `internal/backend/handlers_admin_home_libraries.go`（新增） | 管理 API：上游库列表（TTL 缓存）、管理员自助读写、Patch 语义应用 |
+| `internal/backend/handlers_user.go` | `handleUserViews` 过滤（主路径） |
+| `internal/backend/library_image.go` | `handleLibraryNamedArray` / `handleLibraryMediaFolders` 过滤 |
+| `internal/backend/media_items.go` | `handleUserItems` 根目录旁路过滤（仅无 ParentId 分支） |
+| `internal/backend/handlers_admin.go` | 用户列表回显 `hiddenLibraries`、用户更新接受 Patch 载荷并联动清理、上游更新/删除时缓存失效与记录清理 |
+| `internal/backend/server.go` / `routes.go` | App 装配与新路由注册 |
+| `public/admin.html` / `public/admin.js` | "管理员（我）"卡片、用户弹窗库勾选区块（仅编辑时显示）、管理员自助弹窗、离线组保留提示 |
+| `internal/backend/library_visibility_test.go`（新增） | 存储层：增删改、Patch 清空、持久化、清理、COW 并发（-race） |
+| `internal/backend/library_filter_test.go`（新增） | 5 个端点过滤命中/未命中、ParentId 路径不过滤、无 DB 降级 |
+| `internal/backend/admin_home_libraries_test.go`（新增） | 库列表端点与 TTL/离线回退、Patch 语义（缺席/null/空数组）、用户更新回显、删除联动、权限 403 |
+
 ## V1.4.5（多推流线路支持）
 
 发布日期：2026-09-17

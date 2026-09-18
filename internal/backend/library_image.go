@@ -47,6 +47,7 @@ func (a *App) handleLibraryNamedArray(w http.ResponseWriter, r *http.Request, up
 	onlineClients := a.allowedClients(reqCtx)
 	cfg := a.ConfigStore.Snapshot()
 	multiSource := len(onlineClients) > 1
+	hidden := a.hiddenLibrariesFor(reqCtx)
 
 	groups := fanOutClients(onlineClients, func(c *UpstreamClient) []map[string]any {
 		payload, err := c.RequestJSON(r.Context(), reqCtx, a.Identity, http.MethodGet, upstreamPath, cloneValues(r.URL.Query()), nil)
@@ -54,6 +55,7 @@ func (a *App) handleLibraryNamedArray(w http.ResponseWriter, r *http.Request, up
 			return nil
 		}
 		items := asItems(payload)
+		items = filterHiddenLibraryItems(items, c.ID, hidden)
 		for _, item := range items {
 			rewriteResponseIDs(item, c.ID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 			if multiSource {
@@ -71,6 +73,7 @@ func (a *App) handleLibraryMediaFolders(w http.ResponseWriter, r *http.Request) 
 	reqCtx := requestContextFrom(r.Context())
 	clients := a.allowedClients(reqCtx)
 	cfg := a.ConfigStore.Snapshot()
+	hidden := a.hiddenLibrariesFor(reqCtx)
 
 	groups := fanOutClients(clients, func(c *UpstreamClient) []map[string]any {
 		payload, err := c.RequestJSON(r.Context(), reqCtx, a.Identity, http.MethodGet, "/Library/MediaFolders", cloneValues(r.URL.Query()), nil)
@@ -78,6 +81,7 @@ func (a *App) handleLibraryMediaFolders(w http.ResponseWriter, r *http.Request) 
 			return nil
 		}
 		items := asItems(payload)
+		items = filterHiddenLibraryItems(items, c.ID, hidden)
 		for _, item := range items {
 			rewriteResponseIDs(item, c.ID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 		}
