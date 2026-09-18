@@ -340,8 +340,14 @@ if ! getent group "${SERVICE_USER}" &>/dev/null && command -v groupadd &>/dev/nu
 fi
 if ! id -u "${SERVICE_USER}" &>/dev/null; then
   if command -v useradd &>/dev/null; then
-    useradd -r -s /usr/sbin/nologin "${SERVICE_USER}" 2>/dev/null \
-      || useradd -r -s /sbin/nologin "${SERVICE_USER}" 2>/dev/null \
+    # 同名组已存在时必须显式 -g 指定，否则 useradd 会尝试再建同名组而失败
+    # （"group eio exists - if you want to add this user to that group, use -g."）
+    USERADD_GROUP_ARGS=()
+    if getent group "${SERVICE_USER}" &>/dev/null; then
+      USERADD_GROUP_ARGS=(-g "${SERVICE_USER}")
+    fi
+    useradd -r "${USERADD_GROUP_ARGS[@]}" -s /usr/sbin/nologin "${SERVICE_USER}" 2>/dev/null \
+      || useradd -r "${USERADD_GROUP_ARGS[@]}" -s /sbin/nologin "${SERVICE_USER}" 2>/dev/null \
       || error "无法创建专用运行用户 ${SERVICE_USER}"
     info "已创建专用运行用户: ${SERVICE_USER}"
   else
