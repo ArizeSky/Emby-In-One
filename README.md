@@ -1,6 +1,6 @@
 # Emby-In-One
 
-> **Version: V1.4.4**
+> **Version: V1.4.4-rc1 (Pre-release)**
 
 [![License: GPL v3](https://img.shields.io/github/license/ArizeSky/Emby-In-One?color=blue)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.23+-00ADD8?logo=go&logoColor=white)](https://go.dev/)
@@ -74,7 +74,7 @@ Emby 连接地址：https://emby.cothx.eu.cc/
 
 > **旧版 Node.js 部署说明**：如果您希望部署基于 Node.js 的 V1.2.1 稳定版，请前往本仓库的 [Releases 页面](https://github.com/ArizeSky/Emby-In-One/releases) 下载 V1.2.1 的 Source code 源码压缩包，解压后同样运行 `bash install.sh` 即可。 仓库中的 `legacy/` 目录保留了 V1.2.1 的 Node.js 源码，**仅供对照参考**（Go 版的 ID 虚拟化以它为蓝本），它不参与 Go 版的构建、镜像或安装流程，详见 `legacy/README.md`。
 
-本项目优先推荐在 Linux 服务器直接使用 Release 二进制部署 V1.4.4（无需本地编译）；Docker 方式适合希望自行构建镜像的场景。
+本项目优先推荐在 Linux 服务器直接使用 Release 二进制部署 V1.4.4-rc1（无需本地编译；预发布测试版，正式版发布前供尝鲜验证）；Docker 方式适合希望自行构建镜像的场景。
 
 ### 方式一：Release 二进制一键安装（首推）
 
@@ -86,7 +86,7 @@ sudo bash release-install.sh
 可选：指定版本安装。
 
 ```bash
-sudo bash release-install.sh V1.4.4
+sudo bash release-install.sh V1.4.4-rc1
 ```
 
 该脚本会自动完成：

@@ -1,6 +1,6 @@
 # Emby-In-One
 
-> **Version: V1.4.4**
+> **Version: V1.4.4-rc1 (Pre-release)**
 
 [![License: GPL v3](https://img.shields.io/github/license/ArizeSky/Emby-In-One?color=blue)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.23+-00ADD8?logo=go&logoColor=white)](https://go.dev/)
@@ -74,7 +74,7 @@ Emby Connection Address: https://emby.cothx.eu.cc/
 
 > **Notice for Legacy Node.js Deployment**: If you wish to deploy the V1.2.1 stable Node.js version, please navigate to the [Releases page](https://github.com/ArizeSky/Emby-In-One/releases) of this repository, download the V1.2.1 Source code archive, extract it, and run `bash install.sh`. The `legacy/` directory in this repository keeps the V1.2.1 Node.js source **for reference only** (the Go ID virtualization was written against it); it takes part in no build, image or install of the Go version — see `legacy/README.md`.
 
-This project primarily recommends using Release binaries for V1.4.4 deployment directly on Linux servers (no local Go build required); Docker deployment is suitable for scenarios where you want to build the image yourself.
+This project primarily recommends using Release binaries for V1.4.4-rc1 deployment directly on Linux servers (no local Go build required; this is a pre-release for early testing); Docker deployment is suitable for scenarios where you want to build the image yourself.
 
 ### Method 1: Release Binary One-Click Install (Primary Recommendation)
 
@@ -86,7 +86,7 @@ sudo bash release-install.sh
 Optional: install a specific version.
 
 ```bash
-sudo bash release-install.sh V1.4.4
+sudo bash release-install.sh V1.4.4-rc1
 ```
 
 This script will automatically:

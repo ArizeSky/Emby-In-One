@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 
 # ╔══════════════════════════════════════╗
-# ║    Emby In One 管理菜单 V1.4.4       ║
+# ║   Emby In One 管理菜单 V1.4.4-rc1    ║
 # ╚══════════════════════════════════════╝
 
 PROJECT_DIR="/opt/emby-in-one"
-VERSION="1.4.4"
+VERSION="1.4.4-rc1"
 SERVICE_NAME="emby-in-one"
 GITHUB_REPO="ArizeSky/Emby-In-One"
 

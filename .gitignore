@@ -34,3 +34,6 @@ dist/
 build/
 *.test
 coverage.out
+
+# ---- Local source snapshots (never publish these) ----
+*.zip

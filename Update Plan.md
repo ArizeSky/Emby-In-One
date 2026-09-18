@@ -1,6 +1,6 @@
 # Emby-In-One Update Plan
 
-当前稳定版本：**V1.4.4**
+当前稳定版本：**V1.4.3**（V1.4.4-rc1 预发布测试中）
 
 ---
 
@@ -32,7 +32,7 @@
   done
   ```
   三个附带发现：**(a)** `release-install.sh` 本身从未作为 Release 资产上传（清单里只有 admin.html / admin.js / emby-in-one-cli.sh / docker 归档 / 各架构二进制），所以 CLI 在线更新"按 tag 取 Release 里的脚本"这条主路径对现有 Release 会 404，实际走的是同 tag 的仓库快照兜底（仍是版本锁定，不跟随 main）；把它也上传为资产即可让主路径生效。注意**没有任何消费方校验安装器脚本本身**——即使上传了 `.sha256`，CLI 拉取它时也不做校验，如需闭环要在 CLI 侧补一步。**(b)** `install.sh` 的源码 tarball 路径仍无校验：实测 `codeload` 的 `ETag` 既不是归档字节的哈希也不是 tar 载荷的哈希（三个值互不相同），GitHub 不提供源码归档的 digest，且浮动分支无法预先发布哈希。可行的做法是把源码安装改成**下载 Release 自带的 `Emby-In-One-docker-<tag>.tar.gz` 并复用现有 `verify_sha256`**（约 5 行），前提是发布侧为它产出 `.sha256`；这同时意味着源码安装从"跟随 main"变为"固定到最新 Release"——是一个需要维护者拍板的产品决策，因此没有擅自改。**(c)** CLI 的 Docker 模式在线更新原本也拉 main tarball 且无校验，V1.4.5 验收时已改为下载最新 Release 的 docker 归档并走 `verify_download` 校验（与菜单 [15] 同一代码路径）；`release-install.sh` 中 admin.html / admin.js / cli.sh 的"main 分支无校验回退"也已在验收时移除（Release 缺产物时回退内嵌面板 / 保留磁盘旧副本）。
-- **演示站密码轮换**：README 中原演示站凭据（`admin / 5T5xF4oMxcnrcCPA`）已永久留在 git 历史与所有 fork 里，仅从正文移除不够。**必须在演示站侧轮换该密码**，并确认它没有被复用到其他部署；README 现在承诺"经 Issues 发放定期轮换的临时账号"，轮换机制需要真正落地。
+- **演示站密码轮换**：README 中原演示站凭据（凭据文本已从本文件脱敏）已永久留在 git 历史与所有 fork 里，仅从正文移除不够。**必须在演示站侧轮换该密码**，并确认它没有被复用到其他部署；README 现在承诺"经 Issues 发放定期轮换的临时账号"，轮换机制需要真正落地。
 - **Sessions/Playing 与 Progress 上游失败时的本地记录**（审查清单 P3 最后一项，**未做**）：这两条路径在上游上报失败时仍返回 204 并把进度写进本地库，与上游分叉。没有照做是因为两种改法都有代价：跳过本地记录会在上游短暂抖动时丢掉用户的观看位置，而"区分上游确认/仅本地"需要给 `user_watch_progress` 加一列并贯穿所有读取路径。属于需要产品取舍的改动，留给专门的版本。
 - **图片端点免认证的收紧**：`/Items/{id}/Images/{type}` 依赖"128 位随机虚拟 ID 即能力 URL"，任何拿到 URL 的人都能取图。如需更强控制，可改为短时效签名 URL。
 
