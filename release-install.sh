@@ -62,12 +62,32 @@ for cmd in curl grep sed sha256sum; do
   fi
 done
 
+# ── 版本比较：$1 ≤ $2 ──
+# 忽略 V/v 前缀与 -rc1 等预发布后缀，按点分段数值比较（最多三段，缺段按 0）
+version_lte() {
+  local a="${1#[Vv]}" b="${2#[Vv]}"
+  a="${a%%-*}"; b="${b%%-*}"
+  local A B i x y
+  IFS='.' read -r -a A <<< "$a"
+  IFS='.' read -r -a B <<< "$b"
+  for i in 0 1 2; do
+    x=$((10#${A[i]:-0})); y=$((10#${B[i]:-0}))
+    (( x < y )) && return 0
+    (( x > y )) && return 1
+  done
+  return 0
+}
+
 # ── 校验和验证 ──
 # 发布流程必须为每个产物生成同名的 .sha256 文件，例如:
 #   sha256sum Emby-In-One-linux-amd64-v1.4.5 > Emby-In-One-linux-amd64-v1.4.5.sha256
 #   sha256sum admin.html admin.js emby-in-one-cli.sh > <各自同名>.sha256
 verify_sha256() {
   local file="$1" url="$2"
+  # V1.4.3 及更早的 Release 未附带 .sha256 产物，无从校验；默认跳过保证一键安装可用
+  if [[ "${SKIP_SHA256:-false}" == true ]]; then
+    return 0
+  fi
   # 校验和文件里记录的是发布产物名，即 URL 的最后一段
   local asset_name
   asset_name=$(basename "${url}")
@@ -143,6 +163,15 @@ fi
 # 根据 build 目录里的命名规范构建二进制文件名
 BINARY_NAME="Emby-In-One-linux-${ARCH}-${FILE_VERSION}"
 DOWNLOAD_URL="https://github.com/${GITHUB_REPO}/releases/download/${RELEASE_TAG}/${BINARY_NAME}"
+
+# ── 旧版 Release 无校验和产物 ──
+# .sha256 产物自 V1.4.4-rc1 起才随 Release 发布。未指定版本时脚本会解析"最新稳定版"，
+# 在 V1.4.4 正式版发布前那是 V1.4.3——没有校验和可校验，对这些版本默认跳过校验。
+SKIP_SHA256=false
+if version_lte "${RELEASE_TAG}" "V1.4.3"; then
+  SKIP_SHA256=true
+  warn "目标版本 ${RELEASE_TAG} 为 V1.4.3 及以下旧版 Release，未附带校验和产物，跳过完整性校验"
+fi
 
 # ── 升级检测 ──
 # 目录已存在即视为已有安装: Docker 部署（或上次安装失败残留）的目录里没有

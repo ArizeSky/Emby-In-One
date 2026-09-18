@@ -222,9 +222,10 @@ object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'
 | `internal/backend/library_filter_test.go`（新增） | 5 个端点过滤命中/未命中、ParentId 路径不过滤、无 DB 降级 |
 | `internal/backend/admin_home_libraries_test.go`（新增） | 库列表端点与 TTL/离线回退、Patch 语义（缺席/null/空数组）、用户更新回显、删除联动、权限 403 |
 
-### 修复：安装脚本与 SSH 菜单在非 root 服务下的两处致命问题
+### 修复：安装脚本与 SSH 菜单在三处场景下的致命问题
 
 - **全新安装失败（`无法创建专用运行用户 eio` 后回滚）**：安装脚本先用 `groupadd` 建了同名组，随后 `useradd` 未带 `-g`，其默认行为是再建一个同名用户组，撞上已存在的组即失败（真实报错 `group eio exists - if you want to add this user to that group, use -g.` 被 `2>/dev/null` 吞掉，只显示笼统的"无法创建"）。现组已存在时显式传 `-g`，组不存在时仍由 `useradd` 自建
+- **无版本参数一键安装卡在旧稳定版的校验环节**：V1.4.4 正式版发布前，不指定版本的安装会经 `releases/latest` 解析到 V1.4.3，而 `.sha256` 校验和产物自 V1.4.4-rc1 起才随 Release 发布——旧版 Release 无校验和可校验。现对 V1.4.3 及以下版本默认跳过完整性校验（输出一条明确警告），保证一键安装可用；V1.4.4-rc1 及以上版本仍强制校验
 - **SSH 菜单改密码/改账号后服务崩溃循环（`open config/config.yaml: permission denied`）**：菜单以 root 运行，而服务以专用用户 `eio`（binary 部署）或 uid 1000（Docker 部署）运行。选项 8（改密码）经内置 `--reset-password` 重写 `config.yaml` 与 `tokens.json`、选项 9（改账号）经 `awk+mv` 重写 `config.yaml`，root 重写后文件属主变为 root，服务重启即因读权限被拒而崩溃循环。两层修复：
   - **二进制层（治本）**：`WriteFileAtomic` 以 root 运行时在 rename 前把原文件的 uid/gid 转移到临时文件，原子写不再改变属主——覆盖 `--reset-password` 与运行期全部落盘路径
   - **菜单脚本层（兼容已部署的旧版二进制）**：新增 `restore_ownership`，选项 8/9 与在线更新写入后按 systemd unit 的 `User=`（无 systemd 时退回目录属主）还原属主；Docker 模式还原为 `1000:1000`
@@ -233,7 +234,7 @@ object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'
 
 | 文件 | 修改内容 |
 |------|----------|
-| `release-install.sh` | 组已存在时 `useradd` 显式 `-g`，修复全新安装必失败 |
+| `release-install.sh` | 组已存在时 `useradd` 显式 `-g`，修复全新安装必失败；新增 `version_lte` 版本比较，V1.4.3 及以下默认跳过 sha256 校验（旧 Release 无校验和产物） |
 | `internal/backend/atomicfile.go` | `WriteFileAtomic` rename 前调用 `preserveOwner` |
 | `internal/backend/atomicfile_owner_unix.go`（新增）/ `atomicfile_owner_windows.go`（新增） | 属主保留的平台实现（Windows 为空操作） |
 | `internal/backend/atomicfile_owner_unix_test.go`（新增） | root 下跨用户属主保留的回归测试（非 root 自动跳过） |
