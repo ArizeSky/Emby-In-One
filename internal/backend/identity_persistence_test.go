@@ -288,14 +288,17 @@ func TestPersistedLastSuccessRestoresAfterRestart(t *testing.T) {
 		"X-Emby-Device-Name":    []string{"Restart Device"},
 		"X-Emby-Device-Id":      []string{"restart-device"},
 	})
-	waitForCondition(t, time.Second, func() bool {
-		return client1.IsOnline()
-	}, "first app passthrough upstream to come online after captured login")
-
+	// Online 标志置位与捕获文件落盘不在同一瞬间：recordSuccessfulIdentity
+	// 先让上游上线，随后才同步写 captured-headers.json，存在微小窗口。
+	// 把文件存在性并入等待条件，避免在线后立刻 stat 偶发扑空。
 	capturedPath := filepath.Join(dir, "data", "captured-headers.json")
-	if _, err := os.Stat(capturedPath); err != nil {
-		t.Fatalf("captured-headers.json missing after successful passthrough recovery: %v", err)
-	}
+	waitForCondition(t, 5*time.Second, func() bool {
+		if !client1.IsOnline() {
+			return false
+		}
+		_, err := os.Stat(capturedPath)
+		return err == nil
+	}, "first app passthrough upstream to come online and persist captured headers")
 	_ = app1.Close()
 
 	app2, _ := newTestApp(t)
