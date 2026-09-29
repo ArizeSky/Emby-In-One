@@ -280,10 +280,13 @@ func isPlaylistResponse(contentType, rest string) bool {
 }
 
 // streamResponseHeaders are the upstream headers worth passing through. Chunked
-// transfer encoding is skipped so the proxy sets its own framing.
+// transfer encoding is deliberately absent: the proxy re-frames every response
+// with its own framing (io.Copy to an http.ResponseWriter), and copying the
+// upstream's Transfer-Encoding verbatim would declare framing the body does not
+// follow.
 var streamResponseHeaders = []string{
 	"Content-Type", "Content-Length", "Content-Range", "Accept-Ranges",
-	"Cache-Control", "ETag", "Last-Modified", "Transfer-Encoding",
+	"Cache-Control", "ETag", "Last-Modified",
 	"Content-Disposition", "Content-Encoding", "Date", "Server",
 }
 
@@ -291,9 +294,6 @@ func copyStreamResponseHeaders(w http.ResponseWriter, resp *http.Response) {
 	for _, name := range streamResponseHeaders {
 		value := resp.Header.Get(name)
 		if value == "" {
-			continue
-		}
-		if strings.EqualFold(name, "Transfer-Encoding") && strings.Contains(strings.ToLower(value), "chunked") {
 			continue
 		}
 		w.Header().Set(name, value)

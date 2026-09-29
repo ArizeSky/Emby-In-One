@@ -193,6 +193,24 @@ func (p *UpstreamPool) Reload(cfg Config) {
 	p.restartHealthChecks(cfg.Timeouts)
 }
 
+// requestAuthRecovery schedules the debounced recovery re-login. The cheap
+// debounce check under the lock runs inline, so a burst of 401/403 answers does
+// not spawn a goroutine per response; only the first answer in each debounce
+// window pays for the spawn. The goroutine re-checks the debounce itself, so a
+// racing spawn from another request still collapses there.
+func (c *UpstreamClient) requestAuthRecovery() {
+	if c.onAuthError == nil {
+		return
+	}
+	c.recoveryMu.Lock()
+	within := time.Since(c.lastRecovery) < recoveryDebounce
+	c.recoveryMu.Unlock()
+	if within {
+		return
+	}
+	go c.onAuthError(c)
+}
+
 func (p *UpstreamPool) handleUpstreamAuthError(c *UpstreamClient) {
 	c.recoveryMu.Lock()
 	if time.Since(c.lastRecovery) < recoveryDebounce {
@@ -942,8 +960,8 @@ func (c *UpstreamClient) doRequestOnce(ctx context.Context, reqCtx *RequestConte
 		c.logger.Debugf("[%s] <- %s %s %d", c.Name, method, formatOutboundURLForLog(preparedURL.url.String()), resp.StatusCode)
 	}
 	if (resp.StatusCode == 401 || resp.StatusCode == 403) &&
-		!isUpstreamLoginPath(path) && c.onAuthError != nil {
-		go c.onAuthError(c)
+		!isUpstreamLoginPath(path) {
+		c.requestAuthRecovery()
 	}
 	return resp, nil
 }
@@ -958,10 +976,7 @@ func (c *UpstreamClient) scheduleRecoveryForPreparationError(err error) {
 	if !ok || prep.Kind != "missing-upstream-auth-state" {
 		return
 	}
-	if c.onAuthError == nil {
-		return
-	}
-	go c.onAuthError(c)
+	c.requestAuthRecovery()
 }
 
 func (c *UpstreamClient) identityHeaders(reqCtx *RequestContext, identity *ClientIdentityService) http.Header {
