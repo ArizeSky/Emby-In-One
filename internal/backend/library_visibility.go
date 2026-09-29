@@ -27,7 +27,7 @@ type HiddenLibraryStore struct {
 	snapshot atomic.Pointer[hiddenLibrarySnapshot]
 	writeMu  sync.Mutex
 	db       *sqliteDB
-	logger    *Logger
+	logger   *Logger
 }
 
 func NewHiddenLibraryStore(db *sqliteDB, logger *Logger) (*HiddenLibraryStore, error) {

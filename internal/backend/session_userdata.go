@@ -226,6 +226,7 @@ func (a *App) performUpstream(ctx *http.Request, client *UpstreamClient, method,
 	reqCtx := requestContextFrom(ctx.Context())
 	return client.doRequest(ctx.Context(), reqCtx, method, path, query, body, client.requestHeaders(reqCtx, a.Identity), false)
 }
+
 // upstreamHTTPError reports that the upstream answered a session/userdata request
 // with a non-2xx status. It is deliberately distinct from a transport failure: a
 // transport failure means the event may still have happened upstream (the request

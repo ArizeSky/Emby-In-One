@@ -43,7 +43,12 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 	query := cloneValues(r.URL.Query())
 	body := map[string]any{}
 	if r.Method == http.MethodPost && r.Body != nil {
-		_ = json.NewDecoder(r.Body).Decode(&body)
+		// A malformed body must not be silently dropped: forwarding an empty body
+		// upstream would produce a confusing result. Report it as a bad request.
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"message": "Invalid request body"})
+			return
+		}
 	}
 	if mediaSourceID, ok := body["MediaSourceId"].(string); ok {
 		if msResolved := a.IDStore.ResolveVirtualID(mediaSourceID); msResolved != nil {
