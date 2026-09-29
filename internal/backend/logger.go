@@ -35,6 +35,9 @@ type Logger struct {
 	filePath     string
 	file         *rotatingFile
 	buffer       []LogEntry
+	// rotationReported latches after the first reported rotation failure, so a
+	// persistently failing rotate does not spam stdout on every log line.
+	rotationReported bool
 }
 
 const (
@@ -171,7 +174,13 @@ func (l *Logger) log(level, message string) {
 		_, _ = os.Stdout.WriteString(line)
 	}
 	if l.file != nil && levelValue(level) >= l.fileLevel {
-		_, _ = l.file.WriteString(line)
+		if _, err := l.file.WriteString(line); err != nil && !l.rotationReported {
+			// A rotation failure means the size cap is not being enforced and the log
+			// will grow without bound. Report it once (to stdout only — writing the
+			// warning to the same file would loop) so the operator can see it.
+			l.rotationReported = true
+			_, _ = os.Stdout.WriteString(fmt.Sprintf("%s [ERROR] log rotation failed, file size cap not enforced: %v\n", entry.Timestamp, err))
+		}
 	}
 }
 

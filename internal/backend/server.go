@@ -108,7 +108,9 @@ func (a *App) Close() error {
 		a.Upstream.stopHealthChecks()
 	}
 	if a.IDStore != nil {
-		_ = a.IDStore.Close()
+		if err := a.IDStore.Close(); err != nil && a.Logger != nil {
+			a.Logger.Warnf("ID store close: %v", err)
+		}
 	}
 	if a.Logger != nil {
 		_ = a.Logger.Close()
