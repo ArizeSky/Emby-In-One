@@ -337,6 +337,9 @@ func TestAdminLogsEndpoints(t *testing.T) {
 	})
 }
 
+// Forwarded headers are only honored when trustProxy is set. Without it the
+// request's own Host is used, so a stranger cannot spoof the address the server
+// advertises on the public info endpoint.
 func TestSystemInfoPublicUsesRequestHostForLocalAddress(t *testing.T) {
 	withTempApp(t, func(app *App, handler http.Handler) {
 		req := httptest.NewRequest(http.MethodGet, "/System/Info/Public", nil)
@@ -348,6 +351,27 @@ func TestSystemInfoPublicUsesRequestHostForLocalAddress(t *testing.T) {
 		if rr.Code != http.StatusOK {
 			t.Fatalf("public info status = %d, body=%s", rr.Code, rr.Body.String())
 		}
+		var payload map[string]any
+		if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+			raw := rr.Body.Bytes()
+			t.Fatalf("unmarshal public info: %v (body=%s)", err, raw)
+		}
+		if payload["LocalAddress"] != "http://internal.example:8096" {
+			t.Fatalf("LocalAddress = %#v, want http://internal.example:8096 (forwarded headers must be ignored without trustProxy)", payload["LocalAddress"])
+		}
+	})
+}
+
+// With trustProxy on, the same forwarded headers are honored.
+func TestSystemInfoPublicTrustsForwardedHeadersWhenTrustProxySet(t *testing.T) {
+	config := "server:\n  port: 8096\n  name: \"Test Server\"\n  id: \"server-1\"\n  trustProxy: true\n\nadmin:\n  username: \"admin\"\n  password: \"secret\"\n\nplayback:\n  mode: \"proxy\"\n\ntimeouts:\n  api: 30000\n  global: 15000\n  login: 10000\n  healthCheck: 10000\n  healthInterval: 60000\n\nproxies: []\nupstream: []\n"
+	withTempAppConfig(t, config, func(app *App, handler http.Handler) {
+		req := httptest.NewRequest(http.MethodGet, "/System/Info/Public", nil)
+		req.Host = "internal.example:8096"
+		req.Header.Set("X-Forwarded-Proto", "https")
+		req.Header.Set("X-Forwarded-Host", "media.example.com")
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
 		var payload map[string]any
 		if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
 			t.Fatalf("unmarshal public info: %v", err)
