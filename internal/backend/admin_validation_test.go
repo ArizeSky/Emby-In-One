@@ -89,3 +89,43 @@ func TestAdminSettingsAcceptsZeroGracePeriod(t *testing.T) {
 		}
 	})
 }
+
+// TestValidateUpstreamDraftRejectsLinkLocalTargets is the regression for the
+// proxied-upstream SSRF gap: when an upstream is reached through a forward proxy,
+// the transport dialer only ever resolves the proxy address, so a link-local
+// (cloud metadata) target would never be screened. validateUpstreamDraft now
+// rejects such targets directly.
+func TestValidateUpstreamDraftRejectsLinkLocalTargets(t *testing.T) {
+	base := UpstreamConfig{
+		Name:         "A",
+		PlaybackMode: "proxy",
+		SpoofClient:  "none",
+		Username:     "u",
+		Password:     "p",
+	}
+	linkLocal := base
+	linkLocal.URL = "http://169.254.169.254/latest/meta-data"
+	if err := validateUpstreamDraft(linkLocal); err == nil {
+		t.Fatal("expected a link-local upstream URL to be rejected")
+	}
+
+	linkLocalStream := base
+	linkLocalStream.URL = "http://emby.example.com"
+	linkLocalStream.StreamingURLs = []string{"http://[fe80::1]/streams"}
+	if err := validateUpstreamDraft(linkLocalStream); err == nil {
+		t.Fatal("expected a link-local streaming URL to be rejected")
+	}
+
+	// Loopback and private addresses stay allowed: self-hosted Emby commonly runs
+	// on the same host or LAN, and the upstream dialer policy matches.
+	loopback := base
+	loopback.URL = "http://127.0.0.1:8096"
+	if err := validateUpstreamDraft(loopback); err != nil {
+		t.Fatalf("loopback upstream should be allowed, got %v", err)
+	}
+	private := base
+	private.URL = "http://192.168.1.10:8096"
+	if err := validateUpstreamDraft(private); err != nil {
+		t.Fatalf("private upstream should be allowed, got %v", err)
+	}
+}

@@ -78,25 +78,16 @@ func (p ssrfPolicy) resolveTarget(ctx context.Context, addr string) ([]net.IPAdd
 	return ips, nil
 }
 
-// validatingDialer checks the destination against the policy and then dials the
-// original address, so net.Dialer keeps trying every resolved address instead of
-// being pinned to the first one.
-func validatingDialer(policy ssrfPolicy) func(ctx context.Context, network, addr string) (net.Conn, error) {
-	// Matches the connect/keep-alive timeouts of http.DefaultTransport.
-	base := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
-	return func(ctx context.Context, network, addr string) (net.Conn, error) {
-		if _, err := policy.resolveTarget(ctx, addr); err != nil {
-			return nil, err
-		}
-		return base.DialContext(ctx, network, addr)
+// dialValidated resolves addr once, validates every resolved address against the
+// policy, and then dials the validated addresses in order. Resolving once and
+// dialing only validated addresses closes the DNS-rebinding window where a host
+// validates against one answer and connects to a different one. Trying each
+// validated address in turn keeps the multi-address failover that net.Dialer
+// would otherwise provide.
+func dialValidated(policy ssrfPolicy, base *net.Dialer) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	if base == nil {
+		base = &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
 	}
-}
-
-// pinnedDialer checks the destination against the policy and connects to the
-// first validated address, so a hostname cannot resolve to a permitted address
-// during validation and to a blocked one at connect time (DNS rebinding).
-func pinnedDialer(policy ssrfPolicy) func(ctx context.Context, network, addr string) (net.Conn, error) {
-	base := &net.Dialer{Timeout: 10 * time.Second}
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		_, port, err := net.SplitHostPort(addr)
 		if err != nil {
@@ -106,8 +97,29 @@ func pinnedDialer(policy ssrfPolicy) func(ctx context.Context, network, addr str
 		if err != nil {
 			return nil, err
 		}
-		return base.DialContext(ctx, network, net.JoinHostPort(ips[0].IP.String(), port))
+		var lastErr error
+		for _, ipAddr := range ips {
+			conn, dialErr := base.DialContext(ctx, network, net.JoinHostPort(ipAddr.IP.String(), port))
+			if dialErr == nil {
+				return conn, nil
+			}
+			lastErr = dialErr
+		}
+		return nil, lastErr
 	}
+}
+
+// validatingDialer checks the destination against the policy and then dials the
+// validated addresses. Used for upstream connections.
+func validatingDialer(policy ssrfPolicy) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	// Matches the connect/keep-alive timeouts of http.DefaultTransport.
+	return dialValidated(policy, &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second})
+}
+
+// pinnedDialer is kept for the strict policy used by admin probe targets; it now
+// shares the single-resolution implementation with validatingDialer.
+func pinnedDialer(policy ssrfPolicy) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return dialValidated(policy, &net.Dialer{Timeout: 10 * time.Second})
 }
 
 // upstreamTransportDialer guards upstream connections against link-local targets.
@@ -126,7 +138,13 @@ func ssrfSafeDialer() func(ctx context.Context, network, addr string) (net.Conn,
 // blockedTargetReason reports why host cannot be used as a probe target and which
 // address range it falls into ("loopback", "private", "link-local", "reserved"),
 // or ("", false) when the strict policy allows it.
-func blockedTargetReason(host string) (string, bool) {
+// blockedTargetReason reports whether host resolves to an address blocked by the
+// given policy and which range it falls into ("loopback", "private", "link-local",
+// "reserved"), or ("", false) when the policy allows it. It is a pre-validation
+// used to reject a bad target before any transport is built; the dialer above
+// re-checks at connect time against a single DNS answer, so this pre-check is a
+// filter, not the enforcement point.
+func (p ssrfPolicy) blockedTargetReason(host string) (string, bool) {
 	h := host
 	if hp, _, err := net.SplitHostPort(host); err == nil {
 		h = hp
@@ -140,11 +158,17 @@ func blockedTargetReason(host string) (string, bool) {
 		ips = []net.IP{ip}
 	}
 	for _, ip := range ips {
-		if strictSSRFPolicy.blocks(ip) {
-			return strictSSRFPolicy.reason(ip), true
+		if p.blocks(ip) {
+			return p.reason(ip), true
 		}
 	}
 	return "", false
+}
+
+// blockedTargetReason keeps the original strict-policy signature used by the admin
+// proxy-test handler.
+func blockedTargetReason(host string) (string, bool) {
+	return strictSSRFPolicy.blockedTargetReason(host)
 }
 
 // wrapTransportWithSSRFCheck wraps an existing RoundTripper (typically a proxy transport)

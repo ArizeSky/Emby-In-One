@@ -406,6 +406,10 @@ func (a *App) handleAdminProxyTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// SSRF protection: this endpoint probes egress, so it only accepts public targets.
+	// This pre-check produces a friendly message; it is advisory only. The dialer
+	// below is the enforcement point: it resolves once, rejects any blocked resolved
+	// IP, and connects only to validated addresses, so a DNS answer that changes
+	// between this check and the connect cannot smuggle a blocked target through.
 	parsedTarget, _ := url.Parse(body.TargetURL)
 	if parsedTarget != nil {
 		if reason, blocked := blockedTargetReason(parsedTarget.Hostname()); blocked {
@@ -418,9 +422,9 @@ func (a *App) handleAdminProxyTest(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"success": false, "latency": int64(0), "error": "Failed to create proxy transport (invalid URL or scheme)"})
 		return
 	}
-	// Wrap transport with SSRF-safe dialer that re-checks resolved IPs at connect time,
-	// preventing DNS rebinding attacks where a hostname resolves to a public IP during
-	// validation but to a private IP during the actual connection.
+	// Wrap transport with the SSRF-safe dialer that re-checks resolved IPs at connect
+	// time against a single DNS answer, preventing DNS rebinding attacks where a
+	// hostname resolves to a public IP during validation but a private IP at connect.
 	safeTransport := wrapTransportWithSSRFCheck(transport)
 	client := &http.Client{Transport: safeTransport, Timeout: 10 * time.Second}
 	start := time.Now()

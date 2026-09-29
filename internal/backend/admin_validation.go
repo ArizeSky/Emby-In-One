@@ -133,9 +133,21 @@ func validateUpstreamDraft(draft UpstreamConfig) error {
 	if err := validateHTTPURL(draft.URL); err != nil {
 		return err
 	}
+	// An upstream behind a forward proxy never has its target host resolved by the
+	// transport dialer — the dialer only sees the proxy address — so the target
+	// must be screened here. The upstream policy matches the dialer's: link-local
+	// (cloud metadata) and unspecified addresses are refused, while loopback and
+	// RFC1918 stay allowed because self-hosted Emby commonly runs on the same host
+	// or LAN.
+	if reason, blocked := upstreamURLBlocked(draft.URL); blocked {
+		return &httpError{message: upstreamTargetBlockedMessage(draft.URL, reason)}
+	}
 	for _, streamingURL := range draft.StreamingURLs {
 		if err := validateHTTPURL(streamingURL); err != nil {
 			return &httpError{message: "推流地址 " + streamingURL + " 无效：" + err.Error()}
+		}
+		if reason, blocked := upstreamURLBlocked(streamingURL); blocked {
+			return &httpError{message: upstreamTargetBlockedMessage(streamingURL, reason)}
 		}
 	}
 	hasAPIKey := strings.TrimSpace(draft.APIKey) != ""
@@ -226,6 +238,32 @@ func sanitizeUpstreamURL(raw string) string {
 	parsed.RawQuery = ""
 	parsed.Fragment = ""
 	return parsed.String()
+}
+
+// upstreamURLBlocked reports whether the host of an upstream base URL resolves to
+// an address the upstream SSRF policy refuses (link-local / unspecified). It is
+// the screening that covers targets routed through a forward proxy, where the
+// transport dialer only ever resolves the proxy address.
+func upstreamURLBlocked(rawURL string) (string, bool) {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || parsed.Host == "" {
+		return "", false
+	}
+	return upstreamSSRFPolicy.blockedTargetReason(parsed.Hostname())
+}
+
+// upstreamTargetBlockedMessage explains why an upstream URL was refused.
+func upstreamTargetBlockedMessage(rawURL, reason string) string {
+	host := rawURL
+	if parsed, err := url.Parse(strings.TrimSpace(rawURL)); err == nil && parsed.Host != "" {
+		host = parsed.Hostname()
+	}
+	switch reason {
+	case "link-local":
+		return "上游地址 " + host + " 属于链路本地地址（169.254.0.0/16、fe80::/10），通常是云服务器元数据服务，不能作为上游服务器或推流地址。"
+	default:
+		return "上游地址 " + host + " 属于不可路由的保留地址，不能作为上游服务器或推流地址。"
+	}
 }
 
 func sanitizeProxyURL(raw string) string {
