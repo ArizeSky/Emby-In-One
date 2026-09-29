@@ -1,5 +1,67 @@
 # Emby-In-One 更新日志
 
+## V1.4.4-rc2
+
+发布日期：2026-09-30
+
+> V1.4.4-rc2 是 V1.4.4-rc1 之后的修复预发布，汇总第二轮全项目代码审查的修复产出（17 个提交）。本次审查覆盖认证与安全、代理与流转发、数据持久化三条主线，修复了 **3 项高危、9 项中危**，以及一批健壮性与可观测性改进。**本次没有新增功能，全部是对既有行为的缺陷修复与加固；对外接口保持兼容。** 主要变更集中在：管理员改密后令牌吊销、经代理转发的上游 SSRF 校验、SQLite 共享连接写锁的调用点补齐、HLS 清单的错误状态码与压缩处理、上游验证错误中的凭据脱敏，以及双写一致性。**升级前请读「升级须知」。**
+
+### ⚠️ 升级须知
+
+- **管理员修改普通用户密码后，该用户已登录的令牌会立即失效**。这是安全修复：令牌此前永不过期，改密无法切断泄露令牌的访问。被改密的用户需要重新登录，这是预期行为。
+- **经 HTTP 代理转发的上游地址现在会做目标地址校验**。指向 **link-local / 云元数据地址（`169.254.0.0/16`、`fe80::/10`）** 的上游或推流地址会被拒绝。**本机回环与局域网地址（`127.0.0.1`、`192.168.x.x` 等）仍然允许**，自建 Emby 不受影响；如果你确实把上游指向了元数据地址，请改回真实地址。
+- **`/System/Info/Public` 与 `/System/Info` 的 `LocalAddress` 只在 `server.trustProxy: true` 时才采信 `X-Forwarded-*` 头**。反代部署请确认已开启 `trustProxy`（`config.yaml` 的 `server.trustProxy`），否则该字段会回退为请求自身的 Host。
+- **会话上报（`/Sessions/Playing*`）的本地记录语义修正**：当上游**明确拒绝（非 2xx）**时，代理不再写入本地观看进度（此前会写，造成本地状态与上游不一致）；客户端仍收到 `204`（Emby 客户端的 fire-and-forget 契约不变）。网络层失败（无应答）仍保留本地记录，因为请求可能已送达。
+- **HLS 清单请求现在会显式声明 `Accept-Encoding: identity`**，且上游返回非 2xx 时不再被改写成 200。若上游强制对清单压缩，代理会原样透传（保留 `Content-Encoding`），不再把压缩字节当作明文重写。
+
+### 安全修复（高危）
+
+- **管理员改密后吊销该用户令牌**（`handlers_admin.go`）：`handleAdminUsersUpdate` 此前只在禁用用户时调 `RevokeTokensByUserID`，改密码不吊销；而管理员改自己的密码会全量吊销。现改密与禁用统一吊销该用户令牌，与管理员自身行为对齐。
+- **经代理转发的上游补上目标地址 SSRF 校验**（`upstream.go` / `ssrf.go` / `admin_validation.go`）：HTTP 代理模式下 dialer 只解析代理地址，URL 中的目标主机从不经过校验，导致可经代理访问云元数据与任意内网服务。现在 `validateUpstreamDraft` 对上游 URL 与每条推流地址复用上游 SSRF 策略做目标校验，拒绝 link-local / 未指定地址；本机回环与私有网段仍放行以兼容自建部署。
+- **补齐三处绕过 SQLite 共享连接写锁的写操作**（`user_store.go` / `library_visibility.go`）：`RemoveServerGrants`、`HiddenLibraryStore.RemoveServer`、`HiddenLibraryStore.RemoveUser` 此前直接 autocommit 写入共享连接，可能落入其它 store 正开启的事务并在回滚时被一并丢弃，造成「内存已清理、数据库仍在、重启后复活」。现统一改走 `writeParams` / `withWriteTx`。
+
+### 安全修复（中危）
+
+- **上游验证错误中的凭据脱敏**（`admin_validation.go`）：`LastError` 会带上完整请求 URL（含 `api_key=<上游 AccessToken>`）并原样回显到管理 API 的 502 响应。现经 `redactURLInError` 脱敏后再返回。
+- **消除拨号期 DNS 重绑定窗口**（`ssrf.go`）：`validatingDialer` 此前「校验一次解析结果、再拨原始主机名」会二次解析。现统一为单次解析、校验后只拨已验证 IP，并保留多地址轮询失败转移；`pinnedDialer` 与 `blockedTargetReason` 一并收敛到同一实现。
+
+### 代理与流转发修复（中危）
+
+- **HLS 清单分支不再丢失上游状态码**（`media_stream.go`）：playlist 分支此前只设 `Content-Type` 就写正文，上游 404/500 被以 200 返回。现仅在上游 2xx 时改写清单，其它状态原样透传真实状态码。
+- **压缩的清单不再被当作明文重写**（`media_stream.go`）：转发 `Accept-Encoding` 且 transport 禁用自动解压时，gzip 的 `.m3u8` 会被 `io.ReadAll` 后重写成乱码。现清单请求强制 `Accept-Encoding: identity`；若上游仍压缩，则保留 `Content-Encoding` 原样透传，不做改写。
+- **会话上报不再在上游拒绝时写本地**（`session_userdata.go`）：见「升级须知」。以类型化 `upstreamHTTPError` 区分「上游明确拒绝」与「网络失败」。
+
+### 数据一致性修复（中危）
+
+- **watch store 读错误不再被当作「无记录」**（`watch_store.go` / `session_userdata.go` / `media_nextup.go`）：`GetProgress`、`GetNextUpForSeries` 改为返回 `error`。此前读失败返回 nil 会被上层解释为「无本地记录」并清空上游 UserData，导致 SQLite 瞬时故障时普通用户的进度/已看/收藏被「抹零」且无日志。现读失败跳过覆盖并记录告警。
+- **id 映射先写库成功再登记内存**（`idstore.go`）：`GetOrCreateVirtualID`、`AssociateAdditionalInstance` 此前先写内存再尝试写库、失败仅告警，进程内一致但重启后映射丢失（客户端持有的虚拟 ID 变 404）。现改为持久化优先，失败时记录告警并保留进程内一致。
+- **双写本地失败补日志**（`session_userdata.go`）：`MarkPlayed` / `SetFavorite` 的本地写入失败此前被 `_ =` 静默丢弃，现记录告警。
+- **删除上游时级联清理骨架行**（`watch_store.go` / `handlers_admin.go`）：`MarkPlayed`/`SetFavorite` 为无历史记录的条目插入的 `server_id=''` 骨架行，此前不会被 `DeleteServerData` 清掉。现经 `id_mappings` 级联删除，并把删除处理器的清理顺序调整为「先 watch 数据、后 id 映射」以满足级联依赖。
+
+### 健壮性与可观测性
+
+- **拒绝令牌不再记录任何前缀**（`auth_manager.go`）：此前 Debug 日志会打印被拒令牌前 8 字符，给暴力猜测提供日志确认。现只记录已知令牌数量。
+- **转发头只在 `trustProxy` 下采信**（`middleware.go` / `handlers_system.go`）：`requestOrigin` 此前无条件信任 `X-Forwarded-Proto`/`Host`，任何人可伪造公开端点回显的服务器地址。现仅在 `server.trustProxy: true` 时采信。
+- **缓冲型上游响应加上限**（`fallback_proxy.go` / `upstream.go`）：回退代理的 JSON/ID 重写与 HTML 检测路径、以及错误信息读取此前会无上限 `io.ReadAll`，现分别限制为 32 MiB 与 64 KiB（流式转发路径不受影响）。
+- **401/403 恢复不再每次响应都 spawn goroutine**（`upstream.go`）：新增 `requestAuthRecovery`，在锁内做廉价去抖预检，仅去抖窗口内的首个响应创建 goroutine；去抖逻辑仍在 goroutine 内复核，避免竞态放大。
+- **流式响应头白名单移除 `Transfer-Encoding`**（`media_stream.go`）：代理对每个响应重新分帧，透传上游的 `Transfer-Encoding` 会声明与正文不符的分帧。
+- **PlaybackInfo 畸形请求体显式报 400**（`media_playback.go`）：此前解析失败被忽略，空 body 被转发上游造成困惑结果。
+- **流探针响应 drain 后再关闭**（`stream_probe.go`）：便于连接复用。
+- **迁移探测与清理错误不再吞掉**（`db_migration.go`）：列探测失败与临时表清理失败现记录告警，避免静默选择到不存在的列。
+- **日志轮转失败会告警**（`logfile.go` / `logger.go`）：轮转 rename 失败此前被吞，大小上限静默失效、日志可能无界增长；现收集并在 stdout 告警一次（避免写回同一文件造成循环）。
+- **id store 关闭错误不再忽略**（`server.go`）：`Close` 失败记录告警。
+- **仓库 `gofmt`**：`handlers_admin.go`、`library_visibility.go`、`session_userdata.go` 三个文件格式化归位。
+
+### 本次新增的回归测试
+
+- 写锁：`TestServerRemovalWritesWaitForOpenTransaction`（三处删除等待开启中的事务）
+- 认证：`TestAdminPasswordChangeRevokesUserTokens`（改密吊销令牌）
+- SSRF：`TestValidateUpstreamDraftRejectsLinkLocalTargets`（目标地址校验）
+- 流转发：`TestPlaylistUpstreamErrorKeepsStatus`、`TestPlaylistGzipUpstreamIsRewritten`
+- 会话：`TestSessionUpstreamRefusalDoesNotRecordLocally`、`TestSessionUpstreamSuccessRecordsLocally`
+- 数据：`TestDeleteServerDataCascadesSkeletonRows`、`TestSystemInfoPublicTrustsForwardedHeadersWhenTrustProxySet`
+
+
 ## V1.4.4
 
 发布日期：2026-09-18（V1.4.4-rc1 预发布；正式版日期待定）
