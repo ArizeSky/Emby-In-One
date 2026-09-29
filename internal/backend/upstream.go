@@ -675,7 +675,8 @@ func (c *UpstreamClient) RequestJSON(ctx context.Context, reqCtx *RequestContext
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		payload, _ := io.ReadAll(resp.Body)
+		// The body is only echoed into the error message, so a bounded read is enough.
+		payload, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		return nil, fmt.Errorf("upstream %s %s failed: %s %s", method, path, resp.Status, strings.TrimSpace(string(payload)))
 	}
 	var decoded any
