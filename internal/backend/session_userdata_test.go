@@ -371,8 +371,10 @@ func TestSessionUpstreamRefusalDoesNotRecordLocally(t *testing.T) {
 		body := map[string]any{"ItemId": virtualItem, "PositionTicks": 12345}
 		for _, route := range []string{"/Sessions/Playing", "/Sessions/Playing/Progress", "/Sessions/Playing/Stopped"} {
 			rr := doAuthJSON(t, handler, http.MethodPost, route, body, userToken)
-			if rr.Code == http.StatusNoContent {
-				t.Fatalf("%s: upstream refusal was swallowed as 204", route)
+			// Session events keep their fire-and-forget 204 contract even on an
+			// upstream refusal; what changes is that nothing is recorded locally.
+			if rr.Code != http.StatusNoContent {
+				t.Fatalf("%s: status = %d, want 204 (body=%s)", route, rr.Code, rr.Body.String())
 			}
 		}
 

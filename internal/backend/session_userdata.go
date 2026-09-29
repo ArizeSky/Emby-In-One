@@ -336,18 +336,15 @@ func (a *App) handleSessionPlaying(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// An explicit non-2xx answer is a refusal: the play event did not happen, so
-		// it must not be recorded locally. A transport failure is different — the
-		// request may have been delivered before the connection dropped, and the
-		// session routes keep their best-effort 204 contract there, recording locally.
+		// it is not recorded locally. A transport failure is different — the request
+		// may have been delivered before the connection dropped — so it keeps the
+		// local record. Session events are fire-and-forget for Emby clients: both
+		// cases answer 204.
 		if a.Logger != nil {
 			a.Logger.Warnf("Sessions/Playing upstream error (server %s): %v", serverID, redactURLInError(err))
 		}
-		if uhe, ok := asUpstreamHTTPError(err); ok {
-			if uhe.StatusCode >= 400 && uhe.StatusCode < 500 {
-				writeJSON(w, uhe.StatusCode, map[string]any{"message": "Upstream rejected the play event"})
-			} else {
-				writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Upstream failed to record the play event"})
-			}
+		if _, refused := asUpstreamHTTPError(err); refused {
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 	}
@@ -395,16 +392,13 @@ func (a *App) handleSessionPlayingProgress(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		// Same refusal rule as Sessions/Playing: an explicit non-2xx means the
-		// progress event did not happen upstream, so it is not recorded locally.
+		// progress event did not happen upstream, so it is not recorded locally,
+		// while the client still gets the fire-and-forget 204.
 		if a.Logger != nil {
 			a.Logger.Warnf("Sessions/Playing/Progress upstream error (server %s): %v", serverID, redactURLInError(err))
 		}
-		if uhe, ok := asUpstreamHTTPError(err); ok {
-			if uhe.StatusCode >= 400 && uhe.StatusCode < 500 {
-				writeJSON(w, uhe.StatusCode, map[string]any{"message": "Upstream rejected the progress event"})
-			} else {
-				writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Upstream failed to record the progress event"})
-			}
+		if _, refused := asUpstreamHTTPError(err); refused {
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 	}
@@ -456,10 +450,11 @@ func (a *App) handleSessionPlayingStopped(w http.ResponseWriter, r *http.Request
 			writeJSON(w, status, preparationErrorBody(err))
 			return
 		}
-		if uhe, ok := asUpstreamHTTPError(err); ok {
+		if _, refused := asUpstreamHTTPError(err); refused {
 			// An explicit refusal means the stop was not registered upstream, so the
 			// local progress is not written either. The concurrency slot is still
-			// released: the client did stop playing, and holding the slot would leak it.
+			// released: the client did stop playing, and holding the slot would leak
+			// it. The client keeps the fire-and-forget 204.
 			if a.Logger != nil {
 				a.Logger.Warnf("Sessions/Playing/Stopped upstream error (server %s): %v", serverID, redactURLInError(err))
 			}
@@ -468,11 +463,7 @@ func (a *App) handleSessionPlayingStopped(w http.ResponseWriter, r *http.Request
 					a.PlaybackLimiter.Stop(reqCtx.ProxyUser.UserID, serverID)
 				}
 			}
-			if uhe.StatusCode >= 400 && uhe.StatusCode < 500 {
-				writeJSON(w, uhe.StatusCode, map[string]any{"message": "Upstream rejected the stop event"})
-			} else {
-				writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Upstream failed to record the stop event"})
-			}
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 	}
