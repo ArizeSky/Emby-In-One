@@ -128,3 +128,68 @@ func TestWriteLockSerializesStoresAcrossATransaction(t *testing.T) {
 		t.Fatal("the user create did not commit after the transaction finished")
 	}
 }
+
+// TestServerRemovalWritesWaitForOpenTransaction is the regression for the three
+// server/user removal writes that bypassed the shared connection's write lock:
+// UserStore.RemoveServerGrants, HiddenLibraryStore.RemoveServer and
+// HiddenLibraryStore.RemoveUser issued their DELETE as an autocommit statement,
+// which lands inside any transaction another store has open on the shared
+// connection and disappears with its rollback. They must wait like every other
+// write.
+func TestServerRemovalWritesWaitForOpenTransaction(t *testing.T) {
+	idStore, users, _ := sharedStores(t)
+	db := idStore.db
+	logger := NewLogger(LogConfig{Level: "error", FileLevel: "error", DataDir: t.TempDir()})
+	t.Cleanup(func() { _ = logger.Close() })
+	hidden, err := NewHiddenLibraryStore(db, logger)
+	if err != nil {
+		t.Fatalf("NewHiddenLibraryStore: %v", err)
+	}
+
+	if _, err := users.Create("dave", "dave1234", []string{"srv-0"}); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	dave := users.GetByUsername("dave")
+	if err := hidden.SetServerHidden(dave.ID, "srv-0", []string{"lib-1"}); err != nil {
+		t.Fatalf("set hidden: %v", err)
+	}
+
+	assertWaitsForTransaction := func(name string, write func() error) {
+		t.Helper()
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		txDone := make(chan error, 1)
+		go func() {
+			txDone <- db.withWriteTx(func() error {
+				close(entered)
+				<-release
+				return nil
+			})
+		}()
+		<-entered
+
+		writeDone := make(chan error, 1)
+		go func() { writeDone <- write() }()
+
+		select {
+		case err := <-writeDone:
+			t.Fatalf("%s ran while a transaction was open on the shared connection (err=%v)", name, err)
+		case <-time.After(300 * time.Millisecond):
+		}
+		close(release)
+		if err := <-txDone; err != nil {
+			t.Fatalf("transaction: %v", err)
+		}
+		if err := <-writeDone; err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+
+	assertWaitsForTransaction("RemoveServerGrants", func() error { return users.RemoveServerGrants("srv-0") })
+	assertWaitsForTransaction("HiddenLibraryStore.RemoveServer", func() error { return hidden.RemoveServer("srv-0") })
+	assertWaitsForTransaction("HiddenLibraryStore.RemoveUser", func() error { return hidden.RemoveUser(dave.ID) })
+
+	if got := users.GetByUsername("dave"); got != nil && len(got.AllowedServers) != 0 {
+		t.Fatalf("RemoveServerGrants did not commit: %#v", got.AllowedServers)
+	}
+}

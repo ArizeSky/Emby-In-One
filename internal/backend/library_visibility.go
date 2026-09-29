@@ -181,7 +181,7 @@ func (s *HiddenLibraryStore) RemoveServer(serverID string) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 
-	if err := s.db.execParams(`DELETE FROM user_hidden_libraries WHERE server_id = ?`, serverID); err != nil {
+	if err := s.db.writeParams(`DELETE FROM user_hidden_libraries WHERE server_id = ?`, serverID); err != nil {
 		return err
 	}
 
@@ -217,7 +217,7 @@ func (s *HiddenLibraryStore) RemoveUser(userID string) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 
-	if err := s.db.execParams(`DELETE FROM user_hidden_libraries WHERE user_id = ?`, userID); err != nil {
+	if err := s.db.writeParams(`DELETE FROM user_hidden_libraries WHERE user_id = ?`, userID); err != nil {
 		return err
 	}
 

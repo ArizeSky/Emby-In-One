@@ -318,7 +318,7 @@ func (s *UserStore) RemoveServerGrants(serverID string) error {
 	defer s.mu.Unlock()
 
 	if s.db != nil {
-		if err := s.db.execParams(`DELETE FROM user_servers WHERE server_id = ?`, serverID); err != nil {
+		if err := s.db.writeParams(`DELETE FROM user_servers WHERE server_id = ?`, serverID); err != nil {
 			return err
 		}
 	}
