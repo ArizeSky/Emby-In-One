@@ -23,6 +23,26 @@ func newTestWatchStore(t *testing.T) *WatchStore {
 	return ws
 }
 
+// mustGetProgress is the test shorthand for the error-returning GetProgress.
+func mustGetProgress(t *testing.T, ws *WatchStore, userID, itemID string) *WatchProgress {
+	t.Helper()
+	p, err := ws.GetProgress(userID, itemID)
+	if err != nil {
+		t.Fatalf("GetProgress(%s, %s): %v", userID, itemID, err)
+	}
+	return p
+}
+
+// mustGetNextUpForSeries is the test shorthand for the error-returning GetNextUpForSeries.
+func mustGetNextUpForSeries(t *testing.T, ws *WatchStore, userID, seriesID string) *WatchProgress {
+	t.Helper()
+	p, err := ws.GetNextUpForSeries(userID, seriesID)
+	if err != nil {
+		t.Fatalf("GetNextUpForSeries(%s, %s): %v", userID, seriesID, err)
+	}
+	return p
+}
+
 func TestWatchStoreRecordAndGetProgress(t *testing.T) {
 	ws := newTestWatchStore(t)
 
@@ -40,7 +60,7 @@ func TestWatchStoreRecordAndGetProgress(t *testing.T) {
 		t.Fatalf("record progress: %v", err)
 	}
 
-	got := ws.GetProgress("user1", "item1")
+	got := mustGetProgress(t, ws, "user1", "item1")
 	if got == nil {
 		t.Fatalf("expected progress, got nil")
 	}
@@ -55,7 +75,7 @@ func TestWatchStoreRecordAndGetProgress(t *testing.T) {
 	}
 
 	// Different user sees nothing
-	if ws.GetProgress("user2", "item1") != nil {
+	if mustGetProgress(t, ws, "user2", "item1") != nil {
 		t.Fatalf("user2 should not see user1's progress")
 	}
 }
@@ -86,7 +106,7 @@ func TestWatchStoreUpsertPreservesMetadata(t *testing.T) {
 	}
 	ws.RecordProgress(p2)
 
-	got := ws.GetProgress("user1", "item1")
+	got := mustGetProgress(t, ws, "user1", "item1")
 	if got.Name != "Pilot" {
 		t.Fatalf("metadata lost: Name = %q, want %q", got.Name, "Pilot")
 	}
@@ -108,7 +128,7 @@ func TestWatchStoreUpdatePosition(t *testing.T) {
 
 	ws.UpdatePosition("user1", "item1", 2500, 50000)
 
-	got := ws.GetProgress("user1", "item1")
+	got := mustGetProgress(t, ws, "user1", "item1")
 	if got.PositionTicks != 2500 {
 		t.Fatalf("PositionTicks = %d, want 2500", got.PositionTicks)
 	}
@@ -124,13 +144,13 @@ func TestWatchStoreMarkPlayed(t *testing.T) {
 
 	ws.MarkPlayed("user1", "item1", true)
 
-	got := ws.GetProgress("user1", "item1")
+	got := mustGetProgress(t, ws, "user1", "item1")
 	if !got.Played {
 		t.Fatalf("Played = false, want true")
 	}
 
 	ws.MarkPlayed("user1", "item1", false)
-	got = ws.GetProgress("user1", "item1")
+	got = mustGetProgress(t, ws, "user1", "item1")
 	if got.Played {
 		t.Fatalf("Played = true, want false")
 	}
@@ -141,7 +161,7 @@ func TestWatchStoreMarkPlayedUpsertsWithoutPriorRecord(t *testing.T) {
 
 	ws.MarkPlayed("user1", "item1", true)
 
-	got := ws.GetProgress("user1", "item1")
+	got := mustGetProgress(t, ws, "user1", "item1")
 	if got == nil {
 		t.Fatalf("expected progress record after MarkPlayed")
 	}
@@ -156,7 +176,7 @@ func TestWatchStoreSetFavorite(t *testing.T) {
 	// SetFavorite should upsert even without prior record
 	ws.SetFavorite("user1", "item1", true)
 
-	got := ws.GetProgress("user1", "item1")
+	got := mustGetProgress(t, ws, "user1", "item1")
 	if got == nil {
 		t.Fatalf("expected progress record after SetFavorite")
 	}
@@ -165,7 +185,7 @@ func TestWatchStoreSetFavorite(t *testing.T) {
 	}
 
 	ws.SetFavorite("user1", "item1", false)
-	got = ws.GetProgress("user1", "item1")
+	got = mustGetProgress(t, ws, "user1", "item1")
 	if got.IsFavorite {
 		t.Fatalf("IsFavorite = true, want false")
 	}
@@ -214,7 +234,7 @@ func TestRecordProgressUpsertUpdatesPlayedAndFavorite(t *testing.T) {
 		t.Fatalf("initial insert: %v", err)
 	}
 
-	got := ws.GetProgress("user1", "ep1")
+	got := mustGetProgress(t, ws, "user1", "ep1")
 	if got == nil {
 		t.Fatal("expected initial record")
 	}
@@ -231,7 +251,7 @@ func TestRecordProgressUpsertUpdatesPlayedAndFavorite(t *testing.T) {
 		t.Fatalf("upsert with played=true: %v", err)
 	}
 
-	got = ws.GetProgress("user1", "ep1")
+	got = mustGetProgress(t, ws, "user1", "ep1")
 	if !got.Played {
 		t.Fatal("Played should be true after upsert with played=true")
 	}
@@ -245,7 +265,7 @@ func TestRecordProgressUpsertUpdatesPlayedAndFavorite(t *testing.T) {
 		t.Fatalf("progress event: %v", err)
 	}
 
-	got = ws.GetProgress("user1", "ep1")
+	got = mustGetProgress(t, ws, "user1", "ep1")
 	if !got.Played {
 		t.Fatal("Played should remain true after progress event with played=false")
 	}
@@ -323,7 +343,7 @@ func TestWatchStoreGetNextUpForSeries(t *testing.T) {
 		Played: true,
 	})
 
-	got := ws.GetNextUpForSeries("user1", "series1")
+	got := mustGetNextUpForSeries(t, ws, "user1", "series1")
 	if got == nil {
 		t.Fatalf("expected result, got nil")
 	}
@@ -332,7 +352,7 @@ func TestWatchStoreGetNextUpForSeries(t *testing.T) {
 	}
 
 	// Non-existent series
-	if ws.GetNextUpForSeries("user1", "nonexistent") != nil {
+	if mustGetNextUpForSeries(t, ws, "user1", "nonexistent") != nil {
 		t.Fatalf("expected nil for non-existent series")
 	}
 }
@@ -349,10 +369,10 @@ func TestWatchStoreDeleteUser(t *testing.T) {
 
 	ws.DeleteUser("user1")
 
-	if ws.GetProgress("user1", "item1") != nil {
+	if mustGetProgress(t, ws, "user1", "item1") != nil {
 		t.Fatalf("user1 data should be deleted")
 	}
-	if ws.GetProgress("user2", "item2") == nil {
+	if mustGetProgress(t, ws, "user2", "item2") == nil {
 		t.Fatalf("user2 data should remain")
 	}
 }
@@ -370,8 +390,8 @@ func TestWatchStoreIsolation(t *testing.T) {
 		PositionTicks: 2000, RuntimeTicks: 5000,
 	})
 
-	p1 := ws.GetProgress("user1", "item1")
-	p2 := ws.GetProgress("user2", "item1")
+	p1 := mustGetProgress(t, ws, "user1", "item1")
+	p2 := mustGetProgress(t, ws, "user2", "item1")
 
 	if p1.PositionTicks != 1000 {
 		t.Fatalf("user1 position = %d, want 1000", p1.PositionTicks)
@@ -383,8 +403,8 @@ func TestWatchStoreIsolation(t *testing.T) {
 	// Mark played for user1 only
 	ws.MarkPlayed("user1", "item1", true)
 
-	p1 = ws.GetProgress("user1", "item1")
-	p2 = ws.GetProgress("user2", "item1")
+	p1 = mustGetProgress(t, ws, "user1", "item1")
+	p2 = mustGetProgress(t, ws, "user2", "item1")
 	if !p1.Played {
 		t.Fatalf("user1 should be played")
 	}
@@ -394,8 +414,8 @@ func TestWatchStoreIsolation(t *testing.T) {
 
 	// Favorites are also isolated
 	ws.SetFavorite("user2", "item1", true)
-	p1 = ws.GetProgress("user1", "item1")
-	p2 = ws.GetProgress("user2", "item1")
+	p1 = mustGetProgress(t, ws, "user1", "item1")
+	p2 = mustGetProgress(t, ws, "user2", "item1")
 	if p1.IsFavorite {
 		t.Fatalf("user1 should NOT have favorite")
 	}
@@ -448,12 +468,12 @@ func TestMigratePlayedStatus(t *testing.T) {
 	}
 
 	// ep-1: should have been migrated to played=true (100% >= 90%)
-	p1 := ws2.GetProgress("user1", "ep-1")
+	p1 := mustGetProgress(t, ws2, "user1", "ep-1")
 	if p1 == nil || !p1.Played {
 		t.Errorf("ep-1: expected played=true (auto-migrated), got played=%v", p1 != nil && p1.Played)
 	}
 	// ep-2: should remain played=false (50% < 90%)
-	p2 := ws2.GetProgress("user1", "ep-2")
+	p2 := mustGetProgress(t, ws2, "user1", "ep-2")
 	if p2 == nil || p2.Played {
 		t.Errorf("ep-2: expected played=false, got played=%v", p2 != nil && p2.Played)
 	}

@@ -268,7 +268,11 @@ func (ws *WatchStore) GetResumableItems(proxyUserID string) ([]WatchProgress, er
 }
 
 // GetProgress returns the watch progress for a specific user+item, or nil if not found.
-func (ws *WatchStore) GetProgress(proxyUserID, virtualItemID string) *WatchProgress {
+// GetProgress returns the watch progress for a specific user+item, or (nil, nil)
+// when there is no record. A database failure is reported as an error so callers
+// can tell "no local record" apart from "the read failed" — the overlay layer
+// clears upstream userdata on the former, and must not do so on the latter.
+func (ws *WatchStore) GetProgress(proxyUserID, virtualItemID string) (*WatchProgress, error) {
 	ws.mu.Lock()
 	defer ws.mu.Unlock()
 	stmt, err := ws.db.prepare(`
@@ -280,17 +284,20 @@ func (ws *WatchStore) GetProgress(proxyUserID, virtualItemID string) *WatchProgr
 		WHERE proxy_user_id = ? AND virtual_item_id = ?
 	`)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer stmt.finalize()
 	if err := stmt.bindAll(proxyUserID, virtualItemID); err != nil {
-		return nil
+		return nil, err
 	}
-	rows, _ := ws.scanRows(proxyUserID, stmt)
+	rows, err := ws.scanRows(proxyUserID, stmt)
+	if err != nil {
+		return nil, err
+	}
 	if len(rows) == 0 {
-		return nil
+		return nil, nil
 	}
-	return &rows[0]
+	return &rows[0], nil
 }
 
 // GetNextUpSeries returns one row per series the user has played episodes of,
@@ -340,7 +347,8 @@ func (ws *WatchStore) GetNextUpSeries(proxyUserID string) ([]WatchProgress, erro
 
 // GetNextUpForSeries returns the highest-numbered episode the user has watched
 // (played or in-progress) for a specific series, identified by virtual series ID.
-func (ws *WatchStore) GetNextUpForSeries(proxyUserID, seriesVirtualID string) *WatchProgress {
+// Like GetProgress it reports read failures as an error instead of a bare nil.
+func (ws *WatchStore) GetNextUpForSeries(proxyUserID, seriesVirtualID string) (*WatchProgress, error) {
 	ws.mu.Lock()
 	defer ws.mu.Unlock()
 	stmt, err := ws.db.prepare(`
@@ -355,17 +363,20 @@ func (ws *WatchStore) GetNextUpForSeries(proxyUserID, seriesVirtualID string) *W
 		LIMIT 1
 	`)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer stmt.finalize()
 	if err := stmt.bindAll(proxyUserID, seriesVirtualID); err != nil {
-		return nil
+		return nil, err
 	}
-	rows, _ := ws.scanRows(proxyUserID, stmt)
+	rows, err := ws.scanRows(proxyUserID, stmt)
+	if err != nil {
+		return nil, err
+	}
 	if len(rows) == 0 {
-		return nil
+		return nil, nil
 	}
-	return &rows[0]
+	return &rows[0], nil
 }
 
 // DeleteUser removes all watch data for a proxy user.

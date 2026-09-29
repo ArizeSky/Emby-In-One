@@ -69,7 +69,15 @@ func (a *App) handleLocalNextUp(w http.ResponseWriter, r *http.Request, reqCtx *
 			return
 		}
 		// Get the user's highest played episode for this series
-		seriesProgress := a.WatchStore.GetNextUpForSeries(reqCtx.ProxyUser.UserID, seriesID)
+		seriesProgress, err := a.WatchStore.GetNextUpForSeries(reqCtx.ProxyUser.UserID, seriesID)
+		if err != nil {
+			// Same rule as the userdata overlay: a failed read is not "no record".
+			if a.Logger != nil {
+				a.Logger.Warnf("WatchStore next-up read error: %s", redactURLInError(err))
+			}
+			writeJSON(w, http.StatusOK, empty)
+			return
+		}
 		if seriesProgress == nil {
 			writeJSON(w, http.StatusOK, empty)
 			return

@@ -137,7 +137,12 @@ func (a *App) recordSessionToWatchStore(r *http.Request, virtualItemID string, b
 	}
 
 	// Enrich with item metadata if not already stored
-	existing := a.WatchStore.GetProgress(reqCtx.ProxyUser.UserID, virtualItemID)
+	// A read error is not "no record": skip the enrichment decision on failure
+	// rather than treating the item as unseen.
+	existing, progressErr := a.WatchStore.GetProgress(reqCtx.ProxyUser.UserID, virtualItemID)
+	if progressErr != nil && a.Logger != nil {
+		a.Logger.Warnf("WatchStore progress read error: %s", redactURLInError(progressErr))
+	}
 	if existing == nil || existing.ItemType == "" {
 		a.enrichWatchProgressMetadata(r, reqCtx, p, originalItemID, serverID)
 	}
@@ -621,7 +626,16 @@ func (a *App) overlayLocalUserData(r *http.Request, virtualItemID string, payloa
 	if reqCtx == nil || reqCtx.ProxyUser == nil || reqCtx.ProxyUser.Role == "admin" {
 		return
 	}
-	progress := a.WatchStore.GetProgress(reqCtx.ProxyUser.UserID, virtualItemID)
+	progress, progressErr := a.WatchStore.GetProgress(reqCtx.ProxyUser.UserID, virtualItemID)
+	if progressErr != nil {
+		// A failed read must not be mistaken for "no local record": clearing the
+		// upstream userdata here would zero out the user's progress display on a
+		// transient database error. Leave the payload untouched and log it.
+		if a.Logger != nil {
+			a.Logger.Warnf("WatchStore read error, skipping local overlay: %s", redactURLInError(progressErr))
+		}
+		return
+	}
 	if progress == nil {
 		// No local record → clear upstream admin's UserData to avoid leaking
 		clearUpstreamUserData(payload)

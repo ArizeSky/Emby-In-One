@@ -82,7 +82,7 @@ func TestConcurrentWriteSurvivesTransactionRollback(t *testing.T) {
 		}
 	}
 
-	progress := watch.GetProgress("user-1", "item-1")
+	progress, _ := watch.GetProgress("user-1", "item-1")
 	if progress == nil || progress.PositionTicks != 42 {
 		t.Fatalf("the watch write was lost with the rolled-back transaction: %#v", progress)
 	}
