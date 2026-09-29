@@ -103,7 +103,13 @@ func (a *App) forwardStream(w http.ResponseWriter, r *http.Request, client *Upst
 			r.Header.Get("Range"), r.Header.Get("Accept"), r.Header.Get("Accept-Encoding"))
 	}
 
-	resp, err := client.Stream(r.Context(), reqCtx, a.Identity, upstreamPath, query, streamRequestHeaders(r))
+	reqHeaders := streamRequestHeaders(r)
+	// A manifest is always read and rewritten, so never ask the upstream to compress
+	// it: a gzip-compressed body would be rewritten as opaque garbage.
+	if strings.HasSuffix(strings.ToLower(rest), ".m3u8") {
+		reqHeaders.Set("Accept-Encoding", "identity")
+	}
+	resp, err := client.Stream(r.Context(), reqCtx, a.Identity, upstreamPath, query, reqHeaders)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return // client disconnected or timed out — not a server error
@@ -117,7 +123,11 @@ func (a *App) forwardStream(w http.ResponseWriter, r *http.Request, client *Upst
 	defer resp.Body.Close()
 
 	contentType := resp.Header.Get("Content-Type")
-	if isPlaylistResponse(contentType, rest) {
+	// A playlist is only rewritten when the upstream actually served one. A non-2xx
+	// answer (or an error page that happens to look like a manifest) is passed through
+	// verbatim with its real status, so a 404/500 is not masked as a 200.
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 && isPlaylistResponse(contentType, rest) &&
+		resp.Header.Get("Content-Encoding") == "" {
 		body, _ := io.ReadAll(resp.Body)
 		proxyToken := ""
 		if reqCtx != nil {
@@ -141,6 +151,7 @@ func (a *App) forwardStream(w http.ResponseWriter, r *http.Request, client *Upst
 		}
 		manifest := RewriteM3U8ForItem(string(body), baseURL, virtualItemID, proxyToken)
 		w.Header().Set("Content-Type", "application/x-mpegURL")
+		w.WriteHeader(resp.StatusCode)
 		_, _ = io.WriteString(w, manifest)
 		return
 	}
