@@ -72,7 +72,7 @@ func TestRemoveByServerIDCascadeClean(t *testing.T) {
 }
 
 // TestDeleteServerDataCascadesSkeletonRows is the regression for the orphaned
-// skeleton rows: MarkPlayed/SetFavorite insert a row with server_id = '' when the
+// skeleton rows: MarkPlayed/SetFavorite insert a row with server_id = ” when the
 // item has no prior record, and a plain server_id delete left those rows behind.
 // DeleteServerData now also cascades them through id_mappings, so it must be
 // called before RemoveByServerID.

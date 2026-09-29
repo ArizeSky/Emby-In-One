@@ -387,7 +387,7 @@ func (ws *WatchStore) DeleteUser(proxyUserID string) error {
 }
 
 // DeleteServerData removes all watch data for a deleted server. Rows keyed by the
-// server's real server_id go first; skeleton rows (server_id = '', inserted by
+// server's real server_id go first; skeleton rows (server_id = ”, inserted by
 // MarkPlayed/SetFavorite for an item with no prior record) are then cascaded by
 // their virtual item id through id_mappings, which is why this must run before
 // IDStore.RemoveByServerID drops those mappings.
