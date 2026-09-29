@@ -248,12 +248,11 @@ func (m *AuthManager) ValidateToken(token string) *tokenInfo {
 	knownTokens := len(m.tokens)
 	m.mu.RUnlock()
 	if !ok {
+		// Never log any prefix of the presented token: a brute-forcer who guesses the
+		// first 32 bits would otherwise get log confirmation and a shortened search
+		// space. The count of known tokens is enough to spot a reload problem.
 		if m.logger != nil {
-			short := token
-			if len(short) > 8 {
-				short = short[:8] + "..."
-			}
-			m.logger.Debugf("Token rejected (not found): %s, known tokens=%d", short, knownTokens)
+			m.logger.Debugf("Token rejected (not found), known tokens=%d", knownTokens)
 		}
 		return nil
 	}
