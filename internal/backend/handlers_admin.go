@@ -714,7 +714,11 @@ func (a *App) handleAdminUsersUpdate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "数据库不可用，首页库隐藏未启用"})
 		return
 	}
-	if input.Enabled != nil && !*input.Enabled {
+	// Disabling cuts the user's access; so does changing their password. A token
+	// never expires on its own, so a leaked token would otherwise keep working even
+	// after the credential it came from is gone. The administrator's own password
+	// change already revokes every token (see handleAdminSettingsUpdate).
+	if (input.Enabled != nil && !*input.Enabled) || (input.Password != nil && *input.Password != "") {
 		a.Auth.RevokeTokensByUserID(id)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"success": true})
