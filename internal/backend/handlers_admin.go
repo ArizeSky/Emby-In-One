@@ -274,25 +274,29 @@ func (a *App) handleAdminUpstreamDelete(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Clean up database records for this server
-	if a.IDStore != nil && serverID != "" {
-		if err := a.IDStore.RemoveByServerID(serverID); err != nil && a.Logger != nil {
-			a.Logger.Errorf("delete upstream %s: remove ID mappings: %v", serverID, err)
+	// Clean up database records for this server. Watch data is removed before the ID
+	// mappings because the skeleton-row cascade (server_id = '') looks up virtual
+	// item ids in id_mappings.
+	if serverID != "" {
+		if a.WatchStore != nil {
+			if err := a.WatchStore.DeleteServerData(serverID); err != nil && a.Logger != nil {
+				a.Logger.Errorf("delete upstream %s: delete watch progress: %v", serverID, err)
+			}
 		}
-	}
-	if a.UserStore != nil && serverID != "" {
-		if err := a.UserStore.RemoveServerGrants(serverID); err != nil && a.Logger != nil {
-			a.Logger.Errorf("delete upstream %s: remove user server grants: %v", serverID, err)
+		if a.IDStore != nil {
+			if err := a.IDStore.RemoveByServerID(serverID); err != nil && a.Logger != nil {
+				a.Logger.Errorf("delete upstream %s: remove ID mappings: %v", serverID, err)
+			}
 		}
-	}
-	if a.WatchStore != nil && serverID != "" {
-		if err := a.WatchStore.DeleteServerData(serverID); err != nil && a.Logger != nil {
-			a.Logger.Errorf("delete upstream %s: delete watch progress: %v", serverID, err)
+		if a.UserStore != nil {
+			if err := a.UserStore.RemoveServerGrants(serverID); err != nil && a.Logger != nil {
+				a.Logger.Errorf("delete upstream %s: remove user server grants: %v", serverID, err)
+			}
 		}
-	}
-	if a.HiddenLibraries != nil && serverID != "" {
-		if err := a.HiddenLibraries.RemoveServer(serverID); err != nil && a.Logger != nil {
-			a.Logger.Errorf("delete upstream %s: remove hidden libraries: %v", serverID, err)
+		if a.HiddenLibraries != nil {
+			if err := a.HiddenLibraries.RemoveServer(serverID); err != nil && a.Logger != nil {
+				a.Logger.Errorf("delete upstream %s: remove hidden libraries: %v", serverID, err)
+			}
 		}
 	}
 	a.invalidateUpstreamLibraryCache(serverID)

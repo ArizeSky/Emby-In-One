@@ -386,14 +386,23 @@ func (ws *WatchStore) DeleteUser(proxyUserID string) error {
 	return ws.db.writeParams(`DELETE FROM user_watch_progress WHERE proxy_user_id = ?`, proxyUserID)
 }
 
-// DeleteServerData removes all watch data for a deleted server.
+// DeleteServerData removes all watch data for a deleted server. Rows keyed by the
+// server's real server_id go first; skeleton rows (server_id = '', inserted by
+// MarkPlayed/SetFavorite for an item with no prior record) are then cascaded by
+// their virtual item id through id_mappings, which is why this must run before
+// IDStore.RemoveByServerID drops those mappings.
 func (ws *WatchStore) DeleteServerData(serverID string) error {
 	if serverID == "" {
 		return nil
 	}
 	ws.mu.Lock()
 	defer ws.mu.Unlock()
-	return ws.db.writeParams(`DELETE FROM user_watch_progress WHERE server_id = ?`, serverID)
+	return ws.db.withWriteTx(func() error {
+		if err := ws.db.execParams(`DELETE FROM user_watch_progress WHERE server_id = ?`, serverID); err != nil {
+			return err
+		}
+		return ws.db.execParams(`DELETE FROM user_watch_progress WHERE server_id = '' AND virtual_item_id IN (SELECT virtual_id FROM id_mappings WHERE server_id = ?)`, serverID)
+	})
 }
 
 func (ws *WatchStore) scanRows(proxyUserID string, stmt *sqliteStmt) ([]WatchProgress, error) {
