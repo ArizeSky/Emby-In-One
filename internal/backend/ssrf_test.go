@@ -95,10 +95,13 @@ func TestAdminUpstreamCreateRejectsLinkLocalTarget(t *testing.T) {
 			"username": "u1",
 			"password": "p1",
 		}, token)
-		if rr.Code != http.StatusBadGateway {
+		// The target is refused by the draft validation now, before any transport is
+		// built, so the answer is 400 (a bad request) rather than 502 (a failed
+		// upstream probe). The refusal must still name the rejected range.
+		if rr.Code != http.StatusBadRequest {
 			t.Fatalf("create link-local upstream: status=%d body=%s", rr.Code, rr.Body.String())
 		}
-		if !strings.Contains(rr.Body.String(), "link-local") {
+		if !strings.Contains(rr.Body.String(), "链路本地") {
 			t.Fatalf("error should name the rejected range, got: %s", rr.Body.String())
 		}
 		if got := len(app.ConfigStore.Snapshot().Upstream); got != 0 {

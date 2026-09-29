@@ -207,7 +207,10 @@ func (a *App) validateUpstreamConnectivity(cfg Config, draft UpstreamConfig, ind
 		}
 	}
 	if snapshot.LastError != "" {
-		return upstreamValidationResult{}, errors.New(snapshot.LastError)
+		// LastError can embed the request URL (net/http builds transport errors from
+		// it), and a streaming URL carries the upstream token in its query string.
+		// Redact before the message reaches the admin API response.
+		return upstreamValidationResult{}, errors.New(redactURLInError(errors.New(snapshot.LastError)))
 	}
 	return upstreamValidationResult{}, errors.New("上游服务器验证失败")
 }
