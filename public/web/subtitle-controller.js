@@ -46,6 +46,7 @@
       // All subtitle URLs stay on the authenticated proxy.
       if (url.origin !== location.origin) throw new Error('字幕地址未经过代理');
       url.searchParams.set('api_key', localStorage.getItem('eio_token') || '');
+      url.searchParams.set('MediaSourceId', mediaSource.Id);
       return url.href;
     }
 

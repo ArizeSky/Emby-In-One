@@ -21,6 +21,21 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 	if !a.requireServerAccess(w, r, resolved) {
 		return
 	}
+	query := cloneValues(r.URL.Query())
+	body := map[string]any{}
+	if r.Method == http.MethodPost && r.Body != nil {
+		// A malformed body must not be silently dropped: forwarding an empty body
+		// upstream would produce a confusing result. Report it as a bad request.
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"message": "Invalid request body"})
+			return
+		}
+	}
+	var selected bool
+	resolved, selected = a.selectedPlaybackSource(w, r, resolved, body, query)
+	if !selected {
+		return
+	}
 	// Concurrent playback limit check for regular users
 	if limiterUserID, ok := a.playbackLimiterKey(reqCtx, r, resolved.ServerID); ok {
 		var maxConcurrent int
@@ -40,32 +55,13 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 		a.Logger.Debugf("PlaybackInfo: itemId=%s → server=[%s] originalId=%s, instances=%d",
 			r.PathValue("itemId"), resolved.Client.Name, resolved.OriginalID, len(instances))
 	}
-	query := cloneValues(r.URL.Query())
-	body := map[string]any{}
-	if r.Method == http.MethodPost && r.Body != nil {
-		// A malformed body must not be silently dropped: forwarding an empty body
-		// upstream would produce a confusing result. Report it as a bad request.
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"message": "Invalid request body"})
-			return
-		}
-	}
-	if mediaSourceID, ok := body["MediaSourceId"].(string); ok {
-		if msResolved := a.IDStore.ResolveVirtualID(mediaSourceID); msResolved != nil {
-			body["MediaSourceId"] = msResolved.OriginalID
-		}
-	}
-	if mediaSourceID := query.Get("MediaSourceId"); mediaSourceID != "" {
-		if msResolved := a.IDStore.ResolveVirtualID(mediaSourceID); msResolved != nil {
-			query.Set("MediaSourceId", msResolved.OriginalID)
-		}
-	}
 
 	// Remove proxy token from query before forwarding to upstream
 	query.Del("api_key")
 	query.Del("ApiKey")
 
 	var base map[string]any
+	baseServerID := resolved.ServerID
 	allMediaSources := []map[string]any{}
 	for _, inst := range instances {
 		// The client only ever holds EIO's virtual user ID, and Emby prefers a UserId in the
@@ -89,9 +85,11 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 		}
 		if base == nil {
 			base = deepCloneMap(data)
+			baseServerID = inst.ServerID
 		}
 		for _, raw := range asItems(map[string]any{"Items": data["MediaSources"]}) {
 			mediaSource := deepCloneMap(raw)
+			annotateMediaSource(mediaSource, inst.Client)
 			originalMSID, _ := mediaSource["Id"].(string)
 			virtualMSID := originalMSID
 			if originalMSID != "" {
@@ -187,7 +185,7 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 	// Record which server served this virtual item so Sessions/Playing routes back correctly
 	if len(allMediaSources) > 0 {
 		if virtualItemID := r.PathValue("itemId"); virtualItemID != "" {
-			a.IDStore.SetActiveStream(virtualItemID, resolved.ServerID)
+			a.IDStore.SetActiveStream(virtualItemID, baseServerID)
 		}
 	}
 	if base == nil {
@@ -210,7 +208,7 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 	cfg := a.ConfigStore.Snapshot()
 	// Rewrite top-level fields (excluding MediaSources which were already virtualised per-server above)
 	delete(base, "MediaSources")
-	rewriteResponseIDs(base, resolved.ServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
+	rewriteResponseIDs(base, baseServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 	base["MediaSources"] = make([]any, 0, len(allMediaSources))
 	for _, mediaSource := range allMediaSources {
 		base["MediaSources"] = append(base["MediaSources"].([]any), mediaSource)

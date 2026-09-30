@@ -41,9 +41,9 @@
         if (core && !this._recovering) this._requireHardware(core).catch(error => this._runtimeError(error));
       }, 5000);
       const subtitles = mediaSource.MediaStreams?.filter(s => s.Type === 'Subtitle') || [];
-      const index = mediaSource.DefaultSubtitleStreamIndex;
+      const index = options.subtitleIndex ?? mediaSource.DefaultSubtitleStreamIndex;
       const selected = index == null ? subtitles.find(s => s.IsDefault)?.Index : index;
-      if (selected != null && selected >= 0) this.selectSubtitle(selected);
+      if (selected != null) await this.selectSubtitle(selected);
       this._emitState({ loading: false });
     }
 
@@ -63,6 +63,9 @@
       const video = streams.find(s => s.Type === 'Video');
       const audio = streams.find(s => s.Type === 'Audio');
       const container = (this.mediaSource.Container || '').toLowerCase();
+      const defaultIndex = this.mediaSource.DefaultAudioStreamIndex ?? streams.find(s => s.Type === 'Audio' && s.IsDefault)?.Index ?? audio?.Index;
+      if (this.options.audioIndex >= 0 && streams.filter(s => s.Type === 'Audio').length > 1) return false;
+      if (this.options.audioIndex >= 0 && this.options.audioIndex !== defaultIndex) return false;
       return ['mp4', 'm4v'].includes(container) && ['h264', 'avc'].includes(video?.Codec?.toLowerCase())
         && (!audio || ['aac', 'mp3'].includes(audio.Codec?.toLowerCase()));
     }
@@ -87,7 +90,7 @@
     _native(url) {
       this.mode = 'native';
       const video = this.video = document.createElement('video');
-      video.controls = true;
+      video.controls = false;
       video.playsInline = true;
       video.className = 'absolute inset-0 w-full h-full';
       this.host.append(video);
@@ -161,6 +164,7 @@
       core.setSubtitleEnable(false);
       await firstFrame;
       await this._requireHardware(core);
+      if (this.options.audioIndex >= 0) await this.selectAudio(this.options.audioIndex);
       // A deep link may reach play() without a browser user gesture.
       if (!core.isMSE() && core.isSuspended()) { this.playing = false; this._emitState(); }
     }
@@ -221,6 +225,17 @@
       }
     }
 
+    async selectAudio(index) {
+      this._checkAlive();
+      if (!this.core || this.core.isHls()) return false;
+      const stream = this.core.getStreams().find(s => s.mediaType?.toLowerCase() === 'audio' && s.index === index);
+      if (!stream) return false;
+      if (this.core.getSelectedAudioStreamId() !== stream.id) await this.core.selectAudio(stream.id);
+      this.audioIndex = index;
+      this.options.audioIndex = index;
+      return true;
+    }
+
     async play() {
       this._checkAlive();
       if (this.core) { await this.core.resume(); await this.core.play(); }
@@ -229,8 +244,17 @@
       this._emitState();
     }
     pause() { return this.core ? this.core.pause() : this.video?.pause(); }
-    seek(seconds) {
-      return this.core ? this.core.seek(BigInt(Math.round(seconds * 1000))) : (this.video.currentTime = seconds);
+    async seek(seconds) {
+      this._checkAlive();
+      if (this.core) {
+        await this.core.seek(BigInt(Math.round(seconds * 1000)));
+        this._checkAlive();
+        const actual = this.core.currentTime;
+        this._updateTime(actual == null ? seconds : Number(actual) / 1000);
+      } else {
+        this.video.currentTime = seconds;
+        this._updateTime(seconds);
+      }
     }
     setVolume(volume) { if (this.core) this.core.setVolume(volume); else if (this.video) this.video.volume = volume; }
 

@@ -45,15 +45,9 @@ func decodeOptionalJSON(r *http.Request) (any, error) {
 }
 
 func (a *App) translateSessionBodyIDs(body map[string]any) (string, bool) {
-	// Resolve each ID independently to its OWN server's original value.
-	// This matches the Node.js reference implementation where each virtual ID
-	// is translated to its own server's original regardless of the target server.
-	//
-	// Target server priority: ItemId → MediaSourceId → PlaySessionId → ActiveStream.
-	// This ensures session events are routed to the server that owns the episode
-	// (ItemId), not the server that owns the media source. The upstream Emby
-	// associates resume/progress data with ItemId, so the ItemId must be valid
-	// on the target server.
+	// Selected media sources route a merged item's session to that server's
+	// copy. Keep the legacy primary route when no corresponding copy exists.
+	virtualItemID, _ := body["ItemId"].(string)
 
 	type resolvedID struct {
 		OriginalID string
@@ -78,7 +72,6 @@ func (a *App) translateSessionBodyIDs(body map[string]any) (string, bool) {
 			body[key] = resolved.OriginalID
 		}
 	}
-
 	// Determine target server: prefer ItemId's server (matches Node.js)
 	serverID := ""
 	for _, key := range []string{"ItemId", "MediaSourceId", "PlaySessionId"} {
@@ -87,11 +80,20 @@ func (a *App) translateSessionBodyIDs(body map[string]any) (string, bool) {
 			break
 		}
 	}
+	for _, key := range []string{"MediaSourceId", "PlaySessionId"} {
+		if target := resolutions[key]; target != nil && a.IDStore.ResolveVirtualID(virtualItemID) != nil {
+			if itemID, ok := translateVirtualIDForServer(virtualItemID, target.ServerID, a.IDStore); ok {
+				body["ItemId"] = itemID
+				serverID = target.ServerID
+				break
+			}
+		}
+	}
 
 	if serverID == "" {
 		// Last resort: check which server last served a PlaybackInfo for ItemId
-		if itemID, _ := body["ItemId"].(string); itemID != "" {
-			if idx, ok := a.IDStore.GetActiveStream(itemID); ok {
+		if virtualItemID != "" {
+			if idx, ok := a.IDStore.GetActiveStream(virtualItemID); ok {
 				serverID = idx
 			}
 		}

@@ -135,11 +135,12 @@ func (a *App) handleShowsSeasons(w http.ResponseWriter, r *http.Request) {
 	for _, inst := range instances {
 		query := cloneValues(r.URL.Query())
 		query.Set("UserId", inst.Client.clientUserID())
-		payload, err := inst.Client.RequestJSON(r.Context(), requestContextFrom(r.Context()), a.Identity, http.MethodGet, "/Shows/"+inst.OriginalID+"/Seasons", query, nil)
+		rows, err := a.fetchShowItems(r.Context(), requestContextFrom(r.Context()), inst, "/Shows/"+inst.OriginalID+"/Seasons", query)
 		if err != nil {
-			continue
+			writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Failed to load complete show list; please retry"})
+			return
 		}
-		for _, item := range asItems(payload) {
+		for _, item := range rows {
 			season := deepCloneMap(item)
 			idx, ok := numericInt(season["IndexNumber"])
 			if !ok {
@@ -202,7 +203,7 @@ func (a *App) handleShowsSeasons(w http.ResponseWriter, r *http.Request) {
 	// Seasons and episodes carry per-user UserData: for a regular user the local
 	// record wins over the shared upstream account's state.
 	a.overlayLocalUserDataItems(r, items)
-	writeJSON(w, http.StatusOK, map[string]any{"Items": toAnySlice(items), "TotalRecordCount": len(items), "StartIndex": 0})
+	writeJSON(w, http.StatusOK, paginateItems(items, r.URL.Query()))
 }
 
 func (a *App) handleShowsEpisodes(w http.ResponseWriter, r *http.Request) {
@@ -241,11 +242,12 @@ func (a *App) handleShowsEpisodes(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		payload, err := inst.Client.RequestJSON(r.Context(), requestContextFrom(r.Context()), a.Identity, http.MethodGet, "/Shows/"+inst.OriginalID+"/Episodes", query, nil)
+		rows, err := a.fetchShowItems(r.Context(), requestContextFrom(r.Context()), inst, "/Shows/"+inst.OriginalID+"/Episodes", query)
 		if err != nil {
-			continue
+			writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Failed to load complete show list; please retry"})
+			return
 		}
-		for _, item := range asItems(payload) {
+		for _, item := range rows {
 			episode := deepCloneMap(item)
 			seasonNum, okSeason := numericInt(episode["ParentIndexNumber"])
 			episodeNum, okEpisode := numericInt(episode["IndexNumber"])
@@ -312,7 +314,7 @@ func (a *App) handleShowsEpisodes(w http.ResponseWriter, r *http.Request) {
 	// Seasons and episodes carry per-user UserData: for a regular user the local
 	// record wins over the shared upstream account's state.
 	a.overlayLocalUserDataItems(r, items)
-	writeJSON(w, http.StatusOK, map[string]any{"Items": toAnySlice(items), "TotalRecordCount": len(items), "StartIndex": 0})
+	writeJSON(w, http.StatusOK, paginateItems(items, r.URL.Query()))
 }
 
 func (a *App) handleSearchHints(w http.ResponseWriter, r *http.Request) {

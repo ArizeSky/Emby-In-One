@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Emby-in-One Web Player</title>
 <link rel="stylesheet" href="vendor/inter.css">
-<link rel="stylesheet" href="vendor/tailwind.css?v=20260930k">
+<link rel="stylesheet" href="vendor/tailwind.css?v=20261001b">
 <style>
   /* Player layout and subtitle overlays supplement the shared Tailwind build. */
   .player-container {position:relative;background:#000;width:100%;height:0;padding-top:56.25%;}
@@ -36,6 +36,19 @@
   .chip-hdr{background:#f59e0b;color:#000;}
   .chip-dv{background:#7c3aed;color:#fff;}
   .chip-atmos{background:#10b981;color:#000;}
+  [v-cloak]{display:none;}
+  .web-sidebar{position:sticky;top:0;height:100dvh;}
+  .ep-grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(min(100%,310px),1fr));}
+  .ep-card img{width:38%;max-width:150px;aspect-ratio:16/9;object-fit:cover;align-self:flex-start;}
+  .ep-card .ep-text{min-width:0;}
+  .track-select{background:#1e293b;border:1px solid #475569;border-radius:8px;padding:6px 10px;max-width:100%;}
+  .track-choice{display:block;width:100%;text-align:left;padding:10px 14px;border-radius:8px;background:#1e293b;border:1px solid transparent;}
+  .track-choice.selected{border-color:#3b82f6;background:#1e3a5f;}
+  .play-toolbar{position:absolute;bottom:0;left:0;right:0;z-index:50;padding:16px;background:linear-gradient(transparent,rgba(0,0,0,.96));}
+  .play-actions{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:12px;}
+  .play-actions label{display:flex;gap:6px;align-items:center;font-size:14px;min-width:0;}
+  .play-actions select{max-width:230px;}
+  .play-actions button:disabled{opacity:.4;cursor:default;}
   /* Mobile-friendly controls */
   @media(max-width:640px){.poster-grid{grid-template-columns:repeat(auto-fill,minmax(100px,1fr));gap:8px;}}
 </style>
@@ -71,7 +84,7 @@
   <!-- ===== MAIN APP ===== -->
   <div v-if="page!=='login'" class="flex min-h-screen">
     <!-- Sidebar -->
-    <aside class="w-56 bg-slate-800 border-r border-slate-700 flex-col shrink-0 hidden md:flex">
+    <aside class="web-sidebar w-56 bg-slate-800 border-r border-slate-700 flex-col shrink-0 hidden md:flex">
       <div class="p-5 font-bold text-lg flex items-center space-x-3">
         <div class="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center text-white"><i data-lucide="play-circle" class="w-5 h-5"></i></div>
         <span>Emby-in-One</span>
@@ -86,7 +99,7 @@
         </a>
       </nav>
       <div class="p-3 space-y-1">
-        <button @click="doLogout" class="w-full flex items-center space-x-3 px-3 py-2 rounded-lg text-sm text-slate-400 hover:bg-slate-700/50 hover:text-slate-200 transition">
+        <button @click="doLogout" class="w-full flex items-center space-x-3 px-3 py-2 rounded-lg text-sm text-red-400 hover:bg-slate-700/50 hover:text-slate-200 transition">
           <i data-lucide="log-out" class="w-4 h-4"></i><span>退出登录</span>
         </button>
       </div>
@@ -116,26 +129,11 @@
     </div>
 
     <!-- Page content -->
-    <main class="flex-1 min-h-screen pt-14 md:pt-0 overflow-x-hidden">
+    <main style="min-width:0" class="flex-1 min-h-screen pt-14 md:pt-0 overflow-x-hidden">
 
       <!-- ===== HOME ===== -->
       <div v-if="navPage==='home'" class="p-6 space-y-8">
         <h2 class="text-xl font-bold">首页</h2>
-        <!-- Continue watching -->
-        <section v-if="resumeItems.length">
-          <h3 class="text-lg font-semibold mb-3">继续观看</h3>
-          <div class="poster-grid">
-            <div v-for="it in resumeItems" :key="it.Id" class="poster-card" @click="openItem(it.Id)">
-              <img :src="imageUrl(it,500)" loading="lazy">
-              <div class="p-2">
-                <div class="text-sm font-medium truncate">{{ it.Name }}</div>
-                <div v-if="it.UserData" class="h-1 bg-slate-600 rounded mt-1">
-                  <div class="h-full bg-blue-500 rounded" :style="{width: Math.round(it.UserData.PlaybackPositionTicks/(it.RunTimeTicks||1)*100)+'%'}"></div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </section>
         <!-- Libraries -->
         <section>
           <h3 class="text-lg font-semibold mb-3">媒体库</h3>
@@ -158,6 +156,23 @@
         </section>
       </div>
 
+      <!-- Continue watching / Favorites -->
+      <div v-if="navPage==='resume'||navPage==='favorites'" class="p-6 space-y-4">
+        <h2 class="text-xl font-bold">{{ navPage==='resume' ? '继续观看' : '收藏' }}</h2>
+        <div v-if="collectionLoading" class="text-center py-20"><div class="spinner inline-block"></div></div>
+        <div v-else-if="collectionError" class="text-red-400">{{ collectionError }} <button @click="loadCollection(navPage)" class="underline">重试</button></div>
+        <div v-else-if="!collectionItems.length" class="text-slate-400">{{ navPage==='resume' ? '暂无观看记录' : '暂无收藏，点击影片或剧集详情中的收藏即可添加。' }}</div>
+        <div v-else class="poster-grid">
+          <div v-for="it in collectionItems" :key="it.Id" class="poster-card" @click="openItem(it.Id)">
+            <img :src="imageUrl(it,400)" loading="lazy" :alt="it.Name">
+            <div class="p-2">
+              <div class="text-sm font-medium truncate">{{ it.SeriesName ? it.SeriesName + ' · ' + it.Name : it.Name }}</div>
+              <div v-if="navPage==='resume'" class="h-1 bg-slate-600 rounded mt-1"><div class="h-full bg-blue-500 rounded" :style="{width: Math.min(100,Math.round((it.UserData?.PlaybackPositionTicks||0)/(it.RunTimeTicks||1)*100))+'%'}"></div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- ===== LIBRARY ===== -->
       <div v-if="navPage==='library'" class="p-6 space-y-4">
         <div class="flex items-center justify-between">
@@ -176,7 +191,8 @@
           </div>
         </div>
         <div v-if="libraryLoading" class="text-center py-20"><div class="spinner inline-block"></div></div>
-        <div v-else class="poster-grid">
+        <div v-if="libraryError" class="text-red-400">{{ libraryError }} <button @click="loadLibraryItems()" class="underline">重试</button></div>
+        <div v-if="!libraryLoading" class="poster-grid">
           <div v-for="it in libraryItems" :key="it.Id" class="poster-card" @click="openItem(it.Id)">
             <img :src="imageUrl(it,400)" loading="lazy">
             <div class="p-2">
@@ -185,7 +201,7 @@
             </div>
           </div>
         </div>
-        <div v-if="libraryItems.length>=libLimit" class="text-center py-6">
+        <div v-if="libraryHasMore&&!libraryLoading" class="text-center py-6">
           <button @click="loadLibraryMore" class="px-6 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-sm transition">加载更多</button>
         </div>
       </div>
@@ -193,6 +209,7 @@
       <!-- ===== ITEM DETAIL ===== -->
       <div v-if="navPage==='item'" class="min-h-screen">
         <div v-if="itemDetailLoading" class="flex items-center justify-center py-40"><div class="spinner inline-block"></div></div>
+        <div v-else-if="itemError" class="p-6 text-red-400">{{ itemError }} <button @click="retryItem" class="underline">重试</button></div>
         <div v-else-if="itemDetail" class="relative">
           <!-- Backdrop -->
           <div class="relative h-[60vh] min-h-[320px]">
@@ -207,11 +224,12 @@
                 <span v-if="itemDetail.RunTimeTicks" class="text-sm text-slate-300">{{ runtimeMin }} 分钟</span>
                 <span v-if="itemDetail.ProductionYear" class="text-sm text-slate-300">{{ itemDetail.ProductionYear }}</span>
               </div>
+              <button v-if="itemDetail.SeriesId" @click="openItem(itemDetail.SeriesId)" class="text-blue-400 mt-3">{{ itemDetail.SeriesName }} · S{{ itemDetail.ParentIndexNumber }} E{{ itemDetail.IndexNumber }}</button>
               <h1 class="text-3xl font-bold mt-3">{{ itemDetail.Name }}</h1>
               <div v-if="itemDetail.GenreItems" class="text-sm text-slate-400 mt-1">{{ itemDetail.GenreItems.map(g=>g.Name).join(' · ') }}</div>
               <p v-if="itemDetail.Overview" class="text-slate-300 mt-3 max-w-2xl line-clamp-4">{{ itemDetail.Overview }}</p>
               <div class="mt-4 flex items-center gap-3 flex-wrap">
-                <button @click="playItem(itemDetail)" class="flex items-center space-x-2 px-6 py-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-medium transition">
+                <button @click="playDetail()" class="flex items-center space-x-2 px-6 py-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-medium transition">
                   <i data-lucide="play" class="w-5 h-5"></i><span>{{ itemDetail.Type === 'Series' ? '播放下一集' : '播放' }}</span>
                 </button>
                 <button v-if="!itemDetail.UserData?.IsFavorite" @click="toggleFavorite(itemDetail,false)" class="flex items-center space-x-2 px-4 py-3 rounded-xl bg-slate-700/60 hover:bg-slate-600 text-white transition">
@@ -224,30 +242,28 @@
             </div>
           </div>
 
-          <!-- Versions -->
-          <div v-if="itemDetail.MediaSources?.length>1" class="max-w-5xl mx-auto px-6 py-6 space-y-3">
-            <h3 class="text-lg font-semibold">版本</h3>
-            <div v-for="src in itemDetail.MediaSources" :key="src.Id" class="bg-slate-800 rounded-lg p-4 flex items-center justify-between">
-              <div>
-                <div class="font-medium">{{ src.Name||src.Path?.split('/').pop() }}</div>
-                <div class="text-sm text-slate-400 mt-0.5">
-                  <span v-for="(tag,i) in mediaSourceTags(src)" :key="i" class="mr-2">{{ tag }}</span>
-                </div>
-              </div>
-              <button @click="playItem(itemDetail,src.Id)" class="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-sm transition">播放</button>
-            </div>
+          <!-- Version selection determines the displayed tracks and playback source. -->
+          <div v-if="itemDetail.MediaSources?.length" class="max-w-5xl mx-auto px-6 py-6 space-y-3">
+            <h3 class="text-lg font-semibold">视频版本</h3>
+            <div v-if="itemDetail.EioIncompleteSources" class="text-red-400 text-sm">部分来源未能加载，版本列表可能不完整。<button @click="retryItem" class="underline">重试</button></div>
+            <label class="block">
+              <select aria-label="视频版本" class="track-select w-full" :value="currentMediaSourceId" @change="chooseDetailSource($event.target.value)">
+                <option v-for="src in itemDetail.MediaSources" :key="src.Id" :value="src.Id">{{ src.Name||'默认版本' }} · {{ mediaSourceTags(src).join(' · ') }}</option>
+              </select>
+            </label>
           </div>
 
           <!-- Seasons / Episodes (series) -->
           <div v-if="seriesSeasons.length" class="max-w-5xl mx-auto px-6 py-6 space-y-6">
             <div v-for="season in seriesSeasons" :key="season.Id">
-              <h3 class="text-lg font-semibold mb-3">第 {{ season.IndexNumber }} 季</h3>
-              <div class="ep-grid grid gap-3 sm:grid-cols-2 md:grid-cols-3">
+              <h3 class="text-lg font-semibold mb-3">{{ season.Name||'第 '+season.IndexNumber+' 季' }} · {{ (seasonEpisodes[season.Id]||[]).length }} 集可用</h3>
+              <div v-if="seasonErrors[season.Id]" class="text-red-400 mb-3">{{ seasonErrors[season.Id] }} <button @click="retryItem" class="underline">重试</button></div>
+              <div class="ep-grid">
                 <div v-for="ep in seasonEpisodes[season.Id]" :key="ep.Id" class="ep-card flex" @click="openItem(ep.Id)">
-                  <img :src="imageUrl(ep,260)" class="w-48 h-28 object-cover" loading="lazy">
-                  <div class="p-3 flex-1">
+                  <img :src="imageUrl(ep,260)" class="episode-image" loading="lazy">
+                  <div class="ep-text p-3 flex-1">
                     <div class="text-xs text-slate-400">E{{ String(ep.IndexNumber).padStart(2,'0') }}</div>
-                    <div class="font-medium text-sm mt-0.5">{{ ep.Name }}</div>
+                    <div class="font-medium text-sm mt-0.5 line-clamp-3">{{ ep.Name }}</div>
                     <div class="text-xs text-slate-500 mt-1">{{ runtimeMin_(ep) }} min</div>
                   </div>
                   <div class="p-3 flex items-center shrink-0">
@@ -275,19 +291,20 @@
             <div>
               <h3 class="text-lg font-semibold mb-3">音频</h3>
               <div class="space-y-2 text-sm">
-                <div v-for="s in currentMediaStreams.filter(s=>s.Type==='Audio')" :key="s.Index" class="bg-slate-800 rounded p-2 px-4">
-                  {{ s.DisplayTitle||s.Codec }} · {{ s.Language||'' }} · {{ s.ChannelLayout||s.Channels+'ch' }}
+                <button v-for="s in audioStreams" :key="s.Index" @click="detailAudioIndex=s.Index" :aria-pressed="detailAudioIndex===s.Index" class="track-choice" :class="{selected:detailAudioIndex===s.Index}">
+                  {{ s.DisplayTitle||s.Codec }} · {{ s.Language||'' }} · {{ s.ChannelLayout||(s.Channels ? s.Channels+'ch' : '') }}
                   <span class="chip chip-atmos text-xs ml-2" v-if="s.Profile==='Dolby TrueHD'">Atmos</span>
-                </div>
+                </button>
               </div>
             </div>
             <div>
               <h3 class="text-lg font-semibold mb-3">字幕</h3>
               <div v-if="subtitleStreams.length" class="space-y-2 text-sm">
-                <div v-for="s in subtitleStreams" :key="s.Index" class="bg-slate-800 rounded p-2 px-4">
+                <button @click="detailSubtitleIndex=-1" class="track-choice" :class="{selected:detailSubtitleIndex===-1}" :aria-pressed="detailSubtitleIndex===-1">关闭字幕</button>
+                <button v-for="s in subtitleStreams" :key="s.Index" @click="detailSubtitleIndex=s.Index" class="track-choice" :class="{selected:detailSubtitleIndex===s.Index}" :aria-pressed="detailSubtitleIndex===s.Index">
                   {{ s.DisplayTitle||s.Language||'Unknown' }} · {{ s.Codec }}
                   <span v-if="s.IsExternal" class="text-slate-400 text-xs ml-2">(外挂)</span>
-                </div>
+                </button>
               </div>
               <div v-else class="text-slate-500 text-sm">无字幕</div>
             </div>
@@ -328,46 +345,31 @@
             <div class="mt-4 font-medium">{{ wasmLoadingMsg }}</div>
           </div>
 
-          <!-- Native / HLS controls overlay -->
-          <div v-if="playerMode==='native'" class="absolute top-4 left-4 z-[110]">
-            <button @click="exitPlayer" class="flex items-center space-x-2 px-4 py-2 rounded-lg bg-black/60 hover:bg-black/80 text-white backdrop-blur-sm transition">
-              <i data-lucide="x" class="w-5 h-5"></i>
-              <span class="hidden sm:inline">关闭</span>
-            </button>
+          <div class="absolute top-4 left-4 right-4 flex items-center gap-3 z-[110]">
+            <button @click="exitPlayer" class="px-4 py-2 rounded-lg bg-black/60 text-white">关闭</button>
+            <span class="text-sm truncate">{{ playingItem?.SeriesName }} {{ playingItem?.Name }}</span>
           </div>
-          <div v-if="playerMode==='libmedia'" class="absolute top-4 left-4 right-4 flex items-center justify-between z-[110]">
-            <button @click="exitPlayer" class="flex items-center space-x-2 px-4 py-2 rounded-lg bg-black/60 hover:bg-black/80 text-white backdrop-blur-sm transition">
-              <i data-lucide="x" class="w-5 h-5"></i>
-              <span>关闭</span>
-            </button>
-            <div v-if="!wasmLoading" class="flex items-center space-x-3">
-              <button v-if="wasmPlaying" @click="wasmTogglePause" class="px-4 py-2 rounded-lg bg-black/60 backdrop-blur-sm text-white transition">
-                <i data-lucide="pause" class="w-5 h-5"></i>
-              </button>
-              <button v-else @click="wasmTogglePause" class="px-4 py-2 rounded-lg bg-black/60 backdrop-blur-sm text-white transition">
-                <i data-lucide="play" class="w-5 h-5"></i>
-              </button>
-              <!-- Track buttons -->
-              <span class="text-sm text-slate-300">{{ wasmTimeHuman }} / {{ wasmDurationHuman }}</span>
+          <div v-if="!wasmLoading" class="play-toolbar">
+            <input aria-label="播放进度" type="range" min="0" step="any" :title="seekTitle" :value="seekPreview??wasmTime" :max="Math.max(wasmDuration,1)" @input="previewSeek($event.target.value)" @change="onWasmSeek($event.target.value)" class="w-full cursor-pointer accent-blue-500">
+            <div class="play-actions">
+              <button @click="wasmTogglePause" :aria-label="wasmPlaying?'暂停':'播放'" class="player-btn">{{ wasmPlaying?'暂停':'播放' }}</button>
+              <span class="text-sm">{{ wasmTimeHuman }} / {{ wasmDurationHuman }}</span>
+              <button @click="playItem(previousEpisode)" :disabled="!previousEpisode||trackBusy" class="player-btn">上一集</button>
+              <button @click="playItem(nextEpisode)" :disabled="!nextEpisode||trackBusy" class="player-btn">下一集</button>
+              <label>版本 <select aria-label="播放版本" class="track-select" :value="playMediaSourceId" @change="switchVersion($event.target.value)" :disabled="trackBusy">
+                <option v-for="src in playVersions" :key="src.Id" :value="src.Id">{{ src.Name||'默认版本' }}</option>
+              </select></label>
+              <label v-if="audioTracks.length">音频 <select aria-label="播放音轨" class="track-select" :value="playAudioIndex" @change="selectAudio(Number($event.target.value))" :disabled="trackBusy">
+                <option v-for="s in audioTracks" :key="s.Index" :value="s.Index">{{ s.DisplayTitle||s.Language||s.Codec }}</option>
+              </select></label>
+              <label>字幕 <select aria-label="播放字幕" class="track-select" :value="wasmSubTrack" @change="selectSubtitle(Number($event.target.value))" :disabled="trackBusy">
+                <option :value="-1">关闭字幕</option>
+                <option v-for="s in subtitleTracks" :key="s.Index" :value="s.Index">{{ s.DisplayTitle||s.Language||s.Codec }}</option>
+              </select></label>
+              <label>音量 <input aria-label="音量" type="range" min="0" max="1" step="0.05" :value="playerVolume" @input="changeVolume($event.target.value)" style="width:80px"></label>
+              <button @click="toggleFullscreen" class="player-btn">全屏</button>
             </div>
-          </div>
-
-          <!-- WASM timeline slider -->
-          <div v-if="playerMode==='libmedia'&&!wasmLoading" class="absolute bottom-14 left-4 right-4 z-50">
-            <input type="range" :value="wasmTime" :max="Math.max(wasmDuration,1)" @input="onWasmSeek($event.target.value)" class="w-full h-1 bg-slate-600 rounded-lg appearance-none cursor-pointer accent-blue-500">
-          </div>
-
-          <!-- Subtitle settings: subtitleTracks comes from the playing MediaSource,
-               so it works on deep links where itemDetail was never loaded. -->
-          <div v-if="subtitleTracks.length" class="absolute bottom-40 right-4 z-50">
-            <button @click="showSubMenu=!showSubMenu" class="px-3 py-2 rounded-lg bg-black/60 backdrop-blur-sm text-white text-sm transition">字幕 <i data-lucide="chevron-up" class="w-4 h-4 inline align-middle"></i></button>
-            <div v-if="showSubMenu" class="absolute bottom-10 right-0 bg-slate-800 border border-slate-700 rounded-xl min-w-48 max-h-[60vh] overflow-y-auto shadow-xl">
-              <button @click="selectSubtitle(-1);showSubMenu=false" class="block w-full px-4 py-2 text-left text-sm hover:bg-slate-700 transition" :class="wasmSubTrack===-1?'bg-blue-600':''">关闭</button>
-              <button v-for="s in subtitleTracks" :key="s.Index" @click="selectSubtitle(s.Index);showSubMenu=false" class="block w-full px-4 py-2 text-left text-sm hover:bg-slate-700 transition text-slate-300" :class="wasmSubTrack===s.Index?'bg-blue-600 text-white':''">
-                {{ s.DisplayTitle||s.Language+' · '+s.Codec }}
-                <span class="text-xs text-slate-500" v-if="s.IsExternal">外挂</span>
-              </button>
-            </div>
+            <div v-if="queueError" class="text-sm text-red-400 mt-2">{{ queueError }} <button @click="retryEpisodeQueue" class="underline">重试</button></div>
           </div>
         </div>
       </div>
@@ -377,11 +379,12 @@
 </div>
 <script src="vendor/vue.global.prod.js"></script>
 <script src="vendor/lucide.min.js"></script>
-<script src="vendor/web/libmedia/avplayer.js"></script>
+<script src="vendor/web/libmedia/avplayer.js?v=20261001b"></script>
 <script src="vendor/web/jassub.umd.js"></script>
-<script src="web/subtitles.js?v=20260930k"></script>
-<script src="web/subtitle-controller.js?v=20260930k"></script>
-<script src="web/player-libmedia.js?v=20260930k"></script>
-<script src="web/app.js?v=20260930k"></script>
+<script src="web/subtitles.js?v=20261001b"></script>
+<script src="web/subtitle-controller.js?v=20261001b"></script>
+<script src="web/player-libmedia.js?v=20261001b"></script>
+<script src="web/data.js?v=20261001b"></script>
+<script src="web/app.js?v=20261001b"></script>
 </body>
 </html>

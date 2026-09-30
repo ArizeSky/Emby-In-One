@@ -28,6 +28,9 @@ function harness() {
     hasVideo() { return true; }
     isSuspended() { return false; }
     isMSE() { return true; }
+    isHls() { return this.url?.includes('m3u8'); }
+    getSelectedAudioStreamId() { return this.audioId; }
+    async selectAudio(id) { this.audioId = id; }
     setSubtitleEnable() {}
     resize() {}
   }
@@ -45,6 +48,18 @@ function harness() {
 
 const source = { Container: 'mkv', MediaStreams: [{ Type: 'Video', Codec: 'hevc' }] };
 const item = { Id: 'item', RunTimeTicks: 3000000000 };
+
+test('audio selection maps Emby stream index to libmedia stream id and preserves pause', async () => {
+  const { player, instances } = harness();
+  await player.load('/stream.mkv', source, item);
+  instances[0].getStreams = () => [{ mediaType: 'Audio', index: 3, id: 19 }];
+  await player.pause();
+  assert.equal(await player.selectAudio(3), true);
+  assert.equal(instances[0].audioId, 19);
+  assert.equal(player.playing, false);
+  assert.equal(await player.selectAudio(42), false);
+  await player.destroy();
+});
 
 test('timed-out direct stream falls back once and preserves Vue controls', async () => {
   const { player, instances, container, controls } = harness();

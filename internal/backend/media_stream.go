@@ -58,6 +58,13 @@ func (a *App) proxyStream(w http.ResponseWriter, r *http.Request, route streamRo
 	}
 	// Resolve a virtual MediaSourceId embedded in subtitle/attachment paths:
 	// /Videos/{itemId}/{mediaSourceId}/Subtitles/...  or  .../Attachments/...
+	if slash := strings.IndexByte(rest, '/'); slash > 0 && query.Get("MediaSourceId") == "" {
+		if tail := rest[slash:]; strings.HasPrefix(tail, "/Subtitles/") || strings.HasPrefix(tail, "/Attachments/") {
+			if a.IDStore.ResolveVirtualID(rest[:slash]) != nil {
+				query.Set("MediaSourceId", rest[:slash])
+			}
+		}
+	}
 	rest = resolveMediaSourceInPath(rest, a.IDStore)
 
 	client, originalID, ok := a.resolveStreamTarget(w, r, resolved, virtualItemID, query)

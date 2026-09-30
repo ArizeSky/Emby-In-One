@@ -8,6 +8,7 @@
   const { createApp, ref, computed, onMounted, onBeforeUnmount, nextTick, watch } = Vue;
 
   const API = ''; // same origin
+  const { query, all: allItems, episodeOrder, defaultAudio, defaultSubtitle } = EIOData;
 
   /* ================= helpers ================= */
 
@@ -66,7 +67,7 @@
       const passWrap = ref(null);
 
       /* ---- router ---- */
-      const routeMap = { '': 'login', home: 'home', library: 'library', item: 'item', search: 'search', play: 'player' };
+      const routeMap = { '': 'login', home: 'home', resume: 'resume', favorites: 'favorites', library: 'library', item: 'item', search: 'search', play: 'player' };
       const currentRoute = ref('');
       const routeParam = ref('');
 
@@ -80,8 +81,12 @@
         const { r, param } = readHash();
         currentRoute.value = r; routeParam.value = param;
         if (r === '' || r === 'login') { stopPlayer(); page.value = 'login'; return; }
+        if (!localStorage.getItem('eio_token')) { stopPlayer(); page.value = 'login'; return; }
         const target = routeMap[r];
         if (!target) return;
+        if (target !== 'library') { libraryRequest?.abort(); libraryPageRequest?.abort(); }
+        if (target !== 'item') itemRequest?.abort();
+        if (target !== 'resume' && target !== 'favorites') collectionRequest?.abort();
         // Leaving the player page must stop playback: the video element keeps
         // decoding (and the audio graph keeps running) otherwise.
         if (navPage.value === 'player' && target !== 'player') stopPlayer();
@@ -89,14 +94,17 @@
         navPage.value = target;
         refreshIcons();
         if (r === 'home') loadHome();
-        else if (r === 'library') openLibrary(param);
-        else if (r === 'item') openItem(param);
+        else if (r === 'resume' || r === 'favorites') loadCollection(r);
+        else if (r === 'library') loadLibrary(param);
+        else if (r === 'item') loadItem(param);
         else if (r === 'play') startPlayerFromRoute(param);
       }
 
       /* ---- navigation ---- */
       const pages = [
         { id: 'home', label: '首页', icon: 'home' },
+        { id: 'resume', label: '继续观看', icon: 'history' },
+        { id: 'favorites', label: '收藏', icon: 'heart' },
         { id: 'search', label: '搜索', icon: 'search' },
       ];
       const mobileMenu = ref(false);
@@ -143,6 +151,7 @@
       }
 
       function doLogout() {
+        stopPlayer();
         localStorage.removeItem('eio_token'); localStorage.removeItem('eio_user_id');
         window.location.hash = '#/';
         location.reload();
@@ -151,21 +160,32 @@
       function focusPass() { passWrap.value?.querySelector('input')?.focus(); }
 
       /* ---- home ---- */
-      const resumeItems = ref([]);
       const libraries = ref([]);
       const latestSections = ref([]);
+      const collectionItems = ref([]);
+      const collectionLoading = ref(false);
+      const collectionError = ref('');
+      let collectionRequest = null;
+
+      async function loadCollection(kind) {
+        collectionRequest?.abort();
+        const request = collectionRequest = new AbortController();
+        collectionLoading.value = true; collectionError.value = ''; collectionItems.value = [];
+        const path = `/Users/${localStorage.getItem('eio_user_id')}/Items`;
+        try {
+          const params = { Fields: 'PrimaryImageAspectRatio,RunTimeTicks,UserData,SeriesName', Recursive: true };
+          if (kind === 'favorites') { params.Filters = 'IsFavorite'; params.IncludeItemTypes = 'Movie,Series,Episode'; }
+          const items = await allItems(api, kind === 'resume' ? path + '/Resume' : path, params, { signal: request.signal });
+          if (collectionRequest === request && !request.signal.aborted) collectionItems.value = items;
+        } catch (e) { if (e.name !== 'AbortError') collectionError.value = '加载失败：' + e.message; }
+        finally { if (collectionRequest === request) collectionLoading.value = false; }
+        refreshIcons();
+      }
 
       async function loadHome() {
         const uid = localStorage.getItem('eio_user_id');
-        // Views and Resume are independent; one failing must not blank the page.
-        const [viewsRes, resumeRes] = await Promise.allSettled([
-          api(`/Users/${uid}/Views`),
-          api(`/Users/${uid}/Items/Resume?Limit=12&Fields=PrimaryImageAspectRatio,MediaSources`),
-        ]);
-        if (viewsRes.status === 'fulfilled') libraries.value = viewsRes.value.Items || [];
-        else console.error('loadHome views', viewsRes.reason);
-        if (resumeRes.status === 'fulfilled') resumeItems.value = resumeRes.value.Items || [];
-        else console.error('loadHome resume', resumeRes.reason);
+        try { libraries.value = (await api(`/Users/${uid}/Views`)).Items || []; }
+        catch (e) { console.error('loadHome views', e); }
         // Latest sections load in parallel and skip non-content libraries
         // (playlists return nothing), so the home fills in fast and one slow
         // upstream never blocks the rest.
@@ -195,37 +215,65 @@
       const libLimit = ref(50);
       let libOffset = 0;
 
-      async function openLibrary(id) {
+      const libraryId = ref('');
+      const libraryType = ref('');
+      const libraryHasMore = ref(false);
+      const libraryError = ref('');
+      let libraryRequest = null;
+      let libraryPageRequest = null;
+
+      async function loadLibrary(id) {
+        libraryRequest?.abort(); libraryPageRequest?.abort();
+        const request = libraryRequest = new AbortController();
+        libraryId.value = id; libraryName.value = ''; libraryType.value = '';
         navPage.value = 'library';
         libraryLoading.value = true;
-        libOffset = 0; libraryItems.value = [];
+        libOffset = 0; libraryItems.value = []; libFilter.value = ''; libraryError.value = '';
         try {
-          const lib = await api(`/Users/${localStorage.getItem('eio_user_id')}/Items/${id}`);
+          const lib = libraries.value.find(l => l.Id === id)
+            || await api(`/Users/${localStorage.getItem('eio_user_id')}/Items/${id}`, { signal: request.signal });
+          if (libraryRequest !== request) return;
           libraryName.value = lib.Name;
-        } catch (e) { console.error('openLibrary', e); }
+          libraryType.value = lib.CollectionType || '';
+        } catch (e) { if (e.name === 'AbortError') return; console.error('loadLibrary', e); }
         // Genres are decorative chips: the proxy implements /Genres without the
         // /Users prefix, and a failure here must never block the item list (the
         // old /Users/{id}/Genres path 502'd and aborted the whole page).
         try {
-          const genres = await api(`/Genres?ParentId=${id}&UserId=${localStorage.getItem('eio_user_id')}&Limit=50`);
+          const genres = await api(`/Genres?ParentId=${id}&UserId=${localStorage.getItem('eio_user_id')}&Limit=50`, { signal: request.signal });
+          if (libraryRequest !== request) return;
           libGenres.value = (genres.Items || []).map(g => g.Name);
         } catch (e) { libGenres.value = []; console.error('genres', e); }
-        try { await loadLibraryItems(); } catch (e) { console.error('loadLibraryItems', e); }
-        libraryLoading.value = false;
+        if (libraryRequest !== request || navPage.value !== 'library') return;
+        await loadLibraryItems();
+        if (libraryRequest === request) libraryLoading.value = false;
         refreshIcons();
       }
 
-      async function loadLibraryItems() {
-        const parentId = routeParam.value;
+      async function loadLibraryItems(append = false) {
+        if (!libraryId.value || navPage.value !== 'library' || libraryRequest?.signal.aborted) return;
+        libraryPageRequest?.abort();
+        const request = libraryPageRequest = new AbortController();
+        const parentId = libraryId.value;
         const [sortField, sortDir] = libSort.value.split(',');
-        const items = await api(`/Users/${localStorage.getItem('eio_user_id')}/Items?ParentId=${parentId}&Limit=${libLimit.value}&StartIndex=${libOffset}&SortBy=${sortField}&SortOrder=${sortDir}&Fields=PrimaryImageAspectRatio,ProductionYear&Recursive=true`);
-        libraryItems.value = items.Items || [];
+        libraryError.value = '';
+        try {
+          const params = { ParentId: parentId, Limit: libLimit.value, StartIndex: libOffset,
+            SortBy: sortField, SortOrder: sortDir, Genres: libFilter.value,
+            Fields: 'PrimaryImageAspectRatio,ProductionYear,ProviderIds', Recursive: true,
+            IncludeItemTypes: libraryType.value === 'tvshows' ? 'Series' : libraryType.value === 'movies' ? 'Movie' : '' };
+          const result = await api(query(`/Users/${localStorage.getItem('eio_user_id')}/Items`, params), { signal: request.signal });
+          if (libraryPageRequest !== request || libraryId.value !== parentId) return;
+          const batch = result.Items || [];
+          libraryItems.value = append ? [...libraryItems.value, ...batch.filter(x => !libraryItems.value.some(y => y.Id === x.Id))] : batch;
+          libraryHasMore.value = libOffset + batch.length < (result.TotalRecordCount ?? Infinity) && batch.length > 0;
+        } catch (e) { if (e.name !== 'AbortError') libraryError.value = '加载失败：' + e.message; }
         refreshIcons();
       }
 
-      async function loadLibraryMore() { libOffset += libLimit.value; await loadLibraryItems(); }
+      async function loadLibraryMore() { libOffset = libraryItems.value.length; await loadLibraryItems(true); }
 
-      watch([libFilter, libSort], () => { libOffset = 0; loadLibraryItems(); });
+      watch([libFilter, libSort], () => { if (!libraryType.value) return; libOffset = 0; loadLibraryItems(); });
 
       /* ---- item detail ---- */
       const itemDetail = ref(null);
@@ -233,29 +281,61 @@
       const seriesSeasons = ref([]);
       const seasonEpisodes = ref({});
       const currentMediaSourceId = ref(null);
+      const detailAudioIndex = ref(-1);
+      const detailSubtitleIndex = ref(-1);
+      const itemError = ref('');
+      const seasonErrors = ref({});
+      let itemRequest = null;
 
-      async function openItem(id) {
+      async function loadItem(id) {
+        itemRequest?.abort();
+        const request = itemRequest = new AbortController();
+        itemError.value = ''; seasonErrors.value = {};
         navPage.value = 'item'; itemDetailLoading.value = true;
         itemDetail.value = null; seriesSeasons.value = []; seasonEpisodes.value = {};
         try {
-          const detail = await api(`/Users/${localStorage.getItem('eio_user_id')}/Items/${id}?Fields=MediaSources,Overview,Genres,ProductionYear,RunTimeTicks,OfficialRating,CommunityRating,BackdropImageTags,SeriesId,SeasonId,UserData`);
+          const detail = await api(`/Users/${localStorage.getItem('eio_user_id')}/Items/${id}?Fields=MediaSources,ProviderIds,Overview,Genres,ProductionYear,RunTimeTicks,OfficialRating,CommunityRating,BackdropImageTags,SeriesId,SeasonId,UserData`, { signal: request.signal });
+          if (itemRequest !== request) return;
           itemDetail.value = detail;
-          currentMediaSourceId.value = detail.MediaSources?.[0]?.Id || null;
+          chooseDetailSource(detail.MediaSources?.[0]?.Id || null);
           if (detail.Type === 'Series') {
             // The proxy implements the standard /Shows/{id}/Seasons path (no
             // /Users prefix); the old prefixed path fell through to the
             // fallback proxy and 502'd, so no season or episode ever loaded.
             const uid = localStorage.getItem('eio_user_id');
-            const seasons = await api(`/Shows/${id}/Seasons?UserId=${uid}`);
-            seriesSeasons.value = seasons.Items || [];
-            await Promise.all(seriesSeasons.value.map(async (s) => {
-              const eps = await api(`/Shows/${id}/Episodes?UserId=${uid}&SeasonId=${s.Id}&Fields=PrimaryImageAspectRatio,RunTimeTicks`);
-              seasonEpisodes.value[s.Id] = eps.Items || [];
-            }));
+            const seasons = await allItems(api, `/Shows/${id}/Seasons`, { UserId: uid }, { signal: request.signal });
+            if (itemRequest !== request || request.signal.aborted) return;
+            seriesSeasons.value = seasons;
+            // Keep upstream work bounded. A failed season does not hide the rest.
+            for (const season of seriesSeasons.value) {
+              if (itemRequest !== request) return;
+              try {
+                const eps = await allItems(api, `/Shows/${id}/Episodes`, { UserId: uid, SeasonId: season.Id,
+                  Fields: 'PrimaryImageAspectRatio,RunTimeTicks,SeriesId,SeasonId,UserData' }, { signal: request.signal });
+                if (itemRequest === request) seasonEpisodes.value[season.Id] = eps.sort(episodeOrder);
+              } catch (e) {
+                if (e.name === 'AbortError') return;
+                seasonErrors.value[season.Id] = '本季加载失败，请重试';
+              }
+            }
           }
-        } catch (e) { console.error(e); }
-        itemDetailLoading.value = false;
+        } catch (e) { if (e.name !== 'AbortError') itemError.value = '加载失败：' + e.message; }
+        if (itemRequest === request) itemDetailLoading.value = false;
         refreshIcons();
+      }
+
+      function chooseDetailSource(id) {
+        currentMediaSourceId.value = id;
+        const source = itemDetail.value?.MediaSources?.find(s => s.Id === id);
+        detailAudioIndex.value = defaultAudio(source);
+        detailSubtitleIndex.value = defaultSubtitle(source);
+      }
+
+      function retryItem() { return loadItem(routeParam.value); }
+
+      function playDetail(sourceId = currentMediaSourceId.value) {
+        if (sourceId !== currentMediaSourceId.value) chooseDetailSource(sourceId);
+        return playItem(itemDetail.value, sourceId, { audioIndex: detailAudioIndex.value, subtitleIndex: detailSubtitleIndex.value });
       }
 
       const itemDetailIs4K = computed(() => { const s = currentVideoStream.value; return s && s.Width >= 3800; });
@@ -290,7 +370,9 @@
         try {
           if (remove) await api(`/Users/${localStorage.getItem('eio_user_id')}/FavoriteItems/${item.Id}`, { method: 'DELETE' });
           else await api(`/Users/${localStorage.getItem('eio_user_id')}/FavoriteItems/${item.Id}`, { method: 'POST' });
-          if (itemDetail.value?.Id === item.Id) { itemDetail.value.UserData.IsFavorite = !remove; }
+          item.UserData ||= {};
+          item.UserData.IsFavorite = !remove;
+          if (navPage.value === 'favorites') loadCollection('favorites');
         } catch (e) { console.error(e); }
       }
 
@@ -343,6 +425,20 @@
       const wasmSubTrack = ref(-1);
       const showSubMenu = ref(false);
       const hdrShaderActive = ref(false);
+      const playVersions = ref([]);
+      const playAudioIndex = ref(-1);
+      const episodeQueue = ref([]);
+      const queueError = ref('');
+      const trackBusy = ref(false);
+      const previousEpisode = computed(() => {
+        const i = episodeQueue.value.findIndex(e => e.Id === playingItem.value?.Id);
+        return i > 0 ? episodeQueue.value[i - 1] : null;
+      });
+      const nextEpisode = computed(() => {
+        const i = episodeQueue.value.findIndex(e => e.Id === playingItem.value?.Id);
+        return i >= 0 ? episodeQueue.value[i + 1] || null : null;
+      });
+      const audioTracks = computed(() => playSrc.value?.MediaStreams?.filter(s => s.Type === 'Audio') || []);
 
       let player = null;
       let playSessionId = null;
@@ -355,13 +451,16 @@
       // pendingMediaSourceId carries a version (MediaSource) choice from
       // playItem() into startPlayback(), which the route handler cannot know.
       let pendingMediaSourceId = null;
+      let pendingPlaybackOptions = {};
       // playerItemId records what the live player instance is playing so the
       // route handler can tell "already playing this" from "switching items".
       let playerItemId = null;
       let playbackGeneration = 0;
       let playbackRequest = null;
+      let playerReturnRoute = '#/home';
 
-      async function playItem(item, mediaSourceId) {
+      async function playItem(item, mediaSourceId, options = {}) {
+        if (navPage.value !== 'player') playerReturnRoute = window.location.hash || '#/home';
         // A series has no media sources of its own: PlaybackInfo against a
         // series fails upstream (500, "cannot cast Series to IHasMediaSources").
         // Resolve to the next-up episode, or the first episode when nothing
@@ -370,10 +469,12 @@
           const ep = await resolveSeriesEpisode(item.Id);
           if (!ep) { alert('该剧集没有可播放的集'); return; }
           item = ep;
+          options = {}; mediaSourceId = null;
         }
         playItemId.value = item.Id;
         playingItem.value = item;
         pendingMediaSourceId = mediaSourceId || null;
+        pendingPlaybackOptions = options;
         const target = '#/play/' + item.Id;
         if (window.location.hash === target) {
           // Same route: no hashchange will fire, so drive playback directly.
@@ -393,11 +494,8 @@
           if (next.Items?.length) return next.Items[0];
         } catch (e) { console.error('NextUp', e); }
         try {
-          const seasons = await api(`/Shows/${seriesId}/Seasons?UserId=${uid}`);
-          const season = seasons.Items?.[0];
-          if (!season) return null;
-          const eps = await api(`/Shows/${seriesId}/Episodes?UserId=${uid}&SeasonId=${season.Id}&Fields=PrimaryImageAspectRatio,RunTimeTicks`);
-          return eps.Items?.[0] || null;
+          const eps = await allItems(api, `/Shows/${seriesId}/Episodes`, { UserId: uid, Fields: 'PrimaryImageAspectRatio,RunTimeTicks,SeriesId' });
+          return eps.sort(episodeOrder)[0] || null;
         } catch (e) { console.error('resolveSeriesEpisode', e); return null; }
       }
 
@@ -413,50 +511,53 @@
         playbackRequest = new AbortController();
         const signal = playbackRequest.signal;
         const sourceId = pendingMediaSourceId;
+        const options = pendingPlaybackOptions;
+        wasmLoading.value = true; wasmLoadingMsg.value = '正在加载播放信息…';
+        seekPreview.value = null;
         try {
           let item = playingItem.value && playingItem.value.Id === id ? playingItem.value : null;
-          if (!item) {
-            item = await api(`/Users/${localStorage.getItem('eio_user_id')}/Items/${id}?Fields=MediaSources,Overview,RunTimeTicks,UserData`, { signal });
+          if (!item?.MediaSources?.length) {
+            item = await api(`/Users/${localStorage.getItem('eio_user_id')}/Items/${id}?Fields=MediaSources,Overview,RunTimeTicks,UserData,SeriesId,SeasonId,SeriesName,IndexNumber,ParentIndexNumber`, { signal });
             if (generation !== playbackGeneration) return;
             playingItem.value = item;
           }
           playItemId.value = id;
+          playVersions.value = item.MediaSources || [];
+          await loadEpisodeQueue(item, signal);
           await nextTick(); // the player container only exists once navPage renders
           if (generation !== playbackGeneration) return;
-          await startPlayback(item, sourceId, generation, signal);
+          await startPlayback(item, sourceId, generation, signal, options);
         } catch (e) {
           if (e.name === 'AbortError' || generation !== playbackGeneration) return;
           console.error('startPlayerFromRoute', e);
           alert('无法加载播放内容：' + e.message);
         } finally {
-          if (generation === playbackGeneration) pendingMediaSourceId = null;
+          if (generation === playbackGeneration) { pendingMediaSourceId = null; pendingPlaybackOptions = {}; }
         }
       }
 
-      async function startPlayback(item, mediaSourceId, generation, signal) {
+      async function loadEpisodeQueue(item, signal) {
+        queueError.value = '';
+        if (!item.SeriesId) { episodeQueue.value = []; return; }
+        try {
+          const episodes = await allItems(api, `/Shows/${item.SeriesId}/Episodes`, {
+            UserId: localStorage.getItem('eio_user_id'), Fields: 'SeriesId,RunTimeTicks,UserData' }, { signal });
+          if (!signal?.aborted) episodeQueue.value = episodes.sort(episodeOrder);
+        } catch (e) {
+          if (e.name === 'AbortError') throw e;
+          episodeQueue.value = []; queueError.value = '相邻剧集加载失败，请重试';
+        }
+      }
+
+      function retryEpisodeQueue() { return loadEpisodeQueue(playingItem.value, playbackRequest?.signal); }
+
+      async function startPlayback(item, mediaSourceId, generation, signal, options = {}) {
         try {
           // Declare a browser DeviceProfile so the upstream decides between
           // direct stream and transcode. Without it Emby assumes a client
           // that can direct-play everything and returns no usable stream URL
           // (no DirectStreamUrl, no TranscodingUrl) for the web player.
-          const deviceProfile = {
-            MaxStreamingBitrate: 120000000,
-            DirectPlayProfiles: [
-              { Container: 'mp4,m4v', Type: 'Video', VideoCodec: 'h264,avc', AudioCodec: 'aac,mp3' },
-            ],
-            TranscodingProfiles: [
-              { Container: 'mp4', Type: 'Video', VideoCodec: 'h264', AudioCodec: 'aac', Protocol: 'hls' },
-              { Container: 'ts', Type: 'Video', VideoCodec: 'h264', AudioCodec: 'aac', Protocol: 'hls' },
-            ],
-            CodecProfiles: [],
-            // The fallback is intentionally bounded; original 4K stays on
-            // the direct path instead of being software-decoded after HLS.
-            MaxStaticBitrate: 120000000,
-            SubtitleProfiles: [
-              { Format: 'vtt', Method: 'External' },
-              { Format: 'ass', Method: 'External' },
-            ],
-          };
+          const deviceProfile = EIOData.deviceProfile();
           const info = await api(`/Items/${item.Id}/PlaybackInfo`, {
             method: 'POST',
             signal,
@@ -468,12 +569,17 @@
               MaxStreamingBitrate: 120000000,
               MaxWidth: 1920,
               MaxHeight: 1080,
+              AudioStreamIndex: options.audioIndex >= 0 ? options.audioIndex : undefined,
+              SubtitleStreamIndex: options.subtitleIndex,
+              EnableDirectPlay: options.forceTranscode ? false : undefined,
+              EnableDirectStream: options.forceTranscode ? false : undefined,
             }),
           });
           if (generation !== playbackGeneration) return;
           playSrc.value = info.MediaSources?.find(s => s.Id === mediaSourceId) || info.MediaSources?.[0];
           playMediaSourceId.value = playSrc.value?.Id;
           if (!playSrc.value) throw new Error('No media sources');
+          playAudioIndex.value = options.audioIndex >= 0 ? options.audioIndex : defaultAudio(playSrc.value);
 
           // Create player
           const instance = new EIOPlayer(playerContainer.value);
@@ -494,7 +600,8 @@
           instance.onProgress = (ticks) => {
             api('/Sessions/Playing/Progress', {
               method: 'POST',
-              body: JSON.stringify({ ItemId: item.Id, PlaySessionId: instance.sessionId, PositionTicks: ticks }),
+              body: JSON.stringify({ ItemId: item.Id, MediaSourceId: instance.mediaSource.Id,
+                PlaySessionId: instance.sessionId, PositionTicks: ticks, IsPaused: !instance.playing }),
             }).catch(() => {});
           };
           instance.onEnded = () => { if (player === instance) exitPlayer(); };
@@ -510,13 +617,21 @@
           const streamPath = playSrc.value.DirectStreamUrl
             || `/Videos/${item.Id}/stream.${container}?Static=true&MediaSourceId=${encodeURIComponent(playSrc.value.Id)}`;
           const url = apiRaw(streamPath);
-          await instance.load(url, playSrc.value, item, {
+          if (options.forceTranscode && !playSrc.value.TranscodingUrl) throw new Error('上游未提供可切换音轨的兼容播放流');
+          await instance.load(options.forceTranscode ? apiRaw(playSrc.value.TranscodingUrl) : url, playSrc.value, item, {
             fallbackUrl: playSrc.value.TranscodingUrl ? apiRaw(playSrc.value.TranscodingUrl) : null,
+            audioIndex: playAudioIndex.value,
+            subtitleIndex: options.subtitleIndex,
           });
           if (player !== instance || generation !== playbackGeneration) return;
           wasmSubTrack.value = instance.subtitleIndex ?? -1;
+          const seconds = options.startSeconds ?? (item.UserData?.PlaybackPositionTicks || 0) / 10000000;
+          if (seconds > 0 && seconds < instance.duration) await instance.seek(seconds);
+          if (options.paused) await instance.pause();
+          instance.setVolume(playerVolume.value);
           await api('/Sessions/Playing', { method: 'POST', body: JSON.stringify({ ItemId: item.Id,
-            MediaSourceId: playSrc.value.Id, PlaySessionId: instance.sessionId }), signal }).catch(() => {});
+            MediaSourceId: playSrc.value.Id, PlaySessionId: instance.sessionId,
+            PositionTicks: instance.positionTicks, IsPaused: !instance.playing }), signal }).catch(() => {});
           refreshIcons();
         } catch (e) {
           if (e.name === 'AbortError' || generation !== playbackGeneration) return;
@@ -538,7 +653,8 @@
         if (!player) return;
         api('/Sessions/Playing/Stopped', {
           method: 'POST',
-          body: JSON.stringify({ ItemId: playerItemId, PlaySessionId: player.sessionId, PositionTicks: player.positionTicks }),
+          body: JSON.stringify({ ItemId: playerItemId, MediaSourceId: player.mediaSource?.Id,
+            PlaySessionId: player.sessionId, PositionTicks: player.positionTicks }),
         }).catch(() => {});
         player.destroy();
         player = null;
@@ -548,14 +664,45 @@
 
       function exitPlayer() {
         stopPlayer();
-        window.history.back();
+        window.location.hash = playerReturnRoute.startsWith('#/play/')
+          ? '#/item/' + (playingItem.value?.SeriesId || playingItem.value?.Id) : playerReturnRoute;
       }
 
-      function selectSubtitle(idx) {
-        wasmSubTrack.value = idx;
-        if (player && playSrc.value) {
-          player.selectSubtitle(idx);
-        }
+      async function switchVersion(id) {
+        if (!player || trackBusy.value || id === playMediaSourceId.value) return;
+        trackBusy.value = true;
+        try {
+          await playItem(playingItem.value, id, { startSeconds: player.positionTicks / 10000000, paused: !player.playing });
+        } finally { trackBusy.value = false; }
+      }
+
+      async function selectAudio(index) {
+        if (!player || trackBusy.value || index === playAudioIndex.value) return;
+        trackBusy.value = true;
+        const instance = player;
+        try {
+          if (await instance.selectAudio(index)) playAudioIndex.value = index;
+          else await playItem(playingItem.value, playMediaSourceId.value, { audioIndex: index,
+            subtitleIndex: wasmSubTrack.value, startSeconds: instance.positionTicks / 10000000,
+            paused: !instance.playing, forceTranscode: !!instance.core?.isHls?.() });
+        } catch (e) { alert('音轨切换失败：' + e.message); }
+        finally { trackBusy.value = false; }
+      }
+
+      const seekPreview = ref(null);
+      const playerVolume = ref(1);
+      const seekTitle = computed(() => '跳转至 ' + fmtTicks((seekPreview.value ?? wasmTime.value) * 10000000));
+      function previewSeek(value) { seekPreview.value = Number(value); }
+      function changeVolume(value) { playerVolume.value = Number(value); player?.setVolume(playerVolume.value); }
+      function toggleFullscreen() {
+        const result = document.fullscreenElement ? document.exitFullscreen() : playerContainer.value?.requestFullscreen();
+        result?.catch(e => alert('无法进入全屏：' + e.message));
+      }
+
+      async function selectSubtitle(idx) {
+        if (!player || !playSrc.value) return;
+        try { await player.selectSubtitle(idx); wasmSubTrack.value = idx; }
+        catch (e) { alert('字幕切换失败：' + e.message); }
       }
 
       function wasmTogglePause() {
@@ -566,6 +713,7 @@
 
       function onWasmSeek(v) {
         const seconds = parseFloat(v);
+        seekPreview.value = null;
         wasmTime.value = seconds;
         if (player) Promise.resolve(player.seek(seconds)).catch(e => alert('跳转失败：' + e.message));
       }
@@ -610,22 +758,27 @@
 
       onBeforeUnmount(() => {
         window.removeEventListener('hashchange', syncFromHash);
+        libraryRequest?.abort(); libraryPageRequest?.abort(); itemRequest?.abort(); collectionRequest?.abort();
+        clearTimeout(searchTimer);
         stopPlayer();
       });
 
       return {
         page, navPage, loginForm, loginError, loginLoading, currentUser, passWrap, mobileMenu, pages,
         navigateTo, doLogin, doLogout, focusPass, libraryIcon,
-        resumeItems, libraries, latestSections, loadHome,
+        libraries, latestSections, loadHome, collectionItems, collectionLoading, collectionError, loadCollection,
         libraryName, libraryItems, libraryLoading, libFilter, libSort, libGenres, libLimit,
-        openLibrary, loadLibraryItems, loadLibraryMore,
-        itemDetail, itemDetailLoading, seriesSeasons, seasonEpisodes, openItem,
+        openLibrary, loadLibrary, loadLibraryItems, loadLibraryMore, libraryHasMore, libraryError,
+        itemDetail, itemDetailLoading, seriesSeasons, seasonEpisodes, openItem, loadItem, itemError, seasonErrors,
+        currentMediaSourceId, chooseDetailSource, detailAudioIndex, detailSubtitleIndex, playDetail, retryItem,
         itemDetailIs4K, itemDetailIsHDR, itemDetailIsDV, itemDetailOfficialRating, runtimeMin, runtimeMin_,
         currentMediaStreams, subtitleStreams, audioStreams, currentVideoStream, mediaSourceTags,
         toggleFavorite, playItem,
         searchQuery, searchResults, searchLoading, debouncedSearch,
         imageUrl, backdropUrl,
-        playerContainer, playerMode, playItemId, playSrc,
+        playerContainer, playerMode, playItemId, playSrc, playingItem, playVersions, playMediaSourceId,
+        playAudioIndex, audioTracks, previousEpisode, nextEpisode, queueError, trackBusy, switchVersion, selectAudio, retryEpisodeQueue,
+        seekPreview, seekTitle, playerVolume, previewSeek, changeVolume, toggleFullscreen,
         wasmLoading, wasmLoadingMsg, wasmPlaying, wasmTime, wasmDuration, wasmTimeHuman, wasmDurationHuman,
         wasmSubTrack, showSubMenu, hdrShaderActive, subtitleTracks,
         exitPlayer, wasmTogglePause, onWasmSeek, selectSubtitle,
