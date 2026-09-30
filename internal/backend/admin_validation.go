@@ -157,9 +157,12 @@ func validateUpstreamDraft(draft UpstreamConfig) error {
 		}
 	}
 	hasAPIKey := strings.TrimSpace(draft.APIKey) != ""
-	hasUserPassword := strings.TrimSpace(draft.Username) != "" && draft.Password != ""
+	// The upstream account identifies the login and is required; the password is
+	// optional because Emby permits blank-password accounts. A blank password is
+	// sent upstream as a blank password, exactly like a real client would.
+	hasUserPassword := strings.TrimSpace(draft.Username) != ""
 	if hasAPIKey == hasUserPassword {
-		return &httpError{message: "上游认证方式必须为 apiKey 或 用户名+密码 二选一"}
+		return &httpError{message: "上游认证方式必须为 apiKey 或 用户名 二选一（密码可留空）"}
 	}
 	return nil
 }

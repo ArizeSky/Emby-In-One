@@ -1,7 +1,9 @@
 package backend
 
 import (
+	"bytes"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -98,4 +100,30 @@ func TestConfigSaveUsesAtomicReplace(t *testing.T) {
 	if !strings.Contains(string(raw), `name: 'Atomic Name'`) {
 		t.Fatalf("updated config missing server name: %s", string(raw))
 	}
+}
+
+// TestWebClientAdminLoginRejected locks in the web-player boundary: the web
+// client marks its login with X-EIO-Web-Client, and admin credentials must be
+// refused there (the token would carry admin rights) while the admin panel and
+// real Emby clients, which never set the marker, keep logging in as before.
+func TestWebClientAdminLoginRejected(t *testing.T) {
+	withTempAppPrepared(t, parityConfigWithUpstreams(""), nil, func(app *App, handler http.Handler, dir string) {
+		req := httptest.NewRequest(http.MethodPost, "/Users/AuthenticateByName",
+			bytes.NewBufferString(`{"Username":"admin","Pw":"secret"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-EIO-Web-Client", "1")
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		if rr.Code != http.StatusForbidden {
+			t.Fatalf("web client admin login status = %d, want 403; body=%s", rr.Code, rr.Body.String())
+		}
+		if !strings.Contains(rr.Body.String(), "管理面板") {
+			t.Fatalf("rejection should point at the admin panel: %s", rr.Body.String())
+		}
+
+		// The admin panel and real clients do not send the marker and still get in.
+		if token := loginToken(t, handler, "secret"); token == "" {
+			t.Fatalf("admin login without the web marker must still succeed")
+		}
+	})
 }

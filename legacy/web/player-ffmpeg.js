@@ -79,8 +79,12 @@
         this.ms.addEventListener('sourceopen', () => {
           try {
             this.sb = this.ms.addSourceBuffer(mimeType);
-            this.sb.mode = 'sequence';
-            this.sb.addEventListener('updateend', () => this._flush());
+            // fMP4 segments carry their own timestamps; 'sequence' mode
+            // renumbers them and the buffer ends up with no playable range.
+            this.sb.mode = 'segments';
+            // updateend must clear the updating flag before flushing again:
+            // leaving it set deadlocks the queue after the first append.
+            this.sb.addEventListener('updateend', () => { this.updating = false; this._flush(); });
             this.sb.addEventListener('error', (e) => console.error('MSE sourceBuffer error', e));
             resolve();
           } catch (e) { reject(e); }
@@ -612,8 +616,14 @@
       const vStream = mediaSource.MediaStreams?.find(s => s.Type === 'Video');
       const aStream = mediaSource.MediaStreams?.find(s => s.Type === 'Audio');
       const isHDR = vStream?.VideoRange === 'HDR10' || vStream?.VideoRange === 'HLG' || vStream?.VideoRange === 'DOVI';
-
-      if (this._canNativePlay(container, vStream, aStream)) {
+      // An HLS transcoding URL (from PlaybackInfo's TranscodingUrl) streams
+      // progressively at the upstream instead of downloading the whole file.
+      // It must be checked before the container-based branches: the container
+      // still says "mkv" while the URL serves an HLS playlist.
+      if (this._isHLSUrl(url)) {
+        this.mode = 'hls';
+        await this._setupHLS(url, mediaSource);
+      } else if (this._canNativePlay(container, vStream, aStream)) {
         this.mode = 'native';
         await this._setupNative(url);
       } else if (this._canMSEPlay(container, vStream)) {
@@ -625,6 +635,111 @@
       }
 
       this._startProgressTimer();
+    }
+    _isHLSUrl(url) {
+      return /\.m3u8(\?|$)/i.test(url || '');
+    }
+
+    // _setupHLS plays an upstream HLS transcode through MSE. Emby generates
+    // segments on the fly, so the media playlist grows until the transcode
+    // finishes: the loop re-fetches it, appends every new segment, and starts
+    // playback as soon as the first one is buffered. This is what makes
+    // 4K/HEVC sources playable in a browser at all — the direct stream would
+    // need a full download and a local remux.
+    async _setupHLS(url, mediaSource) {
+      const signal = this._abort?.signal;
+      const fetchText = async (u) => {
+        const r = await fetch(u, { signal });
+        if (!r.ok) throw new Error('HLS playlist fetch failed: ' + r.status);
+        return r.text();
+      };
+      const fetchBuf = async (u) => {
+        const r = await fetch(u, { signal });
+        if (!r.ok) throw new Error('HLS segment fetch failed: ' + r.status);
+        return r.arrayBuffer();
+      };
+
+      // Master playlist: pick the first variant and its codecs. The incoming
+      // URL may be proxy-relative ("/Videos/..."), so resolve it against the
+      // page origin first: URL resolution and fetch both need an absolute base.
+      url = new URL(url, location.origin).toString();
+      const master = await fetchText(url);
+      let variantUrl = url;
+      let codecs = 'avc1.640029,mp4a.40.2';
+      const masterLines = master.split('\n').map(l => l.trim());
+      for (let i = 0; i < masterLines.length; i++) {
+        if (masterLines[i].startsWith('#EXT-X-STREAM-INF')) {
+          const c = masterLines[i].match(/CODECS="([^"]+)"/);
+          if (c) codecs = c[1];
+          for (let j = i + 1; j < masterLines.length; j++) {
+            if (masterLines[j] && !masterLines[j].startsWith('#')) {
+              variantUrl = new URL(masterLines[j], url).toString();
+              break;
+            }
+          }
+          break;
+        }
+      }
+
+      // Video element + MSE.
+      this.video = document.createElement('video');
+      this.video.className = 'absolute inset-0 w-full h-full';
+      this.video.controls = true;
+      this.video.playsInline = true;
+      this.container.appendChild(this.video);
+      this.mse = new MSEPlayer(this.video);
+      await this.mse.init(`video/mp4; codecs="${codecs}"`);
+
+      this.video.addEventListener('timeupdate', () => {
+        this.positionTicks = Math.floor(this.video.currentTime * 10000000);
+        if (this.pgsRenderer) this.pgsRenderer.render(this.video.currentTime);
+      });
+      this.video.addEventListener('ended', () => this._onEnded());
+
+      // Stream the media playlist: append the init segment once, then every
+      // new segment in order; re-fetch while the transcode is still running.
+      let initAppended = false;
+      let nextSegment = 0;
+      let started = false;
+      let finished = false;
+      while (!finished) {
+        const media = await fetchText(variantUrl);
+        const lines = media.split('\n').map(l => l.trim()).filter(Boolean);
+        let initUrl = null;
+        const segments = [];
+        let ended = false;
+        for (const line of lines) {
+          if (line.startsWith('#EXT-X-MAP:')) {
+            const m = line.match(/URI="([^"]+)"/);
+            if (m) initUrl = new URL(m[1], variantUrl).toString();
+          } else if (line.startsWith('#EXT-X-ENDLIST')) {
+            ended = true;
+          } else if (line && !line.startsWith('#')) {
+            segments.push(new URL(line, variantUrl).toString());
+          }
+        }
+        if (initUrl && !initAppended) {
+          this.mse.append(new Uint8Array(await fetchBuf(initUrl)));
+          initAppended = true;
+        }
+        while (nextSegment < segments.length) {
+          this.mse.append(new Uint8Array(await fetchBuf(segments[nextSegment])));
+          nextSegment++;
+          if (!started && nextSegment >= 1) {
+            started = true;
+            this.video.play().catch(() => {});
+            this.playing = true;
+          }
+        }
+        if (ended) {
+          this.mse.endOfStream();
+          finished = true;
+          break;
+        }
+        // The transcode is still producing segments; poll for more.
+        await new Promise(r => setTimeout(r, 2000));
+      }
+      this._setupSubtitles(mediaSource);
     }
 
     _canNativePlay(container, vStream, aStream) {

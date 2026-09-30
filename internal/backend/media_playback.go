@@ -129,8 +129,13 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 						parsed, _ = url.Parse(inst.Client.StreamBaseURL + transcodingURL)
 					}
 					proxyPath := parsed.Path
-					proxyPath = strings.Replace(proxyPath, "/Videos/"+inst.OriginalID+"/", "/Videos/"+r.PathValue("itemId")+"/", 1)
-					proxyPath = strings.Replace(proxyPath, "/Audio/"+inst.OriginalID+"/", "/Audio/"+r.PathValue("itemId")+"/", 1)
+					// Emby serves transcoding manifests from a lowercase
+					// /videos/ root while direct-stream URLs use /Videos/;
+					// the item id swap must catch both spellings so the
+					// client-facing URL always carries the virtual id this
+					// proxy can route.
+					proxyPath = replacePathItemID(proxyPath, "videos", inst.OriginalID, r.PathValue("itemId"))
+					proxyPath = replacePathItemID(proxyPath, "audio", inst.OriginalID, r.PathValue("itemId"))
 					queryValues := parsed.Query()
 					queryValues.Del("api_key")
 					queryValues.Del("ApiKey")
@@ -211,6 +216,34 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 		base["MediaSources"] = append(base["MediaSources"].([]any), mediaSource)
 	}
 	writeJSON(w, http.StatusOK, base)
+}
+
+// replacePathItemID swaps the item id segment of a /Videos/{id}/ or /Audio/{id}/
+// path, matching the stream root case-insensitively (Emby mixes /Videos/ and
+// /videos/ between its direct-stream and transcoding URLs). The rewritten path
+// always carries the canonical capitalised root, because this proxy's own
+// stream routes are registered as /Videos/ and /Audio/ — a lowercase root would
+// fall through to the fallback proxy and fail to resolve.
+func replacePathItemID(path, root, fromID, toID string) string {
+	if fromID == "" || toID == "" || fromID == toID {
+		return path
+	}
+	root = strings.ToLower(root)
+	canonical := strings.ToUpper(root[:1]) + root[1:]
+	lower := strings.ToLower(path)
+	idx := strings.Index(lower, "/"+root+"/")
+	if idx < 0 {
+		return path
+	}
+	idStart := idx + len(root) + 2
+	idEnd := strings.IndexByte(path[idStart:], '/')
+	if idEnd < 0 {
+		return path
+	}
+	if path[idStart:idStart+idEnd] != fromID {
+		return path
+	}
+	return path[:idx+1] + canonical + "/" + toID + path[idStart+idEnd:]
 }
 
 func deepCloneMap(source map[string]any) map[string]any {

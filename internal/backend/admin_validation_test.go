@@ -129,3 +129,33 @@ func TestValidateUpstreamDraftRejectsLinkLocalTargets(t *testing.T) {
 		t.Fatalf("private upstream should be allowed, got %v", err)
 	}
 }
+
+// TestValidateUpstreamDraftAllowsBlankPassword locks in the credential
+// semantics the panel form documents: the upstream account is required, the
+// password is optional (Emby permits blank-password accounts), and exactly one
+// of username / apiKey must be present.
+func TestValidateUpstreamDraftAllowsBlankPassword(t *testing.T) {
+	base := UpstreamConfig{
+		Name:         "A",
+		URL:          "http://127.0.0.1:8096",
+		PlaybackMode: "proxy",
+		SpoofClient:  "passthrough",
+	}
+	blankPassword := base
+	blankPassword.Username = "u"
+	if err := validateUpstreamDraft(blankPassword); err != nil {
+		t.Fatalf("username with blank password should validate, got %v", err)
+	}
+
+	noCredential := base
+	if err := validateUpstreamDraft(noCredential); err == nil {
+		t.Fatal("expected a draft with neither username nor apiKey to be rejected")
+	}
+
+	both := base
+	both.Username = "u"
+	both.APIKey = "key"
+	if err := validateUpstreamDraft(both); err == nil {
+		t.Fatal("expected a draft carrying both username and apiKey to be rejected")
+	}
+}

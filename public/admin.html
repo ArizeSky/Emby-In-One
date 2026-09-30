@@ -268,8 +268,8 @@
           <div><label class="text-sm font-medium">X-Emby-Device-Id</label><input type="text" v-model="serverForm.customDeviceId" placeholder="my-device-001" class="w-full px-4 py-2 border rounded-lg outline-none"></div>
         </div>
         <div v-if="serverForm.authType === 'password'" class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <div><label class="text-sm font-medium">用户名</label><input type="text" v-model="serverForm.username" class="w-full px-4 py-2 border rounded-lg outline-none"></div>
-          <div><label class="text-sm font-medium">密码</label><input type="password" v-model="serverForm.password" class="w-full px-4 py-2 border rounded-lg outline-none"></div>
+          <div><label class="text-sm font-medium">用户名 <span class="text-red-500">*</span></label><input type="text" v-model="serverForm.username" class="w-full px-4 py-2 border rounded-lg outline-none"><p class="mt-1 text-xs text-slate-400">必填：上游 Emby 账号。</p></div>
+          <div><label class="text-sm font-medium">密码</label><input type="password" v-model="serverForm.password" placeholder="可留空" class="w-full px-4 py-2 border rounded-lg outline-none"><p class="mt-1 text-xs text-slate-400">选填：上游账号未设置密码时留空。</p></div>
         </div>
         <div v-else><label class="text-sm font-medium">API Key</label><input type="text" v-model="serverForm.apiKey" class="w-full px-4 py-2 border rounded-lg outline-none"></div>
       </div>

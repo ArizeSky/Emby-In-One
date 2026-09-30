@@ -5,15 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Emby-in-One Web Player</title>
 <link rel="stylesheet" href="vendor/inter.css">
-<link rel="stylesheet" href="vendor/tailwind.css">
+<link rel="stylesheet" href="vendor/tailwind.css?v=20260930k">
 <style>
-  /* WASM / HDR / PGX — shared player styles that are reused across every build
-     of the client. They live in <style> because the Tailwind sources used by the
-     admin panel do not describe them and compiling a separate build for the
-     panel is not worth the CI overhead. */
+  /* Player layout and subtitle overlays supplement the shared Tailwind build. */
   .player-container {position:relative;background:#000;width:100%;height:0;padding-top:56.25%;}
   .player-container.fullscreen {padding-top:0;height:100vh;}
   .player-container video,.player-container canvas {position:absolute;inset:0;width:100%;height:100%;object-fit:contain;}
+  .player-subtitle-text {position:absolute;bottom:12%;left:5%;right:5%;z-index:10;pointer-events:none;text-align:center;white-space:pre-line;font-size:clamp(16px,2.5vw,32px);color:white;text-shadow:1px 1px 3px black,-1px -1px 3px black;}
   .player-hdr-canvas {image-rendering:high-quality;}
   .player-controls {position:absolute;bottom:0;left:0;right:0;padding:12px 16px;background:linear-gradient(transparent,rgba(0,0,0,.85));background-image:linear-gradient(transparent,rgba(0,0,0,.85));}
   .player-controls.hidden {opacity:0;pointer-events:none;transition:opacity .3s;}
@@ -214,7 +212,7 @@
               <p v-if="itemDetail.Overview" class="text-slate-300 mt-3 max-w-2xl line-clamp-4">{{ itemDetail.Overview }}</p>
               <div class="mt-4 flex items-center gap-3 flex-wrap">
                 <button @click="playItem(itemDetail)" class="flex items-center space-x-2 px-6 py-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-medium transition">
-                  <i data-lucide="play" class="w-5 h-5"></i><span>播放</span>
+                  <i data-lucide="play" class="w-5 h-5"></i><span>{{ itemDetail.Type === 'Series' ? '播放下一集' : '播放' }}</span>
                 </button>
                 <button v-if="!itemDetail.UserData?.IsFavorite" @click="toggleFavorite(itemDetail,false)" class="flex items-center space-x-2 px-4 py-3 rounded-xl bg-slate-700/60 hover:bg-slate-600 text-white transition">
                   <i data-lucide="heart" class="w-4 h-4"></i><span>收藏</span>
@@ -245,12 +243,17 @@
             <div v-for="season in seriesSeasons" :key="season.Id">
               <h3 class="text-lg font-semibold mb-3">第 {{ season.IndexNumber }} 季</h3>
               <div class="ep-grid grid gap-3 sm:grid-cols-2 md:grid-cols-3">
-                <div v-for="ep in seasonEpisodes[season.Id]" :key="ep.Id" class="ep-card flex" @click="playItem(ep)">
+                <div v-for="ep in seasonEpisodes[season.Id]" :key="ep.Id" class="ep-card flex" @click="openItem(ep.Id)">
                   <img :src="imageUrl(ep,260)" class="w-48 h-28 object-cover" loading="lazy">
                   <div class="p-3 flex-1">
                     <div class="text-xs text-slate-400">E{{ String(ep.IndexNumber).padStart(2,'0') }}</div>
                     <div class="font-medium text-sm mt-0.5">{{ ep.Name }}</div>
                     <div class="text-xs text-slate-500 mt-1">{{ runtimeMin_(ep) }} min</div>
+                  </div>
+                  <div class="p-3 flex items-center shrink-0">
+                    <button @click.stop="playItem(ep)" title="播放本集" class="w-9 h-9 rounded-full bg-blue-600 hover:bg-blue-500 text-white flex items-center justify-center transition">
+                      <svg viewBox="0 0 24 24" class="w-4 h-4 fill-current"><path d="M8 5v14l11-7z"/></svg>
+                    </button>
                   </div>
                 </div>
               </div>
@@ -323,17 +326,16 @@
           <div v-if="wasmLoading" class="player-wasm-overlay">
             <div class="spinner"></div>
             <div class="mt-4 font-medium">{{ wasmLoadingMsg }}</div>
-            <div class="text-sm text-slate-400 mt-2">首次加载需要下载 WASM 模块（约 25 MB）</div>
           </div>
 
           <!-- Native / HLS controls overlay -->
-          <div v-if="playerMode==='native'||playerMode==='hls'" class="absolute top-4 left-4 z-50">
+          <div v-if="playerMode==='native'" class="absolute top-4 left-4 z-[110]">
             <button @click="exitPlayer" class="flex items-center space-x-2 px-4 py-2 rounded-lg bg-black/60 hover:bg-black/80 text-white backdrop-blur-sm transition">
               <i data-lucide="x" class="w-5 h-5"></i>
               <span class="hidden sm:inline">关闭</span>
             </button>
           </div>
-          <div v-if="playerMode==='wasm'" class="absolute top-4 left-4 right-4 flex items-center justify-between z-50">
+          <div v-if="playerMode==='libmedia'" class="absolute top-4 left-4 right-4 flex items-center justify-between z-[110]">
             <button @click="exitPlayer" class="flex items-center space-x-2 px-4 py-2 rounded-lg bg-black/60 hover:bg-black/80 text-white backdrop-blur-sm transition">
               <i data-lucide="x" class="w-5 h-5"></i>
               <span>关闭</span>
@@ -351,7 +353,7 @@
           </div>
 
           <!-- WASM timeline slider -->
-          <div v-if="playerMode==='wasm'&&!wasmLoading" class="absolute bottom-14 left-4 right-4 z-50">
+          <div v-if="playerMode==='libmedia'&&!wasmLoading" class="absolute bottom-14 left-4 right-4 z-50">
             <input type="range" :value="wasmTime" :max="Math.max(wasmDuration,1)" @input="onWasmSeek($event.target.value)" class="w-full h-1 bg-slate-600 rounded-lg appearance-none cursor-pointer accent-blue-500">
           </div>
 
@@ -359,7 +361,7 @@
                so it works on deep links where itemDetail was never loaded. -->
           <div v-if="subtitleTracks.length" class="absolute bottom-40 right-4 z-50">
             <button @click="showSubMenu=!showSubMenu" class="px-3 py-2 rounded-lg bg-black/60 backdrop-blur-sm text-white text-sm transition">字幕 <i data-lucide="chevron-up" class="w-4 h-4 inline align-middle"></i></button>
-            <div v-if="showSubMenu" class="absolute bottom-10 right-0 bg-slate-800 border border-slate-700 rounded-xl min-w-48 shadow-xl">
+            <div v-if="showSubMenu" class="absolute bottom-10 right-0 bg-slate-800 border border-slate-700 rounded-xl min-w-48 max-h-[60vh] overflow-y-auto shadow-xl">
               <button @click="selectSubtitle(-1);showSubMenu=false" class="block w-full px-4 py-2 text-left text-sm hover:bg-slate-700 transition" :class="wasmSubTrack===-1?'bg-blue-600':''">关闭</button>
               <button v-for="s in subtitleTracks" :key="s.Index" @click="selectSubtitle(s.Index);showSubMenu=false" class="block w-full px-4 py-2 text-left text-sm hover:bg-slate-700 transition text-slate-300" :class="wasmSubTrack===s.Index?'bg-blue-600 text-white':''">
                 {{ s.DisplayTitle||s.Language+' · '+s.Codec }}
@@ -375,9 +377,11 @@
 </div>
 <script src="vendor/vue.global.prod.js"></script>
 <script src="vendor/lucide.min.js"></script>
-<script src="vendor/web/ffmpeg.min.js"></script>
+<script src="vendor/web/libmedia/avplayer.js"></script>
 <script src="vendor/web/jassub.umd.js"></script>
-<script src="web/player.js"></script>
-<script src="web/app.js"></script>
+<script src="web/subtitles.js?v=20260930k"></script>
+<script src="web/subtitle-controller.js?v=20260930k"></script>
+<script src="web/player-libmedia.js?v=20260930k"></script>
+<script src="web/app.js?v=20260930k"></script>
 </body>
 </html>

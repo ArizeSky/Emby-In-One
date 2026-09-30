@@ -38,6 +38,19 @@ func (a *App) handleAuthenticateByName(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if ok {
+		// The admin account must not be playable from the web client: the token
+		// it would receive carries admin rights, and /admin is the only supported
+		// admin entry point. The web player identifies itself with this marker
+		// because it deliberately sends no Emby client identity headers (see
+		// public/web/app.js); the admin panel and real Emby clients never set it
+		// and keep logging in as before.
+		if isWebClientLogin(r) {
+			if a.Logger != nil {
+				a.Logger.Warnf("Web client admin login rejected: user=%q ip=%s", body.Username, r.RemoteAddr)
+			}
+			writeJSON(w, http.StatusForbidden, map[string]any{"message": "管理员账号不能通过 Web 客户端登录，请使用 /admin 管理面板"})
+			return
+		}
 		a.loginLimiter.recordSuccess(ip)
 		if token, _ := result["AccessToken"].(string); token != "" {
 			if hasPassthroughIdentity(r.Header) {
@@ -75,6 +88,14 @@ func (a *App) handleAuthenticateByName(w http.ResponseWriter, r *http.Request) {
 		a.Logger.Warnf("Login failed: user=%q ip=%s client=%q", body.Username, ip, r.Header.Get("X-Emby-Client"))
 	}
 	writeJSON(w, http.StatusUnauthorized, map[string]any{"message": "Invalid username or password"})
+}
+
+// isWebClientLogin reports whether the request comes from the built-in web
+// player. The web client deliberately sends no Emby client identity headers
+// (they would claim the passthrough live identity), so it marks its login with
+// this header instead; the admin panel and real Emby clients never set it.
+func isWebClientLogin(r *http.Request) bool {
+	return r.Header.Get("X-EIO-Web-Client") == "1"
 }
 
 func (a *App) handleUsersPublic(w http.ResponseWriter, r *http.Request) {

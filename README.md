@@ -1,6 +1,6 @@
 # Emby-In-One
 
-> **Version: V1.4.4-rc1 (Pre-release)**
+> **Version: V1.4.4-rc2 (Pre-release)**
 
 [![License: GPL v3](https://img.shields.io/github/license/ArizeSky/Emby-In-One?color=blue)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.23+-00ADD8?logo=go&logoColor=white)](https://go.dev/)
@@ -18,6 +18,7 @@
 - [测试站点](#测试站点)
 - [预览](#预览)
 - [功能概览](#功能概览)
+- [内置 Web 客户端](#内置-web-客户端)
 - [快速安装](#快速安装)
 - [系统要求](#系统要求)
 - [配置文件说明](#配置文件说明)
@@ -34,6 +35,16 @@
 - [项目架构](#项目架构-供开发者查阅)
 - [Star History](#star-history)
 - [许可证](#许可证)
+
+## 内置 Web 客户端
+
+访问服务的 `/web/`，使用管理员创建的普通用户登录。管理员账号用于 `/admin/`，不能登录 Web 客户端。媒体库、搜索、剧集分季和多版本片源均使用用户自己的权限及观看进度。
+
+播放器优先请求原始媒体：H.264/AAC MP4 使用原生 video，MKV、HEVC 等使用 libmedia 1.3.1 流式解封装，优先交给浏览器 MSE/WebCodecs 解码。本地 WASM 解码器按需加载。直链失败或 20 秒内未开始播放时，尝试上游提供的 H.264/AAC HLS；兼容播放请求限制为最大 1920×1080。非 MSE 的更高分辨率视频需要硬件解码，避免持续进行 4K WASM 软解。
+
+内嵌文本/ASS 由 libmedia 渲染；原生播放或 HLS 的外部 ASS 使用 JASSUB/libass，并按需加载本地中文字体。SRT/VTT 支持文本覆盖层；PGS 通过上游导出的 SUP 字幕显示，包含分片、清屏、跳转和尺寸适配。字幕能否导出、HLS 能否生成，取决于上游能力和访问权限。复杂 ASS 排版及实际 4K 硬解仍需用目标设备和片源验收。
+
+开发验证：`node --test tests/web-player.test.cjs tests/web-subtitles.test.cjs`；`tests/make-web-fixtures.py` 可用本地 ffmpeg 生成 8 秒、320×180 的合成样本。将样本放在临时目录，避免加入发行资源。
 
 ## 测试站点
 

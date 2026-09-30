@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>libmedia PoC — mkv/HEVC 直链播放</title>
+<style>
+  body { background: #000; color: #eee; font-family: sans-serif; margin: 0; padding: 20px; }
+  #player { width: 960px; height: 540px; background: #111; margin-bottom: 12px; }
+  #log { font-family: monospace; font-size: 12px; white-space: pre-wrap; max-height: 300px; overflow-y: auto; background: #1a1a1a; padding: 10px; border-radius: 6px; }
+  button { padding: 8px 16px; margin-right: 8px; cursor: pointer; }
+</style>
+</head>
+<body>
+<h3>libmedia PoC</h3>
+<div id="player"></div>
+<div>
+  <button id="btn-play">播放（直链 mkv）</button>
+  <button id="btn-pause">暂停</button>
+  <button id="btn-seek">Seek 到 60s</button>
+</div>
+<div id="log"></div>
+<script src="/web/vendor/web/libmedia/avplayer.js"></script>
+<script>
+const log = (msg) => { document.getElementById('log').textContent += msg + '\n'; const el = document.getElementById('log'); el.scrollTop = el.scrollHeight; };
+const ITEM_ID = new URLSearchParams(location.search).get('item');
+const TOKEN = localStorage.getItem('eio_token');
+const STREAM_URL = location.origin + '/Videos/' + encodeURIComponent(ITEM_ID || '') + '/stream.mkv?Static=true&api_key=' + encodeURIComponent(TOKEN || '');
+let player = null;
+async function start() {
+  if (!TOKEN || !ITEM_ID) { log('请先在 /web/ 登录普通账号，并在页面地址添加 ?item=虚拟媒体ID'); return; }
+  if (player) await player.destroy();
+  log('== AVPlayer 构造 ==');
+  player = new AVPlayer({
+    container: document.getElementById('player'),
+    wasmBaseUrl: location.origin + '/web/vendor/web/libmedia/wasm',
+    enableWebCodecs: true,
+    enableHardware: true,
+    enableWorker: true,
+    preLoadTime: 2,
+  });
+const events = ['loaded','playing','played','paused','ended','error','seeking','seeked','progress','firstVideoRendered','firstAudioRendered'];
+  for (const ev of events) {
+    player.on(ev, (...args) => {
+      log('[event] ' + ev + (args.length && typeof args[0] === 'object' ? ' ' + JSON.stringify(args[0]).substring(0, 200) : ''));
+    });
+  }
+  player.on('time', (t) => {
+    document.title = 'libmedia PoC — ' + (Number(t) / 1000).toFixed(1) + 's';
+  });
+  log('== load ' + STREAM_URL.substring(0, 60) + '... ==');
+  try {
+    await player.load(STREAM_URL, { ext: 'mkv' });
+    log('== load 完成，开始播放 ==');
+    await player.play();
+    log('== play() 返回 ==');
+  } catch (e) {
+    log('!! ERROR: ' + (e && e.message ? e.message : String(e)));
+    if (e && e.stack) log(e.stack.split('\n').slice(0, 5).join('\n'));
+  }
+}
+document.getElementById('btn-play').onclick = start;
+document.getElementById('btn-pause').onclick = () => player && (player.getStatus() === 8 ? player.play() : player.pause());
+document.getElementById('btn-seek').onclick = () => player && player.seek(60000n);
+log('就绪。点击「播放」开始。WebCodecs HEVC 支持: ' + (typeof VideoDecoder !== 'undefined'));
+window.addEventListener('pagehide', () => player?.destroy());
+(async () => {
+  if (typeof VideoDecoder !== 'undefined') {
+    try {
+      const support = await VideoDecoder.isConfigSupported({ codec: 'hev1.1.6.L120.90', codedWidth: 3840, codedHeight: 2160 });
+      log('VideoDecoder HEVC 4K 配置支持: ' + JSON.stringify(support.supported));
+    } catch (e) { log('VideoDecoder 探测失败: ' + e.message); }
+  }
+})();
+</script>
+</body>
+</html>
