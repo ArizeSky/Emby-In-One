@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Emby-in-One Web Player</title>
+<link rel="stylesheet" href="vendor/inter.css">
+<link rel="stylesheet" href="vendor/tailwind.css">
+<style>
+  /* WASM / HDR / PGX — shared player styles that are reused across every build
+     of the client. They live in <style> because the Tailwind sources used by the
+     admin panel do not describe them and compiling a separate build for the
+     panel is not worth the CI overhead. */
+  .player-container {position:relative;background:#000;width:100%;height:0;padding-top:56.25%;}
+  .player-container.fullscreen {padding-top:0;height:100vh;}
+  .player-container video,.player-container canvas {position:absolute;inset:0;width:100%;height:100%;object-fit:contain;}
+  .player-hdr-canvas {image-rendering:high-quality;}
+  .player-controls {position:absolute;bottom:0;left:0;right:0;padding:12px 16px;background:linear-gradient(transparent,rgba(0,0,0,.85));background-image:linear-gradient(transparent,rgba(0,0,0,.85));}
+  .player-controls.hidden {opacity:0;pointer-events:none;transition:opacity .3s;}
+  .player-progress {width:100%;height:4px;background:rgba(255,255,255,.25);border-radius:2px;cursor:pointer;margin-bottom:8px;}
+  .player-progress:hover {height:6px;}
+  .player-progress-bar {height:100%;background:#3b82f6;border-radius:2px;position:relative;transition:width .1s;}
+  .player-btn {background:none;border:none;color:#fff;cursor:pointer;padding:6px;opacity:.9;transition:opacity .15s;}
+  .player-btn:hover {opacity:1;}
+  .subtitle-overlay {position:absolute;bottom:60px;left:50%;transform:translateX(-50%);pointer-events:none;text-align:center;}
+  .subtitle-overlay .ass-track {display:inline-block;}
+  .player-wasm-overlay {position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.8);color:#fff;flex-direction:column;z-index:100;}
+  .spinner {width:40px;height:40px;border:3px solid rgba(255,255,255,.2);border-top-color:#3b82f6;border-radius:50%;animation:spin 1s linear infinite;}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  /* Poster grids & misc */
+  .poster-grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));}
+  .poster-card{cursor:pointer;border-radius:8px;overflow:hidden;background:#1e293b;transition:transform .15s;}
+  .poster-card:hover{transform:scale(1.03);}
+  .poster-card img{width:100%;aspect-ratio:2/3;object-fit:cover;display:block;}
+  .ep-card{cursor:pointer;background:#1e293b;border-radius:8px;overflow:hidden;transition:background .15s;}
+  .ep-card:hover{background:#334155;}
+  .chip{display:inline-flex;align-items:center;padding:2px 8px;border-radius:9999px;font-size:.75rem;font-weight:600;}
+  .chip-hdr{background:#f59e0b;color:#000;}
+  .chip-dv{background:#7c3aed;color:#fff;}
+  .chip-atmos{background:#10b981;color:#000;}
+  /* Mobile-friendly controls */
+  @media(max-width:640px){.poster-grid{grid-template-columns:repeat(auto-fill,minmax(100px,1fr));gap:8px;}}
+</style>
+</head>
+<body class="min-h-screen bg-slate-900 text-slate-100 font-sans">
+<div id="app" v-cloak>
+  <!-- ===== LOGIN ===== -->
+  <div v-if="page==='login'" class="fixed inset-0 bg-slate-900 flex items-center justify-center z-[1000]">
+    <div class="w-full max-w-sm p-8 bg-slate-800 rounded-2xl shadow-2xl space-y-6 text-center mx-4">
+      <div class="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-blue-600 text-white mb-2">
+        <i data-lucide="play-circle" class="w-8 h-8"></i>
+      </div>
+      <h1 class="text-2xl font-bold">Emby-in-One</h1>
+      <p class="text-sm text-slate-400 -mt-4">网页播放器</p>
+      <div v-if="loginError" class="p-3 text-sm text-red-400 bg-red-900/30 rounded-lg border border-red-800">{{ loginError }}</div>
+      <div class="space-y-4 text-left">
+        <div>
+          <label class="block text-sm font-medium mb-1">用户名</label>
+          <input type="text" v-model="loginForm.user" @keyup.enter="focusPass" class="w-full px-4 py-2.5 bg-slate-700 border border-slate-600 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none">
+        </div>
+        <div ref="passWrap">
+          <label class="block text-sm font-medium mb-1">密码</label>
+          <input type="password" v-model="loginForm.pass" @keyup.enter="doLogin" class="w-full px-4 py-2.5 bg-slate-700 border border-slate-600 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none">
+        </div>
+        <button @click="doLogin" :disabled="loginLoading" class="w-full py-2.5 rounded-lg font-medium bg-blue-600 hover:bg-blue-500 disabled:opacity-50 transition">
+          {{ loginLoading ? '登录中...' : '登录' }}
+        </button>
+      </div>
+      <p class="text-xs text-slate-500 pt-2">管理员请使用 <a href="/admin" class="underline text-blue-400">/admin</a> 管理面板</p>
+    </div>
+  </div>
+
+  <!-- ===== MAIN APP ===== -->
+  <div v-if="page!=='login'" class="flex min-h-screen">
+    <!-- Sidebar -->
+    <aside class="w-56 bg-slate-800 border-r border-slate-700 flex-col shrink-0 hidden md:flex">
+      <div class="p-5 font-bold text-lg flex items-center space-x-3">
+        <div class="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center text-white"><i data-lucide="play-circle" class="w-5 h-5"></i></div>
+        <span>Emby-in-One</span>
+      </div>
+      <div class="mx-3 p-2 rounded-lg bg-slate-700/50 text-xs mb-2">
+        <div class="text-slate-300">已登录: <strong>{{ currentUser?.Name }}</strong></div>
+      </div>
+      <nav class="flex-1 px-3 space-y-1">
+        <a v-for="p in pages" :key="p.id" href="#" @click.prevent="navigateTo(p.id)" class="flex items-center space-x-3 px-3 py-2.5 rounded-lg text-sm hover:bg-slate-700/50 transition" :class="navPage===p.id?'bg-blue-600 text-white':'text-slate-300'">
+          <i :data-lucide="p.icon" class="w-4 h-4"></i>
+          <span>{{ p.label }}</span>
+        </a>
+      </nav>
+      <div class="p-3 space-y-1">
+        <button @click="doLogout" class="w-full flex items-center space-x-3 px-3 py-2 rounded-lg text-sm text-slate-400 hover:bg-slate-700/50 hover:text-slate-200 transition">
+          <i data-lucide="log-out" class="w-4 h-4"></i><span>退出登录</span>
+        </button>
+      </div>
+    </aside>
+
+    <!-- Mobile header -->
+    <div class="md:hidden fixed top-0 left-0 right-0 h-14 bg-slate-800 border-b border-slate-700 flex items-center px-4 z-[700]">
+      <button @click="mobileMenu=!mobileMenu" class="p-2 -ml-2 text-slate-300"><i data-lucide="menu" class="w-6 h-6"></i></button>
+      <div class="ml-2 flex items-center space-x-2">
+        <div class="w-7 h-7 rounded-lg bg-blue-600 flex items-center justify-center text-white"><i data-lucide="play-circle" class="w-4 h-4"></i></div>
+        <span class="font-bold">EIO</span>
+      </div>
+    </div>
+
+    <!-- Mobile menu overlay -->
+    <div v-if="mobileMenu" class="fixed inset-0 bg-black/50 z-[750] md:hidden" @click="mobileMenu=false">
+      <div class="absolute top-14 left-0 right-0 bg-slate-800 p-4 border-b border-slate-700" @click.stop>
+        <nav class="space-y-1">
+          <a v-for="p in pages" :key="p.id" href="#" @click.prevent="navigateTo(p.id);mobileMenu=false" class="flex items-center space-x-3 px-3 py-2.5 rounded-lg text-sm text-slate-300 hover:bg-slate-700/50" :class="navPage===p.id?'bg-blue-600 text-white':''">
+            <i :data-lucide="p.icon" class="w-4 h-4"></i><span>{{ p.label }}</span>
+          </a>
+          <button @click="doLogout" class="w-full flex items-center space-x-3 px-3 py-2 rounded-lg text-sm text-red-400 hover:bg-slate-700/50 text-left">
+            <i data-lucide="log-out" class="w-4 h-4"></i><span>退出登录</span>
+          </button>
+        </nav>
+      </div>
+    </div>
+
+    <!-- Page content -->
+    <main class="flex-1 min-h-screen pt-14 md:pt-0 overflow-x-hidden">
+
+      <!-- ===== HOME ===== -->
+      <div v-if="navPage==='home'" class="p-6 space-y-8">
+        <h2 class="text-xl font-bold">首页</h2>
+        <!-- Continue watching -->
+        <section v-if="resumeItems.length">
+          <h3 class="text-lg font-semibold mb-3">继续观看</h3>
+          <div class="poster-grid">
+            <div v-for="it in resumeItems" :key="it.Id" class="poster-card" @click="openItem(it.Id)">
+              <img :src="imageUrl(it,500)" loading="lazy">
+              <div class="p-2">
+                <div class="text-sm font-medium truncate">{{ it.Name }}</div>
+                <div v-if="it.UserData" class="h-1 bg-slate-600 rounded mt-1">
+                  <div class="h-full bg-blue-500 rounded" :style="{width: Math.round(it.UserData.PlaybackPositionTicks/(it.RunTimeTicks||1)*100)+'%'}"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+        <!-- Libraries -->
+        <section>
+          <h3 class="text-lg font-semibold mb-3">媒体库</h3>
+          <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
+            <div v-for="lib in libraries" :key="lib.Id" class="cursor-pointer bg-slate-800 rounded-xl p-4 hover:bg-slate-700 transition text-center" @click="openLibrary(lib.Id)">
+              <i :data-lucide="libraryIcon(lib)" class="w-8 h-8 mx-auto mb-2 text-blue-400"></i>
+              <div class="text-sm font-medium truncate">{{ lib.Name }}</div>
+            </div>
+          </div>
+        </section>
+        <!-- Latest -->
+        <section v-for="sec in latestSections" :key="sec.key">
+          <h3 class="text-lg font-semibold mb-3">{{ sec.title }} · 最新</h3>
+          <div class="poster-grid">
+            <div v-for="it in sec.items" :key="it.Id" class="poster-card" @click="openItem(it.Id)">
+              <img :src="imageUrl(it,300)" loading="lazy">
+              <div class="p-2"><div class="text-sm font-medium truncate">{{ it.Name }}</div></div>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <!-- ===== LIBRARY ===== -->
+      <div v-if="navPage==='library'" class="p-6 space-y-4">
+        <div class="flex items-center justify-between">
+          <h2 class="text-xl font-bold">{{ libraryName }}</h2>
+          <div class="flex items-center space-x-3">
+            <select v-model="libFilter" class="bg-slate-800 border border-slate-600 rounded-lg px-3 py-1.5 text-sm">
+              <option value="">全部</option>
+              <option v-for="v in libGenres" :key="v" :value="v">{{ v }}</option>
+            </select>
+            <select v-model="libSort" class="bg-slate-800 border border-slate-600 rounded-lg px-3 py-1.5 text-sm">
+              <option value="DateCreated,Descending">最新添加</option>
+              <option value="SortName,Ascending">名称</option>
+              <option value="CommunityRating,Descending">评分</option>
+              <option value="ProductionYear,Descending">年份</option>
+            </select>
+          </div>
+        </div>
+        <div v-if="libraryLoading" class="text-center py-20"><div class="spinner inline-block"></div></div>
+        <div v-else class="poster-grid">
+          <div v-for="it in libraryItems" :key="it.Id" class="poster-card" @click="openItem(it.Id)">
+            <img :src="imageUrl(it,400)" loading="lazy">
+            <div class="p-2">
+              <div class="text-sm font-medium truncate">{{ it.Name }}</div>
+              <div v-if="it.ProductionYear" class="text-xs text-slate-400">{{ it.ProductionYear }}</div>
+            </div>
+          </div>
+        </div>
+        <div v-if="libraryItems.length>=libLimit" class="text-center py-6">
+          <button @click="loadLibraryMore" class="px-6 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-sm transition">加载更多</button>
+        </div>
+      </div>
+
+      <!-- ===== ITEM DETAIL ===== -->
+      <div v-if="navPage==='item'" class="min-h-screen">
+        <div v-if="itemDetailLoading" class="flex items-center justify-center py-40"><div class="spinner inline-block"></div></div>
+        <div v-else-if="itemDetail" class="relative">
+          <!-- Backdrop -->
+          <div class="relative h-[60vh] min-h-[320px]">
+            <img v-if="itemDetail.BackdropImageTags?.length" :src="backdropUrl(itemDetail)" class="absolute inset-0 w-full h-full object-cover">
+            <div class="absolute inset-0 bg-gradient-to-t from-slate-900 via-slate-900/60 to-transparent"></div>
+            <div class="absolute bottom-0 left-0 right-0 p-6 max-w-5xl">
+              <div class="flex items-center gap-3 flex-wrap">
+                <span class="chip chip-hdr" v-if="itemDetailIs4K">4K</span>
+                <span class="chip chip-hdr" v-if="itemDetailIsHDR">HDR</span>
+                <span v-if="itemDetailIsDV" class="chip chip-dv">Dolby Vision</span>
+                <span v-if="itemDetailOfficialRating" class="bg-slate-700 px-2 py-0.5 rounded text-xs">{{ itemDetailOfficialRating }}</span>
+                <span v-if="itemDetail.RunTimeTicks" class="text-sm text-slate-300">{{ runtimeMin }} 分钟</span>
+                <span v-if="itemDetail.ProductionYear" class="text-sm text-slate-300">{{ itemDetail.ProductionYear }}</span>
+              </div>
+              <h1 class="text-3xl font-bold mt-3">{{ itemDetail.Name }}</h1>
+              <div v-if="itemDetail.GenreItems" class="text-sm text-slate-400 mt-1">{{ itemDetail.GenreItems.map(g=>g.Name).join(' · ') }}</div>
+              <p v-if="itemDetail.Overview" class="text-slate-300 mt-3 max-w-2xl line-clamp-4">{{ itemDetail.Overview }}</p>
+              <div class="mt-4 flex items-center gap-3 flex-wrap">
+                <button @click="playItem(itemDetail)" class="flex items-center space-x-2 px-6 py-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-medium transition">
+                  <i data-lucide="play" class="w-5 h-5"></i><span>播放</span>
+                </button>
+                <button v-if="!itemDetail.UserData?.IsFavorite" @click="toggleFavorite(itemDetail,false)" class="flex items-center space-x-2 px-4 py-3 rounded-xl bg-slate-700/60 hover:bg-slate-600 text-white transition">
+                  <i data-lucide="heart" class="w-4 h-4"></i><span>收藏</span>
+                </button>
+                <button v-else @click="toggleFavorite(itemDetail,true)" class="flex items-center space-x-2 px-4 py-3 rounded-xl bg-slate-700/60 hover:bg-slate-600 text-red-400 transition">
+                  <i data-lucide="heart" class="w-4 h-4 fill-current"></i><span>已收藏</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Versions -->
+          <div v-if="itemDetail.MediaSources?.length>1" class="max-w-5xl mx-auto px-6 py-6 space-y-3">
+            <h3 class="text-lg font-semibold">版本</h3>
+            <div v-for="src in itemDetail.MediaSources" :key="src.Id" class="bg-slate-800 rounded-lg p-4 flex items-center justify-between">
+              <div>
+                <div class="font-medium">{{ src.Name||src.Path?.split('/').pop() }}</div>
+                <div class="text-sm text-slate-400 mt-0.5">
+                  <span v-for="(tag,i) in mediaSourceTags(src)" :key="i" class="mr-2">{{ tag }}</span>
+                </div>
+              </div>
+              <button @click="playItem(itemDetail,src.Id)" class="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-sm transition">播放</button>
+            </div>
+          </div>
+
+          <!-- Seasons / Episodes (series) -->
+          <div v-if="seriesSeasons.length" class="max-w-5xl mx-auto px-6 py-6 space-y-6">
+            <div v-for="season in seriesSeasons" :key="season.Id">
+              <h3 class="text-lg font-semibold mb-3">第 {{ season.IndexNumber }} 季</h3>
+              <div class="ep-grid grid gap-3 sm:grid-cols-2 md:grid-cols-3">
+                <div v-for="ep in seasonEpisodes[season.Id]" :key="ep.Id" class="ep-card flex" @click="playItem(ep)">
+                  <img :src="imageUrl(ep,260)" class="w-48 h-28 object-cover" loading="lazy">
+                  <div class="p-3 flex-1">
+                    <div class="text-xs text-slate-400">E{{ String(ep.IndexNumber).padStart(2,'0') }}</div>
+                    <div class="font-medium text-sm mt-0.5">{{ ep.Name }}</div>
+                    <div class="text-xs text-slate-500 mt-1">{{ runtimeMin_(ep) }} min</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Media info -->
+          <div v-if="currentMediaStreams.length" class="max-w-5xl mx-auto px-6 py-6 space-y-6">
+            <div>
+              <h3 class="text-lg font-semibold mb-3">视频</h3>
+              <div class="space-y-2 text-sm">
+                <div v-for="s in currentMediaStreams.filter(s=>s.Type==='Video')" :key="s.Index" class="bg-slate-800 rounded p-2 px-4">
+                  {{ s.Codec }} · {{ s.Width }}×{{ s.Height }} · <span class="text-slate-400">{{ Math.round(s.BitRate?s.BitRate/1000:0) }} kbps</span>
+                  <span class="chip chip-hdr text-xs ml-2" v-if="s.VideoRange==='HDR10'">HDR10</span>
+                  <span class="chip chip-dv text-xs ml-2" v-if="s.VideoRange==='DOVI'">Dolby Vision</span>
+                </div>
+              </div>
+            </div>
+            <div>
+              <h3 class="text-lg font-semibold mb-3">音频</h3>
+              <div class="space-y-2 text-sm">
+                <div v-for="s in currentMediaStreams.filter(s=>s.Type==='Audio')" :key="s.Index" class="bg-slate-800 rounded p-2 px-4">
+                  {{ s.DisplayTitle||s.Codec }} · {{ s.Language||'' }} · {{ s.ChannelLayout||s.Channels+'ch' }}
+                  <span class="chip chip-atmos text-xs ml-2" v-if="s.Profile==='Dolby TrueHD'">Atmos</span>
+                </div>
+              </div>
+            </div>
+            <div>
+              <h3 class="text-lg font-semibold mb-3">字幕</h3>
+              <div v-if="subtitleStreams.length" class="space-y-2 text-sm">
+                <div v-for="s in subtitleStreams" :key="s.Index" class="bg-slate-800 rounded p-2 px-4">
+                  {{ s.DisplayTitle||s.Language||'Unknown' }} · {{ s.Codec }}
+                  <span v-if="s.IsExternal" class="text-slate-400 text-xs ml-2">(外挂)</span>
+                </div>
+              </div>
+              <div v-else class="text-slate-500 text-sm">无字幕</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== SEARCH ===== -->
+      <div v-if="navPage==='search'" class="p-6 space-y-6 max-w-5xl mx-auto">
+        <h2 class="text-xl font-bold">搜索</h2>
+        <div class="relative">
+          <i data-lucide="search" class="w-5 h-5 absolute left-3 top-3 text-slate-400"></i>
+          <input v-model="searchQuery" @input="debouncedSearch" placeholder="搜索电影、剧集、演员..." class="w-full pl-10 pr-4 py-3 bg-slate-800 border border-slate-700 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 text-lg">
+        </div>
+        <div v-if="searchResults.length" class="space-y-3">
+          <div v-for="it in searchResults" :key="it.Id" class="flex items-center gap-4 cursor-pointer bg-slate-800 p-3 rounded-xl hover:bg-slate-700 transition" @click="openItem(it.Id)">
+            <img :src="imageUrl(it,150)" class="w-16 h-24 object-cover rounded-lg" loading="lazy">
+            <div>
+              <div class="font-medium">{{ it.Name }}</div>
+              <div class="text-sm text-slate-400">{{ it.Type }} · {{ it.ProductionYear||'' }}</div>
+              <div v-if="it.Overview" class="text-xs text-slate-500 mt-1 line-clamp-2">{{ it.Overview }}</div>
+            </div>
+          </div>
+        </div>
+        <div v-if="searchQuery&&!searchResults.length&&!searchLoading" class="text-center py-20 text-slate-500">未找到与 "{{searchQuery}}" 相关的内容</div>
+      </div>
+
+      <!-- ===== PLAYER ===== -->
+      <div v-if="navPage==='player'" class="fixed inset-0 bg-black z-[900]">
+        <div class="player-container fullscreen" ref="playerContainer">
+          <!-- Native video element -->
+          <video ref="nativeVideo" v-show="playerMode==='native'" :key="'native_'+playItemId" controls playsinline webkit-playsinline class="absolute inset-0 w-full h-full" @play="onNativePlay" @pause="onNativePause" @timeupdate="onTimeUpdate" @ended="onEnded" @error="onVideoError" @loadedmetadata="onNativeLoaded"></video>
+
+          <!-- WASM canvas -->
+          <canvas ref="wasmCanvas" v-if="playerMode==='wasm'" class="absolute inset-0 w-full h-full"></canvas>
+          <!-- SUB/JASSUB canvas -->
+          <canvas ref="subCanvas" v-if="playerMode==='wasm'" class="player-sub-canvas" :style="{position:'absolute',inset:0,pointerEvents:'none',zIndex:10}"></canvas>
+          <!-- HDR shader canvas -->
+          <canvas ref="hdrCanvas" v-if="playerMode==='wasm'" v-show="hdrShaderActive" class="player-hdr-canvas" :style="{position:'absolute',inset:0,zIndex:5}"></canvas>
+          <!-- HLS native -->
+          <video ref="hlsVideo" v-show="playerMode==='hls'" :key="'hls_'+playItemId" controls playsinline class="absolute inset-0 w-full h-full"></video>
+
+          <!-- WASM loading overlay -->
+          <div v-if="wasmLoading" class="player-wasm-overlay">
+            <div class="spinner"></div>
+            <div class="mt-4 font-medium">{{ wasmLoadingMsg }}</div>
+            <div class="text-sm text-slate-400 mt-2">首次加载需要下载 WASM 模块（约 25 MB）</div>
+          </div>
+
+          <!-- Native / HLS controls overlay -->
+          <div v-if="playerMode==='native'||playerMode==='hls'" class="absolute top-4 left-4 z-50">
+            <button @click="exitPlayer" class="flex items-center space-x-2 px-4 py-2 rounded-lg bg-black/60 hover:bg-black/80 text-white backdrop-blur-sm transition">
+              <i data-lucide="x" class="w-5 h-5"></i>
+              <span class="hidden sm:inline">关闭</span>
+            </button>
+          </div>
+          <div v-if="playerMode==='wasm'" class="absolute top-4 left-4 right-4 flex items-center justify-between z-50">
+            <button @click="exitPlayer" class="flex items-center space-x-2 px-4 py-2 rounded-lg bg-black/60 hover:bg-black/80 text-white backdrop-blur-sm transition">
+              <i data-lucide="x" class="w-5 h-5"></i>
+              <span>关闭</span>
+            </button>
+            <div v-if="!wasmLoading" class="flex items-center space-x-3">
+              <button v-if="wasmPlaying" @click="wasmTogglePause" class="px-4 py-2 rounded-lg bg-black/60 backdrop-blur-sm text-white transition">
+                <i data-lucide="pause" class="w-5 h-5"></i>
+              </button>
+              <button v-else @click="wasmTogglePause" class="px-4 py-2 rounded-lg bg-black/60 backdrop-blur-sm text-white transition">
+                <i data-lucide="play" class="w-5 h-5"></i>
+              </button>
+              <!-- Track buttons -->
+              <span class="text-sm text-slate-300">{{ wasmTimeHuman }} / {{ wasmDurationHuman }}</span>
+            </div>
+          </div>
+
+          <!-- WASM timeline slider -->
+          <div v-if="playerMode==='wasm'&&!wasmLoading" class="absolute bottom-14 left-4 right-4 z-50">
+            <input type="range" :value="wasmTime" :max="Math.max(wasmDuration,1)" @input="onWasmSeek($event.target.value)" class="w-full h-1 bg-slate-600 rounded-lg appearance-none cursor-pointer accent-blue-500">
+          </div>
+
+          <!-- Subtitle settings -->
+          <div v-if="playerMode==='wasm'&&subtitleStreams.length" class="absolute bottom-40 right-4 z-50">
+            <button @click="showSubMenu=!showSubMenu" class="px-3 py-2 rounded-lg bg-black/60 backdrop-blur-sm text-white text-sm transition">字幕 <i data-lucide="chevron-up" class="w-4 h-4 inline align-middle"></i></button>
+            <div v-if="showSubMenu" class="absolute bottom-10 right-0 bg-slate-800 border border-slate-700 rounded-xl min-w-48 shadow-xl">
+              <button @click="selectSubtitle(-1);showSubMenu=false" class="block w-full px-4 py-2 text-left text-sm hover:bg-slate-700 transition" :class="wasmSubTrack===-1?'bg-blue-600':''">关闭</button>
+              <button v-for="s in subtitleTracks" :key="s.Index" @click="selectSubtitle(s.Index);showSubMenu=false" class="block w-full px-4 py-2 text-left text-sm hover:bg-slate-700 transition text-slate-300" :class="wasmSubTrack===s.Index?'bg-blue-600 text-white':''">
+                {{ s.DisplayTitle||s.Language+' · '+s.Codec }}
+                <span class="text-xs text-slate-500" v-if="s.IsExternal">外挂</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </main>
+  </div>
+</div>
+<script src="vendor/vue.global.prod.js"></script>
+<script src="vendor/lucide.min.js"></script>
+<script src="vendor/web/ffmpeg.min.js"></script>
+<script src="vendor/web/jassub.umd.js"></script>
+<script src="web/app.js"></script>
+</body>
+</html>

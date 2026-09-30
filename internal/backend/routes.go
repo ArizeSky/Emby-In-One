@@ -55,6 +55,17 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("GET /admin", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/admin/", http.StatusFound)
 	})
+
+	// The web player is a single-page client: /web/ itself serves the document
+	// and every sub-path that is not a static asset falls back to it so deep
+	// links reach the router. The COOP/COEP headers are scoped to /web/ so the
+	// WASM player can use SharedArrayBuffer, while the rest of the API keeps
+	// answering without isolation headers.
+	mux.HandleFunc("GET /web/{$}", a.handleWebPanel)
+	mux.Handle("/web/", webCrossOriginIsolation(http.HandlerFunc(a.handleWebSPA)))
+	mux.HandleFunc("GET /web", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/web/", http.StatusFound)
+	})
 	mux.HandleFunc("GET /favicon.ico", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
