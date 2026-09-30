@@ -158,7 +158,7 @@ func (s *ClientIdentityService) ResolvePassthroughHeadersForServer(liveHeaders h
 	if captured := s.GetLatestCaptured(); hasPassthroughIdentity(captured) {
 		return ResolvedPassthroughHeaders{Source: "captured-latest", Headers: mergePassthroughHeaders(captured)}
 	}
-	return ResolvedPassthroughHeaders{Source: "infuse-fallback", Headers: mergePassthroughHeaders(http.Header{})}
+	return ResolvedPassthroughHeaders{Source: "no-identity", Headers: http.Header{}}
 }
 
 func (s *ClientIdentityService) GetLatestCaptured() http.Header {
@@ -224,15 +224,27 @@ func (s *ClientIdentityService) newCapturedEntry(headers http.Header) capturedEn
 }
 
 func (s *ClientIdentityService) applyPersistenceSnapshot(snapshot identityPersistenceSnapshot) {
-	if snapshot.LatestCaptured != nil {
+	if snapshot.LatestCaptured != nil && !isSpoofedInfuseEntry(snapshot.LatestCaptured.Headers) {
 		entry := s.hydrateCapturedEntry(snapshot.LatestCaptured.Headers, snapshot.LatestCaptured.CapturedAt)
 		s.latestCaptured = cloneCapturedEntry(entry)
 		s.latestInfo = cloneCapturedEntry(entry)
 	}
 	for serverKey, persisted := range snapshot.LastSuccessByServer {
+		if isSpoofedInfuseEntry(persisted.Headers) {
+			continue
+		}
 		entry := s.hydrateCapturedEntry(persisted.Headers, persisted.CapturedAt)
 		s.lastSuccessByServer[serverKey] = entry
 	}
+}
+
+// isSpoofedInfuseEntry reports whether a persisted entry was written by the old
+// Infuse merge base, which stamped every passthrough identity with the fixed
+// "infuse-spoof-id" device ID. Such entries are historical pollution from the
+// removed built-in profile and are dropped on load; a real Infuse client uses a
+// random device ID and never collides with this sentinel.
+func isSpoofedInfuseEntry(headers http.Header) bool {
+	return headers.Get("X-Emby-Device-Id") == "infuse-spoof-id"
 }
 
 func (s *ClientIdentityService) hydrateCapturedEntry(headers http.Header, capturedAt string) capturedEntry {
@@ -266,16 +278,11 @@ func (s *ClientIdentityService) notifyCaptureListeners(listeners []func(string, 
 // mergePassthroughHeaders builds the device-identity header set for one outbound
 // request. Only client/device behaviour fields are copied from the source; the
 // compound authorization header is read for its device fields and then dropped,
-// so a captured local token or user ID can never be forwarded upstream. The
-// separate device headers win over the compound header's fields, so a real client
-// is not pushed back to the default profile.
+// so a captured local token or user ID can never be forwarded upstream. Fields
+// the client did not send are left empty: the proxy never invents a client
+// identity, it only presents what a real client actually sent.
 func mergePassthroughHeaders(source http.Header) http.Header {
 	headers := http.Header{}
-	headers.Set("User-Agent", "Infuse/7.7.1 (iPhone; iOS 17.4.1; Scale/3.00)")
-	headers.Set("X-Emby-Client", "Infuse")
-	headers.Set("X-Emby-Client-Version", "7.7.1")
-	headers.Set("X-Emby-Device-Name", "iPhone")
-	headers.Set("X-Emby-Device-Id", "infuse-spoof-id")
 
 	for _, key := range []string{"User-Agent", "X-Emby-Client", "X-Emby-Client-Version", "X-Emby-Device-Name", "X-Emby-Device-Id", "Accept", "Accept-Language"} {
 		if value := source.Get(key); value != "" {
@@ -284,7 +291,7 @@ func mergePassthroughHeaders(source http.Header) http.Header {
 	}
 
 	// Fill only what the client did not send as its own header.
-	if headers.Get("X-Emby-Client") == "Infuse" || headers.Get("X-Emby-Device-Id") == "infuse-spoof-id" {
+	if headers.Get("X-Emby-Client") == "" || headers.Get("X-Emby-Client-Version") == "" || headers.Get("X-Emby-Device-Name") == "" || headers.Get("X-Emby-Device-Id") == "" {
 		for _, authKey := range []string{"X-Emby-Authorization", "Authorization"} {
 			authValue := source.Get(authKey)
 			if authValue == "" {
@@ -303,7 +310,7 @@ func mergePassthroughHeaders(source http.Header) http.Header {
 				{"X-Emby-Device-Name", "Device"},
 				{"X-Emby-Device-Id", "DeviceId"},
 			} {
-				if headers.Get(field.header) != "" && headers.Get(field.header) != "Infuse" && headers.Get(field.header) != "infuse-spoof-id" {
+				if headers.Get(field.header) != "" {
 					continue
 				}
 				if value := parsed[field.param]; value != "" {

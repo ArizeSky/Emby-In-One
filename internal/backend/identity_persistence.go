@@ -56,7 +56,7 @@ func StableUpstreamKey(upstream UpstreamConfig) string {
 	name := strings.TrimSpace(upstream.Name)
 	spoofClient := strings.TrimSpace(upstream.SpoofClient)
 	if spoofClient == "" {
-		spoofClient = "none"
+		spoofClient = "passthrough"
 	}
 	return baseURL + "|" + name + "|" + spoofClient
 }

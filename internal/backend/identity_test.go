@@ -69,11 +69,11 @@ func TestResolvePassthroughHeadersPreferenceOrder(t *testing.T) {
 
 	svc.DeleteCaptured("token-a")
 	source, headers = callResolvePassthroughHeadersForServer(t, svc, http.Header{}, "token-a", "")
-	if source != "infuse-fallback" {
-		t.Fatalf("source = %q, want infuse-fallback", source)
+	if source != "no-identity" {
+		t.Fatalf("source = %q, want no-identity", source)
 	}
-	if got := headers.Get("X-Emby-Client"); got != "Infuse" {
-		t.Fatalf("fallback client = %q, want Infuse", got)
+	if got := headers.Get("X-Emby-Client"); got != "" {
+		t.Fatalf("no-identity client = %q, want empty", got)
 	}
 }
 
@@ -85,13 +85,18 @@ func TestResolvePassthroughHeadersPreferenceOrder(t *testing.T) {
 // "web" device record instead of seeing the real client's UA.
 func TestWebClientHeadersDoNotClaimPassthroughIdentity(t *testing.T) {
 	svc := NewClientIdentityService()
-	svc.SetCaptured("real-client-token", http.Header{
+	realClientHeaders := http.Header{
 		"User-Agent":            []string{"Infuse/7.7.1 (iPhone; iOS 17.4.1; Scale/3.00)"},
 		"X-Emby-Client":         []string{"Infuse"},
 		"X-Emby-Client-Version": []string{"7.7.1"},
 		"X-Emby-Device-Name":    []string{"iPhone"},
 		"X-Emby-Device-Id":      []string{"real-device-id"},
-	})
+	}
+	svc.SetCaptured("real-client-token", realClientHeaders)
+	// recordSuccessfulIdentity persists the same identity as the global
+	// latest capture once the deferred passthrough login succeeds; that is
+	// the level a web client's requests resolve through.
+	svc.SaveLatestCapturedHeaders(realClientHeaders)
 
 	// The exact header shape the web client sends after the fix: auth token in
 	// X-Emby-Token, the browser's own User-Agent, and nothing else.
@@ -108,6 +113,9 @@ func TestWebClientHeadersDoNotClaimPassthroughIdentity(t *testing.T) {
 	resolved := svc.ResolvePassthroughHeadersForServer(webHeaders, "web-client-proxy-token", "server-key")
 	if resolved.Source == "live-request" {
 		t.Fatalf("source = live-request; the web client must not claim the live identity slot")
+	}
+	if resolved.Source != "captured-latest" {
+		t.Fatalf("source = %q, want captured-latest", resolved.Source)
 	}
 	if got := resolved.Headers.Get("X-Emby-Client"); got != "Infuse" {
 		t.Fatalf("client = %q, want the captured real client Infuse", got)

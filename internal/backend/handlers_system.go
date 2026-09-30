@@ -70,7 +70,7 @@ func (a *App) handleSystemEndpoint(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleSystemPing(w http.ResponseWriter, r *http.Request) {
-	_, _ = w.Write([]byte("Emby Aggregator"))
+	_, _ = w.Write([]byte("Emby-In-One"))
 }
 
 func (a *App) handleRoot(w http.ResponseWriter, r *http.Request) {

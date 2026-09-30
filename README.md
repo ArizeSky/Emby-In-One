@@ -62,11 +62,11 @@ Emby 连接地址：https://emby.cothx.eu.cc/
 - **角色权限隔离** — 管理员拥有所有服务器和管理面板的完整访问权限；普通用户只能访问被分配的服务器，无法访问管理 API。
 - **多服务器聚合** — 合并并展示多台服务器的媒体库与搜索结果。使用 Goroutine 并发请求配合可配置宽恕期——快速服务器优先返回，慢速服务器在宽恕期窗口内继续汇入；超时数据在后台静默补全，聚合延迟取决于最快服务器加宽恕期而非最慢服务器。当某台上游离线时，已聚合内容自动通过 OtherInstances 回退到其他在线服务器——继续观看和接下来观看不受影响。
 - **智能去重与优先级** — 相同影片自动合并，保留多版本片源；支持 4 级元数据优先级逻辑（指定标记 > 中文 > 长度 > 顺序）智能选择最佳展示信息。
-- **高级 UA 伪装** — 支持 Infuse 伪装（高风险，不建议！）和客户端 UA 透传。还可使用 `custom` 模式为每台上游独立定义全部 5 个 Emby 客户端身份头，绕过常见 Emby UA 限制。
+ - **客户端身份透传** — 代理以管理员用真实客户端登录时捕获的身份与上游通信（passthrough），也可用 `custom` 模式为每台上游独立定义全部 5 个 Emby 客户端身份头。代理自身不再内置任何伪造客户端身份。
 - **网络代理池** — 可为每台上游服务器单独配置 HTTP/HTTPS 代理，内置一键连通性测试。
 - **双播放模式** — 代理模式（流量转发、隐藏上游、支持 HLS/分片）或直连模式（302 重定向至上游，节省代理带宽；**会向上游暴露账号凭据，详见[播放模式详解](#播放模式详解)**）。
 - **Token 管理与会话稳定** — 代理 Token 永不过期（仅在登出、改密或手动撤销时移除），防止长时间空闲设备频繁 401；上游 Token 过期时通过 30 秒防抖的异步重登录自动恢复；管理员改密后自动撤销所有已签发 Token。
-- **Passthrough 延迟登录** — passthrough 模式的上游不再在启动时使用 Infuse 身份尝试登录；而是等待真实客户端连接后再认证，避免在上游 Emby 产生虚假设备记录。
+ - **Passthrough 延迟登录** — passthrough 模式的上游（无论密码还是 API Key）在没有已捕获的真实客户端身份前一律不登录、不发请求；等待管理员用真实客户端登录一次后自动完成认证，避免在上游 Emby 产生虚假设备记录。
 - **全面管控与运维** — 内置现代化 SSH CLI 菜单和 Web 管理面板；配备持久化日志和 SQLite ID 映射。SSH 菜单自动检测 Binary/Docker 部署模式，所有操作自动分发到 systemd 或 Docker Compose 对应命令。
 
 ---
@@ -226,7 +226,7 @@ upstream:
     url: "https://emby-b.example.com"
     apiKey: "your-api-key"
     playbackMode: "redirect"                   # 覆盖全局播放模式
-    spoofClient: "infuse"                      # none | passthrough | infuse | custom
+    spoofClient: "passthrough"                  # passthrough | custom
     streamingUrls:                               # 推流线路（可选，有序；单条也可写 streamingUrl: "..."）
       - "https://cdn.example.com"                # 第 1 条为主线路
       - "https://backup.example.com"             # 其余为备用线路
@@ -239,10 +239,10 @@ upstream:
     url: "https://emby-c.example.com"
     apiKey: "your-api-key"
     spoofClient: "custom"
-    customUserAgent: "Infuse/7.7.1 (iPhone; iOS 17.4.1; Scale/3.00)"
-    customClient: "Infuse"
-    customClientVersion: "7.7.1"
-    customDeviceName: "iPhone"
+    customUserAgent: "MyClient/1.0 (Windows; Win64; x64)"
+    customClient: "MyClient"
+    customClientVersion: "1.0.0"
+    customDeviceName: "My Device"
     customDeviceId: "your-custom-device-id"
 ```
 
@@ -404,34 +404,31 @@ V1.4 新增多用户支持，允许管理员创建多个普通用户，每个用
 - **直连模式**：按线路健康状态选择——每个健康检查周期对所有备用线路做连接级探测（任何 HTTP 响应都算存活，包括只转发 `/Videos/`、`/Audio/` 的分流反代返回的 403/404），被标记死亡的线路 60 秒内不再选用，之后自动恢复候选。302 发出后流量不经过代理，播放中途的线路故障由播放器重新拉取清单时自然切换。
 - 留空时与 `url`（前端地址）一致，行为与单条 `streamingUrl` 相同。
 
-### UA 伪装详解 (`spoofClient`)
-
-控制代理以什么客户端身份与上游服务器通信。影响登录、API 请求、健康检查和流媒体代理。
-
-| 值 | User-Agent | X-Emby-Client | 使用场景 |
-|----|-----------|----------------|---------|
-| `none` | 代理默认身份 | `Emby Aggregator` | 大多数服务器——无客户端限制 |
-| `passthrough` | 真实客户端 UA（Infuse 兜底） | 真实客户端值 | 有客户端白名单的服务器 |
-| `infuse` | `Infuse/7.7.1 (iPhone; iOS 17.4.1; Scale/3.00)` | `Infuse` | 仅允许 Infuse 的服务器 |
-| `custom` | 自定义值 | 自定义值 | 需要完全控制客户端标识的服务器 |
-
-> **注**：V1.2 中的 `official` 模式已在 V1.3 中自动迁移为 `custom`，使用原 Emby Web 官方客户端的默认值。
->
-> **当前行为**：`custom` 模式下配置的 `User-Agent`、`X-Emby-Client`、`X-Emby-Client-Version`、`X-Emby-Device-Name`、`X-Emby-Device-Id` 会同时应用于上游登录认证、常规 API 请求、健康检查、图片代理和流媒体代理；管理面板保存后会持久化到配置文件，并在再次编辑时正确回填。
-
-#### Passthrough 模式工作原理
-
-Passthrough 使用五级 header 解析，确保在任何状态下都能向上游提供合理的客户端身份：
-
-1. **实时请求头** — 如果当前请求携带 `X-Emby-Client` 头（真正的 Emby 客户端），直接使用这些头。
-2. **当前 Token 的已捕获头** — 当真实客户端（Infuse、Emby iOS 等）登录 Emby-in-One 时，代理会按当前代理 Token 捕获并存储客户端的 `User-Agent`、`X-Emby-Client`、`X-Emby-Device-Name` 等头信息；后续仅由同一 Token 的请求复用。
-3. **该服务器上次成功的登录头** — 每台 passthrough 服务器成功登录时，使用的完整 headers 会被记住并持久化。重启后直接使用，无需等待用户重新登录。
-4. **最近捕获头** — 如果当前请求无 Token 且该服务器无历史成功记录，使用最近一次任意 Token 的已捕获头。
-5. **Infuse 兜底** — 如果没有任何已捕获的客户端头（如全新安装首次启动），使用 Infuse 身份作为安全默认值。
-
-捕获的头会叠加在 Infuse 基础 profile 之上，所以即使客户端没有发送所有 Emby 头字段（如某些第三方 App），也能呈现完整的客户端身份。
-
-当客户端登录时，所有离线的 passthrough 服务器会自动使用新捕获的头重新尝试登录。成功登录的 headers 按服务器维度持久化存储，重启后健康检查和重连均使用该服务器上次成功的 headers。Token 撤销或过期时，其对应捕获头也会一并清理。
+ ### 客户端身份详解 (`spoofClient`)
+ 
+ 控制代理以什么客户端身份与上游服务器通信。影响登录、API 请求、健康检查和流媒体代理。
+ 
+ | 值 | User-Agent | X-Emby-Client | 使用场景 |
+ |----|-----------|----------------|---------|
+ | `passthrough`（默认） | 管理员登录时捕获的真实客户端 UA | 真实客户端值 | 有客户端白名单的服务器；所有用户共用该捕获身份 |
+ | `custom` | 自定义值（必填） | 自定义值 | 需要完全控制客户端标识的服务器 |
+ 
+ > **注**：V1.2 中的 `official` 模式已在 V1.3 中自动迁移为 `custom`，使用原 Emby Web 官方客户端的默认值。V1.4.4 起内置的 `none`（Emby Aggregator）与 `infuse`（Infuse 伪造）模式已移除，存量配置自动迁移为 `passthrough`。
+ >
+ > **当前行为**：`custom` 模式下配置的 `User-Agent`、`X-Emby-Client`、`X-Emby-Client-Version`、`X-Emby-Device-Name`、`X-Emby-Device-Id` 会同时应用于上游登录认证、常规 API 请求、健康检查、图片代理和流媒体代理；管理面板保存后会持久化到配置文件，并在再次编辑时正确回填。`customUserAgent` 为必填项——没有 User-Agent 的自定义身份会退化成无 UA 出站请求，这正是被移除的行为。
+ 
+ #### Passthrough 模式工作原理
+ 
+ Passthrough 使用四级 header 解析，向上游呈现真实客户端身份；任何一级都取不到时**不伪造、不裸发**，而是延迟登录等待真实客户端：
+ 
+ 1. **实时请求头** — 如果当前请求携带 `X-Emby-Client` 头（真正的 Emby 客户端），直接使用这些头。
+ 2. **当前 Token 的已捕获头** — 当真实客户端（Infuse、Emby iOS 等）登录 Emby-in-One 时，代理会按当前代理 Token 捕获并存储客户端的 `User-Agent`、`X-Emby-Client`、`X-Emby-Device-Name` 等头信息；后续仅由同一 Token 的请求复用。
+ 3. **该服务器上次成功的登录头** — 每台 passthrough 服务器成功登录时，使用的完整 headers 会被记住并持久化。重启后直接使用，无需等待用户重新登录。
+ 4. **最近捕获头** — 如果当前请求无 Token 且该服务器无历史成功记录，使用最近一次任意 Token 的已捕获头。
+ 
+ 客户端没发送的 Emby 头字段会保持为空——代理只呈现客户端真实发出的内容，不再叠加任何内置基础身份。
+ 
+ 当客户端登录时，所有离线的 passthrough 服务器会自动使用新捕获的头重新尝试登录（API Key 上游同样适用：验证 `/Users/Me` 时携带捕获身份，成功后同样落盘）。成功登录的 headers 按服务器维度持久化存储，重启后健康检查和重连均使用该服务器上次成功的 headers。Token 撤销或过期时，其对应捕获头也会一并清理。
 
 ### 元数据优先级 (`priorityMetadata`)
 
@@ -560,7 +557,7 @@ environment:
 | **全局设置** | 系统名称、默认播放模式、管理员账户、超时与宽恕期配置 |
 | **运行日志** | 实时日志查看，支持级别筛选（ERROR/WARN/INFO/DEBUG）、关键词搜索、下载原始日志文件、清空日志 |
 
-> 管理面板侧边栏底部显示当前运行版本号。对于 `spoofClient: passthrough` 的新增/编辑，如果当前没有已捕获的客户端身份，管理 API 仍会保存配置，但会返回 warning，并把该上游保留为 offline，等待真实客户端登录后自动重试。
+> 管理面板侧边栏底部显示当前运行版本号。对于 `spoofClient: passthrough` 的新增/编辑（无论密码还是 API Key），如果当前没有已捕获的客户端身份，管理 API 仍会保存配置，但会返回 warning，并把该上游保留为 offline，等待管理员用真实客户端登录一次后自动重试；全新部署也可改用 `custom` 模式显式定义身份。
 
 ### 管理 API
 
@@ -634,12 +631,13 @@ emby-in-one
 
 ### Passthrough 服务器登录失败 (403)
 
-首次安装时没有客户端身份记录，passthrough 默认使用 Infuse 身份。如果上游 nginx 拒绝 Infuse：
-1. 用任意 Emby 客户端（Infuse、Emby iOS 等）登录一次 Emby-in-One
-2. 代理自动捕获客户端头并重试 passthrough 服务器登录
-3. 成功登录后，该服务器的客户端身份会持久化，后续重启无需再次操作
-4. 查看日志中 `source` 字段确认使用了哪个头源（`last-success` = 使用上次成功的 headers，`captured-override` = 登录重试使用已捕获头，`infuse-fallback` = 无捕获头时兜底）
-5. 如果捕获的客户端 UA 本身也被上游拒绝，需从上游允许的客户端登录一次以捕获合适的身份
+ 首次安装时没有客户端身份记录，passthrough 上游会保持离线并等待捕获（不会伪造身份登录）。如果上游对客户端身份有要求：
+ 1. 用任意 Emby 客户端（Infuse、Emby iOS 等）以 **admin** 身份登录一次 Emby-in-One
+ 2. 代理自动捕获客户端头并重试 passthrough 服务器登录
+ 3. 成功登录后，该服务器的客户端身份会持久化，后续重启无需再次操作
+ 4. 查看日志中 `source` 字段确认使用了哪个头源（`last-success` = 使用上次成功的 headers，`override` = 登录重试使用已捕获头，`no-identity` = 无捕获身份、已延迟登录）
+ 5. 如果捕获的客户端 UA 本身也被上游拒绝，需从上游允许的客户端登录一次以捕获合适的身份
+ 6. 全新部署且暂时无法做种子登录时，可改用 `custom` 模式显式定义客户端身份
 
 ### 上游服务器显示离线 / 登录超时
 

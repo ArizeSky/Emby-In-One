@@ -4,7 +4,7 @@
 
 发布日期：2026-09-30
 
-> V1.4.4-rc2 是 V1.4.4-rc1 之后的修复预发布，汇总第二轮全项目代码审查的修复产出（17 个提交）。本次审查覆盖认证与安全、代理与流转发、数据持久化三条主线，修复了 **3 项高危、9 项中危**，以及一批健壮性与可观测性改进。**本次没有新增功能，全部是对既有行为的缺陷修复与加固；对外接口保持兼容。** 主要变更集中在：管理员改密后令牌吊销、经代理转发的上游 SSRF 校验、SQLite 共享连接写锁的调用点补齐、HLS 清单的错误状态码与压缩处理、上游验证错误中的凭据脱敏，以及双写一致性。**升级前请读「升级须知」。**
+> V1.4.4-rc2 是 V1.4.4-rc1 之后的修复预发布，汇总第二轮全项目代码审查的修复产出（17 个提交）。本次审查覆盖认证与安全、代理与流转发、数据持久化三条主线，修复了 **3 项高危、9 项中危**，以及一批健壮性与可观测性改进；并**彻底移除了三套内置客户端身份方案（无UA / 诚实UA / Infuse UA 伪装）**——代理不再内置任何伪造客户端身份，`spoofClient` 只剩 `passthrough` 与 `custom` 两种模式。**对外接口保持兼容（存量配置自动迁移）。** 主要变更集中在：管理员改密后令牌吊销、经代理转发的上游 SSRF 校验、SQLite 共享连接写锁的调用点补齐、HLS 清单的错误状态码与压缩处理、上游验证错误中的凭据脱敏、双写一致性，以及内置身份机制的全面拆除。**升级前请读「升级须知」。**
 
 ### ⚠️ 升级须知
 
@@ -12,8 +12,10 @@
 - **经 HTTP 代理转发的上游地址现在会做目标地址校验**。指向 **link-local / 云元数据地址（`169.254.0.0/16`、`fe80::/10`）** 的上游或推流地址会被拒绝。**本机回环与局域网地址（`127.0.0.1`、`192.168.x.x` 等）仍然允许**，自建 Emby 不受影响；如果你确实把上游指向了元数据地址，请改回真实地址。
 - **`/System/Info/Public` 与 `/System/Info` 的 `LocalAddress` 只在 `server.trustProxy: true` 时才采信 `X-Forwarded-*` 头**。反代部署请确认已开启 `trustProxy`（`config.yaml` 的 `server.trustProxy`），否则该字段会回退为请求自身的 Host。
 - **会话上报（`/Sessions/Playing*`）的本地记录语义修正**：当上游**明确拒绝（非 2xx）**时，代理不再写入本地观看进度（此前会写，造成本地状态与上游不一致）；客户端仍收到 `204`（Emby 客户端的 fire-and-forget 契约不变）。网络层失败（无应答）仍保留本地记录，因为请求可能已送达。
-- **HLS 清单请求现在会显式声明 `Accept-Encoding: identity`**，且上游返回非 2xx 时不再被改写成 200。若上游强制对清单压缩，代理会原样透传（保留 `Content-Encoding`），不再把压缩字节当作明文重写。
-
+ - **HLS 清单请求现在会显式声明 `Accept-Encoding: identity`**，且上游返回非 2xx 时不再被改写成 200。若上游强制对清单压缩，代理会原样透传（保留 `Content-Encoding`），不再把压缩字节当作明文重写。
+ - **内置客户端身份方案已全部移除**：`spoofClient` 不再支持 `none`（Emby Aggregator 五元组）与 `infuse`（Infuse 伪造身份），合法值只剩 `passthrough | custom`。**存量 `none` / `infuse` 配置在加载时自动迁移为 `passthrough`**；未配置 `spoofClient` 的上游默认值也从 `none` 变为 `passthrough`。
+ - **passthrough 上游的延迟登录扩展到 API Key 模式**：没有已捕获的真实客户端身份时（无论密码还是 API Key），启动登录与健康检查一律跳过，上游保持 offline 等待捕获——不再用伪造身份顶替。**升级后如果上游显示 offline，用任意真实 Emby 客户端（Infuse、Emby iOS 等）以 admin 身份登录一次本代理即可全量恢复**（这是既定的身份种子流程）；全新部署暂时无法做种子登录时，可改用 `custom` 模式显式定义客户端身份（`customUserAgent` 现为必填）。
+ - **历史持久化污染会在加载时清洗**：旧版本 Infuse 合并基底写入 `captured-headers.json` 的 `infuse-spoof-id` 固定设备 ID 条目会在加载时被丢弃，不再外发。
 ### 安全修复（高危）
 
 - **管理员改密后吊销该用户令牌**（`handlers_admin.go`）：`handleAdminUsersUpdate` 此前只在禁用用户时调 `RevokeTokensByUserID`，改密码不吊销；而管理员改自己的密码会全量吊销。现改密与禁用统一吊销该用户令牌，与管理员自身行为对齐。
@@ -55,8 +57,19 @@
 ### 管理面板改进
 
 - **「首页库显示/隐藏」改为折叠列表**（`public/admin.js` / `public/admin.html`）：用户编辑弹窗的「首页隐藏库」与「管理员首页库显示」弹窗此前在打开时对所有上游并发拉取库列表、并默认把每台服务器的库全部展开——上游一多既卡又难操作。现打开时只渲染服务器骨架（名称、在线状态、已隐藏计数），点击某台服务器才按需展开并拉取其库列表（可折叠回、失败可重试）；未成功加载的服务器保存时不提交对应 key，后端原样保留其已存配置（patch 语义不变）。
-
-
+ 
+ ### 移除内置客户端身份（无UA / 诚实UA / Infuse UA 三方案）
+ 
+ 代理此前内置三套出站客户端身份：`none` 模式实际发送 `Emby Aggregator` 五元组（「无UA」只是标签，Go 实现里并不无 UA）、显式 `infuse` 模式发送伪造的 `Infuse/7.7.1` 身份、passthrough 解析链全空时兜底伪造 Infuse 身份，且所有 passthrough 身份都叠加 Infuse 基底（含固定 `infuse-spoof-id` 聚类指纹，会落盘污染 `captured-headers.json`）。本次全部拆除：
+ 
+ - **`spoofClient` 值域收紧为 `passthrough | custom`**（`config.go` / `admin_validation.go`）：默认值改为 `passthrough`；存量 `none` / `infuse` 自动迁移为 `passthrough`；未知值同样归一为 `passthrough`。`custom` 模式新增 `customUserAgent` 必填校验，防止自定义身份退化成无 UA 出站请求。YAML 渲染的省略条件与身份持久化键（`StableUpstreamKey`）同步对齐。
+ - **passthrough 无身份时不再伪造、不再裸发**（`identity.go` / `upstream.go` / `healthcheck.go`）：四级解析链（实时请求头 → 当前 Token 捕获头 → 服务器上次成功登录头 → 最近捕获头）全空时返回 `no-identity` 空头集；LoginAll、健康检查、管理验证的延迟挡板扩展到 API Key 模式。Go `http.Client` 在无 UA 时会自动补 `Go-http-client/1.1`，「裸发」本身就不干净，唯一自洽答案是「不发」。
+ - **Infuse 合并基底删除**（`identity.go`）：passthrough 身份只呈现客户端真实发出的头字段，缺失字段保持为空；复合 Authorization 头的字段回填改为「四字段任一为空即回填」，对所有客户端一视同仁（此前只优待 Infuse）。
+ - **API Key 捕获重试贯通**（`upstream.go`）：捕获触发的离线重试此前在 API Key 分支丢弃捕获头（`validateAPIKey` 不接收 override），且验证成功后不落盘身份——API Key 上游会裸发 `/Users/Me` 且永远无法让后续请求共用捕获身份。现在 override 贯通到 API Key 验证，成功后同样 `recordSuccessfulIdentity` 落盘，web/API 用户经 last-success / captured-latest 共用捕获身份的机制对 API Key 上游同样生效。
+ - **历史污染加载清洗**（`identity.go`）：`captured-headers.json` 中带 `infuse-spoof-id` 的 last-success / latestCaptured 条目在加载时丢弃（真实 Infuse 客户端的设备 ID 是随机的，不会撞上该固定哨兵）。已知残留：真实 Device-Id + 基底补齐的 `iPhone`/`7.7.1` 字段按值与真实捕获不可区分，不做启发式清洗（会误杀真实 Infuse 捕获）；危害远小于固定指纹。
+ - **对内字符串改名**（`auth_manager.go` / `handlers_system.go`）：会话信息与 Ping 响应中的 `Emby Aggregator` 改为 `Emby-In-One`（对内响应，从不下发上游）。连通性探测 UA `Emby-In-One-Liveness` 保留（探测非客户端身份）。
+ - **管理面板**（`public/admin.html` / `public/admin.js`）：下拉只剩「透传真实客户端 / 自定义」两项并说明捕获与延迟登录语义；新增服务器默认 `passthrough`；自定义身份的 User-Agent 标记必填，示例值全部换为中性值。
+ - **legacy/ 目录保留为历史存档**（不参与构建与分发），其中 Node 旧实现的三方案代码一并封存。
 ### 本次新增的回归测试
 
 - 写锁：`TestServerRemovalWritesWaitForOpenTransaction`（三处删除等待开启中的事务）
@@ -64,8 +77,8 @@
 - SSRF：`TestValidateUpstreamDraftRejectsLinkLocalTargets`（目标地址校验）
 - 流转发：`TestPlaylistUpstreamErrorKeepsStatus`、`TestPlaylistGzipUpstreamIsRewritten`
 - 会话：`TestSessionUpstreamRefusalDoesNotRecordLocally`、`TestSessionUpstreamSuccessRecordsLocally`
-- 数据：`TestDeleteServerDataCascadesSkeletonRows`、`TestSystemInfoPublicTrustsForwardedHeadersWhenTrustProxySet`
-
+ - 数据：`TestDeleteServerDataCascadesSkeletonRows`、`TestSystemInfoPublicTrustsForwardedHeadersWhenTrustProxySet`
+ - 身份移除：`TestAPIKeyPassthroughDefersLoginUntilCapturedIdentity`（API Key 延迟登录 + 捕获后带身份重试）、`TestLoadDropsSpoofedInfuseEntries`（历史污染加载清洗）、`TestWebClientHeadersDoNotClaimPassthroughIdentity`（web 客户端不占用 live 身份槽）
 
 ## V1.4.4
 

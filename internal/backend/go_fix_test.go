@@ -22,10 +22,12 @@ func TestAdminUpstreamCreateRejectsOfflineDraft(t *testing.T) {
 		token := loginToken(t, handler, "secret")
 
 		rr := doJSONRequest(t, handler, http.MethodPost, "/admin/api/upstream", map[string]any{
-			"name":     "Broken",
-			"url":      broken.URL,
-			"username": "u1",
-			"password": "p1",
+			"name":            "Broken",
+			"url":             broken.URL,
+			"username":        "u1",
+			"password":        "p1",
+			"spoofClient":     "custom",
+			"customUserAgent": "TestClient/1.0",
 		}, token)
 		if rr.Code == http.StatusOK {
 			t.Fatalf("create upstream unexpectedly succeeded: %s", rr.Body.String())

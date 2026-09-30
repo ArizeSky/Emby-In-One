@@ -99,7 +99,7 @@ func TestValidateUpstreamDraftRejectsLinkLocalTargets(t *testing.T) {
 	base := UpstreamConfig{
 		Name:         "A",
 		PlaybackMode: "proxy",
-		SpoofClient:  "none",
+		SpoofClient:  "passthrough",
 		Username:     "u",
 		Password:     "p",
 	}

@@ -62,11 +62,11 @@ Emby Connection Address: https://emby.cothx.eu.cc/
 - **Role-Based Access Control** — Admins have full access to all servers and the management panel; Regular users can only access their assigned servers and cannot access the admin API.
 - **Multi-Server Aggregation** — Merges and displays media libraries and search results from multiple servers. Uses Goroutine concurrent requests with configurable grace periods — fast servers return first, slower servers contribute within the grace window; timed-out data is silently backfilled in the background, so aggregation latency depends on the fastest server plus grace period rather than the slowest. When an upstream goes offline, already-aggregated content automatically falls back to other online servers via OtherInstances — Resume and NextUp remain unaffected.
 - **Smart Deduplication & Prioritization** — Identical videos are automatically merged with multiple version sources retained; Supports a 4-level metadata priority logic (Designated Tag > Chinese > Length > Order) to smartly pick the best display information.
-- **Advanced UA Spoofing** — Supports Infuse spoofing and client UA passthrough. Can also use `custom` mode to independently define all 5 Emby client identity headers for each upstream, bypassing common Emby UA restrictions.
+ - **Client Identity Passthrough** — The proxy talks to upstreams with the identity captured when the admin logs in with a real client (passthrough), and `custom` mode can independently define all 5 Emby client identity headers per upstream. The proxy itself no longer ships any fabricated client identity.
 - **Network Proxy Pool** — Configure dedicated HTTP/HTTPS proxies separately for each upstream server, complete with a built-in one-click connectivity tester.
 - **Dual Playback Modes** — Proxy mode (traffic relayed, hides upstream, supports HLS/segments) or Redirect mode (302 redirects to upstream, saves proxy machine bandwidth; **it exposes the upstream account credential — see [Playback Mode Explained](#playback-mode-explained)**).
 - **Token Management & Session Stability** — Proxy tokens never expire (only removed on logout, password change, or manual revocation), preventing frequent 401 errors on long-idle devices; upstream tokens auto-recover via async re-login with 30-second debounce when expired; admin password changes automatically revoke all issued tokens.
-- **Passthrough Delayed Login** — Upstream servers in passthrough mode no longer attempt login with Infuse identity at startup; they wait for a real client connection before authenticating, avoiding phantom device records on upstream Emby.
+ - **Passthrough Delayed Login** — Upstream servers in passthrough mode (password or API key) never log in or send requests before a real client identity has been captured; they authenticate automatically once the admin logs in once with a real client, avoiding phantom device records on upstream Emby.
 - **Full Control & Operations** — Built-in modern SSH CLI menu and Web admin panel; comes with persistent logs and SQLite ID mapping. SSH menu auto-detects Binary/Docker deployment mode, dispatching all operations to systemd or Docker Compose commands accordingly.
 
 ---
@@ -226,7 +226,7 @@ upstream:
     url: "https://emby-b.example.com"
     apiKey: "your-api-key"
     playbackMode: "redirect"                   # Overrides global playback mode
-    spoofClient: "infuse"                      # none | passthrough | infuse | custom
+    spoofClient: "passthrough"                  # passthrough | custom
     streamingUrls:                               # Streaming lines (optional, ordered; a single one can also be written as streamingUrl: "...")
       - "https://cdn.example.com"                # 1st entry is the primary line
       - "https://backup.example.com"             # the rest are fallbacks
@@ -239,10 +239,10 @@ upstream:
     url: "https://emby-c.example.com"
     apiKey: "your-api-key"
     spoofClient: "custom"
-    customUserAgent: "Infuse/7.7.1 (iPhone; iOS 17.4.1; Scale/3.00)"
-    customClient: "Infuse"
-    customClientVersion: "7.7.1"
-    customDeviceName: "iPhone"
+    customUserAgent: "MyClient/1.0 (Windows; Win64; x64)"
+    customClient: "MyClient"
+    customClientVersion: "1.0.0"
+    customDeviceName: "My Device"
     customDeviceId: "your-custom-device-id"
 ```
 
@@ -404,34 +404,31 @@ An upstream can configure **multiple streaming lines** (`streamingUrls`, an orde
 - **Redirect mode**: the line is chosen by liveness — every health-check cycle probes fallback lines at the connect level (any HTTP response counts as alive, including the 403/404 returned by split-tunnel reverse proxies that only forward `/Videos/` and `/Audio/`). A line marked dead is skipped for 60 seconds, then becomes a candidate again. After the 302 the traffic no longer passes through the proxy; a line failure mid-playback is handled naturally when the player re-fetches the manifest.
 - When left empty the stream base equals `url` (the front-end address), same as a single `streamingUrl`.
 
-### UA Spoofing Explained (`spoofClient`)
-
-Controls what client identity the proxy communicates with the upstream server. Affects login, API requests, health checks, and stream proxying.
-
-| Value | User-Agent | X-Emby-Client | Usage Scenario |
-|-------|------------|---------------|----------------|
-| `none` | Proxy default identity | `Emby Aggregator` | Most servers — no client restrictions |
-| `passthrough` | True client UA (Infuse fallback) | True client value | Servers with client whitelists |
-| `infuse` | `Infuse/7.7.1 (iPhone; iOS 17.4.1; Scale/3.00)` | `Infuse` | Servers strictly allowing Infuse |
-| `custom` | Custom value | Custom value | Servers needing complete control over client markings |
-
-> **Note**: The `official` mode from V1.2 has been automatically migrated to `custom` in V1.3, using the original Emby Web official client's default values.
->
-> **Current behavior**: In `custom` mode, the configured `User-Agent`, `X-Emby-Client`, `X-Emby-Client-Version`, `X-Emby-Device-Name`, and `X-Emby-Device-Id` are applied to upstream login, normal API requests, health checks, image proxying, and stream proxying. After saving in the admin panel, these values are persisted to the config file and correctly restored when editing the upstream again.
-
-#### Passthrough Mode Principles
-
-Passthrough uses a five-level header resolution to ensure a reasonable client identity is offered to the upstream under any conditions:
-
-1. **Live Request Header** — If the current request carries the `X-Emby-Client` header (a genuine Emby client), direct usage.
-2. **Current Token Captured Header** — When a real client (Infuse, Emby iOS, etc.) logs in to Emby-in-One, the proxy captures and stores the client's `User-Agent`, `X-Emby-Client`, `X-Emby-Device-Name`, etc. based on the proxy Token; future requests heavily tied to the same Token will reuse these.
-3. **Server's Last Successful Login Header** — Every time a passthrough server successfully logs in, the complete headers used are remembered and persisted. Will be used straight after reboot, without waiting for users to re-login.
-4. **Most Recent Captured Header** — If the current request lacks a Token and the server has no historical successful records, it uses the lastly captured header from any Token.
-5. **Infuse Fallback** — If there are entirely no captured client headers (e.g. freshly installed first boot), the Infuse identity acts as a safe default.
-
-Captured headers overlay the basic Infuse profile, ensuring even if the client hasn't sent all Emby header fields (like certain third-party Apps), a fully fleshed client identity can still be presented.
-
-When a client logs in, all offline passthrough servers automatically use the newly captured headers to attempt re-login. The successfully logged-in headers are persistently stored per-server; both health checks and reconnections post-reboot will use that server's last successful headers. Upon token revocation or expiration, its respective captured headers are cleaned as well.
+ ### Client Identity Explained (`spoofClient`)
+ 
+ Controls what client identity the proxy communicates with the upstream server. Affects login, API requests, health checks, and stream proxying.
+ 
+ | Value | User-Agent | X-Emby-Client | Usage Scenario |
+ |-------|------------|---------------|----------------|
+ | `passthrough` (default) | Real client UA captured at admin login | Real client value | Servers with client whitelists; all users share the captured identity |
+ | `custom` | Custom value (required) | Custom value | Servers needing complete control over client markings |
+ 
+ > **Note**: The `official` mode from V1.2 has been automatically migrated to `custom` in V1.3, using the original Emby Web official client's default values. As of V1.4.4 the built-in `none` (Emby Aggregator) and `infuse` (fabricated Infuse) modes are removed, and existing configurations migrate to `passthrough` automatically.
+ >
+ > **Current behavior**: In `custom` mode, the configured `User-Agent`, `X-Emby-Client`, `X-Emby-Client-Version`, `X-Emby-Device-Name`, and `X-Emby-Device-Id` are applied to upstream login, normal API requests, health checks, image proxying, and stream proxying. After saving in the admin panel, these values are persisted to the config file and correctly restored when editing the upstream again. `customUserAgent` is required — a custom identity without a User-Agent would degrade into a UA-less outbound request, which is exactly the behaviour that was removed.
+ 
+ #### Passthrough Mode Principles
+ 
+ Passthrough uses a four-level header resolution to present the real client identity to the upstream; when no level yields anything it **fabricates nothing and sends nothing** — login is deferred until a real client connects:
+ 
+ 1. **Live Request Header** — If the current request carries the `X-Emby-Client` header (a genuine Emby client), direct usage.
+ 2. **Current Token Captured Header** — When a real client (Infuse, Emby iOS, etc.) logs in to Emby-in-One, the proxy captures and stores the client's `User-Agent`, `X-Emby-Client`, `X-Emby-Device-Name`, etc. based on the proxy Token; future requests heavily tied to the same Token will reuse these.
+ 3. **Server's Last Successful Login Header** — Every time a passthrough server successfully logs in, the complete headers used are remembered and persisted. Will be used straight after reboot, without waiting for users to re-login.
+ 4. **Most Recent Captured Header** — If the current request lacks a Token and the server has no historical successful records, it uses the lastly captured header from any Token.
+ 
+ Emby header fields the client did not send stay empty — the proxy presents exactly what the client actually sent, with no built-in base identity layered on top.
+ 
+ When a client logs in, all offline passthrough servers automatically use the newly captured headers to attempt re-login (API-key upstreams included: the `/Users/Me` validation carries the captured identity and records it on success). The successfully logged-in headers are persistently stored per-server; both health checks and reconnections post-reboot will use that server's last successful headers. Upon token revocation or expiration, its respective captured headers are cleaned as well.
 
 ### Metadata Priority (`priorityMetadata`)
 
@@ -560,7 +557,7 @@ Access `http://your-ip:8096/admin`, logging in with the admin credentials from t
 | **Global Settings** | System name, default playback mode, admin account, timeout & grace period configuration |
 | **Runtime Logs** | Real-time log viewing, supports level filtering (ERROR/WARN/INFO/DEBUG), keyword search, downloading raw log files, and clearing logs |
 
-> The admin panel sidebar displays the current running version number. For adding/editing `spoofClient: passthrough` upstreams, if there is no captured client identity available, the admin API will still save the configuration but return a warning, keeping the upstream as offline until a real client logs in and triggers automatic retry.
+> The admin panel sidebar displays the current running version number. For adding/editing `spoofClient: passthrough` upstreams (password or API key), if there is no captured client identity available, the admin API will still save the configuration but return a warning, keeping the upstream as offline until the admin logs in once with a real client and triggers automatic retry; a brand-new deployment can also switch to `custom` mode and define the identity explicitly.
 
 ### Admin API
 
@@ -634,12 +631,13 @@ The actual location of `data/` can be changed with the top-level [`dataDir`](#da
 
 ### Passthrough Upstream Login Failure (403)
 
-If no client identities have been logged upon the first installation, passthrough will default to using the Infuse identity. If the upstream nginx rejects Infuse:
-1. Log into Emby-in-One using any Emby client (Infuse, Emby iOS, etc.)
-2. The proxy will automatically capture the client header arrays and retry login over the passthrough server
-3. Upon a successful log-in, this server's specific client identity will become persisted; requiring no manual re-attempts after future restarts
-4. Monitor logs mapping `source` fields to verify which header source was used (`last-success` = last cleared traits, `captured-override` = retry overrides matching fully tracked headers, `infuse-fallback` = defaulting maneuvers completely devoid of captured targets)
-5. If the naturally captured client UA itself is also rejected by the upstream, explicitly log in using an allowed client to capture appropriate identities safely
+ On a fresh installation no client identity has been captured yet, so passthrough upstreams stay offline and wait for a capture (no fabricated identity is used to log in). If the upstream requires a specific client identity:
+ 1. Log into Emby-in-One using any Emby client (Infuse, Emby iOS, etc.) with the **admin** account
+ 2. The proxy will automatically capture the client header arrays and retry login over the passthrough server
+ 3. Upon a successful log-in, this server's specific client identity will become persisted; requiring no manual re-attempts after future restarts
+ 4. Monitor logs mapping `source` fields to verify which header source was used (`last-success` = last successful headers, `override` = retry using captured headers, `no-identity` = no captured identity, login deferred)
+ 5. If the naturally captured client UA itself is also rejected by the upstream, explicitly log in using an allowed client to capture appropriate identities safely
+ 6. On a brand-new deployment where a seed login is not possible yet, switch to `custom` mode and define the identity explicitly
 
 ### Upstream Shows Offline / Login Timeout
 

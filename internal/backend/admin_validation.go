@@ -130,6 +130,12 @@ func validateUpstreamDraft(draft UpstreamConfig) error {
 	if err := validateSpoofClient(draft.SpoofClient); err != nil {
 		return err
 	}
+	// custom mode must carry its own User-Agent: without one the request would
+	// leave with no UA at all, which is exactly the behaviour this mode must
+	// not degrade into now that every built-in profile is gone.
+	if strings.TrimSpace(draft.SpoofClient) == "custom" && strings.TrimSpace(draft.CustomUserAgent) == "" {
+		return &httpError{message: "custom 模式必须填写 customUserAgent"}
+	}
 	if err := validateHTTPURL(draft.URL); err != nil {
 		return err
 	}
@@ -187,9 +193,8 @@ func withRedirectWarning(draft UpstreamConfig, result upstreamValidationResult) 
 
 func (a *App) validateUpstreamConnectivity(cfg Config, draft UpstreamConfig, index int, reqCtx *RequestContext) (upstreamValidationResult, error) {
 	client := newUpstreamClient(cfg, draft, index, a.Logger)
-	if draft.SpoofClient == "passthrough" && strings.TrimSpace(draft.APIKey) == "" {
-		source, _ := client.resolveIdentityHeaders(reqCtx, a.Identity, nil)
-		if source == "infuse-fallback" {
+	if draft.SpoofClient == "passthrough" {
+		if a.Identity == nil || !a.Identity.HasCapturedHeaders(client.serverKey) {
 			if a.Logger != nil {
 				a.Logger.Infof("[%s] Passthrough admin validation deferred — no captured client identity yet", draft.Name)
 			}
@@ -392,10 +397,10 @@ func validatePlaybackMode(mode string) error {
 
 func validateSpoofClient(mode string) error {
 	switch strings.TrimSpace(mode) {
-	case "none", "passthrough", "infuse", "custom":
+	case "passthrough", "custom":
 		return nil
 	default:
-		return &httpError{message: "spoofClient 必须为 none、passthrough、infuse 或 custom"}
+		return &httpError{message: "spoofClient 必须为 passthrough 或 custom"}
 	}
 }
 

@@ -19,7 +19,7 @@ func withTempApp(t *testing.T, fn func(app *App, handler http.Handler)) {
 func withTempAppConfig(t *testing.T, config string, fn func(app *App, handler http.Handler)) {
 	t.Helper()
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(config), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(testConfigWithDefaultSpoofCustom(config)), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	if err := os.MkdirAll(filepath.Join(dir, "public"), 0o755); err != nil {

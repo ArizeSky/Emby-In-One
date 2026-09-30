@@ -30,9 +30,11 @@ func TestAPIKeyUpstreamValidatesThroughUsersMe(t *testing.T) {
 	withTempApp(t, func(app *App, handler http.Handler) {
 		token := loginToken(t, handler, "secret")
 		rr := doJSONRequest(t, handler, http.MethodPost, "/admin/api/upstream", map[string]any{
-			"name":   "keyed",
-			"url":    srv.URL,
-			"apiKey": "api-key-value",
+			"name":            "keyed",
+			"url":             srv.URL,
+			"apiKey":          "api-key-value",
+			"spoofClient":     "custom",
+			"customUserAgent": "TestClient/1.0",
 		}, token)
 		if rr.Code != http.StatusOK {
 			t.Fatalf("create api-key upstream: status=%d body=%s", rr.Code, rr.Body.String())
@@ -74,9 +76,11 @@ func TestAdminUpstreamValidationDoesNotReflectUpstreamBody(t *testing.T) {
 	withTempApp(t, func(app *App, handler http.Handler) {
 		token := loginToken(t, handler, "secret")
 		rr := doJSONRequest(t, handler, http.MethodPost, "/admin/api/upstream", map[string]any{
-			"name":   "rejecting",
-			"url":    srv.URL,
-			"apiKey": "k1",
+			"name":            "rejecting",
+			"url":             srv.URL,
+			"apiKey":          "k1",
+			"spoofClient":     "custom",
+			"customUserAgent": "TestClient/1.0",
 		}, token)
 		if rr.Code != http.StatusBadGateway {
 			t.Fatalf("create with a rejecting upstream: status=%d body=%s", rr.Code, rr.Body.String())
