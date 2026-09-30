@@ -52,6 +52,11 @@
 - **id store 关闭错误不再忽略**（`server.go`）：`Close` 失败记录告警。
 - **仓库 `gofmt`**：`handlers_admin.go`、`library_visibility.go`、`session_userdata.go` 三个文件格式化归位。
 
+### 管理面板改进
+
+- **「首页库显示/隐藏」改为折叠列表**（`public/admin.js` / `public/admin.html`）：用户编辑弹窗的「首页隐藏库」与「管理员首页库显示」弹窗此前在打开时对所有上游并发拉取库列表、并默认把每台服务器的库全部展开——上游一多既卡又难操作。现打开时只渲染服务器骨架（名称、在线状态、已隐藏计数），点击某台服务器才按需展开并拉取其库列表（可折叠回、失败可重试）；未成功加载的服务器保存时不提交对应 key，后端原样保留其已存配置（patch 语义不变）。
+
+
 ### 本次新增的回归测试
 
 - 写锁：`TestServerRemovalWritesWaitForOpenTransaction`（三处删除等待开启中的事务）

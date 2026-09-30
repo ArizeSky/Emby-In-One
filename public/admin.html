@@ -298,22 +298,32 @@
         <div v-if="editUserId">
           <label class="text-sm font-medium block mb-2">首页隐藏库</label>
           <p class="text-xs text-slate-400 mb-2">勾选 = 从该用户首页隐藏。隐藏仅影响首页库入口；搜索、最新添加、继续观看不受影响。</p>
-          <div v-if="libraryGroupsLoading" class="text-sm text-slate-400 italic py-2">正在加载库列表...</div>
-          <div v-else-if="userLibraryGroups.length === 0" class="text-sm text-slate-400 italic py-2">暂无已配置的上游服务器</div>
-          <div v-else class="space-y-3 max-h-64 overflow-y-auto">
-            <div v-for="g in userLibraryGroups" :key="g.serverId" class="border border-slate-200 rounded-lg p-3">
-              <div class="flex justify-between items-center mb-2">
-                <span class="text-sm font-bold">{{ g.name }}</span>
-                <button v-if="g.online" @click="toggleGroupAll(g, !isGroupAllHidden(g))" class="text-xs text-blue-600 hover:underline">{{ isGroupAllHidden(g) ? '全不选' : '全选' }}</button>
+          <div v-if="userLibraryGroups.length === 0" class="text-sm text-slate-400 italic py-2">暂无已配置的上游服务器</div>
+          <div v-else class="space-y-2 max-h-[60vh] overflow-y-auto">
+            <div v-for="g in userLibraryGroups" :key="g.serverId" class="border border-slate-200 rounded-lg overflow-hidden">
+              <button type="button" @click="toggleLibraryGroup(g)" class="w-full flex items-center justify-between gap-2 px-3 py-2.5 text-left hover:bg-slate-50">
+                <span class="flex items-center gap-2 min-w-0">
+                  <i :data-lucide="g.expanded ? 'chevron-down' : 'chevron-right'" class="w-4 h-4 text-slate-400 shrink-0"></i>
+                  <span :class="g.online ? 'bg-green-500' : 'bg-red-400'" class="w-2 h-2 rounded-full shrink-0"></span>
+                  <span class="text-sm font-bold truncate">{{ g.name }}</span>
+                  <span v-if="g.hiddenIds.length > 0" class="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5 shrink-0">已隐藏 {{ g.hiddenIds.length }}</span>
+                </span>
+                <span v-if="!g.online" class="text-xs text-slate-400 shrink-0">离线</span>
+              </button>
+              <div v-if="g.expanded" class="px-3 pb-3 pt-2 border-t border-slate-100">
+                <div v-if="g.loading" class="text-sm text-slate-400 italic py-2">正在加载库列表...</div>
+                <div v-else-if="g.error" class="py-2 text-xs text-amber-600 flex items-center gap-2"><span class="min-w-0">{{ g.error }}</span><button type="button" @click.stop="refreshLibraryGroup(g)" class="text-blue-600 hover:underline shrink-0">重试</button></div>
+                <template v-else>
+                  <div class="flex justify-end mb-1"><button type="button" @click.stop="toggleGroupAll(g, !isGroupAllHidden(g))" class="text-xs text-blue-600 hover:underline">{{ isGroupAllHidden(g) ? '全不选' : '全选' }}</button></div>
+                  <div class="space-y-1">
+                    <label v-for="lib in g.libraries" :key="lib.id" class="flex items-center space-x-2 cursor-pointer hover:bg-slate-50 p-1 rounded">
+                      <input type="checkbox" :value="lib.id" v-model="g.hiddenIds" class="w-4 h-4 rounded border-slate-300 text-blue-600">
+                      <span class="text-sm">{{ lib.name }}</span>
+                      <span v-if="lib.collectionType" class="text-xs text-slate-400">({{ lib.collectionType }})</span>
+                    </label>
+                  </div>
+                </template>
               </div>
-              <div v-if="g.online" class="space-y-1">
-                <label v-for="lib in g.libraries" :key="lib.id" class="flex items-center space-x-2 cursor-pointer hover:bg-slate-50 p-1 rounded">
-                  <input type="checkbox" :value="lib.id" v-model="g.hiddenIds" class="w-4 h-4 rounded border-slate-300 text-blue-600">
-                  <span class="text-sm">{{ lib.name }}</span>
-                  <span v-if="lib.collectionType" class="text-xs text-slate-400">({{ lib.collectionType }})</span>
-                </label>
-              </div>
-              <p v-else class="text-xs text-amber-600">服务器离线，无法编辑（当前已隐藏 {{ g.hiddenIds.length }} 个库）</p>
             </div>
           </div>
         </div>
@@ -330,20 +340,31 @@
         <p class="text-xs text-slate-400">勾选 = 从自己的首页隐藏。隐藏仅影响首页库入口；搜索、最新添加、继续观看不受影响。</p>
         <div v-if="libraryGroupsLoading" class="text-sm text-slate-400 italic py-2">正在加载库列表...</div>
         <div v-else-if="adminLibraryGroups.length === 0" class="text-sm text-slate-400 italic py-2">暂无已配置的上游服务器</div>
-        <div v-else class="space-y-3 max-h-64 overflow-y-auto">
-          <div v-for="g in adminLibraryGroups" :key="g.serverId" class="border border-slate-200 rounded-lg p-3">
-            <div class="flex justify-between items-center mb-2">
-              <span class="text-sm font-bold">{{ g.name }}</span>
-              <button v-if="g.online" @click="toggleGroupAll(g, !isGroupAllHidden(g))" class="text-xs text-blue-600 hover:underline">{{ isGroupAllHidden(g) ? '全不选' : '全选' }}</button>
+        <div v-else class="space-y-2 max-h-[60vh] overflow-y-auto">
+          <div v-for="g in adminLibraryGroups" :key="g.serverId" class="border border-slate-200 rounded-lg overflow-hidden">
+            <button type="button" @click="toggleLibraryGroup(g)" class="w-full flex items-center justify-between gap-2 px-3 py-2.5 text-left hover:bg-slate-50">
+              <span class="flex items-center gap-2 min-w-0">
+                <i :data-lucide="g.expanded ? 'chevron-down' : 'chevron-right'" class="w-4 h-4 text-slate-400 shrink-0"></i>
+                <span :class="g.online ? 'bg-green-500' : 'bg-red-400'" class="w-2 h-2 rounded-full shrink-0"></span>
+                <span class="text-sm font-bold truncate">{{ g.name }}</span>
+                <span v-if="g.hiddenIds.length > 0" class="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5 shrink-0">已隐藏 {{ g.hiddenIds.length }}</span>
+              </span>
+              <span v-if="!g.online" class="text-xs text-slate-400 shrink-0">离线</span>
+            </button>
+            <div v-if="g.expanded" class="px-3 pb-3 pt-2 border-t border-slate-100">
+              <div v-if="g.loading" class="text-sm text-slate-400 italic py-2">正在加载库列表...</div>
+              <div v-else-if="g.error" class="py-2 text-xs text-amber-600 flex items-center gap-2"><span class="min-w-0">{{ g.error }}</span><button type="button" @click.stop="refreshLibraryGroup(g)" class="text-blue-600 hover:underline shrink-0">重试</button></div>
+              <template v-else>
+                <div class="flex justify-end mb-1"><button type="button" @click.stop="toggleGroupAll(g, !isGroupAllHidden(g))" class="text-xs text-blue-600 hover:underline">{{ isGroupAllHidden(g) ? '全不选' : '全选' }}</button></div>
+                <div class="space-y-1">
+                  <label v-for="lib in g.libraries" :key="lib.id" class="flex items-center space-x-2 cursor-pointer hover:bg-slate-50 p-1 rounded">
+                    <input type="checkbox" :value="lib.id" v-model="g.hiddenIds" class="w-4 h-4 rounded border-slate-300 text-blue-600">
+                    <span class="text-sm">{{ lib.name }}</span>
+                    <span v-if="lib.collectionType" class="text-xs text-slate-400">({{ lib.collectionType }})</span>
+                  </label>
+                </div>
+              </template>
             </div>
-            <div v-if="g.online" class="space-y-1">
-              <label v-for="lib in g.libraries" :key="lib.id" class="flex items-center space-x-2 cursor-pointer hover:bg-slate-50 p-1 rounded">
-                <input type="checkbox" :value="lib.id" v-model="g.hiddenIds" class="w-4 h-4 rounded border-slate-300 text-blue-600">
-                <span class="text-sm">{{ lib.name }}</span>
-                <span v-if="lib.collectionType" class="text-xs text-slate-400">({{ lib.collectionType }})</span>
-              </label>
-            </div>
-            <p v-else class="text-xs text-amber-600">服务器离线，无法编辑（当前已隐藏 {{ g.hiddenIds.length }} 个库）</p>
           </div>
         </div>
       </div>

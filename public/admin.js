@@ -173,22 +173,16 @@ createApp({
     async deleteProxy(id) { if(!confirm('删除代理？')) return; try { await this.api('/admin/api/proxies/'+id, { method:'DELETE' }); await this.refreshProxies(); } catch(e) { alert('删除失败：' + (e.message || '未知错误')); } },
     async refreshUsers() { try { this.userList = await this.api('/admin/api/users'); } catch(e) { this.userList = []; } try { this.upstreamList = await this.api('/admin/api/upstream'); } catch(e) {} this.$nextTick(()=>lucide.createIcons()); },
     openAddUser() { this.editUserId = null; this.userForm = { username:'', password:'', enabled:true, allowedServers:[] }; this.userLibraryGroups = []; this.showUserModal = true; this.$nextTick(()=>lucide.createIcons()); },
-    async editUser(u) {
+    editUser(u) {
       this.editUserId = u.id;
       this.userForm = { username:u.username, password:'', enabled:u.enabled, allowedServers: u.allowedServers ? [...u.allowedServers] : [] };
       this.showUserModal = true;
-      this.userLibraryGroups = [];
-      this.libraryGroupsLoading = true;
-      try {
-        // 只列出该用户有权访问的服务器；未限制（全部）时列出全部。
-        const scope = this.userForm.allowedServers.length > 0
-          ? this.upstreamList.filter(s => this.userForm.allowedServers.includes(s.id))
-          : this.upstreamList;
-        this.userLibraryGroups = await this.loadLibraryGroups(scope, u.hiddenLibraries);
-      } finally {
-        this.libraryGroupsLoading = false;
-        this.$nextTick(()=>lucide.createIcons());
-      }
+      // 折叠列表：只渲染服务器骨架，点击条目时才按需拉取库列表，避免服务器多时打开卡顿。
+      const scope = this.userForm.allowedServers.length > 0
+        ? this.upstreamList.filter(s => this.userForm.allowedServers.includes(s.id))
+        : this.upstreamList;
+      this.userLibraryGroups = this.buildLibraryGroupSkeletons(scope, u.hiddenLibraries);
+      this.$nextTick(()=>lucide.createIcons());
     },
     async saveUser() {
       try {
@@ -211,26 +205,53 @@ createApp({
         this.showUserModal = false; await this.refreshUsers();
       } catch(e) { alert('保存失败：' + (e.message || '未知错误')); }
     },
-    async loadLibraryGroups(servers, hidden) {
+    // 折叠列表骨架：只含服务器元信息与已存隐藏项，库列表等展开时再按需拉取。
+    buildLibraryGroupSkeletons(servers, hidden) {
       hidden = hidden || {};
-      return Promise.all(servers.map(async (s) => {
-        const stored = (hidden[s.id] || []).slice();
-        try {
-          const libraries = await this.api('/admin/api/upstream/' + (s.id || s.index) + '/libraries');
-          // 在线服务器只保留仍存在的库 ID：上游已删除的库在保存时自然清除。
-          return { serverId: s.id, name: s.name, online: true, libraries: libraries, hiddenIds: stored.filter(id => libraries.some(l => l.id === id)) };
-        } catch (e) {
-          // 离线服务器保留已存 ID 供显示计数；保存时不提交该组 key。
-          return { serverId: s.id, name: s.name, online: false, libraries: [], hiddenIds: stored };
-        }
-      }));
+      return this.decorateLibraryGroups((servers || []).map(s => ({
+        serverId: s.id,
+        name: s.name,
+        online: !!s.online,
+        libraries: [],
+        hiddenIds: (hidden[s.id] || []).slice(),
+        loaded: false, // 本次面板是否成功拉取过；未成功拉取则不提交 key，后端保留其已存配置
+      })));
     },
+    decorateLibraryGroups(groups) {
+      for (const g of (groups || [])) { g.expanded = false; g.loading = false; g.error = ''; }
+      return groups;
+    },
+    // 展开/折叠某个服务器；首次展开时按需拉取库列表，之后复用内存结果。
+    async toggleLibraryGroup(g) {
+      if (g.expanded) { g.expanded = false; return; }
+      g.expanded = true;
+      if (!g.loaded && g.libraries.length === 0 && !g.loading) await this.fetchLibraryGroup(g);
+      this.$nextTick(()=>lucide.createIcons());
+    },
+    async fetchLibraryGroup(g, refresh) {
+      if (g.loading) return;
+      g.loading = true; g.error = '';
+      try {
+        const libraries = await this.api('/admin/api/upstream/' + g.serverId + '/libraries' + (refresh ? '?refresh=1' : ''));
+        g.libraries = libraries || [];
+        g.online = true;
+        g.loaded = true;
+        g.hiddenIds = g.hiddenIds.filter(id => g.libraries.some(l => l.id === id));
+      } catch (e) {
+        g.online = false;
+        g.error = (e && e.message) ? e.message : '加载失败';
+      } finally {
+        g.loading = false;
+        this.$nextTick(()=>lucide.createIcons());
+      }
+    },
+    async refreshLibraryGroup(g) { await this.fetchLibraryGroup(g, true); },
     toggleGroupAll(g, val) { g.hiddenIds = val ? g.libraries.map(l => l.id) : []; },
     isGroupAllHidden(g) { return g.libraries.length > 0 && g.libraries.every(l => g.hiddenIds.includes(l.id)); },
     groupHiddenPayload(groups) {
       const payload = {};
       for (const g of groups) {
-        if (!g.online) continue; // 离线组不提交 key，后端不触碰其已存配置
+        if (!g.loaded || g.error) continue; // 未成功加载的服务器不提交 key，后端不触碰其已存配置
         payload[g.serverId] = g.hiddenIds.slice();
       }
       return payload;
@@ -241,7 +262,7 @@ createApp({
       this.libraryGroupsLoading = true;
       try {
         const hidden = (await this.api('/admin/api/home-libraries')).hidden || {};
-        this.adminLibraryGroups = await this.loadLibraryGroups(this.upstreamList, hidden);
+        this.adminLibraryGroups = this.buildLibraryGroupSkeletons(this.upstreamList, hidden);
       } finally {
         this.libraryGroupsLoading = false;
         this.$nextTick(()=>lucide.createIcons());
