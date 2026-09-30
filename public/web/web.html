@@ -315,17 +315,9 @@
       <!-- ===== PLAYER ===== -->
       <div v-if="navPage==='player'" class="fixed inset-0 bg-black z-[900]">
         <div class="player-container fullscreen" ref="playerContainer">
-          <!-- Native video element -->
-          <video ref="nativeVideo" v-show="playerMode==='native'" :key="'native_'+playItemId" controls playsinline webkit-playsinline class="absolute inset-0 w-full h-full" @play="onNativePlay" @pause="onNativePause" @timeupdate="onTimeUpdate" @ended="onEnded" @error="onVideoError" @loadedmetadata="onNativeLoaded"></video>
-
-          <!-- WASM canvas -->
-          <canvas ref="wasmCanvas" v-if="playerMode==='wasm'" class="absolute inset-0 w-full h-full"></canvas>
-          <!-- SUB/JASSUB canvas -->
-          <canvas ref="subCanvas" v-if="playerMode==='wasm'" class="player-sub-canvas" :style="{position:'absolute',inset:0,pointerEvents:'none',zIndex:10}"></canvas>
-          <!-- HDR shader canvas -->
-          <canvas ref="hdrCanvas" v-if="playerMode==='wasm'" v-show="hdrShaderActive" class="player-hdr-canvas" :style="{position:'absolute',inset:0,zIndex:5}"></canvas>
-          <!-- HLS native -->
-          <video ref="hlsVideo" v-show="playerMode==='hls'" :key="'hls_'+playItemId" controls playsinline class="absolute inset-0 w-full h-full"></video>
+          <!-- The player engine (player.js) creates and owns the video,
+               subtitle and HDR canvases inside this container. The template
+               only provides the container and the overlay controls. -->
 
           <!-- WASM loading overlay -->
           <div v-if="wasmLoading" class="player-wasm-overlay">
@@ -363,8 +355,9 @@
             <input type="range" :value="wasmTime" :max="Math.max(wasmDuration,1)" @input="onWasmSeek($event.target.value)" class="w-full h-1 bg-slate-600 rounded-lg appearance-none cursor-pointer accent-blue-500">
           </div>
 
-          <!-- Subtitle settings -->
-          <div v-if="playerMode==='wasm'&&subtitleStreams.length" class="absolute bottom-40 right-4 z-50">
+          <!-- Subtitle settings: subtitleTracks comes from the playing MediaSource,
+               so it works on deep links where itemDetail was never loaded. -->
+          <div v-if="subtitleTracks.length" class="absolute bottom-40 right-4 z-50">
             <button @click="showSubMenu=!showSubMenu" class="px-3 py-2 rounded-lg bg-black/60 backdrop-blur-sm text-white text-sm transition">字幕 <i data-lucide="chevron-up" class="w-4 h-4 inline align-middle"></i></button>
             <div v-if="showSubMenu" class="absolute bottom-10 right-0 bg-slate-800 border border-slate-700 rounded-xl min-w-48 shadow-xl">
               <button @click="selectSubtitle(-1);showSubMenu=false" class="block w-full px-4 py-2 text-left text-sm hover:bg-slate-700 transition" :class="wasmSubTrack===-1?'bg-blue-600':''">关闭</button>

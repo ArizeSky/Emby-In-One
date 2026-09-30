@@ -75,10 +75,18 @@
       function syncFromHash() {
         const { r, param } = readHash();
         currentRoute.value = r; routeParam.value = param;
-        if (routeMap[r]) page.value = routeMap[r];
-        if (r === 'library') openLibrary(param);
+        if (r === '' || r === 'login') { page.value = 'login'; return; }
+        const target = routeMap[r];
+        if (!target) return;
+        // Leaving the player page must stop playback: the video element keeps
+        // decoding (and the audio graph keeps running) otherwise.
+        if (navPage.value === 'player' && target !== 'player') stopPlayer();
+        page.value = 'app';
+        navPage.value = target;
+        if (r === 'home') loadHome();
+        else if (r === 'library') openLibrary(param);
         else if (r === 'item') openItem(param);
-        else if (r === 'play') openPlayer(param);
+        else if (r === 'play') startPlayerFromRoute(param);
       }
 
       /* ---- navigation ---- */
@@ -90,7 +98,19 @@
       function navigateTo(id) { window.location.hash = '#/' + id; }
       function openItem(id) { window.location.hash = '#/item/' + id; }
       function openLibrary(id) { window.location.hash = '#/library/' + id; }
-      function openPlayer(id) { window.location.hash = '#/play/' + id; }
+
+      // libraryIcon maps a library's CollectionType to a lucide icon name. The
+      // home page calls it inline, so it must exist before the first render.
+      function libraryIcon(lib) {
+        const t = (lib?.CollectionType || '').toLowerCase();
+        const map = {
+          movies: 'film', tvshows: 'tv', music: 'music', musicvideos: 'clapperboard',
+          books: 'book-open', audiobooks: 'headphones', comics: 'book',
+          homevideos: 'video', photos: 'image', playlists: 'list-music',
+          boxsets: 'folder', livetv: 'radio', channels: 'radio-tower',
+        };
+        return map[t] || 'library';
+      }
 
       /* ---- auth ---- */
       async function doLogin() {
@@ -271,7 +291,7 @@
       const playerContainer = ref(null);
       const playerMode = ref('native');
       const playItemId = ref('');
-      const playItem = ref(null);
+      const playingItem = ref(null);
       const playSrc = ref(null);
       const playMediaSourceId = ref(null);
       const wasmLoading = ref(false);
@@ -293,11 +313,48 @@
         return playSrc.value.MediaStreams?.filter(s => s.Type === 'Subtitle') || [];
       });
 
+      // pendingMediaSourceId carries a version (MediaSource) choice from
+      // playItem() into startPlayback(), which the route handler cannot know.
+      let pendingMediaSourceId = null;
+      // playerItemId records what the live player instance is playing so the
+      // route handler can tell "already playing this" from "switching items".
+      let playerItemId = null;
+
       async function playItem(item, mediaSourceId) {
-        playItemId.value = item.Id; playItem.value = item;
-        window.location.hash = '#/play/' + item.Id;
-        await nextTick();
-        await startPlayback(item, mediaSourceId);
+        playItemId.value = item.Id;
+        playingItem.value = item;
+        pendingMediaSourceId = mediaSourceId || null;
+        const target = '#/play/' + item.Id;
+        if (window.location.hash === target) {
+          // Same route: no hashchange will fire, so drive playback directly.
+          await startPlayerFromRoute(item.Id, true);
+        } else {
+          window.location.hash = target;
+        }
+      }
+
+      // startPlayerFromRoute is the single entry point that begins playback.
+      // Deep links (#/play/{id} typed or reloaded) and in-app navigation both
+      // land here; playItem() only records the intent and lets the router call
+      // this, which keeps "start playback" from running twice.
+      async function startPlayerFromRoute(id, force) {
+        if (!id || !localStorage.getItem('eio_token')) return;
+        if (!force && playItemId.value === id && playerItemId === id) return;
+        try {
+          let item = playingItem.value && playingItem.value.Id === id ? playingItem.value : null;
+          if (!item) {
+            item = await api(`/Users/${localStorage.getItem('eio_user_id')}/Items/${id}?Fields=MediaSources,Overview,RunTimeTicks,UserData`);
+            playingItem.value = item;
+          }
+          playItemId.value = id;
+          await nextTick(); // the player container only exists once navPage renders
+          await startPlayback(item, pendingMediaSourceId);
+        } catch (e) {
+          console.error('startPlayerFromRoute', e);
+          alert('无法加载播放内容：' + e.message);
+        } finally {
+          pendingMediaSourceId = null;
+        }
       }
 
       async function startPlayback(item, mediaSourceId) {
@@ -315,8 +372,9 @@
           playSessionId = info.PlaySessionId;
 
           // Create player
-          if (player) player.destroy();
+          stopPlayer();
           player = new EIOPlayer(playerContainer.value);
+          playerItemId = item.Id;
           player.onProgress = (ticks) => {
             api('/Sessions/Playing/Progress', {
               method: 'POST',
@@ -342,15 +400,22 @@
         } catch (e) { console.error('startPlayback', e); alert('播放失败：' + e.message); }
       }
 
+      // stopPlayer tears the player down and reports the stop upstream. It is
+      // separate from exitPlayer because leaving the player route must stop
+      // playback without necessarily navigating.
+      function stopPlayer() {
+        if (!player) return;
+        api('/Sessions/Playing/Stopped', {
+          method: 'POST',
+          body: JSON.stringify({ ItemId: playItemId.value, PlaySessionId: playSessionId, PositionTicks: player.positionTicks }),
+        }).catch(() => {});
+        player.destroy();
+        player = null;
+        playerItemId = null;
+      }
+
       function exitPlayer() {
-        if (player) {
-          api('/Sessions/Playing/Stopped', {
-            method: 'POST',
-            body: JSON.stringify({ ItemId: playItemId.value, PlaySessionId: playSessionId, PositionTicks: player.positionTicks }),
-          }).catch(() => {});
-          player.destroy();
-          player = null;
-        }
+        stopPlayer();
         window.history.back();
       }
 
@@ -383,21 +448,23 @@
           try {
             const me = await api(`/Users/${localStorage.getItem('eio_user_id')}`);
             currentUser.value = me;
+            const hadHash = !!window.location.hash;
             window.location.hash = window.location.hash || '#/home';
-            syncFromHash();
-            if (navPage.value === 'home') loadHome();
+            // When the hash was just set, the hashchange event drives the
+            // first sync; calling it here too would load the home data twice.
+            if (hadHash) syncFromHash();
           } catch { doLogout(); }
         } else { syncFromHash(); }
       });
 
       onBeforeUnmount(() => {
         window.removeEventListener('hashchange', syncFromHash);
-        if (player) { player.destroy(); player = null; }
+        stopPlayer();
       });
 
       return {
         page, navPage, loginForm, loginError, loginLoading, currentUser, passWrap, mobileMenu, pages,
-        navigateTo, doLogin, doLogout, focusPass,
+        navigateTo, doLogin, doLogout, focusPass, libraryIcon,
         resumeItems, libraries, latestSections, loadHome,
         libraryName, libraryItems, libraryLoading, libFilter, libSort, libGenres, libLimit,
         openLibrary, loadLibraryItems, loadLibraryMore,

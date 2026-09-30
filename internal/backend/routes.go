@@ -61,7 +61,7 @@ func (a *App) Handler() http.Handler {
 	// links reach the router. The COOP/COEP headers are scoped to /web/ so the
 	// WASM player can use SharedArrayBuffer, while the rest of the API keeps
 	// answering without isolation headers.
-	mux.HandleFunc("GET /web/{$}", a.handleWebPanel)
+	mux.Handle("GET /web/{$}", webCrossOriginIsolation(http.HandlerFunc(a.handleWebPanel)))
 	mux.Handle("/web/", webCrossOriginIsolation(http.HandlerFunc(a.handleWebSPA)))
 	mux.HandleFunc("GET /web", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/web/", http.StatusFound)
