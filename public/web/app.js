@@ -13,10 +13,15 @@
 
   async function api(path, opts = {}) {
     const token = localStorage.getItem('eio_token');
-    const userId = localStorage.getItem('eio_user_id');
+    // Authentication uses X-Emby-Token only. The web client deliberately sends
+    // no client identity (no Authorization compound header, no X-Emby-Client /
+    // X-Emby-Device-* headers): on passthrough upstreams those headers would
+    // win the identity resolution over the captured real-client identity and
+    // the upstream would register a fabricated "web" device record. With no
+    // identity headers the proxy falls through to the captured real client's
+    // UA, which is exactly what passthrough mode promises.
     const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
-    if (token) headers['Authorization'] = `MediaBrowser Token="${token}", Client="Emby-in-One Web", Device="web", DeviceId="${deviceId}", Version="1.0"`;
-    if (userId) headers['X-Emby-User-Id'] = userId;
+    if (token) headers['X-Emby-Token'] = token;
     const res = await fetch(`${API}${path}`, { ...opts, headers });
     if (!res.ok) {
       const body = await res.text().catch(() => '');
@@ -26,17 +31,13 @@
     return res.json();
   }
 
+  // Raw URLs (images, streams, subtitle files) authenticate with api_key in
+  // the query string — same token, and equally free of client identity.
   function apiRaw(path) {
     const token = localStorage.getItem('eio_token');
     const sep = path.includes('?') ? '&' : '?';
     return `${API}${path}${sep}api_key=${encodeURIComponent(token || '')}`;
   }
-
-  const deviceId = (() => {
-    let id = localStorage.getItem('eio_device_id');
-    if (!id) { id = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2); localStorage.setItem('eio_device_id', id); }
-    return id;
-  })();
 
   function fmtTicks(ticks) {
     if (!ticks) return '0:00';

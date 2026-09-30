@@ -77,6 +77,46 @@ func TestResolvePassthroughHeadersPreferenceOrder(t *testing.T) {
 	}
 }
 
+// TestWebClientHeadersDoNotClaimPassthroughIdentity locks in the contract the
+// web player relies on: a browser request that authenticates with X-Emby-Token
+// and carries no Emby identity headers must not be treated as a live client
+// identity. If it were, the passthrough resolution would rank it above the
+// captured real-client identity and the upstream would register a fabricated
+// "web" device record instead of seeing the real client's UA.
+func TestWebClientHeadersDoNotClaimPassthroughIdentity(t *testing.T) {
+	svc := NewClientIdentityService()
+	svc.SetCaptured("real-client-token", http.Header{
+		"User-Agent":            []string{"Infuse/7.7.1 (iPhone; iOS 17.4.1; Scale/3.00)"},
+		"X-Emby-Client":         []string{"Infuse"},
+		"X-Emby-Client-Version": []string{"7.7.1"},
+		"X-Emby-Device-Name":    []string{"iPhone"},
+		"X-Emby-Device-Id":      []string{"real-device-id"},
+	})
+
+	// The exact header shape the web client sends after the fix: auth token in
+	// X-Emby-Token, the browser's own User-Agent, and nothing else.
+	webHeaders := http.Header{
+		"X-Emby-Token": []string{"web-client-proxy-token"},
+		"User-Agent":   []string{"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"},
+	}
+	if hasPassthroughIdentity(webHeaders) {
+		t.Fatal("web client headers must not count as a passthrough identity")
+	}
+
+	// Resolving with the web client's live headers must fall through to the
+	// captured real-client identity, not report a live-request identity.
+	resolved := svc.ResolvePassthroughHeadersForServer(webHeaders, "web-client-proxy-token", "server-key")
+	if resolved.Source == "live-request" {
+		t.Fatalf("source = live-request; the web client must not claim the live identity slot")
+	}
+	if got := resolved.Headers.Get("X-Emby-Client"); got != "Infuse" {
+		t.Fatalf("client = %q, want the captured real client Infuse", got)
+	}
+	if got := resolved.Headers.Get("User-Agent"); got != "Infuse/7.7.1 (iPhone; iOS 17.4.1; Scale/3.00)" {
+		t.Fatalf("user-agent = %q, want the captured real client UA", got)
+	}
+}
+
 func TestParseAuthorizationIdentity(t *testing.T) {
 	tests := []struct {
 		name   string
