@@ -1,0 +1,882 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Emby-in-One · /web 页面预览 v1.2</title>
+<style>
+/* ============ v1.1 设计令牌（含对比度修订，见 02-design-notes.md） ============ */
+:root{
+  --bg-0:#070a12; --bg-1:#0d1322; --bg-2:#151d31; --bg-3:#1e2942;
+  --line:rgba(148,163,184,.14); --line-2:rgba(148,163,184,.24);
+  --t1:#f1f5f9; --t2:#94a3b8; --t3:#5b6b85;
+  --ac:#4f46e5; --ac2:#7c3aed; --ac-text:#818cf8;
+  --ac-grad:linear-gradient(135deg,#4f46e5 0%,#7c3aed 100%);
+  --ac-glow:rgba(79,70,229,.35);
+  --gold:#f5b544; --dv:#a78bfa; --atmos:#34d399; --danger:#f87171;
+  --r-card:14px; --r-btn:10px; --r-pill:999px;
+  --sh-card:0 10px 34px rgba(0,0,0,.45);
+  --sh-pop:0 18px 50px rgba(0,0,0,.6);
+  --glass:rgba(13,19,34,.72);
+  --ease:cubic-bezier(.22,.61,.36,1);
+  --dur:.22s;
+}
+*{margin:0;padding:0;box-sizing:border-box;scrollbar-width:thin;scrollbar-color:var(--bg-3) transparent;}
+html{scroll-behavior:smooth;}
+body{background:radial-gradient(1100px 500px at 85% -100px,rgba(79,70,229,.13),transparent 60%),radial-gradient(800px 400px at -10% 30%,rgba(124,58,237,.07),transparent 60%),var(--bg-0);
+  color:var(--t1);font-family:"Inter","Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;line-height:1.65;-webkit-font-smoothing:antialiased;}
+::selection{background:rgba(79,70,229,.4);}
+:focus-visible{outline:2px solid var(--ac-text);outline-offset:2px;}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;}}
+.wrap{max-width:1240px;margin:0 auto;padding:0 24px 90px;}
+
+/* ---------- 文档头 ---------- */
+.doc-hero{padding:60px 0 34px;}
+.doc-kicker{display:inline-flex;align-items:center;gap:8px;font-size:12px;font-weight:600;letter-spacing:.18em;color:var(--t2);border:1px solid var(--line-2);border-radius:var(--r-pill);padding:6px 14px;background:var(--bg-1);}
+.doc-kicker .dot{width:6px;height:6px;border-radius:50%;background:var(--ac-text);box-shadow:0 0 10px var(--ac-glow);}
+.doc-hero h1{font-size:clamp(28px,4vw,40px);font-weight:800;letter-spacing:-.03em;margin:20px 0 8px;}
+.doc-hero h1 em{font-style:normal;background:var(--ac-grad);-webkit-background-clip:text;background-clip:text;color:transparent;}
+.doc-hero p{color:var(--t2);font-size:15px;max-width:780px;}
+.doc-meta{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px;}
+.doc-meta span{font-size:12.5px;color:var(--t2);background:var(--bg-1);border:1px solid var(--line);border-radius:8px;padding:5px 12px;}
+.doc-meta b{color:var(--t1);font-weight:600;}
+
+/* ---------- 页签 ---------- */
+.tabs{position:sticky;top:0;z-index:50;backdrop-filter:blur(14px);background:rgba(7,10,18,.82);border-bottom:1px solid var(--line);margin:0 -24px;padding:0 24px;}
+.tabs .in{max-width:1240px;margin:0 auto;display:flex;gap:4px;overflow-x:auto;}
+.tabs .in::-webkit-scrollbar{display:none;}
+.tab{flex:none;position:relative;border:none;background:transparent;color:var(--t2);font-size:13.5px;font-weight:600;padding:15px 15px;cursor:pointer;transition:color var(--dur) var(--ease);font-family:inherit;}
+.tab:hover{color:var(--t1);}
+.tab.on{color:var(--t1);}
+.tab::after{content:"";position:absolute;left:14px;right:14px;bottom:-1px;height:2px;border-radius:2px;background:var(--ac-grad);opacity:0;transition:opacity var(--dur);}
+.tab.on::after{opacity:1;}
+
+/* ---------- 页面区 ---------- */
+.page{display:none;padding-top:28px;}
+.page.on{display:block;}
+.page-cap{display:flex;align-items:baseline;gap:12px;margin-bottom:14px;}
+.page-cap h2{font-size:19px;font-weight:750;letter-spacing:-.02em;}
+.page-cap span{font-size:12.5px;color:var(--t3);}
+
+/* ---------- 浏览器框架 ---------- */
+.frame{border-radius:16px;overflow-x:auto;border:1px solid var(--line-2);box-shadow:var(--sh-pop);background:var(--bg-0);}
+.frame .bar{display:flex;align-items:center;gap:8px;padding:11px 16px;background:var(--bg-1);border-bottom:1px solid var(--line);}
+.frame .bar .c{width:11px;height:11px;border-radius:50%;flex:none;}
+.frame .bar .c1{background:#ff5f57;} .frame .bar .c2{background:#febc2e;} .frame .bar .c3{background:#28c840;}
+.frame .bar .url{flex:1;text-align:center;font-size:12px;color:var(--t3);background:var(--bg-0);border-radius:8px;padding:5px 14px;margin-left:12px;min-width:200px;}
+.mock{min-width:900px;position:relative;}
+
+/* ---------- 要点行 ---------- */
+.keypts{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px;margin-top:16px;}
+.kp{background:var(--bg-1);border:1px solid var(--line);border-radius:12px;padding:12px 16px;font-size:12.5px;color:var(--t2);}
+.kp b{display:block;color:var(--t1);font-size:13px;margin-bottom:2px;font-weight:650;}
+
+/* ============ 侧栏 ============ */
+.side{width:216px;flex:none;background:var(--bg-1);border-right:1px solid var(--line);display:flex;flex-direction:column;padding:18px 14px;}
+.side .logo{display:flex;align-items:center;gap:11px;padding:6px 10px 18px;}
+.side .logo .m{width:34px;height:34px;border-radius:10px;background:var(--ac-grad);display:flex;align-items:center;justify-content:center;box-shadow:0 6px 18px var(--ac-glow);}
+.side .logo .m svg{width:16px;height:16px;fill:#fff;}
+.side .logo b{font-size:15px;letter-spacing:-.01em;}
+.nav-i{display:flex;align-items:center;gap:12px;padding:11px 13px;border-radius:var(--r-btn);color:var(--t2);font-size:13.5px;font-weight:550;cursor:pointer;transition:all var(--dur);position:relative;}
+.nav-i svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex:none;}
+.nav-i:hover{color:var(--t1);background:var(--bg-2);}
+.nav-i.on{color:#fff;background:linear-gradient(90deg,rgba(79,70,229,.3),rgba(124,58,237,.1));}
+.nav-i.on::before{content:"";position:absolute;left:-14px;top:9px;bottom:9px;width:3px;border-radius:3px;background:var(--ac-grad);box-shadow:0 0 12px var(--ac-glow);}
+.side .user{margin-top:auto;display:flex;align-items:center;gap:10px;padding:11px 13px;border-radius:var(--r-btn);background:var(--bg-2);border:1px solid var(--line);}
+.side .avatar{width:30px;height:30px;border-radius:50%;background:var(--ac-grad);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;flex:none;}
+.side .user .n{font-size:12.5px;font-weight:600;}
+.side .user .s{font-size:10.5px;color:var(--t3);}
+
+/* ============ 通用组件 ============ */
+.main{flex:1;min-width:0;display:flex;flex-direction:column;background:var(--bg-0);}
+.spacer{flex:1;}
+.gchips{display:flex;gap:8px;flex-wrap:wrap;}
+.gchip{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;font-weight:650;letter-spacing:.04em;padding:4px 11px;border-radius:var(--r-pill);color:var(--t1);background:rgba(13,19,34,.6);border:1px solid rgba(255,255,255,.16);backdrop-filter:blur(8px);}
+.gchip .d{width:5px;height:5px;border-radius:50%;}
+.gchip.k4k .d{background:var(--gold);} .gchip.dv .d{background:var(--dv);} .gchip.atm .d{background:var(--atmos);} .gchip.plain .d{background:var(--t3);}
+.btn-p{display:inline-flex;align-items:center;gap:9px;background:var(--ac-grad);color:#fff;border:none;border-radius:var(--r-btn);padding:12px 26px;font-size:14.5px;font-weight:650;cursor:pointer;box-shadow:0 6px 22px var(--ac-glow);transition:transform var(--dur) var(--ease),box-shadow var(--dur),filter var(--dur);font-family:inherit;}
+.btn-p:hover{transform:translateY(-2px);box-shadow:0 10px 30px var(--ac-glow);filter:brightness(1.08);}
+.btn-p svg{width:16px;height:16px;fill:currentColor;}
+.btn-p small{display:block;font-size:11px;font-weight:500;opacity:.85;margin-top:1px;}
+.btn-g{display:inline-flex;align-items:center;gap:9px;background:rgba(21,29,49,.7);color:var(--t1);border:1px solid var(--line-2);border-radius:var(--r-btn);padding:12px 22px;font-size:14px;font-weight:600;cursor:pointer;backdrop-filter:blur(8px);transition:all var(--dur) var(--ease);font-family:inherit;}
+.btn-g:hover{border-color:rgba(129,140,248,.5);background:var(--bg-3);}
+.btn-g svg{width:15px;height:15px;fill:currentColor;}
+.ibtn{width:38px;height:38px;border-radius:10px;display:flex;align-items:center;justify-content:center;background:transparent;border:none;color:var(--t1);cursor:pointer;transition:all var(--dur);}
+.ibtn:hover{background:var(--bg-3);}
+.ibtn svg{width:19px;height:19px;fill:currentColor;}
+.gpill{display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:600;color:var(--t1);background:rgba(13,19,34,.6);border:1px solid var(--line-2);border-radius:var(--r-pill);padding:7px 13px;cursor:pointer;backdrop-filter:blur(8px);transition:all var(--dur);font-family:inherit;}
+.gpill:hover{border-color:rgba(129,140,248,.55);background:var(--bg-3);}
+.gpill svg{width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round;}
+.gpill .v{color:var(--t2);font-weight:500;}
+
+/* 海报卡 */
+.np-card{border-radius:var(--r-card);overflow:hidden;position:relative;cursor:pointer;background:var(--bg-2);border:1px solid var(--line);transition:transform var(--dur) var(--ease),box-shadow var(--dur) var(--ease),border-color var(--dur);}
+.np-card:hover{transform:translateY(-6px);box-shadow:var(--sh-pop);border-color:rgba(129,140,248,.45);}
+.np-poster{aspect-ratio:2/3;position:relative;display:flex;align-items:flex-end;}
+.np-poster .scrim{position:absolute;inset:auto 0 0 0;height:64%;background:linear-gradient(transparent,rgba(4,7,14,.94));display:flex;flex-direction:column;justify-content:flex-end;padding:12px 12px 10px;transform:translateY(14px);opacity:.92;transition:transform var(--dur) var(--ease),opacity var(--dur);}
+.np-card:hover .scrim{transform:translateY(0);opacity:1;}
+.np-title{font-size:13.5px;font-weight:650;letter-spacing:-.01em;line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}
+.np-meta{font-size:11.5px;color:var(--t2);margin-top:3px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
+.np-meta .star{color:var(--gold);font-weight:700;}
+.np-badge{position:absolute;top:10px;right:10px;font-size:10.5px;font-weight:700;letter-spacing:.06em;padding:3px 9px;border-radius:var(--r-pill);color:#fff;background:rgba(7,10,18,.55);border:1px solid rgba(255,255,255,.22);backdrop-filter:blur(8px);}
+.np-badge.dv{color:var(--dv);border-color:rgba(167,139,250,.5);}
+.np-play{position:absolute;left:50%;top:44%;transform:translate(-50%,-50%) scale(.6);width:46px;height:46px;border-radius:50%;border:1px solid rgba(255,255,255,.35);background:rgba(7,10,18,.55);backdrop-filter:blur(8px);display:flex;align-items:center;justify-content:center;color:#fff;opacity:0;transition:all var(--dur) var(--ease);cursor:pointer;}
+.np-card:hover .np-play{opacity:1;transform:translate(-50%,-50%) scale(1);}
+.np-play svg{width:18px;height:18px;fill:currentColor;margin-left:2px;}
+.np-prog{position:absolute;left:0;right:0;bottom:0;height:3px;background:rgba(255,255,255,.18);}
+.np-prog i{display:block;height:100%;background:var(--ac-grad);box-shadow:0 0 8px var(--ac-glow);}
+.hscroll{display:grid;grid-auto-flow:column;grid-auto-columns:clamp(128px,11vw,158px);gap:16px;overflow-x:auto;padding-bottom:18px;}
+.pgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(138px,1fr));gap:16px;padding:0 30px 24px;}
+.rise{animation:rise .55s var(--ease) both;}
+@keyframes rise{from{opacity:0;transform:translateY(16px);}to{opacity:1;transform:none;}}
+
+/* 媒体库卡 */
+.lib-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:14px;}
+.lib-card{position:relative;border-radius:var(--r-card);overflow:hidden;cursor:pointer;min-height:104px;border:1px solid var(--line);display:flex;align-items:flex-end;padding:14px 16px;transition:transform var(--dur) var(--ease),box-shadow var(--dur),border-color var(--dur);}
+.lib-card:hover{transform:translateY(-4px);box-shadow:var(--sh-pop);border-color:rgba(129,140,248,.45);}
+.lib-card .bg{position:absolute;inset:0;}
+.lib-card .veil{position:absolute;inset:0;background:linear-gradient(100deg,rgba(7,10,18,.85) 25%,rgba(7,10,18,.3));}
+.lib-name{position:relative;font-size:15.5px;font-weight:700;}
+.lib-count{position:relative;font-size:11.5px;color:var(--t2);margin-top:2px;}
+
+/* Hero */
+.hero{position:relative;overflow:hidden;min-height:318px;display:flex;align-items:flex-end;border-bottom:1px solid var(--line);}
+.hero .bg{position:absolute;inset:0;background:radial-gradient(700px 340px at 72% 14%,rgba(79,70,229,.42),transparent 65%),radial-gradient(520px 300px at 28% 85%,rgba(124,58,237,.24),transparent 60%),linear-gradient(115deg,#1b1e4b 0%,#0d1327 55%,#070a12 100%);}
+.hero .veil{position:absolute;inset:0;background:linear-gradient(to top,rgba(7,10,18,.97) 6%,rgba(7,10,18,.4) 52%,transparent);}
+.hero .content{position:relative;padding:26px 30px 30px;max-width:600px;}
+.hero h3{font-size:clamp(24px,2.6vw,32px);font-weight:800;letter-spacing:-.025em;margin:12px 0 4px;}
+.hero .orig{font-size:13px;color:var(--t2);letter-spacing:.02em;}
+.hero .meta{color:var(--t2);font-size:13px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px;}
+.hero .meta .star{color:var(--gold);font-weight:700;}
+.hero p{color:var(--t2);font-size:13px;margin:12px 0 18px;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;max-width:520px;}
+.hero .dots{position:absolute;right:26px;bottom:24px;display:flex;gap:7px;}
+.hero .dots i{width:7px;height:7px;border-radius:50%;background:rgba(255,255,255,.25);transition:all var(--dur);cursor:pointer;}
+.hero .dots i.on{background:#fff;width:22px;border-radius:4px;}
+.row{padding:20px 30px 4px;}
+.row .rh{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:13px;}
+.row .rh h6{font-size:16px;font-weight:700;letter-spacing:-.01em;}
+.row .rh a{font-size:12.5px;color:var(--t3);text-decoration:none;cursor:pointer;}
+.row .rh a:hover{color:var(--ac-text);}
+
+/* 媒体库工具栏 */
+.libbar{display:flex;align-items:center;gap:14px;margin:18px 30px 16px;padding:10px 16px;border-radius:14px;background:var(--glass);border:1px solid rgba(255,255,255,.1);backdrop-filter:blur(14px);box-shadow:var(--sh-card);flex-wrap:wrap;}
+.lb-title{font-size:16px;font-weight:750;letter-spacing:-.01em;}
+.lb-title span{font-size:12px;color:var(--t3);font-weight:500;margin-left:8px;}
+.fpills{display:flex;gap:6px;flex-wrap:wrap;}
+.fpill{font-size:12px;font-weight:600;color:var(--t2);padding:6px 13px;border-radius:var(--r-pill);cursor:pointer;border:1px solid transparent;transition:all var(--dur);}
+.fpill:hover{color:var(--t1);background:var(--bg-3);}
+.fpill.on{color:#fff;background:var(--ac-grad);box-shadow:0 4px 12px var(--ac-glow);}
+.viewtog{display:flex;gap:2px;background:var(--bg-2);border-radius:10px;padding:3px;}
+.viewtog .ibtn{width:32px;height:32px;border-radius:8px;}
+.viewtog .ibtn.on{background:var(--bg-3);color:var(--t1);}
+.viewtog .ibtn svg{width:16px;height:16px;}
+.skel{border-radius:10px;background:linear-gradient(100deg,var(--bg-2) 40%,var(--bg-3) 50%,var(--bg-2) 60%);background-size:200% 100%;animation:shimmer 1.4s infinite linear;}
+@keyframes shimmer{to{background-position:-200% 0;}}
+.skel-poster{aspect-ratio:2/3;}
+.skel-line{height:11px;margin-top:9px;}
+.skel-line.s{width:55%;}
+
+/* 版本卡 */
+.ver-card{display:flex;gap:14px;align-items:center;padding:14px 16px;border-radius:12px;background:var(--bg-2);border:1px solid var(--line);cursor:pointer;transition:all var(--dur) var(--ease);}
+.ver-card:hover{border-color:var(--line-2);}
+.ver-card.on{border-color:rgba(129,140,248,.6);background:linear-gradient(90deg,rgba(79,70,229,.15),transparent 55%),var(--bg-2);}
+.vc-radio{width:18px;height:18px;border-radius:50%;border:2px solid var(--line-2);flex:none;position:relative;transition:border-color var(--dur);}
+.ver-card.on .vc-radio{border-color:var(--ac-text);}
+.ver-card.on .vc-radio::after{content:"";position:absolute;inset:3px;border-radius:50%;background:var(--ac-grad);}
+.vc-main{flex:1;min-width:0;}
+.vc-name{font-size:14px;font-weight:650;}
+.vc-tags{margin-top:6px;}
+.vc-meta{font-size:12px;color:var(--t3);font-variant-numeric:tabular-nums;flex:none;}
+
+/* 分段控件 */
+.seg{display:inline-flex;background:var(--bg-2);border:1px solid var(--line);border-radius:var(--r-pill);padding:4px;gap:4px;}
+.seg button{border:none;background:transparent;color:var(--t2);font-size:13px;font-weight:600;padding:7px 18px;border-radius:var(--r-pill);cursor:pointer;transition:all var(--dur);font-family:inherit;}
+.seg button:hover{color:var(--t1);}
+.seg button.on{color:#fff;background:var(--ac-grad);box-shadow:0 4px 14px var(--ac-glow);}
+.seg button span{font-size:11px;opacity:.75;margin-left:4px;font-weight:500;}
+
+/* 剧集行 */
+.ep-row{display:flex;gap:16px;padding:12px;border-radius:12px;background:var(--bg-2);border:1px solid var(--line);cursor:pointer;transition:all var(--dur) var(--ease);}
+.ep-row:hover{border-color:rgba(129,140,248,.45);transform:translateX(4px);}
+.ep-row.watched{opacity:.55;}
+.ep-row.next{border-color:rgba(129,140,248,.55);background:linear-gradient(90deg,rgba(79,70,229,.12),transparent 60%),var(--bg-2);}
+.ep-thumb{width:150px;aspect-ratio:16/9;border-radius:8px;flex:none;position:relative;overflow:hidden;}
+.ep-thumb .ck{position:absolute;top:6px;right:6px;width:20px;height:20px;border-radius:50%;background:var(--atmos);display:flex;align-items:center;justify-content;}
+.ep-thumb .ck svg{width:11px;height:11px;fill:none;stroke:#04281c;stroke-width:3;stroke-linecap:round;stroke-linejoin:round;}
+.ep-body{flex:1;min-width:0;}
+.ep-no{font-size:11px;color:var(--t3);font-weight:700;letter-spacing:.1em;}
+.ep-name{font-size:14.5px;font-weight:650;margin-top:1px;}
+.ep-meta{font-size:12px;color:var(--t2);margin-top:4px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;}
+.ep-prog{height:3px;background:rgba(255,255,255,.15);border-radius:2px;margin-top:9px;width:66%;}
+.ep-prog i{display:block;height:100%;background:var(--ac-grad);border-radius:2px;}
+.ep-side{display:flex;align-items:center;gap:10px;flex:none;}
+.ep-play{width:42px;height:42px;border-radius:50%;background:var(--ac-grad);border:none;color:#fff;display:flex;align-items:center;justify-content:center;cursor:pointer;opacity:0;transform:scale(.7);transition:all var(--dur) var(--ease);box-shadow:0 6px 16px var(--ac-glow);}
+.ep-row:hover .ep-play{opacity:1;transform:scale(1);}
+.ep-play svg{width:17px;height:17px;fill:currentColor;margin-left:2px;}
+.next-chip{font-size:11px;font-weight:700;color:var(--ac-text);border:1px solid rgba(129,140,248,.45);border-radius:var(--r-pill);padding:3px 10px;letter-spacing:.04em;}
+
+/* 轨道选择 */
+.track-item{display:flex;align-items:center;gap:10px;padding:11px 14px;border-radius:10px;background:var(--bg-2);border:1px solid var(--line);cursor:pointer;font-size:13px;color:var(--t2);transition:all var(--dur);}
+.track-item:hover{border-color:var(--line-2);color:var(--t1);}
+.track-item.on{border-color:rgba(129,140,248,.55);color:var(--t1);}
+.track-item .dot{width:6px;height:6px;border-radius:50%;background:var(--t3);flex:none;}
+.track-item.on .dot{background:var(--ac-text);box-shadow:0 0 8px var(--ac-glow);}
+.track-item .ext{font-size:10.5px;color:var(--t3);border:1px solid var(--line-2);border-radius:6px;padding:1px 7px;margin-left:auto;letter-spacing:.05em;}
+.track-item .atm{color:var(--atmos);font-weight:700;font-size:11px;}
+
+/* 搜索 */
+.search-new{position:relative;}
+.search-new svg{position:absolute;left:18px;top:50%;transform:translateY(-50%);width:19px;height:19px;fill:none;stroke:var(--t3);stroke-width:2.2;stroke-linecap:round;}
+.search-new input{width:100%;background:var(--bg-1);border:1px solid rgba(129,140,248,.6);border-radius:var(--r-pill);color:var(--t1);padding:15px 22px 15px 50px;font-size:15.5px;outline:none;box-shadow:0 0 0 4px rgba(79,70,229,.18);font-family:inherit;}
+.search-new input::placeholder{color:var(--t3);}
+.recent{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:16px;}
+.recent .rl{font-size:12px;color:var(--t3);margin-right:2px;}
+.rchip{display:inline-flex;align-items:center;gap:8px;font-size:12.5px;color:var(--t2);background:var(--bg-2);border:1px solid var(--line);border-radius:var(--r-pill);padding:5px 8px 5px 14px;cursor:pointer;transition:all var(--dur);}
+.rchip:hover{color:var(--t1);border-color:var(--line-2);}
+.rchip .x{width:17px;height:17px;border-radius:50%;display:flex;align-items:center;justify-content:center;color:var(--t3);font-size:12px;line-height:1;}
+.rchip .x:hover{background:var(--bg-3);color:var(--t1);}
+.res-card{display:flex;gap:16px;padding:14px;border-radius:var(--r-card);background:var(--bg-1);border:1px solid var(--line);cursor:pointer;transition:all var(--dur);}
+.res-card:hover{border-color:rgba(129,140,248,.5);transform:translateX(4px);}
+.res-card .thumb{width:56px;aspect-ratio:2/3;border-radius:8px;flex:none;}
+.res-card .rt{font-size:14.5px;font-weight:650;}
+.res-card .rm{font-size:12px;color:var(--t2);margin-top:2px;}
+.res-card .ro{font-size:12px;color:var(--t3);margin-top:5px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}
+.grp{margin-top:24px;}
+.grp-h{display:flex;align-items:baseline;gap:10px;margin-bottom:12px;}
+.grp-h b{font-size:15px;font-weight:700;}
+.grp-h span{font-size:12px;color:var(--t3);}
+
+/* 空状态 */
+.empty{display:flex;flex-direction:column;align-items:center;gap:8px;padding:36px 20px;border:1px dashed var(--line-2);border-radius:14px;text-align:center;}
+.empty .ill{width:120px;height:78px;margin-bottom:4px;}
+.empty .e1{font-size:14.5px;font-weight:650;}
+.empty .e2{font-size:12.5px;color:var(--t2);}
+.empty .act{margin-top:8px;font-size:13px;color:var(--ac-text);cursor:pointer;font-weight:600;}
+.empty .act:hover{text-decoration:underline;}
+
+/* 登录 */
+.login-wrap{display:grid;place-items:center;min-height:520px;background:radial-gradient(700px 400px at 70% 20%,rgba(79,70,229,.1),transparent 60%),var(--bg-0);padding:30px;}
+.login-split{display:grid;grid-template-columns:1.05fr 1fr;width:100%;max-width:820px;border-radius:18px;overflow:hidden;border:1px solid var(--line);box-shadow:var(--sh-pop);}
+.login-brand{position:relative;padding:34px;display:flex;flex-direction:column;justify-content:space-between;background:radial-gradient(500px 300px at 20% 15%,rgba(79,70,229,.45),transparent 60%),radial-gradient(400px 260px at 85% 90%,rgba(124,58,237,.3),transparent 60%),linear-gradient(140deg,#141a3a 0%,#0a0f1f 70%);}
+.login-brand .gridlines{position:absolute;inset:0;opacity:.5;background-image:linear-gradient(rgba(255,255,255,.045) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.045) 1px,transparent 1px);background-size:34px 34px;}
+.login-brand .mark{position:relative;width:52px;height:52px;border-radius:14px;background:var(--ac-grad);display:flex;align-items:center;justify-content:center;box-shadow:0 8px 26px var(--ac-glow);}
+.login-brand .mark svg{width:24px;height:24px;fill:#fff;}
+.login-brand h5{position:relative;font-size:23px;font-weight:800;letter-spacing:-.02em;margin-top:24px;}
+.login-brand p{position:relative;color:var(--t2);font-size:13.5px;margin-top:8px;max-width:300px;}
+.login-brand .foot{position:relative;font-size:12px;color:var(--t3);}
+.login-form{background:var(--bg-1);padding:34px;display:flex;flex-direction:column;justify-content:center;gap:15px;}
+.login-form label{font-size:12.5px;font-weight:650;color:var(--t2);display:block;margin-bottom:7px;letter-spacing:.02em;}
+.fld{position:relative;}
+.fld input{width:100%;background:var(--bg-0);border:1px solid var(--line-2);border-radius:var(--r-btn);color:var(--t1);padding:12px 44px 12px 15px;font-size:14px;outline:none;transition:border-color var(--dur),box-shadow var(--dur);font-family:inherit;}
+.fld input:focus{border-color:var(--ac-text);box-shadow:0 0 0 3px rgba(79,70,229,.22);}
+.fld input.err{border-color:var(--danger);}
+.fld .eye{position:absolute;right:8px;top:50%;transform:translateY(-50%);width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--t3);cursor:pointer;background:none;border:none;}
+.fld .eye:hover{color:var(--t1);background:var(--bg-2);}
+.fld .eye svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;}
+.fld .err-msg{font-size:12px;color:var(--danger);margin-top:6px;display:flex;align-items:center;gap:6px;}
+.fld .err-msg svg{width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;}
+.login-form .hint{font-size:12px;color:var(--t3);}
+
+/* 播放器 */
+.player-mock{position:relative;aspect-ratio:16/8.4;min-height:560px;background:radial-gradient(800px 380px at 65% 26%,rgba(79,70,229,.3),transparent 62%),radial-gradient(500px 300px at 20% 75%,rgba(124,58,237,.18),transparent 60%),linear-gradient(160deg,#10163a 0%,#0a0f22 55%,#05070d 100%);overflow:hidden;}
+.player-mock .vlabel{position:absolute;left:50%;top:40%;transform:translate(-50%,-50%);text-align:center;color:rgba(255,255,255,.85);}
+.player-mock .vlabel .b1{font-size:19px;font-weight:750;letter-spacing:-.01em;}
+.player-mock .vlabel .b2{font-size:12px;color:var(--t2);margin-top:7px;letter-spacing:.16em;}
+.player-mock .topbar{position:absolute;top:0;left:0;right:0;padding:18px 24px;display:flex;align-items:center;gap:14px;background:linear-gradient(rgba(5,7,13,.78),transparent);}
+.player-mock .topbar .back{width:36px;height:36px;border-radius:50%;background:rgba(7,10,18,.5);border:1px solid rgba(255,255,255,.18);display:flex;align-items:center;justify-content:center;cursor:pointer;}
+.player-mock .topbar .back svg{width:16px;height:16px;fill:none;stroke:#fff;stroke-width:2.4;stroke-linecap:round;stroke-linejoin:round;}
+.player-mock .topbar .tt{font-size:14px;font-weight:650;color:#fff;text-shadow:0 1px 6px rgba(0,0,0,.6);}
+.player-mock .topbar .tt small{color:var(--t2);font-weight:500;margin-left:8px;}
+.player-mock .sub{position:absolute;bottom:118px;left:0;right:0;text-align:center;font-size:clamp(14px,1.6vw,19px);color:#fff;text-shadow:1px 1px 3px #000,-1px -1px 3px #000;pointer-events:none;}
+.player-mock .ctrls{position:absolute;bottom:0;left:0;right:0;padding:16px 24px 20px;background:linear-gradient(transparent,rgba(5,7,13,.9) 55%);}
+.player-mock .ctrls .inner{background:var(--glass);border:1px solid rgba(255,255,255,.1);border-radius:16px;backdrop-filter:blur(16px);padding:14px 18px;box-shadow:0 14px 40px rgba(0,0,0,.5);}
+.pbar{position:relative;height:5px;border-radius:3px;background:rgba(255,255,255,.18);cursor:pointer;}
+.pbar .buf{position:absolute;inset:0 auto 0 0;width:64%;background:rgba(255,255,255,.3);border-radius:3px;}
+.pbar .cur{position:absolute;inset:0 auto 0 0;width:38%;background:var(--ac-grad);border-radius:3px;box-shadow:0 0 10px var(--ac-glow);}
+.pbar .thumb{position:absolute;top:50%;left:38%;width:13px;height:13px;border-radius:50%;background:#fff;transform:translate(-50%,-50%);box-shadow:0 2px 8px rgba(0,0,0,.5);}
+.pbar .bubble{position:absolute;bottom:18px;left:38%;transform:translateX(-50%);font-size:11px;font-weight:600;background:rgba(7,10,18,.92);border:1px solid var(--line-2);border-radius:7px;padding:4px 9px;font-variant-numeric:tabular-nums;}
+.ctrlbar{margin-top:13px;display:flex;align-items:center;gap:13px;flex-wrap:wrap;}
+.ibtn.big{width:46px;height:46px;border-radius:50%;background:var(--ac-grad);box-shadow:0 6px 18px var(--ac-glow);}
+.ibtn.big:hover{transform:scale(1.06);}
+.ibtn.big svg{width:20px;height:20px;}
+.vol{display:flex;align-items:center;gap:8px;}
+.vol input{width:76px;accent-color:var(--ac-text);cursor:pointer;}
+.ptime{font-size:12.5px;color:var(--t2);font-variant-numeric:tabular-nums;}
+.ptime b{color:var(--t1);font-weight:600;}
+.toast{position:absolute;top:66px;right:24px;display:flex;align-items:center;gap:11px;background:var(--glass);backdrop-filter:blur(16px);border:1px solid rgba(255,255,255,.12);border-radius:12px;padding:11px 14px 11px 13px;font-size:13px;box-shadow:var(--sh-pop);animation:rise .5s var(--ease) both;}
+.toast .bar{width:3px;height:20px;border-radius:2px;background:var(--atmos);flex:none;}
+.toast .tx{color:var(--t1);font-weight:600;}
+.toast .tx small{display:block;color:var(--t2);font-weight:500;font-size:11.5px;}
+.toast .close{margin-left:6px;color:var(--t3);cursor:pointer;font-size:14px;line-height:1;}
+.kbd-hint{position:absolute;right:26px;bottom:118px;display:flex;gap:6px;align-items:center;font-size:11px;color:var(--t3);}
+.kbd-hint kbd{font-family:ui-monospace,Consolas,monospace;font-size:10.5px;background:rgba(7,10,18,.6);border:1px solid var(--line-2);border-bottom-width:2px;border-radius:6px;padding:2px 7px;color:var(--t2);}
+
+/* 列表页标题 */
+.list-h{display:flex;align-items:baseline;gap:12px;padding:24px 30px 16px;}
+.list-h h2{font-size:20px;font-weight:750;letter-spacing:-.02em;}
+.list-h span{font-size:12.5px;color:var(--t3);}
+
+footer{margin-top:70px;padding-top:24px;border-top:1px solid var(--line);color:var(--t3);font-size:12.5px;display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap;}
+
+/* 渐变库 */
+.g1{background:linear-gradient(160deg,#312e81 0%,#0c1327 85%);} .g2{background:linear-gradient(160deg,#7c2d12 0%,#0c1327 85%);}
+.g3{background:linear-gradient(160deg,#14532d 0%,#0c1327 85%);} .g4{background:linear-gradient(160deg,#701a4d 0%,#0c1327 85%);}
+.g5{background:linear-gradient(160deg,#0e7490 0%,#0c1327 85%);} .g6{background:linear-gradient(160deg,#b45309 0%,#0c1327 85%);}
+.g7{background:linear-gradient(160deg,#4c1d95 0%,#0c1327 85%);} .g8{background:linear-gradient(160deg,#164e63 0%,#0c1327 85%);}
+.g9{background:linear-gradient(160deg,#831843 0%,#0c1327 85%);} .g10{background:linear-gradient(160deg,#1e3a5f 0%,#0c1327 85%);}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<div class="doc-hero">
+  <span class="doc-kicker"><span class="dot"></span>PAGE PREVIEWS · v1.2</span>
+  <h1>/web 全页面 <em>预览版</em></h1>
+  <p>按 <b>02-design-notes.md</b> 令牌与组件规范渲染的 8 个页面整页预览，已并入 v1.2 评审修订（首页行序、媒体库卡去计数、侧栏收敛）。点击上方页签切换；海报以渐变示意（实际为 imageUrl 缩略图），悬停卡片/按钮/进度条可交互。</p>
+  <div class="doc-meta">
+    <span>令牌 <b>v1.1</b> · 页面修订 <b>v1.2（评审结论）</b></span>
+    <span>页面 <b>8 个</b></span>
+    <span>新增 <b>详情页（电影/剧集）· 媒体库 · 搜索 · 列表页</b></span>
+  </div>
+</div>
+
+<nav class="tabs"><div class="in">
+  <button class="tab on" data-target="login">登录</button>
+  <button class="tab" data-target="home">首页</button>
+  <button class="tab" data-target="library">媒体库</button>
+  <button class="tab" data-target="movie">详情 · 电影</button>
+  <button class="tab" data-target="series">详情 · 剧集</button>
+  <button class="tab" data-target="search">搜索</button>
+  <button class="tab" data-target="lists">继续观看 / 收藏</button>
+  <button class="tab" data-target="player">播放器</button>
+</div></nav>
+
+<!-- ============ 1 登录 ============ -->
+<section class="page on" data-page="login">
+  <div class="page-cap"><h2>登录页</h2><span>品牌分栏 · 行内错误 · 显示密码</span></div>
+  <div class="frame">
+    <div class="bar"><span class="c c1"></span><span class="c c2"></span><span class="c c3"></span><span class="url">emby.example.com/web/#/</span></div>
+    <div class="mock">
+      <div class="login-wrap">
+        <div class="login-split">
+          <div class="login-brand">
+            <div class="gridlines"></div>
+            <div>
+              <div class="mark"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div>
+              <h5>Emby-in-One</h5>
+              <p>多台 Emby 服务器，一个入口。你的媒体库、进度与收藏，随处续播。</p>
+            </div>
+            <div class="foot">普通用户登录 · 管理员请前往 /admin</div>
+          </div>
+          <div class="login-form">
+            <div class="fld">
+              <label>用户名</label>
+              <input value="demo">
+            </div>
+            <div class="fld">
+              <label>密码</label>
+              <input type="password" value="•••••••" class="err">
+              <button class="eye" title="显示密码"><svg viewBox="0 0 24 24"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.6"/></svg></button>
+              <div class="err-msg"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16.2v.1"/></svg>用户名或密码错误，请重试</div>
+            </div>
+            <button class="btn-p" style="justify-content:center;">登 录</button>
+            <div class="hint">忘记密码请联系管理员重置</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="keypts">
+    <div class="kp"><b>品牌分栏</b>左侧渐变 + 网格纹理建立品牌感，窄屏自动堆叠为单列</div>
+    <div class="kp"><b>行内错误</b>错误显示在输入框下方（替代顶部红条），输入框红描边</div>
+    <div class="kp"><b>显示密码</b>眼睛图标内嵌右侧，hover 反馈</div>
+    <div class="kp"><b>v1.1 渐变</b>主按钮 #4F46E5→#7C3AED，白字对比度 5.7:1+（AA）</div>
+  </div>
+</section>
+
+<!-- ============ 2 首页 ============ -->
+<section class="page" data-page="home">
+  <div class="page-cap"><h2>首页</h2><span>Hero 轮播 · 继续观看 · 媒体库 · 最新（v1.2 行序）</span></div>
+  <div class="frame">
+    <div class="bar"><span class="c c1"></span><span class="c c2"></span><span class="c c3"></span><span class="url">emby.example.com/web/#/home</span></div>
+    <div class="mock" style="display:flex;min-height:840px;">
+      <aside class="side">
+        <div class="logo"><div class="m"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div><b>Emby-in-One</b></div>
+        <div class="nav-i on"><svg viewBox="0 0 24 24"><path d="M3 10.5L12 3l9 7.5"/><path d="M5 10v10h14V10"/></svg>首页</div>
+        <div class="nav-i"><svg viewBox="0 0 24 24"><path d="M12 20s-7-4.6-9-9c-1.3-3 1-7 5-7 2.5 0 4 2 4 2s1.5-2 4-2 6.3 4 5 7c-2 4.4-9 9-9 9z"/></svg>收藏</div>
+        <div class="nav-i"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>搜索</div>
+        <div class="user"><div class="avatar">演</div><div><div class="n">演示用户</div><div class="s">已登录</div></div></div>
+      </aside>
+      <div class="main">
+        <div class="hero">
+          <div class="bg"></div><div class="veil"></div>
+          <div class="content">
+            <div class="gchips">
+              <span class="gchip k4k"><span class="d"></span>4K</span>
+              <span class="gchip dv"><span class="d"></span>Dolby Vision</span>
+              <span class="gchip plain"><span class="d"></span>Atmos</span>
+            </div>
+            <h3>沙丘：第二部</h3>
+            <div class="orig">Dune: Part Two</div>
+            <div class="meta"><span>2024</span>·<span>科幻 / 冒险</span>·<span>166 分钟</span>·<span class="star">★ 8.3</span>·<span>R 级</span></div>
+            <p>保罗·艾特里奥执导的史诗科幻续章。厄崔迪家族联合弗雷曼人，在沙丘星球展开复仇与圣战，命运的风暴席卷整个宇宙。</p>
+            <div style="display:flex;gap:12px;align-items:center;">
+              <button class="btn-p"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>播放</button>
+              <button class="btn-g">详情</button>
+            </div>
+          </div>
+          <div class="dots"><i class="on"></i><i></i><i></i><i></i><i></i></div>
+        </div>
+        <div class="row">
+          <div class="rh"><h6>继续观看</h6><a>全部 ›</a></div>
+          <div class="hscroll" data-grid="resume"></div>
+        </div>
+        <div class="row">
+          <div class="rh"><h6>媒体库</h6><a>管理 ›</a></div>
+          <div class="lib-grid">
+            <div class="lib-card"><div class="bg g1"></div><div class="veil"></div><div><div class="lib-name">电影</div></div></div>
+            <div class="lib-card"><div class="bg g7"></div><div class="veil"></div><div><div class="lib-name">剧集</div></div></div>
+            <div class="lib-card"><div class="bg g3"></div><div class="veil"></div><div><div class="lib-name">音乐</div></div></div>
+            <div class="lib-card"><div class="bg g6"></div><div class="veil"></div><div><div class="lib-name">纪录片</div></div></div>
+          </div>
+        </div>
+        <div class="row">
+          <div class="rh"><h6>电影 · 最新</h6><a>进入媒体库 ›</a></div>
+          <div class="hscroll" data-grid="latest"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="keypts">
+    <div class="kp"><b>Hero 焦点区</b>取最新添加前 5 项轮播（8s，悬停暂停），含原名/评分/分级</div>
+    <div class="kp"><b>行序（v1.2）</b>Hero → 继续观看 → 媒体库 → 最新；媒体库卡不显示计数（D11）</div>
+    <div class="kp"><b>继续观看</b>横向滚动行，卡片带进度条与"剩 xx 分钟"，"全部 ›"链至 #/resume</div>
+    <div class="kp"><b>入场动效</b>卡片 stagger 上浮（60ms/项，8 项封顶）</div>
+  </div>
+</section>
+
+<!-- ============ 3 媒体库 ============ -->
+<section class="page" data-page="library">
+  <div class="page-cap"><h2>媒体库页</h2><span>粘性工具栏 · 筛选胶囊 · 无限滚动</span></div>
+  <div class="frame">
+    <div class="bar"><span class="c c1"></span><span class="c c2"></span><span class="c c3"></span><span class="url">emby.example.com/web/#/library/lib-movies</span></div>
+    <div class="mock" style="display:flex;min-height:860px;">
+      <aside class="side">
+        <div class="logo"><div class="m"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div><b>Emby-in-One</b></div>
+        <div class="nav-i"><svg viewBox="0 0 24 24"><path d="M3 10.5L12 3l9 7.5"/><path d="M5 10v10h14V10"/></svg>首页</div>
+        <div class="nav-i"><svg viewBox="0 0 24 24"><path d="M12 20s-7-4.6-9-9c-1.3-3 1-7 5-7 2.5 0 4 2 4 2s1.5-2 4-2 6.3 4 5 7c-2 4.4-9 9-9 9z"/></svg>收藏</div>
+        <div class="nav-i"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>搜索</div>
+        <div class="user"><div class="avatar">演</div><div><div class="n">演示用户</div><div class="s">已登录</div></div></div>
+      </aside>
+      <div class="main">
+        <div class="libbar">
+          <div class="lb-title">电影<span>1,284 部</span></div>
+          <div class="fpills">
+            <span class="fpill on">全部</span><span class="fpill">科幻</span><span class="fpill">剧情</span><span class="fpill">动作</span><span class="fpill">悬疑</span><span class="fpill">动画</span>
+          </div>
+          <span class="spacer"></span>
+          <button class="gpill">最新添加 <svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></button>
+          <div class="viewtog">
+            <button class="ibtn on" title="网格视图"><svg viewBox="0 0 24 24"><path d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z"/></svg></button>
+            <button class="ibtn" title="列表视图"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
+          </div>
+        </div>
+        <div class="pgrid" data-grid="movies"></div>
+        <div style="padding:0 30px 26px;">
+          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(138px,1fr));gap:16px;">
+            <div><div class="skel skel-poster"></div><div class="skel skel-line"></div><div class="skel skel-line s"></div></div>
+            <div><div class="skel skel-poster"></div><div class="skel skel-line"></div><div class="skel skel-line s"></div></div>
+            <div><div class="skel skel-poster"></div><div class="skel skel-line"></div><div class="skel skel-line s"></div></div>
+            <div><div class="skel skel-poster"></div><div class="skel skel-line"></div><div class="skel skel-line s"></div></div>
+          </div>
+          <div style="text-align:center;font-size:11.5px;color:var(--t3);margin-top:14px;letter-spacing:.1em;">↓ 无限滚动加载中（IntersectionObserver 哨兵）</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="keypts">
+    <div class="kp"><b>粘性工具栏</b>滚动后收窄为玻璃胶囊（56→44px），含筛选/排序/视图切换</div>
+    <div class="kp"><b>筛选胶囊</b>流派即点即筛，选中态渐变（替代 select）</div>
+    <div class="kp"><b>无限滚动</b>骨架屏占位 + IO 哨兵触发，按钮兜底隐藏</div>
+    <div class="kp"><b>海报卡</b>hover 遮罩上浮 + 播放钮 + 评分/年份（数据字段已有）</div>
+  </div>
+</section>
+
+<!-- ============ 4 详情 · 电影 ============ -->
+<section class="page" data-page="movie">
+  <div class="page-cap"><h2>详情页 · 电影</h2><span>英雄区 · 版本卡片单选 · 轨道选择</span></div>
+  <div class="frame">
+    <div class="bar"><span class="c c1"></span><span class="c c2"></span><span class="c c3"></span><span class="url">emby.example.com/web/#/item/m1</span></div>
+    <div class="mock" style="display:flex;min-height:960px;">
+      <aside class="side">
+        <div class="logo"><div class="m"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div><b>Emby-in-One</b></div>
+        <div class="nav-i"><svg viewBox="0 0 24 24"><path d="M3 10.5L12 3l9 7.5"/><path d="M5 10v10h14V10"/></svg>首页</div>
+        <div class="nav-i"><svg viewBox="0 0 24 24"><path d="M12 20s-7-4.6-9-9c-1.3-3 1-7 5-7 2.5 0 4 2 4 2s1.5-2 4-2 6.3 4 5 7c-2 4.4-9 9-9 9z"/></svg>收藏</div>
+        <div class="nav-i"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>搜索</div>
+        <div class="user"><div class="avatar">演</div><div><div class="n">演示用户</div><div class="s">已登录</div></div></div>
+      </aside>
+      <div class="main">
+        <div class="hero" style="min-height:360px;">
+          <div class="bg"></div><div class="veil"></div>
+          <div class="content">
+            <div class="gchips">
+              <span class="gchip k4k"><span class="d"></span>4K</span>
+              <span class="gchip k4k"><span class="d"></span>HDR10</span>
+              <span class="gchip dv"><span class="d"></span>Dolby Vision</span>
+              <span class="gchip plain"><span class="d"></span>Atmos</span>
+              <span class="gchip plain"><span class="d"></span>R 级</span>
+            </div>
+            <h3>沙丘：第二部</h3>
+            <div class="orig">Dune: Part Two · 2024 · 科幻 / 冒险 · 166 分钟 · <span style="color:var(--gold);font-weight:700;">★ 8.3</span></div>
+            <p>保罗·艾特里奥执导的史诗科幻续章。厄崔迪家族联合弗雷曼人，在沙丘星球展开复仇与圣战，命运的风暴席卷整个宇宙。甜茶与赞达亚领衔，汉斯·季默配乐。</p>
+            <div style="display:flex;gap:12px;align-items:stretch;">
+              <button class="btn-p"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg><span>播放<small>从 42:00 继续</small></span></button>
+              <button class="btn-g"><svg viewBox="0 0 24 24"><path d="M12 20s-7-4.6-9-9c-1.3-3 1-7 5-7 2.5 0 4 2 4 2s1.5-2 4-2 6.3 4 5 7c-2 4.4-9 9-9 9z"/></svg>已收藏</button>
+              <button class="btn-g" style="padding:12px 16px;">⋯</button>
+            </div>
+          </div>
+        </div>
+        <div style="padding:22px 30px;">
+          <div class="grp-h" style="margin-bottom:12px;"><b>视频版本</b><span>2 个来源</span></div>
+          <div style="display:grid;gap:12px;max-width:720px;">
+            <div class="ver-card on">
+              <div class="vc-radio"></div>
+              <div class="vc-main">
+                <div class="vc-name">4K HDR · 服务器A</div>
+                <div class="vc-tags gchips" style="margin-top:6px;">
+                  <span class="gchip k4k"><span class="d"></span>MKV</span>
+                  <span class="gchip k4k"><span class="d"></span>HEVC · 3840×2160</span>
+                  <span class="gchip dv"><span class="d"></span>HDR10</span>
+                  <span class="gchip atm"><span class="d"></span>TrueHD 7.1</span>
+                </div>
+              </div>
+              <div class="vc-meta">78 Mbps</div>
+            </div>
+            <div class="ver-card">
+              <div class="vc-radio"></div>
+              <div class="vc-main">
+                <div class="vc-name">1080p · 服务器B</div>
+                <div class="vc-tags gchips" style="margin-top:6px;">
+                  <span class="gchip plain"><span class="d"></span>MP4</span>
+                  <span class="gchip plain"><span class="d"></span>H.264 · 1920×1080</span>
+                  <span class="gchip plain"><span class="d"></span>AAC 5.1</span>
+                </div>
+              </div>
+              <div class="vc-meta">12 Mbps</div>
+            </div>
+          </div>
+        </div>
+        <div style="padding:6px 30px 30px;display:grid;grid-template-columns:1fr 1fr;gap:26px;max-width:860px;">
+          <div>
+            <div class="grp-h" style="margin-bottom:12px;"><b>音频</b><span>3 条音轨</span></div>
+            <div style="display:grid;gap:9px;">
+              <div class="track-item on"><span class="dot"></span>中文 · TrueHD 7.1<span class="atm">Atmos</span></div>
+              <div class="track-item"><span class="dot"></span>中文 · AAC 5.1</div>
+              <div class="track-item"><span class="dot"></span>英语 · AAC 2.0</div>
+            </div>
+          </div>
+          <div>
+            <div class="grp-h" style="margin-bottom:12px;"><b>字幕</b><span>3 条</span></div>
+            <div style="display:grid;gap:9px;">
+              <div class="track-item on"><span class="dot"></span>中文 · ASS<span class="ext">外挂</span></div>
+              <div class="track-item"><span class="dot"></span>English · SRT<span class="ext">外挂</span></div>
+              <div class="track-item"><span class="dot"></span>关闭字幕</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="keypts">
+    <div class="kp"><b>英雄区 52vh</b>徽章 → 标题+原名 → meta → 简介 clamp-3 → 操作行</div>
+    <div class="kp"><b>续播副文本</b>播放按钮内嵌"从 42:00 继续"（PlaybackPositionTicks 已有）</div>
+    <div class="kp"><b>版本卡片单选</b>替代 select：规格 chips + 码率一目了然，选中渐变描边</div>
+    <div class="kp"><b>轨道双列</b>音频/字幕并排（<640px 单列），当前项指示点高亮</div>
+  </div>
+</section>
+
+<!-- ============ 5 详情 · 剧集 ============ -->
+<section class="page" data-page="series">
+  <div class="page-cap"><h2>详情页 · 剧集</h2><span>季分段控件 · 剧集行 · 已看/下一集状态</span></div>
+  <div class="frame">
+    <div class="bar"><span class="c c1"></span><span class="c c2"></span><span class="c c3"></span><span class="url">emby.example.com/web/#/item/s1</span></div>
+    <div class="mock" style="display:flex;min-height:960px;">
+      <aside class="side">
+        <div class="logo"><div class="m"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div><b>Emby-in-One</b></div>
+        <div class="nav-i"><svg viewBox="0 0 24 24"><path d="M3 10.5L12 3l9 7.5"/><path d="M5 10v10h14V10"/></svg>首页</div>
+        <div class="nav-i"><svg viewBox="0 0 24 24"><path d="M12 20s-7-4.6-9-9c-1.3-3 1-7 5-7 2.5 0 4 2 4 2s1.5-2 4-2 6.3 4 5 7c-2 4.4-9 9-9 9z"/></svg>收藏</div>
+        <div class="nav-i"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>搜索</div>
+        <div class="user"><div class="avatar">演</div><div><div class="n">演示用户</div><div class="s">已登录</div></div></div>
+      </aside>
+      <div class="main">
+        <div class="hero" style="min-height:330px;">
+          <div class="bg" style="background:radial-gradient(700px 340px at 72% 14%,rgba(124,58,237,.4),transparent 65%),radial-gradient(520px 300px at 28% 85%,rgba(79,70,229,.22),transparent 60%),linear-gradient(115deg,#2a1a4e 0%,#0d1327 55%,#070a12 100%);"></div>
+          <div class="veil"></div>
+          <div class="content">
+            <div class="gchips">
+              <span class="gchip k4k"><span class="d"></span>4K</span>
+              <span class="gchip plain"><span class="d"></span>共 2 季 16 集</span>
+              <span class="gchip plain"><span class="d"></span>2023 · 科幻 / 悬疑</span>
+              <span class="gchip plain"><span class="d"></span><span style="color:var(--gold);font-weight:700;">★ 8.7</span></span>
+            </div>
+            <h3>三体</h3>
+            <div class="orig">已看 2 集 · 下次从 S1E3 继续</div>
+            <p>纳米材料学家与刑警联手对抗神秘组织，红岸基地的往事与三体文明的入侵逐渐浮出水面。改编自刘慈欣同名科幻小说。</p>
+            <div style="display:flex;gap:12px;">
+              <button class="btn-p"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>播放 S1E3</button>
+              <button class="btn-g"><svg viewBox="0 0 24 24"><path d="M12 20s-7-4.6-9-9c-1.3-3 1-7 5-7 2.5 0 4 2 4 2s1.5-2 4-2 6.3 4 5 7c-2 4.4-9 9-9 9z"/></svg>收藏</button>
+            </div>
+          </div>
+        </div>
+        <div style="padding:18px 30px 8px;display:flex;align-items:center;gap:16px;">
+          <div class="seg">
+            <button class="on">第 1 季<span>8 集</span></button>
+            <button>第 2 季<span>8 集</span></button>
+          </div>
+          <span class="spacer"></span>
+          <span style="font-size:12px;color:var(--t3);">已看 2 / 8</span>
+        </div>
+        <div style="padding:12px 30px 30px;display:grid;gap:10px;" data-eps></div>
+      </div>
+    </div>
+  </div>
+  <div class="keypts">
+    <div class="kp"><b>季分段控件</b>替代"每季一大段"：sticky 分段切换，只换列表不换页</div>
+    <div class="kp"><b>剧集行</b>16:9 缩略图 + 集号/标题/时长 + hover 播放钮</div>
+    <div class="kp"><b>状态语义</b>已看=降透明+✓角标；观看中=进度条；下一集=描边+徽章</div>
+    <div class="kp"><b>播放按钮</b>直接标注"播放 S1E3"（NextUp 逻辑已有）</div>
+  </div>
+</section>
+
+<!-- ============ 6 搜索 ============ -->
+<section class="page" data-page="search">
+  <div class="page-cap"><h2>搜索页</h2><span>聚焦光晕 · 最近搜索 · 分组结果</span></div>
+  <div class="frame">
+    <div class="bar"><span class="c c1"></span><span class="c c2"></span><span class="c c3"></span><span class="url">emby.example.com/web/#/search</span></div>
+    <div class="mock" style="display:flex;min-height:680px;">
+      <aside class="side">
+        <div class="logo"><div class="m"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div><b>Emby-in-One</b></div>
+        <div class="nav-i"><svg viewBox="0 0 24 24"><path d="M3 10.5L12 3l9 7.5"/><path d="M5 10v10h14V10"/></svg>首页</div>
+        <div class="nav-i"><svg viewBox="0 0 24 24"><path d="M12 20s-7-4.6-9-9c-1.3-3 1-7 5-7 2.5 0 4 2 4 2s1.5-2 4-2 6.3 4 5 7c-2 4.4-9 9-9 9z"/></svg>收藏</div>
+        <div class="nav-i on"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>搜索</div>
+        <div class="user"><div class="avatar">演</div><div><div class="n">演示用户</div><div class="s">已登录</div></div></div>
+      </aside>
+      <div class="main" style="padding:26px 30px;">
+        <div class="search-new">
+          <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>
+          <input placeholder="搜索电影、剧集、演员…" value="沙">
+        </div>
+        <div class="recent">
+          <span class="rl">最近搜索</span>
+          <span class="rchip">三体<span class="x">×</span></span>
+          <span class="rchip">奥本海默<span class="x">×</span></span>
+          <span class="rchip">星际穿越<span class="x">×</span></span>
+          <span class="rchip">幕府将军<span class="x">×</span></span>
+        </div>
+        <div class="grp">
+          <div class="grp-h"><b>电影</b><span>2 个结果</span></div>
+          <div style="display:grid;gap:10px;">
+            <div class="res-card">
+              <div class="thumb g1"></div>
+              <div><div class="rt">沙丘：第二部</div><div class="rm">2024 · 科幻/冒险 · 166 分钟 · ★ 8.3</div>
+              <div class="ro">保罗·艾特里奥执导的史诗科幻续章，厄崔迪家族的复仇之战在沙丘星球全面展开。</div></div>
+            </div>
+            <div class="res-card">
+              <div class="thumb g10"></div>
+              <div><div class="rt">沙丘</div><div class="rm">2021 · 科幻/冒险 · 155 分钟 · ★ 7.7</div>
+              <div class="ro">厄崔迪家族接管沙漠星球厄拉科斯，少年保罗的觉醒之旅就此开始。</div></div>
+            </div>
+          </div>
+        </div>
+        <div class="grp">
+          <div class="grp-h"><b>剧集</b><span>0 个结果</span></div>
+          <div class="empty" style="padding:26px 20px;">
+            <div class="e2">剧集分类下未找到 "沙" 相关内容</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="keypts">
+    <div class="kp"><b>聚焦光晕</b>胶囊输入框聚焦时主色 ring + 阴影（演示为聚焦态）</div>
+    <div class="kp"><b>最近搜索</b>localStorage 最多 8 条，可单条删除（空输入聚焦时显示）</div>
+    <div class="kp"><b>分组结果</b>电影/剧集分节 + 计数，结果卡 hover 右移亮边</div>
+    <div class="kp"><b>分节空态</b>单分组无结果时轻量提示，不占大版面</div>
+  </div>
+</section>
+
+<!-- ============ 7 继续观看 / 收藏 ============ -->
+<section class="page" data-page="lists">
+  <div class="page-cap"><h2>继续观看 / 收藏</h2><span>进度卡片 · 空状态规范 · #/resume 经首页「全部 ›」进入</span></div>
+  <div class="frame">
+    <div class="bar"><span class="c c1"></span><span class="c c2"></span><span class="c c3"></span><span class="url">emby.example.com/web/#/resume</span></div>
+    <div class="mock" style="display:flex;min-height:780px;">
+      <aside class="side">
+        <div class="logo"><div class="m"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div><b>Emby-in-One</b></div>
+        <div class="nav-i"><svg viewBox="0 0 24 24"><path d="M3 10.5L12 3l9 7.5"/><path d="M5 10v10h14V10"/></svg>首页</div>
+        <div class="nav-i"><svg viewBox="0 0 24 24"><path d="M12 20s-7-4.6-9-9c-1.3-3 1-7 5-7 2.5 0 4 2 4 2s1.5-2 4-2 6.3 4 5 7c-2 4.4-9 9-9 9z"/></svg>收藏</div>
+        <div class="nav-i"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>搜索</div>
+        <div class="user"><div class="avatar">演</div><div><div class="n">演示用户</div><div class="s">已登录</div></div></div>
+      </aside>
+      <div class="main">
+        <div class="list-h"><h2>继续观看</h2><span>6 项 · 独立于上游的本地观看记录</span></div>
+        <div class="pgrid" data-grid="resume6"></div>
+        <div style="padding:10px 30px 30px;">
+          <div style="height:1px;background:var(--line);margin:6px 0 22px;"></div>
+          <div class="list-h" style="padding:0 0 16px;"><h2 style="font-size:17px;">收藏</h2><span>空状态示例</span></div>
+          <div class="empty">
+            <svg class="ill" viewBox="0 0 120 78" fill="none">
+              <circle cx="60" cy="40" r="26" stroke="#5b6b85" stroke-width="2" stroke-dasharray="4 6"/>
+              <path d="M60 52s-14-9-18-18c-2.6-6 2-14 10-14 5 0 8 4 8 4s3-4 8-4 12.6 8 10 14c-4 9-18 18-18 18z" stroke="#5b6b85" stroke-width="2"/>
+              <path d="M28 22l3 3M31 19l-3 3M92 56l3 3M95 52l-3 3" stroke="#5b6b85" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+            <div class="e1">还没有收藏</div>
+            <div class="e2">打开任意影片或剧集，点击 ♥ 即可收藏</div>
+            <div class="act">去首页逛逛 →</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="keypts">
+    <div class="kp"><b>进度卡片</b>底部渐变进度条 + "剩 xx 分钟"元信息（UserData 已有）</div>
+    <div class="kp"><b>剧集卡片</b>标题带 S1E3 前缀，与电影卡片同构</div>
+    <div class="kp"><b>空状态规范</b>线稿插画 + 主/副文案 + 行动按钮（四页统一）</div>
+    <div class="kp"><b>骨架屏</b>加载中显示同构占位（本页数据到达后交叉淡入）</div>
+  </div>
+</section>
+
+<!-- ============ 8 播放器 ============ -->
+<section class="page" data-page="player">
+  <div class="page-cap"><h2>播放器</h2><span>玻璃控制条 · Toast 反馈 · 快捷键</span></div>
+  <div class="frame">
+    <div class="bar"><span class="c c1"></span><span class="c c2"></span><span class="c c3"></span><span class="url">emby.example.com/web/#/play/s1e3</span></div>
+    <div class="player-mock">
+      <div class="vlabel"><div class="b1">三体 · 第一季 第 3 集</div><div class="b2">MOCK PLAYBACK · 1080P · NATIVE</div></div>
+      <div class="topbar">
+        <div class="back"><svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg></div>
+        <div class="tt">三体<small>S1 · E3 射手与农场主</small></div>
+        <span class="spacer"></span>
+        <span class="gchip plain"><span class="d"></span>1080p</span>
+      </div>
+      <div class="toast">
+        <span class="bar"></span>
+        <div class="tx">已切换音轨<small>中文 · TrueHD 7.1</small></div>
+        <span class="close">×</span>
+      </div>
+      <div class="sub">这是一条演示字幕 · libmedia / JASSUB 渲染样式</div>
+      <div class="kbd-hint"><kbd>Space</kbd>播放/暂停 <kbd>F</kbd>全屏 <kbd>C</kbd>字幕</div>
+      <div class="ctrls"><div class="inner">
+        <div class="pbar"><span class="buf"></span><span class="cur"></span><span class="thumb"></span><span class="bubble">18:42</span></div>
+        <div class="ctrlbar">
+          <button class="ibtn" title="上一集"><svg viewBox="0 0 24 24"><path d="M6 6h2.4v12H6zM20 6l-9.5 6L20 18z"/></svg></button>
+          <button class="ibtn big" title="播放/暂停"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button>
+          <button class="ibtn" title="下一集"><svg viewBox="0 0 24 24"><path d="M15.6 6H18v12h-2.4zM4 6l9.5 6L4 18z"/></svg></button>
+          <div class="vol">
+            <button class="ibtn" title="音量"><svg viewBox="0 0 24 24"><path d="M3 10v4h4l5 4V6L7 10H3z"/><path d="M16 8.5a5 5 0 010 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
+            <input type="range" value="80">
+          </div>
+          <span class="ptime"><b>18:42</b> / 46:00</span>
+          <span class="spacer"></span>
+          <button class="gpill"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h10"/><path d="M4 18h7"/></svg>字幕 <span class="v">中文</span></button>
+          <button class="gpill"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg>音轨 <span class="v">7.1</span></button>
+          <button class="gpill"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h10M4 18h7"/></svg>4K</button>
+          <button class="ibtn" title="全屏"><svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg></button>
+        </div>
+      </div></div>
+    </div>
+  </div>
+  <div class="keypts">
+    <div class="kp"><b>玻璃控制条</b>blur(16px) + 内描边，3s 无操作自动隐藏（悬停/拖动常显）</div>
+    <div class="kp"><b>Toast 反馈</b>切轨/错误用非模态 Toast（替代 alert），2.5s 自动消失</div>
+    <div class="kp"><b>快捷键</b>Space/K/J/L/F/C/M 全表，输入框聚焦时失效</div>
+    <div class="kp"><b>进度条</b>缓冲层 + 时间气泡跟随鼠标 + 拖动常显</div>
+  </div>
+</section>
+
+<footer>
+  <span>Emby-in-One · /web 页面预览 v1.2 · 令牌与规范见 02-design-notes.md（同目录）</span>
+  <span>海报为渐变示意；实际渲染使用 imageUrl 缩略图</span>
+</footer>
+
+</div>
+
+<script>
+/* ---------- 数据 ---------- */
+const MOVIES = [
+  {name:'沙丘：第二部', year:2024, rating:8.3, badge:'4K · HDR', g:'g1'},
+  {name:'奥本海默', year:2023, rating:8.4, g:'g2'},
+  {name:'星际穿越', year:2014, rating:9.1, g:'g3'},
+  {name:'银翼杀手2049', year:2017, rating:8.0, badge:'DV', dv:true, g:'g4'},
+  {name:'流浪地球2', year:2023, rating:8.2, g:'g5'},
+  {name:'让子弹飞', year:2010, rating:9.0, g:'g6'},
+  {name:'盗梦空间', year:2010, rating:9.0, g:'g7'},
+  {name:'疯狂动物城', year:2016, rating:8.7, g:'g8'},
+  {name:'寄生虫', year:2019, rating:8.5, g:'g9'},
+  {name:'沙丘', year:2021, rating:7.7, g:'g10'},
+  {name:'头号玩家', year:2018, rating:8.2, g:'g1'},
+  {name:'你的名字。', year:2016, rating:8.5, g:'g2'},
+];
+const RESUME = [
+  {name:'奥本海默', left:'剩 96 分钟', prog:42, g:'g2'},
+  {name:'三体 · S1E3', left:'剩 15 分钟', prog:65, g:'g7'},
+  {name:'流浪地球2', left:'剩 153 分钟', prog:8, g:'g5'},
+  {name:'银翼杀手2049', left:'剩 61 分钟', prog:47, g:'g4'},
+];
+const RESUME6 = [
+  ...RESUME,
+  {name:'盗梦空间', left:'剩 43 分钟', prog:73, g:'g7'},
+  {name:'你的名字。', left:'剩 108 分钟', prog:20, g:'g2'},
+];
+const EPS = [
+  {no:'E01', name:'科学边界', dur:'46 分钟', state:'watched', g:'g7'},
+  {no:'E02', name:'台球', dur:'44 分钟', state:'watched', g:'g4'},
+  {no:'E03', name:'射手与农场主', dur:'46 分钟', state:'watching', prog:65, g:'g7'},
+  {no:'E04', name:'三体', dur:'48 分钟', state:'next', g:'g3'},
+  {no:'E05', name:'红岸之一', dur:'45 分钟', g:'g5'},
+  {no:'E06', name:'红岸之二', dur:'47 分钟', g:'g9'},
+  {no:'E07', name:'审判日', dur:'49 分钟', g:'g1'},
+  {no:'E08', name:'飞矢不动', dur:'44 分钟', g:'g10'},
+];
+
+/* ---------- 渲染 ---------- */
+function poster(m, i) {
+  return `<div class="np-card rise" style="animation-delay:${(i % 8) * .06}s"><div class="np-poster ${m.g}">
+    ${m.badge ? `<span class="np-badge${m.dv ? ' dv' : ''}">${m.badge}</span>` : ''}
+    <button class="np-play" title="播放"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button>
+    <div class="scrim"><div class="np-title">${m.name}</div><div class="np-meta">${m.rating ? `<span class="star">★ ${m.rating}</span>` : ''}${m.year ? `<span>${m.year}</span>` : ''}${m.left ? `<span>${m.left}</span>` : ''}</div></div>
+    ${m.prog ? `<div class="np-prog"><i style="width:${m.prog}%"></i></div>` : ''}
+  </div></div>`;
+}
+function epRow(e, i) {
+  const cls = e.state === 'watched' ? ' watched' : e.state === 'next' ? ' next' : '';
+  return `<div class="ep-row${cls}">
+    <div class="ep-thumb ${e.g}">${e.state === 'watched' ? '<span class="ck"><svg viewBox="0 0 24 24"><path d="M5 13l4 4 10-10"/></svg></span>' : ''}</div>
+    <div class="ep-body">
+      <div class="ep-no">${e.no}</div>
+      <div class="ep-name">${e.name}</div>
+      <div class="ep-meta"><span>${e.dur}</span>${e.state === 'watching' ? '<span style="color:var(--ac-text);font-weight:600;">观看中 · 65%</span>' : ''}</div>
+      ${e.prog ? `<div class="ep-prog"><i style="width:${e.prog}%"></i></div>` : ''}
+    </div>
+    <div class="ep-side">
+      ${e.state === 'next' ? '<span class="next-chip">下一集</span>' : ''}
+      <button class="ep-play" title="播放本集"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button>
+    </div>
+  </div>`;
+}
+document.querySelectorAll('[data-grid]').forEach(el => {
+  const key = el.dataset.grid;
+  const items = key === 'movies' ? MOVIES : key === 'latest' ? MOVIES.slice(0, 6) : key === 'resume' ? RESUME : RESUME6;
+  el.innerHTML = items.map(poster).join('');
+});
+document.querySelector('[data-eps]').innerHTML = EPS.map(epRow).join('');
+
+/* ---------- 页签切换 ---------- */
+document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => {
+  document.querySelectorAll('.tab').forEach(x => x.classList.toggle('on', x === t));
+  document.querySelectorAll('.page').forEach(p => p.classList.toggle('on', p.dataset.page === t.dataset.target));
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}));
+</script>
+</body>
+</html>
