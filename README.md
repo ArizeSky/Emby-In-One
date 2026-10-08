@@ -1,6 +1,6 @@
 # Emby-In-One
 
-> **Version: V1.4.4-rc2 (Pre-release)**
+> **Version: V1.4.4-rc3 (Pre-release)**
 
 [![License: GPL v3](https://img.shields.io/github/license/ArizeSky/Emby-In-One?color=blue)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.23+-00ADD8?logo=go&logoColor=white)](https://go.dev/)
@@ -40,13 +40,15 @@
 
 访问服务的 `/web/`，使用管理员创建的普通用户登录。管理员账号用于 `/admin/`，不能登录 Web 客户端。媒体库、搜索、剧集分季和多版本片源均使用用户自己的权限及观看进度。
 
-左侧“继续观看”和“收藏”提供独立列表；退出登录固定在侧栏底部。影片及单集详情可以预选版本、音轨和字幕，版本名称包含来源服务器。播放器支持跨季上一集/下一集，以及保留进度切换版本和音轨。
+V1.4.4-rc3 重做为桌面界面：分栏登录、216 px 桌面侧栏（首页 / 收藏 / 搜索）、首页 Hero 与“继续观看 · 全部”、媒体库网格/列表切换与分页、详情分季与版本卡、搜索分组与最近搜索。首页新增一条有界 Resume 请求，其余交互不改变后端端点与鉴权。
+
+影片及单集详情可以预选版本、音轨和字幕，版本名称包含来源服务器。播放器控制层支持自动隐藏、画面单击/双击、键盘快捷键（Space/K、←/→、↑/↓、M、F、C、Esc）、进度预览气泡、音量与全屏；启动/运行失败显示可重试错误卡，429 单独表达，切源/切轨期间控件整体锁定并保留进度。
 
 播放器优先请求原始媒体：H.264/AAC MP4 使用原生 video，MKV、HEVC 等使用 libmedia 1.3.1 流式解封装，优先交给浏览器 MSE/WebCodecs 解码。本地 WASM 解码器按需加载。直链失败或 20 秒内未开始播放时，尝试上游提供的 H.264/AAC HLS；兼容播放请求限制为最大 1920×1080。非 MSE 的更高分辨率视频需要硬件解码，避免持续进行 4K WASM 软解。
 
 内嵌文本/ASS 由 libmedia 渲染；原生播放或 HLS 的外部 ASS 使用 JASSUB/libass，并按需加载本地中文字体。SRT/VTT 支持文本覆盖层；PGS 通过上游导出的 SUP 字幕显示，包含分片、清屏、跳转和尺寸适配。字幕能否导出、HLS 能否生成，取决于上游能力和访问权限。复杂 ASS 排版及实际 4K 硬解仍需用目标设备和片源验收。
 
-开发验证：`node --test tests/web-data.test.cjs tests/web-player.test.cjs tests/web-subtitles.test.cjs tests/web-mse-seek.test.cjs`；`tests/make-web-fixtures.py` 可用本地 ffmpeg 生成 8 秒、320×180 的合成样本。将样本放在临时目录，避免加入发行资源。
+开发验证：`node --test tests/web-data.test.cjs tests/web-ui.test.cjs tests/web-player.test.cjs tests/web-subtitles.test.cjs tests/web-mse-seek.test.cjs`；`tests/make-web-fixtures.py` 可用本地 ffmpeg 生成 8 秒、320×180 的合成样本。将样本放在临时目录，避免加入发行资源。
 
 ## 测试站点
 
@@ -88,7 +90,7 @@ Emby 连接地址：https://emby.cothx.eu.cc/
 
 > **旧版 Node.js 部署说明**：如果您希望部署基于 Node.js 的 V1.2.1 稳定版，请前往本仓库的 [Releases 页面](https://github.com/ArizeSky/Emby-In-One/releases) 下载 V1.2.1 的 Source code 源码压缩包，解压后同样运行 `bash install.sh` 即可。 仓库中的 `legacy/` 目录保留了 V1.2.1 的 Node.js 源码，**仅供对照参考**（Go 版的 ID 虚拟化以它为蓝本），它不参与 Go 版的构建、镜像或安装流程，详见 `legacy/README.md`。
 
-本项目优先推荐在 Linux 服务器直接使用 Release 二进制部署 V1.4.4-rc1（无需本地编译；预发布测试版，正式版发布前供尝鲜验证）；Docker 方式适合希望自行构建镜像的场景。
+本项目优先推荐在 Linux 服务器直接使用 Release 二进制部署 V1.4.4-rc3（无需本地编译；预发布测试版，正式版发布前供尝鲜验证）；Docker 方式适合希望自行构建镜像的场景。
 
 ### 方式一：Release 二进制一键安装（首推）
 
@@ -100,7 +102,7 @@ sudo bash release-install.sh
 可选：指定版本安装。
 
 ```bash
-sudo bash release-install.sh V1.4.4-rc1
+sudo bash release-install.sh V1.4.4-rc3
 ```
 
 该脚本会自动完成：

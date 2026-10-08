@@ -1,6 +1,6 @@
 # Emby-In-One
 
-> **Version: V1.4.4-rc2 (Pre-release)**
+> **Version: V1.4.4-rc3 (Pre-release)**
 
 [![License: GPL v3](https://img.shields.io/github/license/ArizeSky/Emby-In-One?color=blue)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.23+-00ADD8?logo=go&logoColor=white)](https://go.dev/)
@@ -40,13 +40,15 @@ Based on Go language, it implements a multi-server Emby aggregation proxy — me
 
 Open `/web/` and sign in with a regular user created by the administrator. Admin accounts belong to `/admin/` and cannot sign in to the Web client. Libraries, search, seasons, source selection and watch progress follow the signed-in user's permissions.
 
-Continue watching and Favorites have dedicated sidebar pages, with sign-out fixed at the bottom. Item details let you choose a version, audio track and subtitle before playback; version names include their source server. The player provides previous/next episode controls across seasons and preserves position when switching versions or audio.
+V1.4.4-rc3 rebuilds the desktop interface: a split sign-in screen, a 216 px desktop sidebar (Home / Favorites / Search), a home Hero with a "Continue watching · All" entry, library grid/list switching with paging, per-season detail plus version cards, and grouped search with recent searches. Home adds one bounded Resume request; everything else keeps the existing backend endpoints and authentication.
+
+Item details let you choose a version, audio track and subtitle before playback; version names include their source server. The control layer auto-hides, supports click/double-click on the picture, keyboard shortcuts (Space/K, arrows, M, F, C, Esc), a seek preview bubble, volume and fullscreen; startup/runtime failures show a retryable error card, 429 is reported separately, and version/audio switching locks the controls while preserving position.
 
 Playback first requests the original media. H.264/AAC MP4 uses native video; MKV, HEVC and other formats use libmedia 1.3.1 with streaming demux and preferred browser MSE/WebCodecs decoding. Local WASM decoders load on demand. Failed direct playback, including a 20-second startup timeout, can fall back to upstream H.264/AAC HLS requested at up to 1920×1080. Higher-resolution non-MSE playback requires hardware decoding to avoid sustained 4K WASM software decode.
 
 libmedia renders embedded text/ASS. External ASS with native video or HLS uses JASSUB/libass and a local Chinese font loaded only when selected. SRT/VTT use a text overlay; PGS uses upstream-exported SUP subtitles with fragment assembly, clearing, seeking and aspect fitting. Subtitle export and HLS availability depend on upstream capabilities and permissions. Complex ASS layouts and actual 4K hardware playback still require validation on the target device and source.
 
-Development checks: `node --test tests/web-data.test.cjs tests/web-player.test.cjs tests/web-subtitles.test.cjs tests/web-mse-seek.test.cjs`. `tests/make-web-fixtures.py` creates tiny, eight-second 320×180 samples using a local ffmpeg executable. Keep generated media in a temporary directory, outside release assets.
+Development checks: `node --test tests/web-data.test.cjs tests/web-ui.test.cjs tests/web-player.test.cjs tests/web-subtitles.test.cjs tests/web-mse-seek.test.cjs`. `tests/make-web-fixtures.py` creates tiny, eight-second 320×180 samples using a local ffmpeg executable. Keep generated media in a temporary directory, outside release assets.
 
 ## Demo Site
 
@@ -88,7 +90,7 @@ Emby Connection Address: https://emby.cothx.eu.cc/
 
 > **Notice for Legacy Node.js Deployment**: If you wish to deploy the V1.2.1 stable Node.js version, please navigate to the [Releases page](https://github.com/ArizeSky/Emby-In-One/releases) of this repository, download the V1.2.1 Source code archive, extract it, and run `bash install.sh`. The `legacy/` directory in this repository keeps the V1.2.1 Node.js source **for reference only** (the Go ID virtualization was written against it); it takes part in no build, image or install of the Go version — see `legacy/README.md`.
 
-This project primarily recommends using Release binaries for V1.4.4-rc1 deployment directly on Linux servers (no local Go build required; this is a pre-release for early testing); Docker deployment is suitable for scenarios where you want to build the image yourself.
+This project primarily recommends using Release binaries for V1.4.4-rc3 deployment directly on Linux servers (no local Go build required; this is a pre-release for early testing); Docker deployment is suitable for scenarios where you want to build the image yourself.
 
 ### Method 1: Release Binary One-Click Install (Primary Recommendation)
 
@@ -100,7 +102,7 @@ sudo bash release-install.sh
 Optional: install a specific version.
 
 ```bash
-sudo bash release-install.sh V1.4.4-rc1
+sudo bash release-install.sh V1.4.4-rc3
 ```
 
 This script will automatically:

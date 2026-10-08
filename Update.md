@@ -1,5 +1,27 @@
 # Emby-In-One 更新日志
 
+## V1.4.4-rc3
+
+发布日期：2026-10-08
+
+> V1.4.4-rc3 是 `/web` 网页客户端的界面与交互更新预发布，只改前端表现层，**不改动 Go 后端、鉴权策略、端点、存储或播放/字幕内核**。导航拆为桌面侧栏（首页 / 收藏 / 搜索）+ 首页“继续观看 · 全部”，统一色板、按钮、卡片、加载/空态/焦点态；首页新增 Hero、续看行与分块局部重试；媒体库增加网格/列表与有界自动分页；详情分季、单季重试、版本卡与真实进度；搜索分组与最近搜索；播放器控制层增加自动隐藏、菜单、快捷键与可重试错误卡。
+
+### Web 界面与交互
+
+- 新增 `public/web/ui.css`、`ui.js`、`page-state.js`、`player-ui.js`、`ui-components.js`；`web.html`、`app.js` 重写并接入上述模块，全部沿用现有 IIFE/全局构建风格，无新运行依赖、打包器或路由。
+- 首页请求预算固定：一条 Views、对非 playlists 的前 3 个库各一条 Latest，以及**新增一条有界 Resume 请求**（`Limit=12`，不使用 `EIOData.all`、不做计数或逐条详情查询）。各块独立 loading/error，失败可局部重试，不把失败当空库。
+- 页面控制器各自持有 AbortController 与递增代次：离开首页/搜索即取消，旧成功/失败/finally 都不能覆盖新页面（含用户 id 变更）。
+- 媒体库分页：游标按原始批次推进、同状态只发一条请求、重复页停止自动分页并提示重试、IntersectionObserver 与按钮兜底并存。
+- 详情：主数据先显示，季列表/季集独立加载；单季失败只重试该季；元信息缺失即隐藏，不猜 4K/DV/Atmos；简介三行展开/收起。
+- 播放器：控制层状态限定 idle/loading/playing/paused/ended/error；启动/运行失败统一走 `handlePlaybackFailure`，同一次失败只生成一张错误卡，429 显示“服务器并发已满”；切源/切轨忙态覆盖完整重载；字幕按真实信号判定成功/失败，失败则恢复旧轨或明确关闭。
+- 不新增外部播放直链、复制链接或 VLC/Infuse 唤起入口；不新增历史页、手动已看、连播、相似推荐或首页 NextUp。
+
+### 验证与未测边界
+
+- 前端行为测试：`node --test tests/web-data.test.cjs tests/web-ui.test.cjs tests/web-player.test.cjs tests/web-subtitles.test.cjs tests/web-mse-seek.test.cjs`，覆盖分页游标/去重/取消、首页局部失败、慢搜索乱序、单季重试、Toast 上限、最近搜索存储异常等（新增 `tests/web-ui.test.cjs`、`tests/web-ui-harness.cjs`）。
+- 语法检查：`node --check` 覆盖 5 个新增/改写脚本；`npm run build:panel` 重新生成共享 Tailwind 产物。
+- 未在本环境实测：真实片源的跨季连播、切源恢复时间、字幕内核在复杂 ASS/PGS 下的表现、Chromium 全屏与浏览器矩阵的人工验收、纯嵌入（无磁盘 public）资源加载；这些仍以目标设备与片源验收为准，不代表已通过。
+
 ## V1.4.4-rc2
 
 发布日期：2026-09-30
