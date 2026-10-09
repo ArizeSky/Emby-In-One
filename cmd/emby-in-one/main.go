@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -94,11 +94,12 @@ func ensureServiceStopped(cfg backend.Config, force bool) error {
 		return nil
 	}
 	address := "127.0.0.1:" + strconv.Itoa(cfg.Server.Port)
-	conn, err := net.DialTimeout("tcp", address, 2*time.Second)
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get("http://" + address + "/System/Info/Public")
 	if err != nil {
 		return nil // nothing listening on the configured port
 	}
-	_ = conn.Close()
+	_ = resp.Body.Close()
 	return fmt.Errorf("emby-in-one is still running on %s; stop it first (systemctl stop emby-in-one) or pass --force", address)
 }
 
