@@ -105,6 +105,10 @@ func (a *App) proxyStream(w http.ResponseWriter, r *http.Request, route streamRo
 // rewriting HLS manifests so their URLs keep pointing at this proxy.
 func (a *App) forwardStream(w http.ResponseWriter, r *http.Request, client *UpstreamClient, upstreamPath string, query url.Values, rest, virtualItemID string) {
 	reqCtx := requestContextFrom(r.Context())
+	timelineSession := ""
+	if session := query.Get("PlaySessionId"); session != "" {
+		timelineSession = client.ID + "\x00" + virtualItemID + "\x00" + session
+	}
 	if a.Logger != nil {
 		a.Logger.Debugf("Stream request headers: Range=%q, Accept=%q, AE=%q",
 			r.Header.Get("Range"), r.Header.Get("Accept"), r.Header.Get("Accept-Encoding"))
@@ -157,6 +161,10 @@ func (a *App) forwardStream(w http.ResponseWriter, r *http.Request, client *Upst
 			baseURL = prepared
 		}
 		manifest := RewriteM3U8ForItem(string(body), baseURL, virtualItemID, proxyToken)
+		// Remember where each media segment starts so proxied segments can have
+		// their fMP4 timeline restored to the playlist position (see
+		// rewriteHLSSegmentBody).
+		storeHLSSegmentPositions(timelineSession, rest, manifest)
 		w.Header().Set("Content-Type", "application/x-mpegURL")
 		w.WriteHeader(resp.StatusCode)
 		_, _ = io.WriteString(w, manifest)
@@ -168,7 +176,17 @@ func (a *App) forwardStream(w http.ResponseWriter, r *http.Request, client *Upst
 			resp.StatusCode, contentType, resp.Header.Get("Content-Length"),
 			resp.Header.Get("Content-Encoding"), resp.Header.Get("Content-Range"))
 	}
+	body, rewritten, readErr := rewriteHLSSegmentBody(r, resp, timelineSession, rest)
+	if readErr != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Failed to read HLS segment"})
+		return
+	}
 	copyStreamResponseHeaders(w, resp)
+	if rewritten {
+		w.WriteHeader(resp.StatusCode)
+		_, _ = w.Write(body)
+		return
+	}
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, resp.Body)
 }

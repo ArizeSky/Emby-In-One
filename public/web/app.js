@@ -517,6 +517,8 @@
       let playerReturnRoute = '#/home';
       let seekCommitTimer = null;
       let seekTarget = null;
+      let seekInFlight = null;      // pending engine-seek target: stale time events must not move the thumb
+      let seekInFlightTimer = null;
       let subtitleAttempt = null;
       let subtitleSwitchSerial = 0;
       let startupSubtitleError = null;
@@ -675,7 +677,9 @@
           if (player !== instance || generation !== playbackGeneration) return;
           playerMode.value = state.mode;
           wasmPlaying.value = state.playing;
-          wasmTime.value = state.time;
+          // While an engine seek is pending, stale time events would snap the
+          // progress thumb back to the pre-seek position; hold the target instead.
+          if (seekInFlight == null || Math.abs(state.time - seekInFlight) < 1) wasmTime.value = state.time;
           wasmDuration.value = state.duration;
           if (state.message) playerMessage.value = state.message;
           if (state.subtitleError) handleSubtitleError(instance, generation, state.subtitleError);
@@ -749,6 +753,10 @@
       function stopPlayer() {
         playbackGeneration++;
         playbackRequest?.abort(); playbackRequest = null;
+        if (seekCommitTimer != null) { clearTimeout(seekCommitTimer); seekCommitTimer = null; }
+        if (seekInFlightTimer != null) { clearTimeout(seekInFlightTimer); seekInFlightTimer = null; }
+        seekTarget = null; seekInFlight = null; seekPreview.value = null;
+        engineSeekSerial++; engineSeekBusy = false; engineSeekQueued = null;
         playerMessage.value = '';
         playerAlive.value = false;
         playerUI.closeMenu();
@@ -885,8 +893,25 @@
       /* ---- progress / volume / shortcuts ---- */
       function previewSeek(value) { seekPreview.value = Number(value); }
 
+      // The browser fires pointerup before change on a range slider. Clearing the
+      // preview on pointerup would let Vue rewrite the input value to the stale
+      // engine time before change reads it, snapping the thumb back to the
+      // pre-drag position. Commit from the authoritative preview instead; the
+      // change event that follows re-commits the same value harmlessly.
+      function endScrub() {
+        if (seekPreview.value == null) return;
+        commitScrubValue(seekPreview.value);
+      }
+
+      function cancelScrub() { seekPreview.value = null; }
+
       function onWasmSeek(value) {
-        const seconds = parseFloat(value);
+        const seconds = seekPreview.value != null ? seekPreview.value : parseFloat(value);
+        commitScrubValue(seconds);
+      }
+
+      function commitScrubValue(seconds) {
+        if (!Number.isFinite(seconds)) return;
         seekPreview.value = null;
         wasmTime.value = seconds;
         commitSeek(seconds);
@@ -898,8 +923,47 @@
         seekCommitTimer = setTimeout(() => {
           seekCommitTimer = null;
           const target = seekTarget; seekTarget = null;
-          if (player) Promise.resolve(player.seek(target)).catch(e => toasts.push({ message: '跳转失败：' + safeError(e), kind: 'error' }));
+          if (player) runEngineSeek(target);
         }, 0);
+      }
+
+      // Seeks are serialized against the engine: while core.seek() runs, the
+      // engine rejects further seeks ("player is seeking now"), so a newer
+      // target is queued and applied when the in-flight seek settles. This
+      // keeps a quick second drag from being silently dropped.
+      let engineSeekBusy = false;
+      let engineSeekQueued = null;
+      let engineSeekSerial = 0;
+
+      async function runEngineSeek(target) {
+        if (!player) return;
+        if (engineSeekBusy) { engineSeekQueued = target; seekInFlight = target; return; }
+        const instance = player;
+        const serial = ++engineSeekSerial;
+        const current = () => player === instance && engineSeekSerial === serial;
+        engineSeekBusy = true;
+        seekInFlight = target;
+        if (seekInFlightTimer != null) clearTimeout(seekInFlightTimer);
+        seekInFlightTimer = setTimeout(() => { if (current()) { seekInFlight = null; seekInFlightTimer = null; } }, 8000);
+        try {
+          await instance.seek(target);
+        } catch (e) {
+          if (current() && e?.name !== 'AbortError') toasts.push({ message: '跳转失败：' + safeError(e), kind: 'error' });
+        } finally {
+          if (!current()) return;
+          const queued = engineSeekQueued; engineSeekQueued = null;
+          engineSeekBusy = false;
+          if (queued == null) {
+            if (seekInFlightTimer != null) { clearTimeout(seekInFlightTimer); seekInFlightTimer = null; }
+            seekInFlight = null;
+          } else {
+            if (queued !== target) runEngineSeek(queued);
+            else {
+              if (seekInFlightTimer != null) clearTimeout(seekInFlightTimer);
+              seekInFlightTimer = null; seekInFlight = null;
+            }
+          }
+        }
       }
 
       function seekBy(delta) {
@@ -1035,7 +1099,7 @@
         previousEpisode, nextEpisode, queueError, retryEpisodeQueue, trackBusy, subtitleBusy, switchVersion, selectAudio, selectSubtitle,
         wasmSubTrack, seekPreview, seekTitle, seekPercent, playerVolume, previewSeek, changeVolume, toggleMute, toggleFullscreen,
         wasmTime, wasmDuration, wasmTimeHuman, wasmDurationHuman, wasmPlaying, playerLoadingText,
-        exitPlayer, retryPlayback, selectErrorSource, wasmTogglePause, onWasmSeek,
+        exitPlayer, retryPlayback, selectErrorSource, wasmTogglePause, onWasmSeek, endScrub, cancelScrub,
       };
     },
   });

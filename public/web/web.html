@@ -468,7 +468,7 @@
             <div v-if="seekPreview!=null" class="eio-seek-bubble" :style="{ left: seekPercent + '%' }">{{ seekTitle }}</div>
             <input type="range" min="0" step="any" :max="Math.max(wasmDuration, 0)" :value="seekPreview ?? wasmTime"
                    :disabled="!playerAlive || !wasmDuration" aria-label="播放进度" :aria-valuetext="wasmTimeHuman + ' / ' + wasmDurationHuman"
-                   @input="previewSeek($event.target.value)" @change="onWasmSeek($event.target.value)" @pointerup="seekPreview=null">
+                   @input="previewSeek($event.target.value)" @change="onWasmSeek($event.target.value)" @pointerup="endScrub" @pointercancel="cancelScrub">
           </div>
           <div class="eio-play-row">
             <button class="eio-play-btn" :aria-label="wasmPlaying ? '暂停' : '播放'" @click="wasmTogglePause()">
@@ -511,7 +511,7 @@
 </div>
 <script src="/web/vendor/vue.global.prod.js"></script>
 <script src="/web/vendor/lucide.min.js"></script>
-<script src="/web/vendor/web/libmedia/avplayer.js?v=20261001b"></script>
+<script src="/web/vendor/web/libmedia/avplayer.js?v=20261009-seek3"></script>
 <script src="/web/vendor/web/jassub.umd.js"></script>
 <script src="/web/web/subtitles.js?v=20261001b"></script>
 <script src="/web/web/subtitle-controller.js?v=20261001b"></script>
@@ -522,6 +522,6 @@
 <script src="/web/web/player-ui.js?v=v1.4.4-rc3"></script>
 <script src="/web/web/library-state.js?v=v1.4.4-rc3"></script>
 <script src="/web/web/ui-components.js?v=v1.4.4-rc3"></script>
-<script src="/web/web/app.js?v=v1.4.4-rc3.2"></script>
+<script src="/web/web/app.js?v=v1.4.4-rc3.5"></script>
 </body>
 </html>
