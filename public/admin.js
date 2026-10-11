@@ -44,11 +44,11 @@ createApp({
   watch: {
     currentPage(v) { if(this._refreshTimer) clearTimeout(this._refreshTimer); this._refreshTimer = setTimeout(()=>{this.refresh(); this.$nextTick(() => lucide.createIcons());}, 50); }
   },
-  mounted() { const t = localStorage.getItem('eio_token'); if(t) this.checkAuth(t); this.$nextTick(() => lucide.createIcons()); },
+  mounted() { const t = localStorage.getItem('eio_admin_token'); if(t) this.checkAuth(t); this.$nextTick(() => lucide.createIcons()); },
   methods: {
     navigateTo(id) { this.currentPage = id; this.showSidebar = false; },
     async api(path, opts = {}) {
-      const t = localStorage.getItem('eio_token');
+      const t = localStorage.getItem('eio_admin_token');
       const h = { 'Content-Type': 'application/json' };
       if(t) h['X-Emby-Token'] = t;
       const r = await fetch(path, { ...opts, headers: h });
@@ -62,11 +62,11 @@ createApp({
     async doLogin() { try {
       const r = await fetch('/Users/AuthenticateByName', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({Username:this.loginForm.user, Pw:this.loginForm.pass}) });
       if(!r.ok) throw new Error(); const data = await r.json();
-      localStorage.setItem('eio_token', data.AccessToken);
-      try { await this.api('/admin/api/status'); } catch(e) { localStorage.removeItem('eio_token'); this.loginError = '需要管理员权限'; return; }
+      localStorage.setItem('eio_admin_token', data.AccessToken);
+      try { await this.api('/admin/api/status'); } catch(e) { localStorage.removeItem('eio_admin_token'); this.loginError = '需要管理员权限'; return; }
       this.isLoggedIn = true; this.refresh(); this.refreshClientInfo();
     } catch(e) { this.loginError = '用户名或密码错误'; } },
-    logout() { this.isLoggedIn = false; localStorage.removeItem('eio_token'); },
+    logout() { this.isLoggedIn = false; localStorage.removeItem('eio_admin_token'); },
     async copyClientUA() {
       if (!this.clientInfo || !this.clientInfo.userAgent) return;
       try { await navigator.clipboard.writeText(this.clientInfo.userAgent); alert('UA 已复制到剪贴板'); } catch(e) {}
@@ -100,7 +100,7 @@ createApp({
     },
     async refreshLogs() { this.isLoadingLogs = true; try { this.logs = await this.api('/admin/api/logs?limit=500'); this.$nextTick(() => { const b=this.$refs.logBox; if(b) b.scrollTop=b.scrollHeight; lucide.createIcons(); }); } catch(e) { this.logs = []; } finally { this.isLoadingLogs=false; } },
     async downloadLogs() {
-      const t = localStorage.getItem('eio_token');
+      const t = localStorage.getItem('eio_admin_token');
       const res = await fetch('/admin/api/logs/download', { headers: t ? { 'X-Emby-Token': t } : {} });
       if (!res.ok) { alert('下载失败'); return; }
       const blob = await res.blob();
