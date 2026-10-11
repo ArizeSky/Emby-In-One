@@ -322,7 +322,7 @@ func (a *App) handleAdminUpstreamReconnect(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "Server not found"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"success": true, "online": client.Online})
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "online": client.IsOnline()})
 }
 
 func (a *App) handleAdminProxiesList(w http.ResponseWriter, r *http.Request) {
