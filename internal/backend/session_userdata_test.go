@@ -1,8 +1,10 @@
 package backend
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -414,4 +416,53 @@ func TestSessionUpstreamSuccessRecordsLocally(t *testing.T) {
 			t.Fatal("no local watch record after a successful session forward")
 		}
 	})
+}
+
+func TestReadUpstreamJSONOrNoContentBoundsBodies(t *testing.T) {
+	// An error body is truncated to the same 64 KiB cap RequestJSON uses.
+	resp := &http.Response{
+		StatusCode: http.StatusInternalServerError,
+		Status:     "500 Internal Server Error",
+		Header:     http.Header{},
+		Body:       io.NopCloser(bytes.NewReader(make([]byte, 128*1024))),
+	}
+	_, _, err := readUpstreamJSONOrNoContent(resp)
+	httpErr, ok := asUpstreamHTTPError(err)
+	if !ok {
+		t.Fatalf("expected upstreamHTTPError, got %T (%v)", err, err)
+	}
+	if len(httpErr.Body) > maxUpstreamErrorBodySize {
+		t.Fatalf("error body not truncated: %d bytes", len(httpErr.Body))
+	}
+
+	// A success body above the cap is rejected instead of being parsed.
+	resp = &http.Response{
+		StatusCode: http.StatusOK,
+		Status:     "200 OK",
+		Header:     http.Header{},
+		Body:       io.NopCloser(bytes.NewReader(bytes.Repeat([]byte("x"), maxUpstreamSessionBodySize+1))),
+	}
+	if _, payload, err := readUpstreamJSONOrNoContent(resp); err == nil || payload != nil {
+		t.Fatalf("oversized body accepted: payload=%v err=%v", payload, err)
+	}
+
+	// Small JSON and 204 still behave as before.
+	resp = &http.Response{
+		StatusCode: http.StatusOK,
+		Status:     "200 OK",
+		Header:     http.Header{},
+		Body:       io.NopCloser(bytes.NewReader([]byte(`{"ok":true}`))),
+	}
+	if _, payload, err := readUpstreamJSONOrNoContent(resp); err != nil || payload == nil {
+		t.Fatalf("small json rejected: payload=%v err=%v", payload, err)
+	}
+	resp = &http.Response{
+		StatusCode: http.StatusNoContent,
+		Status:     "204 No Content",
+		Header:     http.Header{},
+		Body:       io.NopCloser(bytes.NewReader(nil)),
+	}
+	if _, payload, err := readUpstreamJSONOrNoContent(resp); err != nil || payload != nil {
+		t.Fatalf("204 rejected: payload=%v err=%v", payload, err)
+	}
 }

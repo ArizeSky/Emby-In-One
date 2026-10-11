@@ -253,19 +253,30 @@ func asUpstreamHTTPError(err error) (*upstreamHTTPError, bool) {
 	return nil, false
 }
 
+// Bounded like UpstreamClient.RequestJSON: a hostile or broken upstream must
+// not be able to OOM the proxy or inject unbounded content into client
+// responses through these per-playback endpoints.
+const (
+	maxUpstreamErrorBodySize   = 64 << 10 // 64 KiB, mirrors RequestJSON
+	maxUpstreamSessionBodySize = 1 << 20  // 1 MiB
+)
+
 func readUpstreamJSONOrNoContent(resp *http.Response) (int, any, error) {
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		payload, _ := io.ReadAll(resp.Body)
+		payload, _ := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamErrorBodySize))
 		return resp.StatusCode, nil, &upstreamHTTPError{
 			StatusCode: resp.StatusCode,
 			Status:     resp.Status,
 			Body:       string(bytes.TrimSpace(payload)),
 		}
 	}
-	raw, err := io.ReadAll(resp.Body)
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamSessionBodySize+1))
 	if err != nil {
 		return resp.StatusCode, nil, err
+	}
+	if len(raw) > maxUpstreamSessionBodySize {
+		return resp.StatusCode, nil, fmt.Errorf("upstream response body exceeds %d bytes", maxUpstreamSessionBodySize)
 	}
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 || resp.StatusCode == http.StatusNoContent {
