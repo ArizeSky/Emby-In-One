@@ -78,3 +78,16 @@ test('container listeners bind only after the player page renders', async t => {
   assert.ok(bound.includes('pointerdown'));
   assert.ok(bound.includes('click'));
 });
+
+test('a stuck engine seek releases the queue after the watchdog fires', async t => {
+  const { app, context, start } = playbackHarness();
+  context.EIO_SEEK_WATCHDOG_MS = 20; // harness context is the app's window
+  t.after(() => { app.exitPlayer(); app.toasts.dispose(); });
+  const player = await start();
+  app.onWasmSeek('100'); await delay(10);
+  assert.equal(player.calls.length, 1); // seek(100) never settles
+  await delay(40);                      // watchdog fires
+  app.onWasmSeek('200'); await delay(10);
+  assert.equal(player.calls.length, 2); // before the fix this stayed at 1
+  player.calls[1].resolve(); await delay(0);
+});

@@ -949,7 +949,18 @@
         engineSeekBusy = true;
         seekInFlight = target;
         if (seekInFlightTimer != null) clearTimeout(seekInFlightTimer);
-        seekInFlightTimer = setTimeout(() => { if (current()) { seekInFlight = null; seekInFlightTimer = null; } }, 8000);
+        const seekWatchdogMs = Number(window.EIO_SEEK_WATCHDOG_MS) || 8000;
+        seekInFlightTimer = setTimeout(() => {
+          if (!current()) return;
+          // The engine seek never settled. Release the queue so later seeks
+          // are attempted instead of being queued forever; if the engine is
+          // still stuck it will reject the next seek with its own error,
+          // which the catch above surfaces. Stay silent — the seek may land.
+          seekInFlight = null;
+          seekInFlightTimer = null;
+          engineSeekBusy = false;
+          engineSeekQueued = null;
+        }, seekWatchdogMs);
         try {
           await instance.seek(target);
         } catch (e) {
