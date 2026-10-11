@@ -158,13 +158,16 @@ func (m *AuthManager) load() error {
 }
 
 func (m *AuthManager) save() error {
-	m.mu.RLock()
+	// Hold the write lock across the snapshot AND the file write. Releasing it
+	// between them lets a concurrent save interleave: an issuance snapshot
+	// written after a revocation resurrects revoked tokens in tokens.json,
+	// and they become valid again after a restart.
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	payload := map[string]any{"_proxyUserId": m.proxyUserID}
 	for token, info := range m.tokens {
 		payload[token] = info
 	}
-	m.mu.RUnlock()
-
 	encoded, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
 		return err

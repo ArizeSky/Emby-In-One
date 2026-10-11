@@ -2,6 +2,7 @@ package backend
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -124,6 +126,74 @@ func TestWebClientAdminLoginRejected(t *testing.T) {
 		// The admin panel and real clients do not send the marker and still get in.
 		if token := loginToken(t, handler, "secret"); token == "" {
 			t.Fatalf("admin login without the web marker must still succeed")
+		}
+	})
+}
+
+// Concurrent issuance and revocation must persist consistently: save() used
+// to snapshot under a read lock and write the file after releasing it, so a
+// save that interleaved with another one could write a stale snapshot —
+// losing newly issued tokens or resurrecting revoked ones across a restart.
+func TestAuthManagerConcurrentSavesKeepEveryIssuedToken(t *testing.T) {
+	withTempAppPrepared(t, parityConfigWithUpstreams(""), nil, func(app *App, handler http.Handler, dir string) {
+		m := app.Auth
+		const goroutines = 8
+		const iterations = 25
+		var mu sync.Mutex
+		issued := make([]string, 0, goroutines*iterations)
+		var failures int
+		var wg sync.WaitGroup
+		for g := 0; g < goroutines; g++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for i := 0; i < iterations; i++ {
+					resp, ok, err := m.Authenticate("admin", "secret")
+					if err != nil || !ok {
+						mu.Lock()
+						failures++
+						mu.Unlock()
+						continue
+					}
+					mu.Lock()
+					issued = append(issued, resp["AccessToken"].(string))
+					mu.Unlock()
+				}
+			}()
+		}
+		wg.Wait()
+		if failures != 0 {
+			t.Fatalf("%d concurrent logins failed", failures)
+		}
+
+		raw, err := os.ReadFile(filepath.Join(dir, "data", "tokens.json"))
+		if err != nil {
+			t.Fatalf("read tokens.json: %v", err)
+		}
+		var persisted map[string]any
+		if err := json.Unmarshal(raw, &persisted); err != nil {
+			t.Fatalf("tokens.json is not valid JSON after concurrent saves: %v", err)
+		}
+		for _, token := range issued {
+			if _, ok := persisted[token]; !ok {
+				t.Fatalf("issued token was lost by a concurrent save: %d of %d persisted", len(persisted)-1, len(issued))
+			}
+		}
+
+		// Revocation must persist as well: the file holds no tokens afterwards.
+		m.RevokeAllTokens()
+		raw, err = os.ReadFile(filepath.Join(dir, "data", "tokens.json"))
+		if err != nil {
+			t.Fatalf("reread tokens.json: %v", err)
+		}
+		persisted = nil
+		if err := json.Unmarshal(raw, &persisted); err != nil {
+			t.Fatalf("tokens.json is not valid JSON after revocation: %v", err)
+		}
+		for key := range persisted {
+			if key != "_proxyUserId" {
+				t.Fatalf("revoked token %q persisted after RevokeAllTokens", key)
+			}
 		}
 	})
 }
