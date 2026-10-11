@@ -2,14 +2,14 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { harness, delay } = require('./web-ui-harness.cjs');
 
-function playbackHarness() {
+function playbackHarness({ presetContainer = true } = {}) {
   const source = { Id: 'source', Container: 'mp4', MediaStreams: [] };
   const item = { Id: 'movie', Type: 'Movie', RunTimeTicks: 20000000000, MediaSources: [source] };
   const env = harness({ reply: () => ({ MediaSources: [source], PlaySessionId: 'session' }) });
   const instances = [];
   const { app, context } = env;
   context.addEventListener = context.removeEventListener = () => {};
-  app.playerContainer.value = { addEventListener() {}, removeEventListener() {} };
+  if (presetContainer) app.playerContainer.value = { addEventListener() {}, removeEventListener() {} };
   context.EIOPlayer = class {
     constructor() { this.duration = 2000; this.positionTicks = 0; this.playing = true; this.calls = []; instances.push(this); }
     async load(url, mediaSource) { this.mediaSource = mediaSource; this.state(0); }
@@ -18,7 +18,17 @@ function playbackHarness() {
     setVolume() {}
     destroy() {}
   };
-  const start = async () => { context.location.hash = '#/play/movie'; await app.playItem(item); return instances.at(-1); };
+  // start(container): when a container is passed it is assigned mid-load —
+  // after playItem's synchronous prologue (whose attach() still sees null)
+  // and before its awaits resolve — matching how Vue renders the player
+  // page while item data is still loading.
+  const start = async (container) => {
+    context.location.hash = '#/play/movie';
+    const pending = app.playItem(item);
+    if (container) app.playerContainer.value = container;
+    await pending;
+    return instances.at(-1);
+  };
   return { ...env, start };
 }
 
@@ -56,4 +66,15 @@ test('an old player seek cannot clear a new player queue or report its error', a
   newPlayer.calls[0].resolve(); await delay(0);
   assert.deepEqual(newPlayer.calls.map(c => c.target), [500, 600]);
   newPlayer.calls[1].resolve(); await delay(0);
+});
+
+test('container listeners bind only after the player page renders', async t => {
+  const { app, start } = playbackHarness({ presetContainer: false });
+  t.after(() => { app.exitPlayer(); app.toasts.dispose(); });
+  const bound = [];
+  const container = { addEventListener(type) { bound.push(type); }, removeEventListener() {} };
+  await start(container);
+  assert.ok(bound.includes('pointermove'));
+  assert.ok(bound.includes('pointerdown'));
+  assert.ok(bound.includes('click'));
 });

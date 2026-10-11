@@ -622,6 +622,11 @@
           await loadEpisodeQueue(item, signal);
           await nextTick(); // the player container only exists once navPage renders
           if (generation !== playbackGeneration) return;
+          // Re-attach now that the container actually exists: the attach() near
+          // the top of this function ran before Vue rendered the player page,
+          // so the container listeners were skipped. attach() detaches first,
+          // so this is idempotent and re-binds the window/document listeners.
+          playerUI.attach();
           await startPlayback(item, sourceId, generation, signal, options);
         } catch (e) {
           handlePlaybackFailure(e, generation, buildRetryContext(item || playingItem.value, sourceId, options));
