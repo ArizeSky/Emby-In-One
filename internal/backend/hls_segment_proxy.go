@@ -7,7 +7,14 @@ import (
 	"strings"
 )
 
-const maxHLSSegmentRewriteSize = 64 << 20
+const (
+	maxHLSSegmentRewriteSize = 64 << 20
+
+	// maxHLSManifestSize caps the manifest body buffered for rewriting; real
+	// playlists are kilobytes of text, so 8 MiB only rejects hostile or
+	// broken upstreams.
+	maxHLSManifestSize = 8 << 20
+)
 
 // Buffer only eligible VOD segments. Oversized segments keep streaming, and a
 // failed read must not be sent as a successful truncated 200 response.

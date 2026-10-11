@@ -139,7 +139,26 @@ func (a *App) forwardStream(w http.ResponseWriter, r *http.Request, client *Upst
 	// verbatim with its real status, so a 404/500 is not masked as a 200.
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 && isPlaylistResponse(contentType, rest) &&
 		resp.Header.Get("Content-Encoding") == "" {
-		body, _ := io.ReadAll(resp.Body)
+		// A manifest read that fails mid-body must not be served as a truncated
+		// 200 playlist: the player would seek into missing segments. Same rule
+		// as the segment path below.
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxHLSManifestSize+1))
+		if readErr != nil {
+			if a.Logger != nil {
+				a.Logger.Errorf("Stream manifest read failed: itemId=%s upstream=%s: %s",
+					virtualItemID, upstreamPath, redactURLInError(readErr))
+			}
+			writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Failed to read HLS manifest"})
+			return
+		}
+		if len(body) > maxHLSManifestSize {
+			if a.Logger != nil {
+				a.Logger.Errorf("Stream manifest too large: itemId=%s upstream=%s: %d bytes",
+					virtualItemID, upstreamPath, len(body))
+			}
+			writeJSON(w, http.StatusBadGateway, map[string]any{"message": "HLS manifest exceeds size limit"})
+			return
+		}
 		proxyToken := ""
 		if reqCtx != nil {
 			proxyToken = reqCtx.ProxyToken

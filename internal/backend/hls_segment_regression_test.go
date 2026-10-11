@@ -156,3 +156,54 @@ func TestHLSTimelineProxyResolvesVirtualSessionEndToEnd(t *testing.T) {
 		}
 	})
 }
+
+func TestHLSManifestFailedReadReturnsBadGateway(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/Users/AuthenticateByName":
+			_ = json.NewEncoder(w).Encode(map[string]any{"AccessToken": "upstream-token", "User": map[string]any{"Id": "upstream-user"}})
+		case strings.HasSuffix(r.URL.Path, "/main.m3u8"):
+			w.Header().Set("Content-Type", "application/x-mpegURL")
+			// Declare more bytes than the handler writes: the connection closes
+			// mid-body, so the proxy's manifest read fails with ErrUnexpectedEOF.
+			w.Header().Set("Content-Length", "1024")
+			_, _ = io.WriteString(w, "#EXTM3U\n#EXTINF:3,\n0.mp4\n")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+	withTempAppConfig(t, singleUpstreamConfig(upstream.URL), func(app *App, handler http.Handler) {
+		token := loginToken(t, handler, "secret")
+		serverID := app.Upstream.Clients()[0].ID
+		item := app.IDStore.GetOrCreateVirtualID("original-item", serverID)
+		rr := doJSONRequest(t, handler, "GET", "/Videos/"+item+"/video/main.m3u8?api_key="+token, nil, "")
+		if rr.Code != http.StatusBadGateway {
+			t.Fatalf("manifest status=%d body=%q", rr.Code, rr.Body.String())
+		}
+	})
+}
+
+func TestHLSManifestOversizedBodyReturnsBadGateway(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/Users/AuthenticateByName":
+			_ = json.NewEncoder(w).Encode(map[string]any{"AccessToken": "upstream-token", "User": map[string]any{"Id": "upstream-user"}})
+		case strings.HasSuffix(r.URL.Path, "/main.m3u8"):
+			w.Header().Set("Content-Type", "application/x-mpegURL")
+			_, _ = io.WriteString(w, strings.Repeat("#EXTM3U\n", maxHLSManifestSize/8+2))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+	withTempAppConfig(t, singleUpstreamConfig(upstream.URL), func(app *App, handler http.Handler) {
+		token := loginToken(t, handler, "secret")
+		serverID := app.Upstream.Clients()[0].ID
+		item := app.IDStore.GetOrCreateVirtualID("original-item", serverID)
+		rr := doJSONRequest(t, handler, "GET", "/Videos/"+item+"/video/main.m3u8?api_key="+token, nil, "")
+		if rr.Code != http.StatusBadGateway {
+			t.Fatalf("manifest status=%d", rr.Code)
+		}
+	})
+}
