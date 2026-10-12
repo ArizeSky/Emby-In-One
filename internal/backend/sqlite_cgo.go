@@ -23,16 +23,21 @@ const (
 	sqliteDone = 101
 )
 
-type sqliteDB struct {
-	ptr *C.sqlite3
-
-	// writeMu serializes every write statement and transaction issued on this handle.
-	// All stores share one SQLite connection, and a transaction is connection-scoped:
-	// without this lock an autocommit write issued by another store while a transaction
-	// is open lands inside that transaction and is silently rolled back (or committed
-	// early) with it.
-	writeMu sync.Mutex
-}
+ type sqliteDB struct {
+ 	ptr *C.sqlite3
+ 
+ 	// mu serializes every statement issued on this handle. All stores share one
+ 	// SQLite connection, and both transactions and the cursor state of a
+ 	// stepping SELECT are connection-scoped: without mutual exclusion a read
+ 	// stepping rows while another store's transaction is open sees that
+  // transaction's uncommitted rows (and its statement interleaving), and an
+ 	// autocommit write issued while a transaction is open lands inside it and
+ 	// is silently rolled back (or committed early) with it.
+ 	//
+ 	// Readers take the lock shared; single write statements and whole
+ 	// transactions take it exclusive.
+ 	mu sync.RWMutex
+ }
 
 type sqliteStmt struct {
 	ptr *C.sqlite3_stmt
@@ -59,44 +64,60 @@ func openSQLite(path string) (*sqliteDB, error) {
 	return handle, nil
 }
 
-// withWriteLock runs fn while holding the connection's write lock. Use it for single
-// write statements so they cannot interleave with another store's open transaction.
-func (db *sqliteDB) withWriteLock(fn func() error) error {
-	if db == nil {
-		return errors.New("sqlite: nil database handle")
-	}
-	db.writeMu.Lock()
-	defer db.writeMu.Unlock()
-	return fn()
-}
-
-// withWriteTx runs fn inside BEGIN IMMEDIATE ... COMMIT under the connection's write
-// lock. Every multi-statement write must go through here so other stores cannot slip
-// autocommit statements into (or lose theirs to) our transaction.
-//
-// Lock order is store.mu -> db.writeMu. Nothing inside fn may call back into a store,
-// so writeMu is only ever held for one statement or one transaction.
-func (db *sqliteDB) withWriteTx(fn func() error) error {
-	return db.withWriteLock(func() error {
-		if err := db.exec(`BEGIN IMMEDIATE`); err != nil {
-			return err
-		}
-		if err := fn(); err != nil {
-			_ = db.exec(`ROLLBACK`)
-			return err
-		}
-		if err := db.exec(`COMMIT`); err != nil {
-			_ = db.exec(`ROLLBACK`)
-			return err
-		}
-		return nil
-	})
-}
-
-// writeParams runs a parameterized write statement under the connection write lock.
-func (db *sqliteDB) writeParams(query string, args ...any) error {
-	return db.withWriteLock(func() error { return db.execParams(query, args...) })
-}
+ // withReadLock runs fn while holding the connection's read lock. Use it for
+ // SELECT statements and their stepping loops: a read in progress must not
+ // interleave with another store's open transaction on this shared connection,
+ // or it can observe that transaction's uncommitted rows.
+ func (db *sqliteDB) withReadLock(fn func() error) error {
+ 	if db == nil {
+ 		return errors.New("sqlite: nil database handle")
+ 	}
+ 	db.mu.RLock()
+ 	defer db.mu.RUnlock()
+ 	return fn()
+ }
+ 
+ // withWriteLock runs fn while holding the connection's write lock exclusively.
+ // Use it for single write statements so they cannot interleave with another
+ // store's open transaction or with a read in progress.
+ func (db *sqliteDB) withWriteLock(fn func() error) error {
+ 	if db == nil {
+ 		return errors.New("sqlite: nil database handle")
+ 	}
+ 	db.mu.Lock()
+ 	defer db.mu.Unlock()
+ 	return fn()
+ }
+ 
+ // withWriteTx runs fn inside BEGIN IMMEDIATE ... COMMIT under the connection's
+ // exclusive lock. Every multi-statement write must go through here so other
+ // stores cannot slip autocommit statements into (or lose theirs to) our
+ // transaction, and no read can step rows inside it.
+ //
+ // Lock order is store.mu -> db.mu. Nothing inside fn may call back into a
+ // store, so db.mu is only ever held for one statement, one transaction, or
+ // one read.
+ func (db *sqliteDB) withWriteTx(fn func() error) error {
+ 	return db.withWriteLock(func() error {
+ 		if err := db.exec(`BEGIN IMMEDIATE`); err != nil {
+ 			return err
+ 		}
+ 		if err := fn(); err != nil {
+ 			_ = db.exec(`ROLLBACK`)
+ 			return err
+ 		}
+ 		if err := db.exec(`COMMIT`); err != nil {
+ 			_ = db.exec(`ROLLBACK`)
+ 			return err
+ 		}
+ 		return nil
+ 	})
+ }
+ 
+ // writeParams runs a parameterized write statement under the connection write lock.
+ func (db *sqliteDB) writeParams(query string, args ...any) error {
+ 	return db.withWriteLock(func() error { return db.execParams(query, args...) })
+ }
 
 func closeSQLite(db *sqliteDB) error {
 	if db == nil || db.ptr == nil {
