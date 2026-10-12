@@ -896,7 +896,11 @@
       }
 
       /* ---- progress / volume / shortcuts ---- */
-      function previewSeek(value) { seekPreview.value = Number(value); }
+      // A cancelled drag (pointercancel) must not be committed by the change
+      // event some browsers still fire afterwards; the next input event
+      // starts a new interaction and clears the flag.
+      let scrubCancelled = false;
+      function previewSeek(value) { scrubCancelled = false; seekPreview.value = Number(value); }
 
       // The browser fires pointerup before change on a range slider. Clearing the
       // preview on pointerup would let Vue rewrite the input value to the stale
@@ -908,9 +912,10 @@
         commitScrubValue(seekPreview.value);
       }
 
-      function cancelScrub() { seekPreview.value = null; }
+      function cancelScrub() { scrubCancelled = true; seekPreview.value = null; }
 
       function onWasmSeek(value) {
+        if (scrubCancelled) { scrubCancelled = false; return; }
         const seconds = seekPreview.value != null ? seekPreview.value : parseFloat(value);
         commitScrubValue(seconds);
       }

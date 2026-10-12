@@ -79,6 +79,23 @@ test('container listeners bind only after the player page renders', async t => {
   assert.ok(bound.includes('click'));
 });
 
+test('a cancelled scrub is not committed by the trailing change event', async t => {
+  const { app, start } = playbackHarness();
+  t.after(() => { app.exitPlayer(); app.toasts.dispose(); });
+  const player = await start();
+  app.previewSeek('100'); // the drag starts
+  app.cancelScrub();      // pointercancel abandons it
+  app.onWasmSeek('100');  // the change event some browsers still fire
+  await delay(10);
+  assert.deepEqual(player.calls.map(c => c.target), [], 'the cancelled scrub was committed');
+
+  // A later interaction commits normally.
+  app.previewSeek('150');
+  app.endScrub();
+  await delay(10);
+  assert.deepEqual(player.calls.map(c => c.target), [150]);
+});
+
 test('a stuck engine seek releases the queue after the watchdog fires', async t => {
   const { app, context, start } = playbackHarness();
   context.EIO_SEEK_WATCHDOG_MS = 20; // harness context is the app's window
