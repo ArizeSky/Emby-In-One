@@ -42,7 +42,7 @@ createApp({
     }
   },
   watch: {
-    currentPage(v) { if(this._refreshTimer) clearTimeout(this._refreshTimer); this._refreshTimer = setTimeout(()=>{this.refresh(); this.$nextTick(() => lucide.createIcons());}, 50); }
+    currentPage(v) { if(this._refreshTimer) clearTimeout(this._refreshTimer); this.abortRefresh(); this._refreshTimer = setTimeout(()=>{this.refresh(); this.$nextTick(() => lucide.createIcons());}, 50); }
   },
   mounted() { const t = localStorage.getItem('eio_admin_token'); if(t) this.checkAuth(t); this.$nextTick(() => lucide.createIcons()); },
   methods: {
@@ -71,19 +71,27 @@ createApp({
       if (!this.clientInfo || !this.clientInfo.userAgent) return;
       try { await navigator.clipboard.writeText(this.clientInfo.userAgent); alert('UA 已复制到剪贴板'); } catch(e) {}
     },
+    // Page switches abort the previous page's in-flight refreshes: without
+    // this, a late response overwrote whatever the new page had already
+    // loaded (or emptied its lists through the error path).
+    abortRefresh() { if (this._refreshAbort) { this._refreshAbort.abort(); this._refreshAbort = null; } },
+    refreshSignal() { if (!this._refreshAbort) this._refreshAbort = new AbortController(); return this._refreshAbort.signal; },
+    isAbort(e) { return e && e.name === 'AbortError'; },
     refresh() {
-      if(this.currentPage === 'dashboard') this.refreshDashboard();
-      if(this.currentPage === 'servers') this.refreshServers();
-      if(this.currentPage === 'users') this.refreshUsers();
-      if(this.currentPage === 'proxies') this.refreshProxies();
-      if(this.currentPage === 'settings') this.refreshSettings();
-      if(this.currentPage === 'logs') this.refreshLogs();
+      this.abortRefresh();
+      const signal = this.refreshSignal();
+      if(this.currentPage === 'dashboard') this.refreshDashboard(signal);
+      if(this.currentPage === 'servers') this.refreshServers(signal);
+      if(this.currentPage === 'users') this.refreshUsers(signal);
+      if(this.currentPage === 'proxies') this.refreshProxies(signal);
+      if(this.currentPage === 'settings') this.refreshSettings(signal);
+      if(this.currentPage === 'logs') this.refreshLogs(signal);
     },
-    async refreshDashboard() { try { this.stats = await this.api('/admin/api/status'); } catch(e) {} this.refreshClientInfo(); this.$nextTick(()=>lucide.createIcons()); },
-    async refreshClientInfo() { try { this.clientInfo = await this.api('/admin/api/client-info'); } catch(e) {} this.$nextTick(()=>lucide.createIcons()); },
-    async refreshServers() { try { this.upstreamList = await this.api('/admin/api/upstream'); } catch(e) { this.upstreamList = []; } try { await this.refreshProxies(); } catch(e) {} this.$nextTick(()=>lucide.createIcons()); },
-    async refreshProxies() { try { this.proxyList = await this.api('/admin/api/proxies'); } catch(e) { this.proxyList = []; } this.$nextTick(()=>lucide.createIcons()); },
-    async refreshSettings() { try { const s = await this.api('/admin/api/settings'); this.settings = { ...this.settings, ...s, adminPassword: '', currentPassword: '', timeouts: s.timeouts || this.settings.timeouts }; this.adminUsernameOriginal = s.adminUsername || ''; } catch(e) {} },
+    async refreshDashboard(signal) { try { this.stats = await this.api('/admin/api/status', { signal }); } catch(e) { if (this.isAbort(e)) return; } this.refreshClientInfo(signal); this.$nextTick(()=>lucide.createIcons()); },
+    async refreshClientInfo(signal) { try { this.clientInfo = await this.api('/admin/api/client-info', { signal }); } catch(e) { if (this.isAbort(e)) return; } this.$nextTick(()=>lucide.createIcons()); },
+    async refreshServers(signal) { try { this.upstreamList = await this.api('/admin/api/upstream', { signal }); } catch(e) { if (!this.isAbort(e)) this.upstreamList = []; } try { await this.refreshProxies(signal); } catch(e) {} this.$nextTick(()=>lucide.createIcons()); },
+    async refreshProxies(signal) { try { this.proxyList = await this.api('/admin/api/proxies', { signal }); } catch(e) { if (!this.isAbort(e)) this.proxyList = []; } this.$nextTick(()=>lucide.createIcons()); },
+    async refreshSettings(signal) { try { const s = await this.api('/admin/api/settings', { signal }); this.settings = { ...this.settings, ...s, adminPassword: '', currentPassword: '', timeouts: s.timeouts || this.settings.timeouts }; this.adminUsernameOriginal = s.adminUsername || ''; } catch(e) { if (this.isAbort(e)) return; } },
     async saveSettings() {
       const nextUsername = (this.settings.adminUsername || '').trim();
       const usernameChanged = !!nextUsername && nextUsername !== this.adminUsernameOriginal;
@@ -98,7 +106,7 @@ createApp({
         setTimeout(()=>this.saveSuccess=false,3000);
       } catch(e) { alert('保存失败：' + (e.message || '未知错误')); }
     },
-    async refreshLogs() { this.isLoadingLogs = true; try { this.logs = await this.api('/admin/api/logs?limit=500'); this.$nextTick(() => { const b=this.$refs.logBox; if(b) b.scrollTop=b.scrollHeight; lucide.createIcons(); }); } catch(e) { this.logs = []; } finally { this.isLoadingLogs=false; } },
+    async refreshLogs(signal) { this.isLoadingLogs = true; try { this.logs = await this.api('/admin/api/logs?limit=500', { signal }); this.$nextTick(() => { const b=this.$refs.logBox; if(b) b.scrollTop=b.scrollHeight; lucide.createIcons(); }); } catch(e) { if (!this.isAbort(e)) this.logs = []; } finally { this.isLoadingLogs=false; } },
     async downloadLogs() {
       const t = localStorage.getItem('eio_admin_token');
       const res = await fetch('/admin/api/logs/download', { headers: t ? { 'X-Emby-Token': t } : {} });
@@ -171,7 +179,7 @@ createApp({
     },
     async saveProxy() { try { await this.api('/admin/api/proxies', { method:'POST', body:JSON.stringify(this.proxyForm) }); this.showProxyModal = false; await this.refreshProxies(); } catch(e) { alert('添加失败：' + (e.message || '未知错误')); } },
     async deleteProxy(id) { if(!confirm('删除代理？')) return; try { await this.api('/admin/api/proxies/'+id, { method:'DELETE' }); await this.refreshProxies(); } catch(e) { alert('删除失败：' + (e.message || '未知错误')); } },
-    async refreshUsers() { try { this.userList = await this.api('/admin/api/users'); } catch(e) { this.userList = []; } try { this.upstreamList = await this.api('/admin/api/upstream'); } catch(e) {} this.$nextTick(()=>lucide.createIcons()); },
+    async refreshUsers(signal) { try { this.userList = await this.api('/admin/api/users', { signal }); } catch(e) { if (!this.isAbort(e)) this.userList = []; } try { this.upstreamList = await this.api('/admin/api/upstream', { signal }); } catch(e) { if (this.isAbort(e)) return; } this.$nextTick(()=>lucide.createIcons()); },
     openAddUser() { this.editUserId = null; this.userForm = { username:'', password:'', enabled:true, allowedServers:[] }; this.userLibraryGroups = []; this.showUserModal = true; this.$nextTick(()=>lucide.createIcons()); },
     editUser(u) {
       this.editUserId = u.id;
