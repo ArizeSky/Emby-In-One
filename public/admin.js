@@ -58,7 +58,7 @@ createApp({
       if(!r.ok) throw new Error(data.error || data.message || ('HTTP ' + r.status));
       return data;
     },
-    async checkAuth() { try { const s = await this.api('/admin/api/status'); if(!s || s.error) { this.logout(); return; } this.isLoggedIn = true; this.refresh(); this.refreshClientInfo(); } catch(e) { this.logout(); } },
+    async checkAuth() { try { const s = await this.api('/admin/api/status'); if(!s || s.error) { this.logout(); return; } this.isLoggedIn = true; this.refresh(); this.refreshClientInfo(); } catch(e) { /* api() already logs out on 401; a transient failure (server restart, network blip) keeps the stored token so a refresh can retry */ } },
     async doLogin() { try {
       const r = await fetch('/Users/AuthenticateByName', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({Username:this.loginForm.user, Pw:this.loginForm.pass}) });
       if(!r.ok) throw new Error(); const data = await r.json();

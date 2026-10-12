@@ -28,6 +28,10 @@ function harness(options = {}) {
   const reply = options.reply || (() => ({ Items: [] }));
   const storage = options.storage || makeStorage({ eio_token: 'token', eio_user_id: 'user' });
   let app;
+  // Lifecycle hooks are captured (not invoked) so tests can drive them; the
+  // production scripts only register them during setup().
+  const mountedHooks = [];
+  const beforeUnmountHooks = [];
 
   const context = {
     URL, AbortController, DOMException, console, Math, JSON, Promise,
@@ -48,12 +52,15 @@ function harness(options = {}) {
       ref: value => ({ value }),
       computed: fn => ({ get value() { return fn(); } }),
       reactive: obj => obj,
-      watch() {}, onMounted() {}, onBeforeUnmount() {},
+      watch() {},
+      onMounted(fn) { mountedHooks.push(fn); },
+      onBeforeUnmount(fn) { beforeUnmountHooks.push(fn); },
       nextTick: fn => Promise.resolve().then(() => fn && fn()),
       createApp: opts => ({ component() {}, mount() { app = opts.setup(); } }),
     },
     document: { hidden: false, fullscreenElement: null, addEventListener() {}, removeEventListener() {} },
     IntersectionObserver: undefined,
+    addEventListener() {}, removeEventListener() {},
   };
   context.window = context;
   context.window.innerWidth = options.width || 1440;
@@ -61,7 +68,7 @@ function harness(options = {}) {
   for (const file of SCRIPTS) {
     vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'public', 'web', file), 'utf8'), context);
   }
-  return { app, context, calls, data: context.EIOData, storage };
+  return { app, context, calls, data: context.EIOData, storage, mountedHooks, beforeUnmountHooks };
 }
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));

@@ -1075,7 +1075,15 @@
             const hadHash = !!window.location.hash;
             window.location.hash = window.location.hash || '#/home';
             if (hadHash) syncFromHash();
-          } catch (e) { doLogout(); }
+          } catch (e) {
+            // Only an explicit 401 ends the session. A transient failure (a
+            // restarting server, a network blip, a 502) must not destroy a
+            // valid token: the user stays on the login form with the session
+            // intact, and a refresh retries the check.
+            if (e && e.status === 401) { doLogout(); return; }
+            loginError.value = '暂时无法连接服务器，请刷新重试。';
+            page.value = 'login';
+          }
         } else { syncFromHash(); }
       });
 
