@@ -69,6 +69,34 @@ test('malformed SUP cannot allocate oversized compositions or read truncated seg
   assert.throws(() => renderer._parsePCS(new Uint8Array([255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0])), /Invalid/);
 });
 
+test('PGS reuses one offscreen canvas and ImageData across display sets', () => {
+  const created = [];
+  const imageDataCreated = [];
+  function canvas() {
+    const ctx = {
+      clearRect() {}, drawImage() {},
+      createImageData(w, h) { imageDataCreated.push([w, h]); return { data: new Uint8ClampedArray(w * h * 4) }; },
+      putImageData() {},
+    };
+    return { width: 300, height: 150, clientWidth: 640, clientHeight: 360, getContext: () => ctx };
+  }
+  const context = { window: { devicePixelRatio: 1 }, Uint8Array,
+    document: { createElement: tag => { created.push(tag); return canvas(); } }, Map, fetch: async () => {}, console };
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../public/web/subtitles.js'), 'utf8'), context);
+  const surface = canvas();
+  const renderer = new context.window.EIOPGSRenderer(surface);
+
+  renderer._parse(fixture);
+  renderer.render(2); // display set 0
+  renderer.render(5); // display set 5, same composition size
+  assert.equal(created.length, 1, 'each display set allocated a new offscreen canvas');
+  assert.equal(imageDataCreated.length, 1, 'each display set allocated a new ImageData');
+
+  renderer.destroy();
+  assert.equal(renderer._offscreen, null, 'destroy did not release the offscreen canvas');
+  assert.equal(renderer._imgData, null, 'destroy did not release the ImageData');
+});
+
 function controllerHarness(core = null, request = async () => {}) {
   const player = { container: { append() {} }, core, positionTicks: 0,
     item: { Id: 'item' }, mediaSource: { Id: 'source', MediaStreams: [

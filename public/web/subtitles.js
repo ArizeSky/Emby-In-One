@@ -213,11 +213,23 @@
         palette[e.idx] = [r, g, b, e.alpha];
       }
 
-      const offscreen = document.createElement('canvas');
-      offscreen.width = pcs.width;
-      offscreen.height = pcs.height;
-      const octx = offscreen.getContext('2d');
-      const imgData = octx.createImageData(pcs.width, pcs.height);
+      // One offscreen canvas and one ImageData are reused across display
+      // sets: allocating a fresh 1920x1080 pair per subtitle used to churn
+      // ~16 MB of canvas memory every few seconds. The buffers are only
+      // reallocated when the composition size changes.
+      if (!this._offscreen || this._offscreen.width !== pcs.width || this._offscreen.height !== pcs.height) {
+        const offscreen = document.createElement('canvas');
+        offscreen.width = pcs.width;
+        offscreen.height = pcs.height;
+        this._offscreen = offscreen;
+        this._imgData = null;
+      }
+      const octx = this._offscreen.getContext('2d');
+      if (!this._imgData) this._imgData = octx.createImageData(pcs.width, pcs.height);
+      const imgData = this._imgData;
+      // A fresh ImageData starts zeroed; the reused one must be cleared
+      // because a display set may not cover every pixel.
+      imgData.data.fill(0);
 
       for (const obj of pcs.objects) {
         const ods = ds.ods.find(o => o.objId === obj.objId);
@@ -242,7 +254,7 @@
         }
       }
       octx.putImageData(imgData, 0, 0);
-      return offscreen;
+      return this._offscreen;
     }
 
     render(time) {
@@ -284,6 +296,8 @@
       this.objects.clear();
       this.fragments.clear();
       this.currentDS = null;
+      this._offscreen = null;
+      this._imgData = null;
       this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
     }
   }
