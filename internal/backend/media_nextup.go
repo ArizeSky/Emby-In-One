@@ -1,10 +1,11 @@
 package backend
 
-import (
-	"net/http"
-	"net/url"
-	"strconv"
-)
+ import (
+ 	"net/http"
+ 	"net/url"
+ 	"strconv"
+ 	"sync"
+ )
 
 func (a *App) handleShowsNextUp(w http.ResponseWriter, r *http.Request) {
 	reqCtx := requestContextFrom(r.Context())
@@ -100,32 +101,60 @@ func (a *App) handleLocalNextUp(w http.ResponseWriter, r *http.Request, reqCtx *
 		return
 	}
 
-	var nextUpItems []map[string]any
-	limit := 20
-	if l, ok := queryInt(query, "Limit"); ok && l > 0 {
-		limit = l
-	}
-
-	for _, sp := range seriesList {
-		if len(nextUpItems) >= limit {
-			break
-		}
-		if sp.SeriesOriginalID == "" {
-			continue
-		}
-		serverID, seriesOrigID, client := a.resolveSeriesServer(&sp)
-		if client == nil {
-			continue
-		}
-		nextEp := a.fetchNextEpisode(r, reqCtx, client, seriesOrigID, serverID, &sp)
-		if nextEp != nil {
-			rewriteResponseIDs(nextEp, serverID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
-			if id, _ := nextEp["Id"].(string); id != "" {
-				a.overlayLocalUserData(r, id, nextEp)
-			}
-			nextUpItems = append(nextUpItems, nextEp)
-		}
-	}
+ 	var nextUpItems []map[string]any
+ 	limit := 20
+ 	if l, ok := queryInt(query, "Limit"); ok && l > 0 {
+ 		limit = l
+ 	}
+ 
+ 	// nextUpBatch bounds both the concurrency and the over-fetch: series are
+ 	// fetched in waves of at most this many, in list order, and the wave stops
+ 	// once the client's Limit is satisfied. The requests used to run strictly
+ 	// serially, so a user with N in-progress series waited N round trips
+ 	// before the first item rendered.
+ 	nextUpBatch := 8
+ 	if limit < nextUpBatch {
+ 		nextUpBatch = limit
+ 	}
+ 
+ 	for start := 0; start < len(seriesList) && len(nextUpItems) < limit; start += nextUpBatch {
+ 		end := start + nextUpBatch
+ 		if end > len(seriesList) {
+ 			end = len(seriesList)
+ 		}
+ 		batch := seriesList[start:end]
+ 		episodes := make([]map[string]any, len(batch))
+ 		serverIDs := make([]string, len(batch))
+ 		var wg sync.WaitGroup
+ 		for i := range batch {
+ 			if batch[i].SeriesOriginalID == "" {
+ 				continue
+ 			}
+ 			serverID, seriesOrigID, client := a.resolveSeriesServer(&batch[i])
+ 			if client == nil {
+ 				continue
+ 			}
+ 			serverIDs[i] = serverID
+ 			wg.Add(1)
+ 			go func(i int, client *UpstreamClient, seriesOrigID, serverID string, sp WatchProgress) {
+ 				defer wg.Done()
+ 				episodes[i] = a.fetchNextEpisode(r, reqCtx, client, seriesOrigID, serverID, &sp)
+ 			}(i, client, seriesOrigID, serverID, batch[i])
+ 		}
+ 		wg.Wait()
+ 		// Rewrite and overlay sequentially after the wave: the result order
+ 		// stays the series order the store returned.
+ 		for i, nextEp := range episodes {
+ 			if nextEp == nil || len(nextUpItems) >= limit {
+ 				continue
+ 			}
+ 			rewriteResponseIDs(nextEp, serverIDs[i], a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
+ 			if id, _ := nextEp["Id"].(string); id != "" {
+ 				a.overlayLocalUserData(r, id, nextEp)
+ 			}
+ 			nextUpItems = append(nextUpItems, nextEp)
+ 		}
+ 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"Items":            toAnySlice(nextUpItems),
