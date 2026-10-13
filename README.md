@@ -15,7 +15,6 @@
 
 ## 目录
 
-- [测试站点](#测试站点)
 - [预览](#预览)
 - [功能概览](#功能概览)
 - [内置 Web 客户端](#内置-web-客户端)
@@ -35,27 +34,6 @@
 - [项目架构](#项目架构-供开发者查阅)
 - [Star History](#star-history)
 - [许可证](#许可证)
-
-## 内置 Web 客户端
-
-访问服务的 `/web/`，使用管理员创建的普通用户登录。管理员账号用于 `/admin/`，不能登录 Web 客户端。媒体库、搜索、剧集分季和多版本片源均使用用户自己的权限及观看进度。
-
-V1.4.4-rc3 重做为桌面界面：分栏登录、216 px 桌面侧栏（首页 / 收藏 / 搜索）、首页 Hero 与“继续观看 · 全部”、媒体库网格/列表切换与分页、详情分季与版本卡、搜索分组与最近搜索。首页新增一条有界 Resume 请求，其余交互不改变后端端点与鉴权。
-
-影片及单集详情可以预选版本、音轨和字幕，版本名称包含来源服务器。播放器控制层支持自动隐藏、画面单击/双击、键盘快捷键（Space/K、←/→、↑/↓、M、F、C、Esc）、进度预览气泡、音量与全屏；启动/运行失败显示可重试错误卡，429 单独表达，切源/切轨期间控件整体锁定并保留进度。
-
-播放器优先请求原始媒体：H.264/AAC MP4 使用原生 video，MKV、HEVC 等使用 libmedia 1.3.1 流式解封装，优先交给浏览器 MSE/WebCodecs 解码。本地 WASM 解码器按需加载。直链失败或 20 秒内未开始播放时，尝试上游提供的 H.264/AAC HLS；兼容播放请求限制为最大 1920×1080。非 MSE 的更高分辨率视频需要硬件解码，避免持续进行 4K WASM 软解。
-
-内嵌文本/ASS 由 libmedia 渲染；原生播放或 HLS 的外部 ASS 使用 JASSUB/libass，并按需加载本地中文字体。SRT/VTT 支持文本覆盖层；PGS 通过上游导出的 SUP 字幕显示，包含分片、清屏、跳转和尺寸适配。字幕能否导出、HLS 能否生成，取决于上游能力和访问权限。复杂 ASS 排版及实际 4K 硬解仍需用目标设备和片源验收。
-
-开发验证：`node --test tests/web-data.test.cjs tests/web-ui.test.cjs tests/web-player.test.cjs tests/web-subtitles.test.cjs tests/web-mse-seek.test.cjs`；`tests/make-web-fixtures.py` 可用本地 ffmpeg 生成 8 秒、320×180 的合成样本。将样本放在临时目录，避免加入发行资源。
-
-## 测试站点
-
-[演示站点](https://emby.cothx.eu.cc/)
-Emby 连接地址：https://emby.cothx.eu.cc/
-
-> **演示站账号不再随仓库公开。** 出于安全考虑，本仓库不提供明文账号与密码；如需体验，请通过 GitHub [Issues](https://github.com/ArizeSky/Emby-In-One/issues) 联系维护者获取**定期轮换**的临时账号。请勿在公开渠道传播演示站凭据。
 
 ## 预览
 
@@ -83,6 +61,20 @@ Emby 连接地址：https://emby.cothx.eu.cc/
 - **Token 管理与会话稳定** — 代理 Token 永不过期（仅在登出、改密或手动撤销时移除），防止长时间空闲设备频繁 401；上游 Token 过期时通过 30 秒防抖的异步重登录自动恢复；管理员改密后自动撤销所有已签发 Token。
  - **Passthrough 延迟登录** — passthrough 模式的上游（无论密码还是 API Key）在没有已捕获的真实客户端身份前一律不登录、不发请求；等待管理员用真实客户端登录一次后自动完成认证，避免在上游 Emby 产生虚假设备记录。
 - **全面管控与运维** — 内置现代化 SSH CLI 菜单和 Web 管理面板；配备持久化日志和 SQLite ID 映射。SSH 菜单自动检测 Binary/Docker 部署模式，所有操作自动分发到 systemd 或 Docker Compose 对应命令。
+
+## 内置 Web 客户端
+
+访问服务的 `/web/`，使用管理员创建的普通用户登录。管理员账号用于 `/admin/`，不能登录 Web 客户端。媒体库、搜索、剧集分季和多版本片源均使用用户自己的权限及观看进度。
+
+V1.4.4-rc3 重做为桌面界面：分栏登录、216 px 桌面侧栏（首页 / 收藏 / 搜索）、首页 Hero 与“继续观看 · 全部”、媒体库网格/列表切换与分页、详情分季与版本卡、搜索分组与最近搜索。首页新增一条有界 Resume 请求，其余交互不改变后端端点与鉴权。
+
+影片及单集详情可以预选版本、音轨和字幕，版本名称包含来源服务器。播放器控制层支持自动隐藏、画面单击/双击、键盘快捷键（Space/K、←/→、↑/↓、M、F、C、Esc）、进度预览气泡、音量与全屏；启动/运行失败显示可重试错误卡，429 单独表达，切源/切轨期间控件整体锁定并保留进度。
+
+播放器优先请求原始媒体：H.264/AAC MP4 使用原生 video，MKV、HEVC 等使用 libmedia 1.3.1 流式解封装，优先交给浏览器 MSE/WebCodecs 解码。本地 WASM 解码器按需加载。直链失败或 20 秒内未开始播放时，尝试上游提供的 H.264/AAC HLS；兼容播放请求限制为最大 1920×1080。非 MSE 的更高分辨率视频需要硬件解码，避免持续进行 4K WASM 软解。
+
+内嵌文本/ASS 由 libmedia 渲染；原生播放或 HLS 的外部 ASS 使用 JASSUB/libass，并按需加载本地中文字体。SRT/VTT 支持文本覆盖层；PGS 通过上游导出的 SUP 字幕显示，包含分片、清屏、跳转和尺寸适配。字幕能否导出、HLS 能否生成，取决于上游能力和访问权限。复杂 ASS 排版及实际 4K 硬解仍需用目标设备和片源验收。
+
+开发验证：`node --test tests/web-data.test.cjs tests/web-ui.test.cjs tests/web-player.test.cjs tests/web-player-ui.test.cjs tests/web-subtitles.test.cjs tests/web-mse-seek.test.cjs tests/web-mse-duration.test.cjs tests/web-seek-queue.test.cjs tests/web-session.test.cjs tests/admin-panel.test.cjs`（10 个文件 55 项）；`tests/make-web-fixtures.py` 可用本地 ffmpeg 生成 8 秒、320×180 的合成样本。将样本放在临时目录，避免加入发行资源。
 
 ---
 
@@ -321,6 +313,8 @@ V1.4 新增多用户支持，允许管理员创建多个普通用户，每个用
 | 管理员 (admin) | 可访问所有服务器、管理面板、管理 API；观看历史与上游服务器共享 |
 | 普通用户 (user) | 仅可访问被分配的服务器；拥有独立的观看历史（与其他用户、上游账户隔离） |
 
+> **禁用/删除用户后令牌立即失效**：管理面板禁用或删除普通用户时，除撤销其已签发令牌外，代理对 user 角色令牌逐请求复查用户状态，被禁用或已删除的账户立即返回 401，无需等待令牌自然过期。
+
 ### 独立观看历史
 
 由于所有分发用户共享同一个上游 Emby 账户，上游的观看进度、已播放状态和收藏是共享的。V1.4 起，普通用户的观看数据以**本地记录**为准，隔离在上游账户之外：
@@ -419,7 +413,7 @@ V1.4 新增多用户支持，允许管理员创建多个普通用户，每个用
 - **直连模式**：按线路健康状态选择——每个健康检查周期对所有备用线路做连接级探测（任何 HTTP 响应都算存活，包括只转发 `/Videos/`、`/Audio/` 的分流反代返回的 403/404），被标记死亡的线路 60 秒内不再选用，之后自动恢复候选。302 发出后流量不经过代理，播放中途的线路故障由播放器重新拉取清单时自然切换。
 - 留空时与 `url`（前端地址）一致，行为与单条 `streamingUrl` 相同。
 
- ### 客户端身份详解 (`spoofClient`)
+### 客户端身份详解 (`spoofClient`)
  
  控制代理以什么客户端身份与上游服务器通信。影响登录、API 请求、健康检查和流媒体代理。
  
@@ -432,7 +426,7 @@ V1.4 新增多用户支持，允许管理员创建多个普通用户，每个用
  >
  > **当前行为**：`custom` 模式下配置的 `User-Agent`、`X-Emby-Client`、`X-Emby-Client-Version`、`X-Emby-Device-Name`、`X-Emby-Device-Id` 会同时应用于上游登录认证、常规 API 请求、健康检查、图片代理和流媒体代理；管理面板保存后会持久化到配置文件，并在再次编辑时正确回填。`customUserAgent` 为必填项——没有 User-Agent 的自定义身份会退化成无 UA 出站请求，这正是被移除的行为。
  
- #### Passthrough 模式工作原理
+#### Passthrough 模式工作原理
  
  Passthrough 使用四级 header 解析，向上游呈现真实客户端身份；任何一级都取不到时**不伪造、不裸发**，而是延迟登录等待真实客户端：
  
@@ -516,7 +510,10 @@ emby-in-one --reset-password <new-password|-> [--force]
 - **优雅关机**：收到 `SIGINT` / `SIGTERM` 信号后，先排空当前活动连接（最多等待 10 秒），再关闭 HTTP 服务器和健康检查定时器
 - **管理面板 CSP**：Admin 面板返回严格的 `Content-Security-Policy`——`default-src 'self'`，且 `script-src` / `style-src` / `font-src` / `connect-src` 中不含任何第三方源、不含 `'unsafe-inline'`。Vue、lucide、Tailwind CSS 产物与 Inter 字体全部自托管于 `public/vendor/`，面板既不加载也不外连任何外部地址。仅保留 `'unsafe-eval'`（Vue 运行时编译 DOM 内模板所需）
 - **流媒体 URL 缓存自动淘汰**：`IDStore` 中的 `streamURLs` 缓存条目 4 小时后自动过期，每 30 分钟清理一次，防止长期运行后内存无限增长
-- **代理连通性测试 SSRF 防护**：管理面板的代理测试接口内置 DNS 重绑定防护，阻止请求连接到私有/保留 IP 地址（`127.x`、`10.x`、`172.16-31.x`、`192.168.x` 等）
+- **代理连通性测试 SSRF 防护**：管理面板的代理测试接口内置 DNS 重绑定防护，阻止请求连接到私有/保留 IP 地址（`127.x`、`10.x`、`172.16-31.x`、`192.168.x` 等）；预检 DNS 解析带请求上下文与 5 秒上限，解析器无响应时快速放行（连接时检查仍是执法点），不会挂起管理请求
+- **日志文件权限**：`data/emby-in-one.log` 与轮转备份按 `0600` 写入（与 `tokens.json` 同级），旧版本遗留的 0644 文件在打开与轮转时自动收紧；Windows 保持系统默认
+- **日志与错误信息脱敏**：代理 URL 中的 `user:pass@` 凭据在写入日志与错误信息前自动脱敏；出站请求日志对敏感查询参数（令牌、密码等）同样脱敏
+- **禁用/删除用户的令牌即时失效**：管理面板禁用或删除普通用户时，除撤销其已签发令牌外，代理对 user 角色令牌逐请求复查用户状态，被禁用或已删除的账户立即返回 401
 - **YAML 注释安全解析**：配置文件解析时正确处理引号内的 `#` 字符，不再错误截断含 `#` 的值
 
 ---
@@ -538,6 +535,7 @@ emby-in-one --reset-password <new-password|-> [--force]
 - Docker 路径：`/app/data/emby-in-one.log`
 - 单文件最大 10MB，保留 3 个备份（`emby-in-one.log.1` ~ `.3`），自动轮转
 - 管理面板可下载和清空（清空会连同备份一起删除）
+- 权限：Unix/Linux 上按 `0600` 写入（日志可能包含带参数的 URL），轮转备份一并收紧；Windows 保持系统默认
 
 ### 日志配置
 
@@ -578,6 +576,31 @@ environment:
 
 所有 API 需要认证（`X-Emby-Token` 头或 `api_key` 查询参数）。出于安全考虑，`/admin/api/*` 仅按同源方式开放，不为任意跨域来源返回放行头。
 
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/admin/api/status` | 系统状态 |
+| GET | `/admin/api/upstream` | 列出上游服务器 |
+| POST | `/admin/api/upstream` | 添加上游服务器 |
+| PUT | `/admin/api/upstream/:index` | 修改上游服务器 |
+| DELETE | `/admin/api/upstream/:index` | 删除上游服务器（自动清理 ID 映射） |
+| POST | `/admin/api/upstream/:index/reconnect` | 重连上游服务器 |
+| POST | `/admin/api/upstream/reorder` | 调整服务器顺序 |
+| GET | `/admin/api/proxies` | 列出代理 |
+| POST | `/admin/api/proxies` | 添加代理 |
+| POST | `/admin/api/proxies/test` | 测试代理连通性 |
+| DELETE | `/admin/api/proxies/:id` | 删除代理 |
+| GET | `/admin/api/settings` | 获取全局设置 |
+| PUT | `/admin/api/settings` | 修改全局设置 |
+| GET | `/admin/api/logs?limit=500` | 获取内存日志 |
+| GET | `/admin/api/logs/download` | 下载持久化日志文件 |
+| DELETE | `/admin/api/logs` | 清空日志 |
+| GET | `/admin/api/client-info` | 获取已捕获的客户端信息 |
+| GET | `/admin/api/users` | 列出所有普通用户 |
+| POST | `/admin/api/users` | 创建普通用户 |
+| PUT | `/admin/api/users/:id` | 修改普通用户 |
+| DELETE | `/admin/api/users/:id` | 删除普通用户（自动清除观看数据） |
+| POST | `/admin/api/logout` | 管理员登出 |
+
 ---
 
 ## SSH 管理菜单
@@ -614,31 +637,6 @@ emby-in-one
   - `emby-in-one.log` — 日志文件
 
 `data/` 的实际位置可以通过配置文件顶层的 [`dataDir`](#数据目录-datadir) 键改写。
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/admin/api/status` | 系统状态 |
-| GET | `/admin/api/upstream` | 列出上游服务器 |
-| POST | `/admin/api/upstream` | 添加上游服务器 |
-| PUT | `/admin/api/upstream/:index` | 修改上游服务器 |
-| DELETE | `/admin/api/upstream/:index` | 删除上游服务器（自动清理 ID 映射） |
-| POST | `/admin/api/upstream/:index/reconnect` | 重连上游服务器 |
-| POST | `/admin/api/upstream/reorder` | 调整服务器顺序 |
-| GET | `/admin/api/proxies` | 列出代理 |
-| POST | `/admin/api/proxies` | 添加代理 |
-| POST | `/admin/api/proxies/test` | 测试代理连通性 |
-| DELETE | `/admin/api/proxies/:id` | 删除代理 |
-| GET | `/admin/api/settings` | 获取全局设置 |
-| PUT | `/admin/api/settings` | 修改全局设置 |
-| GET | `/admin/api/logs?limit=500` | 获取内存日志 |
-| GET | `/admin/api/logs/download` | 下载持久化日志文件 |
-| DELETE | `/admin/api/logs` | 清空日志 |
-| GET | `/admin/api/client-info` | 获取已捕获的客户端信息 |
-| GET | `/admin/api/users` | 列出所有普通用户 |
-| POST | `/admin/api/users` | 创建普通用户 |
-| PUT | `/admin/api/users/:id` | 修改普通用户 |
-| DELETE | `/admin/api/users/:id` | 删除普通用户（自动清除观看数据） |
-| POST | `/admin/api/logout` | 管理员登出 |
 
 ---
 
@@ -738,42 +736,87 @@ Emby-In-One/
 │   ├── auth.go                     # 代理 Token 签发与校验
 │   ├── auth_context.go             # 请求级认证上下文注入与提取
 │   ├── auth_manager.go             # 上游认证管理（登录/Session/API Key）
-│   ├── identity.go                 # 客户端身份捕获与 Passthrough 五级解析
+│   ├── identity.go                 # 客户端身份捕获与 Passthrough 四级解析
 │   ├── identity_persistence.go     # 客户端身份按服务器维度持久化
 │   ├── user_store.go               # 多用户存储（CRUD、密码哈希、内存索引 + SQLite）
 │   ├── handlers_admin.go           # 管理后台 API 处理器（上游服务器增删改查）
+│   ├── handlers_admin_home_libraries.go  # 每用户首页库隐藏的管理端接口与库列表缓存
 │   ├── handlers_system.go          # 系统信息接口（/System/Info）
 │   ├── handlers_user.go            # 用户登录限速与用户相关接口处理器
+│   ├── handlers_web.go             # /web/ 静态资源服务（磁盘优先、内嵌回退、COOP/COEP）
 │   ├── admin_validation.go         # 管理后台输入校验与辅助工具
 │   ├── idstore.go                  # SQLite 双向 ID 映射（虚拟 ID ↔ 原始 ID）
 │   ├── id_rewriter.go              # 递归 ID 虚拟化/反虚拟化重写
 │   ├── query_ids.go                # 批量查询 ID 解析
+│   ├── identifier_lookup.go        # 多来源标识符查询（各 store 锁内执行）
 │   ├── media.go                    # 媒体聚合、去重、元数据优先级选择
 │   ├── aggregation.go              # 通用聚合框架（宽恕期 + 后台静默补全）
 │   ├── media_items.go              # 媒体条目查询（多上游扇出合并）
 │   ├── media_resume.go             # "继续观看"接口代理与多上游合并
 │   ├── media_nextup.go             # "接下来观看"接口代理与多上游合并
 │   ├── media_playback.go           # PlaybackInfo 查询与并发播放限制检查
+│   ├── media_source.go             # MediaSource 选择与播放会话归属
 │   ├── media_stream.go             # 视频/音频流代理（虚拟 ID 路由解析）
+│   ├── item_detail.go              # 合并条目详情（多实例 MediaSource 聚合）
+│   ├── item_instances.go           # 附加实例（OtherInstances）发现
+│   ├── show_items.go               # 剧集/季集列表合并（先合并再分页）
 │   ├── library_image.go            # 图片代理（缓存头）
+│   ├── library_filter.go           # 请求级隐藏库解析（首页库隐藏）
+│   ├── library_visibility.go       # 每用户首页库可见性存储（含管理员自身）
+│   ├── user_filter.go              # 本地用户态筛选（IsFavorite/IsPlayed/IsResumable）
 │   ├── series_userdata.go          # 系列级观看历史隔离（Resume/NextUp）
 │   ├── session_userdata.go         # Sessions/Playing 进度上报
 │   ├── watch_store.go              # 每用户观看进度存储与持久化
 │   ├── playback_limiter.go         # 并发播放数限制（心跳超时自动释放）
 │   ├── login_limiter.go            # 登录失败限流（按 IP；容量满时逐出最旧记录）
 │   ├── streamproxy.go              # HTTP 流代理（背压、HLS 相对路径重写）
+│   ├── stream_probe.go             # 推流线路连接级存活探测（直连模式选线）
+│   ├── hls_segment_proxy.go        # VOD 分片时间轴重写与超大分片流式回退
+│   ├── hls_segment_time.go         # fMP4 时间轴解析与重写（tfdt/sidx，seek 时间线恢复）
 │   ├── fallback_proxy.go           # 兜底路由：扫描 URL/Query 中的虚拟 ID
 │   ├── healthcheck.go              # 并行健康检查
 │   ├── logger.go                   # 分级日志（Console + File 双输出 + 轮转）
+│   ├── logfile.go                  # 轮转日志文件（0600 权限、备份移位与收紧）
+│   ├── privatefile.go              # 私有文件权限（0600）与旧文件自动收紧
+│   ├── atomicfile.go               # 原子写文件（临时文件 + 重命名）
+│   ├── atomicfile_owner_unix.go    # 原子替换时保留文件属主（Unix）
+│   ├── atomicfile_owner_windows.go # 属主保持的 Windows 空实现
+│   ├── db_migration.go             # SQLite 表结构迁移（表/列探测与补建）
 │   ├── scrypt_local.go             # 管理员密码 scrypt 加密
 │   ├── sqlite_cgo.go               # CGO 嵌入式 SQLite 编译与底层绑定
-│   └── upstream.go                 # 上游连接池 & 并发请求编排
+│   ├── upstream.go                 # 上游连接池 & 并发请求编排
+│   ├── upstream_auth_state.go      # 上游认证状态一致性快照
+│   ├── outbound_identity.go        # 出站身份载体改写与命名
+│   ├── outbound_identity_policy.go # 出站认证模式与身份规则
+│   ├── outbound_errors.go          # 出站错误归一化（准备错误/传输错误分类）
+│   ├── outbound_log.go             # 出站请求日志（敏感参数脱敏）
+│   └── outbound_diagnostics.go     # 出站诊断扫描（有界输入）
 ├── third_party/sqlite/             # SQLite CGO 源码依赖
 ├── public/
-│   ├── embed.go                    # go:embed 指令（将 admin.html、admin.js 与 vendor/ 编译进二进制）
+│   ├── embed.go                    # go:embed 指令（将 admin.html、admin.js、vendor/ 与 web/ 编译进二进制）
 │   ├── admin.html                  # Vue 3 + Tailwind CSS 管理面板模板
 │   ├── admin.js                    # Vue 3 应用逻辑（从 admin.html 拆分）
-│   └── vendor/                     # 自托管前端依赖：Vue、lucide、Tailwind 产物、Inter 字体
+│   ├── web/                        # 内置 Web 客户端（/web/，Vue 3 全局构建，无打包步骤）
+│   │   ├── web.html                #   单页应用外壳
+│   │   ├── app.js                  #   应用入口（路由、页面装配、播放器接线）
+│   │   ├── data.js                 #   共享数据操作（API 封装）
+│   │   ├── ui.js                   #   共享 UI 状态工厂（Toast、最近搜索等）
+│   │   ├── page-state.js           #   页面请求控制器（AbortController + 代次）
+│   │   ├── library-state.js        #   媒体库页控制器（网格/列表、有界分页）
+│   │   ├── ui-components.js        #   可复用 Vue 组件
+│   │   ├── player-ui.js            #   播放器控制层状态（状态机、菜单、快捷键）
+│   │   ├── player-libmedia.js      #   播放引擎（原生 MP4、libmedia 流式、HLS 兜底）
+│   │   ├── subtitle-controller.js  #   轨道选择与字幕时钟
+│   │   ├── subtitles.js            #   字幕覆盖层（SRT/VTT/PGS、ASS 渲染）
+│   │   └── ui.css                  #   Web 客户端样式
+│   └── vendor/                     # 自托管前端依赖：Vue、lucide、Tailwind 产物、Inter 字体；
+│                                   # web/ 下为 libmedia 播放器、JASSUB 字幕引擎与 Noto Sans SC 字体
+├── tests/                          # Node 前端行为测试（node --test，10 个文件 55 项）
+│   ├── web-ui-harness.cjs          #   共享 VM harness（Vue 桩，按 web.html 顺序加载脚本）
+│   ├── make-web-fixtures.py        #   ffmpeg 合成样本生成（样本不入发行资源）
+│   └── *.test.cjs                  #   data / ui / player / player-ui / subtitles / mse-seek /
+│                                   #   mse-duration / seek-queue / session / admin-panel
+├── design/web-ui/                  # /web 界面重设计文档（视觉稿、评审记录、执行规格）
 ├── assets/panel.css                # Tailwind 输入文件（含从 admin.html 迁出的面板自定义样式）
 ├── tailwind.config.js              # Tailwind 扫描配置（改动 admin.html/admin.js 后跑 npm run build:panel）
 ├── package.json                    # 根 package.json 仅保留 build:panel 一个脚本（Node 依赖已移至 legacy/）

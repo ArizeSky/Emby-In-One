@@ -15,7 +15,6 @@ Based on Go language, it implements a multi-server Emby aggregation proxy — me
 
 ## Table of Contents
 
-- [Demo Site](#demo-site)
 - [Preview](#preview)
 - [Features Overview](#features-overview)
 - [Built-in Web Client](#built-in-web-client)
@@ -35,27 +34,6 @@ Based on Go language, it implements a multi-server Emby aggregation proxy — me
 - [Project Architecture](#project-architecture-developer-reference)
 - [Star History](#star-history)
 - [License](#license)
-
-## Built-in Web Client
-
-Open `/web/` and sign in with a regular user created by the administrator. Admin accounts belong to `/admin/` and cannot sign in to the Web client. Libraries, search, seasons, source selection and watch progress follow the signed-in user's permissions.
-
-V1.4.4-rc3 rebuilds the desktop interface: a split sign-in screen, a 216 px desktop sidebar (Home / Favorites / Search), a home Hero with a "Continue watching · All" entry, library grid/list switching with paging, per-season detail plus version cards, and grouped search with recent searches. Home adds one bounded Resume request; everything else keeps the existing backend endpoints and authentication.
-
-Item details let you choose a version, audio track and subtitle before playback; version names include their source server. The control layer auto-hides, supports click/double-click on the picture, keyboard shortcuts (Space/K, arrows, M, F, C, Esc), a seek preview bubble, volume and fullscreen; startup/runtime failures show a retryable error card, 429 is reported separately, and version/audio switching locks the controls while preserving position.
-
-Playback first requests the original media. H.264/AAC MP4 uses native video; MKV, HEVC and other formats use libmedia 1.3.1 with streaming demux and preferred browser MSE/WebCodecs decoding. Local WASM decoders load on demand. Failed direct playback, including a 20-second startup timeout, can fall back to upstream H.264/AAC HLS requested at up to 1920×1080. Higher-resolution non-MSE playback requires hardware decoding to avoid sustained 4K WASM software decode.
-
-libmedia renders embedded text/ASS. External ASS with native video or HLS uses JASSUB/libass and a local Chinese font loaded only when selected. SRT/VTT use a text overlay; PGS uses upstream-exported SUP subtitles with fragment assembly, clearing, seeking and aspect fitting. Subtitle export and HLS availability depend on upstream capabilities and permissions. Complex ASS layouts and actual 4K hardware playback still require validation on the target device and source.
-
-Development checks: `node --test tests/web-data.test.cjs tests/web-ui.test.cjs tests/web-player.test.cjs tests/web-subtitles.test.cjs tests/web-mse-seek.test.cjs`. `tests/make-web-fixtures.py` creates tiny, eight-second 320×180 samples using a local ffmpeg executable. Keep generated media in a temporary directory, outside release assets.
-
-## Demo Site
-
-[Demo Site](https://emby.cothx.eu.cc/)
-Emby Connection Address: https://emby.cothx.eu.cc/
-
-> **Demo credentials are no longer published in this repository.** For security reasons, no plaintext account or password is provided here. To try the demo, contact the maintainer via GitHub [Issues](https://github.com/ArizeSky/Emby-In-One/issues) for a **periodically rotated** temporary account. Please do not redistribute demo credentials in public channels.
 
 ## Preview
 
@@ -83,6 +61,20 @@ Emby Connection Address: https://emby.cothx.eu.cc/
 - **Token Management & Session Stability** — Proxy tokens never expire (only removed on logout, password change, or manual revocation), preventing frequent 401 errors on long-idle devices; upstream tokens auto-recover via async re-login with 30-second debounce when expired; admin password changes automatically revoke all issued tokens.
  - **Passthrough Delayed Login** — Upstream servers in passthrough mode (password or API key) never log in or send requests before a real client identity has been captured; they authenticate automatically once the admin logs in once with a real client, avoiding phantom device records on upstream Emby.
 - **Full Control & Operations** — Built-in modern SSH CLI menu and Web admin panel; comes with persistent logs and SQLite ID mapping. SSH menu auto-detects Binary/Docker deployment mode, dispatching all operations to systemd or Docker Compose commands accordingly.
+
+## Built-in Web Client
+
+Open `/web/` and sign in with a regular user created by the administrator. Admin accounts belong to `/admin/` and cannot sign in to the Web client. Libraries, search, seasons, source selection and watch progress follow the signed-in user's permissions.
+
+V1.4.4-rc3 rebuilds the desktop interface: a split sign-in screen, a 216 px desktop sidebar (Home / Favorites / Search), a home Hero with a "Continue watching · All" entry, library grid/list switching with paging, per-season detail plus version cards, and grouped search with recent searches. Home adds one bounded Resume request; everything else keeps the existing backend endpoints and authentication.
+
+Item details let you choose a version, audio track and subtitle before playback; version names include their source server. The control layer auto-hides, supports click/double-click on the picture, keyboard shortcuts (Space/K, arrows, M, F, C, Esc), a seek preview bubble, volume and fullscreen; startup/runtime failures show a retryable error card, 429 is reported separately, and version/audio switching locks the controls while preserving position.
+
+Playback first requests the original media. H.264/AAC MP4 uses native video; MKV, HEVC and other formats use libmedia 1.3.1 with streaming demux and preferred browser MSE/WebCodecs decoding. Local WASM decoders load on demand. Failed direct playback, including a 20-second startup timeout, can fall back to upstream H.264/AAC HLS requested at up to 1920×1080. Higher-resolution non-MSE playback requires hardware decoding to avoid sustained 4K WASM software decode.
+
+libmedia renders embedded text/ASS. External ASS with native video or HLS uses JASSUB/libass and a local Chinese font loaded only when selected. SRT/VTT use a text overlay; PGS uses upstream-exported SUP subtitles with fragment assembly, clearing, seeking and aspect fitting. Subtitle export and HLS availability depend on upstream capabilities and permissions. Complex ASS layouts and actual 4K hardware playback still require validation on the target device and source.
+
+Development checks: `node --test tests/web-data.test.cjs tests/web-ui.test.cjs tests/web-player.test.cjs tests/web-player-ui.test.cjs tests/web-subtitles.test.cjs tests/web-mse-seek.test.cjs tests/web-mse-duration.test.cjs tests/web-seek-queue.test.cjs tests/web-session.test.cjs tests/admin-panel.test.cjs` (10 files, 55 tests). `tests/make-web-fixtures.py` creates tiny, eight-second 320×180 samples using a local ffmpeg executable. Keep generated media in a temporary directory, outside release assets.
 
 ---
 
@@ -321,6 +313,8 @@ V1.4 adds multi-user support, allowing admins to create multiple regular users, 
 | Admin (admin) | Can access all servers, admin panel, admin API; Watch history shared with upstream servers |
 | Regular User (user) | Can only access assigned servers; Has independent watch history (isolated from other users and upstream accounts) |
 
+> **Tokens expire immediately when a user is disabled or deleted**: besides revoking the user's issued tokens, the proxy re-checks the account status on every request carrying a user-role token — a disabled or deleted account gets 401 right away, without waiting for the token to age out.
+
 ### Independent Watch History
 
 Because all distributed users share the same upstream Emby account, upstream watch progress, played status, and favorites are shared. Starting from V1.4, a regular user's watch data is **local state**, isolated from the upstream account:
@@ -419,7 +413,7 @@ An upstream can configure **multiple streaming lines** (`streamingUrls`, an orde
 - **Redirect mode**: the line is chosen by liveness — every health-check cycle probes fallback lines at the connect level (any HTTP response counts as alive, including the 403/404 returned by split-tunnel reverse proxies that only forward `/Videos/` and `/Audio/`). A line marked dead is skipped for 60 seconds, then becomes a candidate again. After the 302 the traffic no longer passes through the proxy; a line failure mid-playback is handled naturally when the player re-fetches the manifest.
 - When left empty the stream base equals `url` (the front-end address), same as a single `streamingUrl`.
 
- ### Client Identity Explained (`spoofClient`)
+### Client Identity Explained (`spoofClient`)
  
  Controls what client identity the proxy communicates with the upstream server. Affects login, API requests, health checks, and stream proxying.
  
@@ -432,7 +426,7 @@ An upstream can configure **multiple streaming lines** (`streamingUrls`, an orde
  >
  > **Current behavior**: In `custom` mode, the configured `User-Agent`, `X-Emby-Client`, `X-Emby-Client-Version`, `X-Emby-Device-Name`, and `X-Emby-Device-Id` are applied to upstream login, normal API requests, health checks, image proxying, and stream proxying. After saving in the admin panel, these values are persisted to the config file and correctly restored when editing the upstream again. `customUserAgent` is required — a custom identity without a User-Agent would degrade into a UA-less outbound request, which is exactly the behaviour that was removed.
  
- #### Passthrough Mode Principles
+#### Passthrough Mode Principles
  
  Passthrough uses a four-level header resolution to present the real client identity to the upstream; when no level yields anything it **fabricates nothing and sends nothing** — login is deferred until a real client connects:
  
@@ -516,7 +510,10 @@ emby-in-one --reset-password <new-password|-> [--force]
 - **Graceful shutdown**: On receiving `SIGINT` / `SIGTERM`, drains active connections (up to 10 seconds) before closing the HTTP server and health check timers
 - **Admin panel CSP**: the admin panel returns a strict `Content-Security-Policy` - `default-src 'self'`, with no third-party origin and no `'unsafe-inline'` in `script-src` / `style-src` / `font-src` / `connect-src`. Vue, lucide, the compiled Tailwind CSS and the Inter font are all self-hosted under `public/vendor/`, so the panel loads nothing from and connects to nothing on an external origin. Only `'unsafe-eval'` remains, which Vue needs to compile its in-DOM template at runtime
 - **Stream URL cache auto-eviction**: `IDStore` stream URL cache entries expire after 4 hours, cleaned every 30 minutes, preventing unbounded memory growth during long-running operation
-- **Proxy connectivity test SSRF protection**: The admin panel's proxy test endpoint includes DNS rebinding protection, blocking connections to private/reserved IP addresses (`127.x`, `10.x`, `172.16-31.x`, `192.168.x`, etc.)
+- **Proxy connectivity test SSRF protection**: The admin panel's proxy test endpoint includes DNS rebinding protection, blocking connections to private/reserved IP addresses (`127.x`, `10.x`, `172.16-31.x`, `192.168.x`, etc.); the pre-check DNS lookup is bounded by the request context plus a 5-second cap, so a stuck resolver fails open quickly (the connect-time check remains the enforcement point) instead of hanging the admin request
+- **Log file permissions**: `data/emby-in-one.log` and its rotated backups are written `0600` (same class as `tokens.json`); files left world-readable by older builds are tightened on open and rotation. Windows keeps its default
+- **Credential redaction in logs and errors**: `user:pass@` credentials inside proxy URLs are redacted before reaching log lines or error messages; outbound request logs redact sensitive query parameters (tokens, passwords) the same way
+- **Immediate token invalidation on user disable/delete**: besides revoking a user's issued tokens, the proxy re-checks the account status on every request carrying a user-role token — a disabled or deleted account gets 401 right away
 - **YAML comment-safe parsing**: Config file parsing correctly handles `#` characters inside quotes, no longer incorrectly truncating values containing `#`
 
 ---
@@ -538,6 +535,7 @@ emby-in-one --reset-password <new-password|-> [--force]
 - Docker path: `/app/data/emby-in-one.log`
 - Up to 10MB per file, retaining 3 rotated backups (`emby-in-one.log.1` ~ `.3`), auto-rotation
 - Capable of being downloaded and cleared inside the admin panel (clearing also deletes the backups)
+- Permissions: written `0600` on Unix/Linux (logs can carry parameterized URLs), rotated backups included; Windows keeps its default
 
 ### Log Configuration
 
@@ -578,6 +576,31 @@ Access `http://your-ip:8096/admin`, logging in with the admin credentials from t
 
 All APIs require authentication (`X-Emby-Token` header or `api_key` query parameter). For security reasons, `/admin/api/*` endpoints only open to same-origin requests, denying unhindered cross-origin acceptances.
 
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/admin/api/status` | System status |
+| GET | `/admin/api/upstream` | List upstream servers |
+| POST | `/admin/api/upstream` | Add upstream server |
+| PUT | `/admin/api/upstream/:index` | Modify upstream server |
+| DELETE | `/admin/api/upstream/:index` | Delete upstream server (auto-cleans ID mappings) |
+| POST | `/admin/api/upstream/:index/reconnect` | Reconnect upstream server |
+| POST | `/admin/api/upstream/reorder` | Adjust server ordering |
+| GET | `/admin/api/proxies` | List proxies |
+| POST | `/admin/api/proxies` | Add proxy |
+| POST | `/admin/api/proxies/test` | Test proxy connectivity |
+| DELETE | `/admin/api/proxies/:id` | Delete proxy |
+| GET | `/admin/api/settings` | Get global settings |
+| PUT | `/admin/api/settings` | Modify global settings |
+| GET | `/admin/api/logs?limit=500` | Get in-memory logs |
+| GET | `/admin/api/logs/download` | Download the persistent log file |
+| DELETE | `/admin/api/logs` | Clear logs |
+| GET | `/admin/api/client-info` | Get captured client info |
+| GET | `/admin/api/users` | List all regular users |
+| POST | `/admin/api/users` | Create a regular user |
+| PUT | `/admin/api/users/:id` | Modify a regular user |
+| DELETE | `/admin/api/users/:id` | Delete a regular user (auto-clears watch data) |
+| POST | `/admin/api/logout` | Admin logout |
+
 ---
 
 ## SSH Management Menu
@@ -614,31 +637,6 @@ Runtime directories:
   - `emby-in-one.log` — Log file
 
 The actual location of `data/` can be changed with the top-level [`dataDir`](#data-directory-datadir) key in the config file.
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/admin/api/status` | System status |
-| GET | `/admin/api/upstream` | List upstream servers |
-| POST | `/admin/api/upstream` | Add upstream server |
-| PUT | `/admin/api/upstream/:index` | Modify upstream server |
-| DELETE | `/admin/api/upstream/:index` | Delete upstream server (auto-cleans ID mappings) |
-| POST | `/admin/api/upstream/:index/reconnect` | Reconnect upstream server |
-| POST | `/admin/api/upstream/reorder` | Adjust server ordering |
-| GET | `/admin/api/proxies` | List proxies |
-| POST | `/admin/api/proxies` | Add proxy |
-| POST | `/admin/api/proxies/test` | Test proxy connectivity |
-| DELETE | `/admin/api/proxies/:id` | Delete proxy |
-| GET | `/admin/api/settings` | Retrieve global settings |
-| PUT | `/admin/api/settings` | Modify global settings |
-| GET | `/admin/api/logs?limit=500` | Fetch in-memory logs |
-| GET | `/admin/api/logs/download` | Download persisted log files |
-| DELETE | `/admin/api/logs` | Clear logs |
-| GET | `/admin/api/client-info` | Get currently captured client information |
-| GET | `/admin/api/users` | List all regular users |
-| POST | `/admin/api/users` | Create regular user |
-| PUT | `/admin/api/users/:id` | Update regular user |
-| DELETE | `/admin/api/users/:id` | Delete regular user (auto-clears watch data) |
-| POST | `/admin/api/logout` | Admin logout |
 
 ---
 
@@ -738,42 +736,87 @@ Emby-In-One/
 │   ├── auth.go                     # Proxy token issuance & validation
 │   ├── auth_context.go             # Per-request auth context injection & extraction
 │   ├── auth_manager.go             # Upstream auth management (login/session/API Key)
-│   ├── identity.go                 # Client identity capture & Passthrough 5-level resolution
+│   ├── identity.go                 # Client identity capture & Passthrough 4-level resolution
 │   ├── identity_persistence.go     # Per-upstream client identity persistence
 │   ├── user_store.go               # Multi-user storage (CRUD, password hashing, memory index + SQLite)
 │   ├── handlers_admin.go           # Admin API handlers (upstream server CRUD)
+│   ├── handlers_admin_home_libraries.go  # Per-user home-library hiding admin endpoint & library cache
 │   ├── handlers_system.go          # System info endpoints (/System/Info)
 │   ├── handlers_user.go            # User login rate limiting & user-related handlers
+│   ├── handlers_web.go             # /web/ static assets (disk-first, embedded fallback, COOP/COEP)
 │   ├── admin_validation.go         # Admin input validation & helper utilities
 │   ├── idstore.go                  # SQLite bidirectional ID mapping (virtual ↔ original)
 │   ├── id_rewriter.go              # Recursive ID virtualization/devirtualization rewriting
 │   ├── query_ids.go                # Batch query ID resolution
+│   ├── identifier_lookup.go        # Multi-source identifier lookup (each store under its lock)
 │   ├── media.go                    # Media aggregation, dedup, metadata priority selection
 │   ├── aggregation.go              # Common aggregation framework (grace period + background backfill)
 │   ├── media_items.go              # Media item queries (multi-upstream fan-out merge)
 │   ├── media_resume.go             # Resume Items proxy & multi-upstream merge
 │   ├── media_nextup.go             # Next Up proxy & multi-upstream merge
 │   ├── media_playback.go           # PlaybackInfo query & concurrent playback limit check
+│   ├── media_source.go             # MediaSource selection & playback session ownership
 │   ├── media_stream.go             # Video/audio stream proxy (virtual ID route resolution)
+│   ├── item_detail.go              # Merged item detail (multi-instance MediaSource aggregation)
+│   ├── item_instances.go           # OtherInstances discovery
+│   ├── show_items.go               # Episode list merging for shows (merge before paging)
 │   ├── library_image.go            # Image proxy (cache headers)
+│   ├── library_filter.go           # Per-request hidden-library resolution (home hiding)
+│   ├── library_visibility.go       # Per-user home-library visibility storage (admin included)
+│   ├── user_filter.go              # Local user-state filters (IsFavorite/IsPlayed/IsResumable)
 │   ├── series_userdata.go          # Series-level watch history isolation (Resume/NextUp)
 │   ├── session_userdata.go         # Sessions/Playing progress reporting
 │   ├── watch_store.go              # Per-user watch progress storage & persistence
 │   ├── playback_limiter.go         # Concurrent playback limiter (heartbeat timeout auto-release)
 │   ├── login_limiter.go            # Per-IP login failure limiter (evicts instead of blocking)
 │   ├── streamproxy.go              # HTTP stream proxy (backpressure, HLS relative path rewriting)
+│   ├── stream_probe.go             # Streaming-line liveness probes (redirect-mode line choice)
+│   ├── hls_segment_proxy.go        # VOD segment timeline rewriting & oversized-segment streaming fallback
+│   ├── hls_segment_time.go         # fMP4 timeline parse/rewrite (tfdt/sidx, seek timeline restore)
 │   ├── fallback_proxy.go           # Fallback route: scan URL/Query for virtual IDs
 │   ├── healthcheck.go              # Parallel health checks
 │   ├── logger.go                   # Leveled logging (Console + File dual output + rotation)
+│   ├── logfile.go                  # Rotating log file (0600 mode, backup shifting & tightening)
+│   ├── privatefile.go              # Private file mode (0600) & tightening of legacy files
+│   ├── atomicfile.go               # Atomic file writes (temp file + rename)
+│   ├── atomicfile_owner_unix.go    # Owner preservation on atomic replace (Unix)
+│   ├── atomicfile_owner_windows.go # Owner-preservation no-op for Windows
+│   ├── db_migration.go             # SQLite schema migration (table/column probing & backfill)
 │   ├── scrypt_local.go             # Admin password scrypt hashing
 │   ├── sqlite_cgo.go               # CGO embedded SQLite compilation & low-level bindings
-│   └── upstream.go                 # Upstream connection pool & concurrent request orchestration
+│   ├── upstream.go                 # Upstream connection pool & concurrent request orchestration
+│   ├── upstream_auth_state.go      # Consistent snapshot of an upstream's auth state
+│   ├── outbound_identity.go        # Outbound identity carrier rewriting & naming
+│   ├── outbound_identity_policy.go # Outbound auth modes & identity rules
+│   ├── outbound_errors.go          # Outbound error normalization (preparation vs transport)
+│   ├── outbound_log.go             # Outbound request logs (sensitive parameter redaction)
+│   └── outbound_diagnostics.go     # Outbound diagnostics scanning (bounded input)
 ├── third_party/sqlite/             # SQLite CGO source dependency
 ├── public/
-│   ├── embed.go                    # go:embed directive (compiles admin.html, admin.js and vendor/ into binary)
+│   ├── embed.go                    # go:embed directive (compiles admin.html, admin.js, vendor/ and web/ into the binary)
 │   ├── admin.html                  # Vue 3 + Tailwind CSS admin panel template
 │   ├── admin.js                    # Vue 3 application logic (extracted from admin.html)
-│   └── vendor/                     # Self-hosted frontend dependencies: Vue, lucide, Tailwind output, Inter font
+│   ├── web/                        # Built-in Web client (/web/, Vue 3 global build, no bundler)
+│   │   ├── web.html                #   Single-page application shell
+│   │   ├── app.js                  #   App entry (routing, page assembly, player wiring)
+│   │   ├── data.js                 #   Shared data operations (API wrappers)
+│   │   ├── ui.js                   #   Shared UI state factories (toast, recent searches)
+│   │   ├── page-state.js           #   Page request controllers (AbortController + generations)
+│   │   ├── library-state.js        #   Library page controller (grid/list, bounded paging)
+│   │   ├── ui-components.js        #   Reusable Vue components
+│   │   ├── player-ui.js            #   Player control-layer state (state machine, menus, shortcuts)
+│   │   ├── player-libmedia.js      #   Player engine (native MP4, libmedia streaming, HLS fallback)
+│   │   ├── subtitle-controller.js  #   Track selection & subtitle clocks
+│   │   ├── subtitles.js            #   Subtitle overlays (SRT/VTT/PGS, ASS rendering)
+│   │   └── ui.css                  #   Web client styles
+│   └── vendor/                     # Self-hosted frontend dependencies: Vue, lucide, Tailwind output, Inter font;
+│                                   # web/ holds the libmedia player, the JASSUB subtitle engine and Noto Sans SC
+├── tests/                          # Node front-end behavior tests (node --test, 10 files / 55 tests)
+│   ├── web-ui-harness.cjs          #   Shared VM harness (Vue stubs, scripts loaded in web.html order)
+│   ├── make-web-fixtures.py        #   ffmpeg synthetic sample generation (samples stay out of releases)
+│   └── *.test.cjs                  #   data / ui / player / player-ui / subtitles / mse-seek /
+│                                   #   mse-duration / seek-queue / session / admin-panel
+├── design/web-ui/                  # /web UI redesign docs (visual proposals, reviews, execution spec)
 ├── assets/panel.css                # Tailwind input (holds the panel styles moved out of admin.html)
 ├── tailwind.config.js              # Tailwind content config (run npm run build:panel after editing admin.html/admin.js)
 ├── package.json                    # Root package.json keeps only the build:panel script (Node deps moved to legacy/)
