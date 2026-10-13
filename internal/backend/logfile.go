@@ -25,13 +25,18 @@ func newRotatingFile(path string, maxSize int64, keep int) *rotatingFile {
 	return writer
 }
 
+// open creates (or appends to) the log with PrivateFileMode: the log can carry
+// tokens and parameterized URLs, so it belongs to the same class as the token
+// store. A previous run may have left it world-readable, so the mode is
+// re-applied on every open; the chmod is best-effort and never blocks logging.
 func (f *rotatingFile) open() error {
-	file, err := os.OpenFile(f.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	file, err := os.OpenFile(f.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, PrivateFileMode())
 	if err != nil {
 		f.file = nil
 		f.written = 0
 		return err
 	}
+	_ = file.Chmod(PrivateFileMode())
 	f.file = file
 	// Continue counting where a previous run left off.
 	f.written = 0
@@ -72,7 +77,7 @@ func (f *rotatingFile) Clear() error {
 		_ = f.file.Close()
 		f.file = nil
 	}
-	if err := os.WriteFile(f.path, []byte{}, 0o644); err != nil {
+	if err := os.WriteFile(f.path, []byte{}, PrivateFileMode()); err != nil {
 		return err
 	}
 	f.removeBackups()
@@ -99,6 +104,11 @@ func (f *rotatingFile) rotate() error {
 	_ = os.Remove(f.backupPath(1))
 	if err := os.Rename(f.path, f.backupPath(1)); err != nil && !os.IsNotExist(err) && firstErr == nil {
 		firstErr = err
+	}
+	// Backups shifted in from a previous run may still be world-readable; the
+	// mode is re-applied best-effort so old backups age out private too.
+	for index := 1; index <= f.keep; index++ {
+		_ = os.Chmod(f.backupPath(index), PrivateFileMode())
 	}
 	if err := f.open(); err != nil {
 		return err
