@@ -131,7 +131,7 @@ func (a *App) handleAdminUpstreamCreate(w http.ResponseWriter, r *http.Request) 
 	draft := UpstreamConfig{FollowRedirects: true}
 	applyAdminUpstreamInput(&draft, body, true)
 	normalizeUpstream(&draft, len(cfg.Upstream), &cfg)
-	if err := validateUpstreamDraft(draft); err != nil {
+	if err := validateUpstreamDraft(r.Context(), draft); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
@@ -195,7 +195,7 @@ func (a *App) handleAdminUpstreamUpdate(w http.ResponseWriter, r *http.Request) 
 	applyAdminUpstreamInput(&draft, body, false)
 	draft.ID = existing.ID // Keep existing persistent ID
 	normalizeUpstream(&draft, index, &cfg)
-	if err := validateUpstreamDraft(draft); err != nil {
+	if err := validateUpstreamDraft(r.Context(), draft); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
@@ -416,7 +416,7 @@ func (a *App) handleAdminProxyTest(w http.ResponseWriter, r *http.Request) {
 	// between this check and the connect cannot smuggle a blocked target through.
 	parsedTarget, _ := url.Parse(body.TargetURL)
 	if parsedTarget != nil {
-		if reason, blocked := blockedTargetReason(parsedTarget.Hostname()); blocked {
+		if reason, blocked := blockedTargetReason(r.Context(), parsedTarget.Hostname()); blocked {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": probeTargetBlockedMessage(parsedTarget.Hostname(), reason)})
 			return
 		}

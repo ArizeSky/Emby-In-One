@@ -45,7 +45,7 @@ func TestBlockedTargetReasonIsReportedPerRange(t *testing.T) {
 		{"0.0.0.0", "reserved"},
 	}
 	for _, tc := range cases {
-		reason, blocked := blockedTargetReason(tc.host)
+		reason, blocked := blockedTargetReason(context.Background(), tc.host)
 		if !blocked {
 			t.Errorf("%s: want blocked", tc.host)
 			continue
@@ -54,9 +54,44 @@ func TestBlockedTargetReasonIsReportedPerRange(t *testing.T) {
 			t.Errorf("%s: reason = %q, want %q", tc.host, reason, tc.reason)
 		}
 	}
-	if reason, blocked := blockedTargetReason("8.8.8.8"); blocked {
+	if reason, blocked := blockedTargetReason(context.Background(), "8.8.8.8"); blocked {
 		t.Errorf("public address must stay allowed, got reason %q", reason)
 	}
+}
+
+// TestBlockedTargetReasonIsBounded proves the DNS pre-check cannot hang an
+// admin request: a resolver that never answers is cut off by the caller's
+// context, and by the internal cap when the caller has no deadline. A failed
+// lookup must fail open (the dial-time check remains the enforcement point).
+func TestBlockedTargetReasonIsBounded(t *testing.T) {
+	orig := blockedTargetLookup
+	defer func() { blockedTargetLookup = orig }()
+	blockedTargetLookup = func(ctx context.Context, network, host string) ([]net.IP, error) {
+		<-ctx.Done() // a resolver that never answers
+		return nil, ctx.Err()
+	}
+
+	t.Run("caller context", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+		start := time.Now()
+		if reason, blocked := blockedTargetReason(ctx, "upstream.example"); blocked {
+			t.Fatalf("a failed lookup must fail open, got reason %q", reason)
+		}
+		if elapsed := time.Since(start); elapsed > 2*time.Second {
+			t.Fatalf("pre-check took %s; a canceled caller context must cut it off", elapsed)
+		}
+	})
+
+	t.Run("internal cap", func(t *testing.T) {
+		start := time.Now()
+		if reason, blocked := blockedTargetReason(context.Background(), "upstream.example"); blocked {
+			t.Fatalf("a failed lookup must fail open, got reason %q", reason)
+		}
+		if elapsed := time.Since(start); elapsed > 2*blockedTargetResolveTimeout {
+			t.Fatalf("pre-check took %s; the internal cap must bound it", elapsed)
+		}
+	})
 }
 
 func TestUpstreamDialerRefusesLinkLocalBeforeConnecting(t *testing.T) {

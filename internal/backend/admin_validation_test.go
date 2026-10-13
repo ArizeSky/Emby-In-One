@@ -1,6 +1,7 @@
 package backend
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"testing"
@@ -105,14 +106,14 @@ func TestValidateUpstreamDraftRejectsLinkLocalTargets(t *testing.T) {
 	}
 	linkLocal := base
 	linkLocal.URL = "http://169.254.169.254/latest/meta-data"
-	if err := validateUpstreamDraft(linkLocal); err == nil {
+	if err := validateUpstreamDraft(context.Background(), linkLocal); err == nil {
 		t.Fatal("expected a link-local upstream URL to be rejected")
 	}
 
 	linkLocalStream := base
 	linkLocalStream.URL = "http://emby.example.com"
 	linkLocalStream.StreamingURLs = []string{"http://[fe80::1]/streams"}
-	if err := validateUpstreamDraft(linkLocalStream); err == nil {
+	if err := validateUpstreamDraft(context.Background(), linkLocalStream); err == nil {
 		t.Fatal("expected a link-local streaming URL to be rejected")
 	}
 
@@ -120,12 +121,12 @@ func TestValidateUpstreamDraftRejectsLinkLocalTargets(t *testing.T) {
 	// on the same host or LAN, and the upstream dialer policy matches.
 	loopback := base
 	loopback.URL = "http://127.0.0.1:8096"
-	if err := validateUpstreamDraft(loopback); err != nil {
+	if err := validateUpstreamDraft(context.Background(), loopback); err != nil {
 		t.Fatalf("loopback upstream should be allowed, got %v", err)
 	}
 	private := base
 	private.URL = "http://192.168.1.10:8096"
-	if err := validateUpstreamDraft(private); err != nil {
+	if err := validateUpstreamDraft(context.Background(), private); err != nil {
 		t.Fatalf("private upstream should be allowed, got %v", err)
 	}
 }
@@ -143,19 +144,19 @@ func TestValidateUpstreamDraftAllowsBlankPassword(t *testing.T) {
 	}
 	blankPassword := base
 	blankPassword.Username = "u"
-	if err := validateUpstreamDraft(blankPassword); err != nil {
+	if err := validateUpstreamDraft(context.Background(), blankPassword); err != nil {
 		t.Fatalf("username with blank password should validate, got %v", err)
 	}
 
 	noCredential := base
-	if err := validateUpstreamDraft(noCredential); err == nil {
+	if err := validateUpstreamDraft(context.Background(), noCredential); err == nil {
 		t.Fatal("expected a draft with neither username nor apiKey to be rejected")
 	}
 
 	both := base
 	both.Username = "u"
 	both.APIKey = "key"
-	if err := validateUpstreamDraft(both); err == nil {
+	if err := validateUpstreamDraft(context.Background(), both); err == nil {
 		t.Fatal("expected a draft carrying both username and apiKey to be rejected")
 	}
 }

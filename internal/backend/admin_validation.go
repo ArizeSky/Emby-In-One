@@ -120,7 +120,7 @@ func parsePathIndex(r *http.Request, name string) (int, bool) {
 	return parsed, true
 }
 
-func validateUpstreamDraft(draft UpstreamConfig) error {
+func validateUpstreamDraft(ctx context.Context, draft UpstreamConfig) error {
 	if err := validateRequiredLength("upstream.name", strings.TrimSpace(draft.Name), 1, 100); err != nil {
 		return err
 	}
@@ -145,14 +145,14 @@ func validateUpstreamDraft(draft UpstreamConfig) error {
 	// (cloud metadata) and unspecified addresses are refused, while loopback and
 	// RFC1918 stay allowed because self-hosted Emby commonly runs on the same host
 	// or LAN.
-	if reason, blocked := upstreamURLBlocked(draft.URL); blocked {
+	if reason, blocked := upstreamURLBlocked(ctx, draft.URL); blocked {
 		return &httpError{message: upstreamTargetBlockedMessage(draft.URL, reason)}
 	}
 	for _, streamingURL := range draft.StreamingURLs {
 		if err := validateHTTPURL(streamingURL); err != nil {
 			return &httpError{message: "推流地址 " + streamingURL + " 无效：" + err.Error()}
 		}
-		if reason, blocked := upstreamURLBlocked(streamingURL); blocked {
+		if reason, blocked := upstreamURLBlocked(ctx, streamingURL); blocked {
 			return &httpError{message: upstreamTargetBlockedMessage(streamingURL, reason)}
 		}
 	}
@@ -254,13 +254,14 @@ func sanitizeUpstreamURL(raw string) string {
 // upstreamURLBlocked reports whether the host of an upstream base URL resolves to
 // an address the upstream SSRF policy refuses (link-local / unspecified). It is
 // the screening that covers targets routed through a forward proxy, where the
-// transport dialer only ever resolves the proxy address.
-func upstreamURLBlocked(rawURL string) (string, bool) {
+// transport dialer only ever resolves the proxy address. The DNS lookup is
+// bounded by the caller's ctx plus the internal resolve cap.
+func upstreamURLBlocked(ctx context.Context, rawURL string) (string, bool) {
 	parsed, err := url.Parse(strings.TrimSpace(rawURL))
 	if err != nil || parsed.Host == "" {
 		return "", false
 	}
-	return upstreamSSRFPolicy.blockedTargetReason(parsed.Hostname())
+	return upstreamSSRFPolicy.blockedTargetReason(ctx, parsed.Hostname())
 }
 
 // upstreamTargetBlockedMessage explains why an upstream URL was refused.

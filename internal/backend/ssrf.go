@@ -135,21 +135,33 @@ func ssrfSafeDialer() func(ctx context.Context, network, addr string) (net.Conn,
 	return pinnedDialer(strictSSRFPolicy)
 }
 
-// blockedTargetReason reports why host cannot be used as a probe target and which
-// address range it falls into ("loopback", "private", "link-local", "reserved"),
-// or ("", false) when the strict policy allows it.
-// blockedTargetReason reports whether host resolves to an address blocked by the
-// given policy and which range it falls into ("loopback", "private", "link-local",
-// "reserved"), or ("", false) when the policy allows it. It is a pre-validation
-// used to reject a bad target before any transport is built; the dialer above
-// re-checks at connect time against a single DNS answer, so this pre-check is a
-// filter, not the enforcement point.
-func (p ssrfPolicy) blockedTargetReason(host string) (string, bool) {
+// blockedTargetResolveTimeout caps the DNS pre-check below. The check is a
+// filter, not the enforcement point (the dialer re-checks at connect time), so
+// a resolver that never answers must fail open quickly instead of hanging the
+// admin request that asked for the screening.
+const blockedTargetResolveTimeout = 5 * time.Second
+
+// blockedTargetLookup resolves a host to its IPs. It is a variable so tests can
+// substitute a lookup that hangs until its context is canceled.
+var blockedTargetLookup = net.DefaultResolver.LookupIP
+
+// blockedTargetReason reports whether host resolves to an address blocked by
+// the given policy and which range it falls into ("loopback", "private",
+// "link-local", "reserved"), or ("", false) when the policy allows it. It is a
+// pre-validation used to reject a bad target before any transport is built; the
+// dialer above re-checks at connect time against a single DNS answer, so this
+// pre-check is a filter, not the enforcement point. The lookup honors ctx (a
+// gone client cancels it) and is capped by blockedTargetResolveTimeout; a
+// failed, canceled, or timed-out lookup fails open, exactly like an unresolvable
+// hostname always has — IP literals are still screened via the fallback below.
+func (p ssrfPolicy) blockedTargetReason(ctx context.Context, host string) (string, bool) {
 	h := host
 	if hp, _, err := net.SplitHostPort(host); err == nil {
 		h = hp
 	}
-	ips, err := net.LookupIP(h)
+	ctx, cancel := context.WithTimeout(ctx, blockedTargetResolveTimeout)
+	defer cancel()
+	ips, err := blockedTargetLookup(ctx, "ip", h)
 	if err != nil {
 		ip := net.ParseIP(h)
 		if ip == nil {
@@ -167,8 +179,8 @@ func (p ssrfPolicy) blockedTargetReason(host string) (string, bool) {
 
 // blockedTargetReason keeps the original strict-policy signature used by the admin
 // proxy-test handler.
-func blockedTargetReason(host string) (string, bool) {
-	return strictSSRFPolicy.blockedTargetReason(host)
+func blockedTargetReason(ctx context.Context, host string) (string, bool) {
+	return strictSSRFPolicy.blockedTargetReason(ctx, host)
 }
 
 // wrapTransportWithSSRFCheck wraps an existing RoundTripper (typically a proxy transport)
