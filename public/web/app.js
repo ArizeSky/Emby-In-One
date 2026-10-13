@@ -1,4 +1,4 @@
-/* Emby-In-One Web Player — single-page application (v1.4.4-rc3)
+/* Emby-In-One Web Player — single-page application (V1.4.4-rc2)
  *
  * Vue 3 global build, no build step. Loads the shared vendor/ scripts plus
  * libmedia and JASSUB. Player engine: player-libmedia.js (window.EIOPlayer).

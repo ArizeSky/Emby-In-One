@@ -1,6 +1,6 @@
 # Emby-In-One
 
-> **Version: V1.4.4-rc3 (Pre-release)**
+> **Version: V1.4.4-rc2 (Pre-release)**
 
 [![License: GPL v3](https://img.shields.io/github/license/ArizeSky/Emby-In-One?color=blue)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.23+-00ADD8?logo=go&logoColor=white)](https://go.dev/)
@@ -66,7 +66,7 @@
 
 访问服务的 `/web/`，使用管理员创建的普通用户登录。管理员账号用于 `/admin/`，不能登录 Web 客户端。媒体库、搜索、剧集分季和多版本片源均使用用户自己的权限及观看进度。
 
-V1.4.4-rc3 重做为桌面界面：分栏登录、216 px 桌面侧栏（首页 / 收藏 / 搜索）、首页 Hero 与“继续观看 · 全部”、媒体库网格/列表切换与分页、详情分季与版本卡、搜索分组与最近搜索。首页新增一条有界 Resume 请求，其余交互不改变后端端点与鉴权。
+V1.4.4-rc2 重做为桌面界面：分栏登录、216 px 桌面侧栏（首页 / 收藏 / 搜索）、首页 Hero 与“继续观看 · 全部”、媒体库网格/列表切换与分页、详情分季与版本卡、搜索分组与最近搜索。首页新增一条有界 Resume 请求，其余交互不改变后端端点与鉴权。
 
 影片及单集详情可以预选版本、音轨和字幕，版本名称包含来源服务器。播放器控制层支持自动隐藏、画面单击/双击、键盘快捷键（Space/K、←/→、↑/↓、M、F、C、Esc）、进度预览气泡、音量与全屏；启动/运行失败显示可重试错误卡，429 单独表达，切源/切轨期间控件整体锁定并保留进度。
 
@@ -82,7 +82,7 @@ V1.4.4-rc3 重做为桌面界面：分栏登录、216 px 桌面侧栏（首页 /
 
 > **旧版 Node.js 部署说明**：如果您希望部署基于 Node.js 的 V1.2.1 稳定版，请前往本仓库的 [Releases 页面](https://github.com/ArizeSky/Emby-In-One/releases) 下载 V1.2.1 的 Source code 源码压缩包，解压后同样运行 `bash install.sh` 即可。 仓库中的 `legacy/` 目录保留了 V1.2.1 的 Node.js 源码，**仅供对照参考**（Go 版的 ID 虚拟化以它为蓝本），它不参与 Go 版的构建、镜像或安装流程，详见 `legacy/README.md`。
 
-本项目优先推荐在 Linux 服务器直接使用 Release 二进制部署 V1.4.4-rc3（无需本地编译；预发布测试版，正式版发布前供尝鲜验证）；Docker 方式适合希望自行构建镜像的场景。
+本项目优先推荐在 Linux 服务器直接使用 Release 二进制部署 V1.4.4-rc2（无需本地编译；预发布测试版，正式版发布前供尝鲜验证）；Docker 方式适合希望自行构建镜像的场景。
 
 ### 方式一：Release 二进制一键安装（首推）
 
@@ -94,7 +94,7 @@ sudo bash release-install.sh
 可选：指定版本安装。
 
 ```bash
-sudo bash release-install.sh V1.4.4-rc3
+sudo bash release-install.sh V1.4.4-rc2
 ```
 
 该脚本会自动完成：

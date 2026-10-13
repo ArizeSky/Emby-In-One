@@ -1,4 +1,4 @@
-/* Emby-in-One Web client — shared UI state factories (v1.4.4-rc3).
+/* Emby-in-One Web client — shared UI state factories (V1.4.4-rc2).
  *
  * These factories own presentation-only state: Toast queue, home Hero,
  * recent-search memory, library view mode and item-detail display state.

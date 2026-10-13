@@ -1,4 +1,4 @@
-/* Emby-in-One Web client — media library page controller (v1.4.4-rc3).
+/* Emby-in-One Web client — media library page controller (V1.4.4-rc2).
  *
  * Owns the library list state: name/type, items, first-page vs paging status,
  * sort/filter, the real paging cursor and the sentinel observer. The caller

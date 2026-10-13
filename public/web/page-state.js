@@ -1,4 +1,4 @@
-/* Emby-in-One Web client — page request controllers (v1.4.4-rc3).
+/* Emby-in-One Web client — page request controllers (V1.4.4-rc2).
  *
  * Each controller owns an AbortController and a monotonically increasing
  * generation. Every load/schedule/retry bumps the generation and aborts the

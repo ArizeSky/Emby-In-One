@@ -1,4 +1,4 @@
-/* Emby-in-One Web client — player control-layer state (v1.4.4-rc3).
+/* Emby-in-One Web client — player control-layer state (V1.4.4-rc2).
  *
  * Owns only presentation/state for the player page: status, error card,
  * in-flight operation, control visibility, open menus, screen-click and

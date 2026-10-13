@@ -1,4 +1,4 @@
-# V1.4.4-rc3：/web 前端 UI 改进执行文档
+# V1.4.4-rc2：/web 前端 UI 改进执行文档
 
 日期：2026-10-08。状态：待实施；本文是执行规格，不代表功能已完成或版本已发布。
 
@@ -12,9 +12,9 @@
 - 登录分栏、三项桌面侧栏、首页 Hero/续看/媒体库/最新内容、媒体库筛选和列表视图、详情版本卡及季分段、搜索分组、继续观看/收藏列表。
 - 播放器控制条、自动隐藏、快捷键、菜单、进度预览、音量、全屏、Toast 和可重试错误页。
 - 必要的表现层请求治理：取消、过期结果校验、分页防重复、单季重试；首页新增一条有界 Resume 查询。
-- V1.4.4-rc3 版本、缓存参数、更新日志与发布前验证。
+- V1.4.4-rc2 版本、缓存参数、更新日志与发布前验证。
 
-以下不进入 rc3：
+以下不进入 rc2：
 
 | 项目 | 本版处理 |
 |---|---|
@@ -27,7 +27,7 @@
 
 执行优先级：用户后续指令 → 本文 → `02-design-notes.md` 中不冲突的规范 → `03-page-previews.html` 的布局参考。`01-visual-proposal.html` 仅为历史色板记录，`04-implementation-review.md` 提供问题依据。不能重新启用本文排除的功能来追求旧稿完整度。
 
-版本格式：文档/发行 tag 为 `V1.4.4-rc3`；构建注入和资产文件名沿用仓库惯例 `v1.4.4-rc3`；npm/CLI 内部数值为 `1.4.4-rc3`。
+版本格式：文档/发行 tag 为 `V1.4.4-rc2`；构建注入和资产文件名沿用仓库惯例 `v1.4.4-rc2`；npm/CLI 内部数值为 `1.4.4-rc2`。
 
 ## 2. 代码基线和改动边界
 
@@ -35,7 +35,7 @@
 
 ### 2.1 当前集成锚点
 
-| 文件及锚点 | 当前职责 | rc3 动作 |
+| 文件及锚点 | 当前职责 | rc2 动作 |
 |---|---|---|
 | `public/web/web.html:7` 样式引入 | Inter 与共享 Tailwind | 加 Web 专用 CSS，放在共享 CSS 后 |
 | `public/web/web.html:58` LOGIN | 表单 | 改分栏、行内错误和密码显隐 |
@@ -92,7 +92,7 @@
 
 在 web.html 使用绝对站内资源路径 `/web/vendor/...`、`/web/web/...`，兼容 `/web/`、`/web/web/web.html` 和服务器已有的无扩展名 SPA 回退。禁止把 `public/web/ui.css` 写成 URL `/web/ui.css`。
 
-新增样式：`/web/web/ui.css?v=v1.4.4-rc3`，在 Tailwind 后加载。原内联样式迁入 ui.css，保留播放器 host/video/canvas/subtitle 的定位规则；不改共享管理端 CSS。
+新增样式：`/web/web/ui.css?v=v1.4.4-rc2`，在 Tailwind 后加载。原内联样式迁入 ui.css，保留播放器 host/video/canvas/subtitle 的定位规则；不改共享管理端 CSS。
 
 脚本顺序：Vue → lucide → libmedia/JASSUB → subtitles/subtitle-controller/player-libmedia → data.js → ui.js → page-state.js → player-ui.js → ui-components.js → app.js。全部为现有 IIFE/全局构建风格，不引入 npm 运行依赖、打包器或 router。
 
@@ -369,7 +369,7 @@ lucide 不启用 MutationObserver；组件挂载/选项更新调用显式 onChan
 
 ## 9. 实施阶段与完成条件
 
-所有阶段在同一 rc3 工作分支完成，可按职责拆提交。代码改动前保存基线验证结果；本执行文档本身不授权发布 tag、推送或替换正在运行的服务。
+所有阶段在同一 rc2 工作分支完成，可按职责拆提交。代码改动前保存基线验证结果；本执行文档本身不授权发布 tag、推送或替换正在运行的服务。
 
 | 阶段 | 必做工作 | 完成条件 |
 |---|---|---|
@@ -377,7 +377,7 @@ lucide 不启用 MutationObserver；组件挂载/选项更新调用显式 onChan
 | P1 基础 | ui.css、组件注册、Toast、资源 URL、登录/侧栏、真实海报卡 | 1440/1024 px 布局可读，焦点可达，管理端不变 |
 | P2 页面 | 首页、库页、详情、搜索、续看/收藏；接取消/重试 | 关键请求/分页/季失败测试通过，所有成功/空/失败页面可用 |
 | P3 播放器 | 控制层、菜单、隐藏/快捷键、错误重试、全屏、切轨锁 | 原播放/字幕回归通过，切源恢复时间及暂停，不出现孤立实例 |
-| P4 交付 | 版本与缓存、构建、CI/截图、rc3 更新日志 | §10–12 全部满足，未完成项有明确记录且不能冒充完成 |
+| P4 交付 | 版本与缓存、构建、CI/截图、rc2 更新日志 | §10–12 全部满足，未完成项有明确记录且不能冒充完成 |
 
 P1 可以先搭组件再迁模板；页面只在对应阶段启用，不留下半接通按钮。不要为了保留旧 CSS 在最终模板同时渲染两套页面或两份播放器控件。
 
@@ -426,13 +426,13 @@ node --check public/web/page-state.js
 node --check public/web/player-ui.js
 node --check public/web/ui-components.js
 $env:GOMAXPROCS='2'
-go build -p 1 -ldflags '-X main.Version=v1.4.4-rc3' -o build/emby-in-one-v1.4.4-rc3.exe ./cmd/emby-in-one
+go build -p 1 -ldflags '-X main.Version=v1.4.4-rc2' -o build/emby-in-one-v1.4.4-rc2.exe ./cmd/emby-in-one
 go vet -p 1 ./...
 go test -p 1 -parallel 2 -count=1 ./...
-& './build/emby-in-one-v1.4.4-rc3.exe' --version
+& './build/emby-in-one-v1.4.4-rc2.exe' --version
 ```
 
---version 必须输出 `v1.4.4-rc3`。本地低并发以免与实播争用 CPU；不要在 4K 播放时运行构建/全量测试。CI 仍须通过 `.github/workflows/ci.yml` 的 build/vet、Linux `go test -race -timeout 20m ./...`、Tailwind 重建一致性和 shell 语法检查；不得因本版没有后端改动而删除原检查。
+--version 必须输出 `v1.4.4-rc2`。本地低并发以免与实播争用 CPU；不要在 4K 播放时运行构建/全量测试。CI 仍须通过 `.github/workflows/ci.yml` 的 build/vet、Linux `go test -race -timeout 20m ./...`、Tailwind 重建一致性和 shell 语法检查；不得因本版没有后端改动而删除原检查。
 
 版本变更的脚本逐个检查：`bash -n install.sh`、`bash -n release-install.sh`、`bash -n emby-in-one-cli.sh`。不能把多个脚本作为 bash -n 的连续参数，否则只检查第一个。本地没有 Bash/C 工具链时记录环境限制，不将未运行项写成通过。
 
@@ -458,30 +458,30 @@ go test -p 1 -parallel 2 -count=1 ./...
 
 纯嵌入验证：在独立临时工作目录放入刚构建的二进制和隔离测试配置，使用空上游与独立 data、非生产端口启动；确认 `/web/`、`/web/web/ui.css`、四个新 JS 的 Content-Type/内容正确，不能把返回的 SPA HTML 误认为 JS 成功。不要移动/隐藏实际项目 public 或 config 来模拟缺文件。
 
-截图和记录放 `build/qa-v1.4.4-rc3/`，不得包含 token/媒体直链/密码；至少包括登录、带真实海报首页、库两种视图、电影/剧集详情、搜索空/失败、播放器普通/全屏菜单及错误态。按状态列出 PASS/FAIL/NOT RUN，未实测的真实片源能力注明边界。
+截图和记录放 `build/qa-v1.4.4-rc2/`，不得包含 token/媒体直链/密码；至少包括登录、带真实海报首页、库两种视图、电影/剧集详情、搜索空/失败、播放器普通/全屏菜单及错误态。按状态列出 PASS/FAIL/NOT RUN，未实测的真实片源能力注明边界。
 
 ## 11. 版本与文档同步
 
 这些是实施代码完成后的动作；本次编写执行文档不提前把生产 README 标成已发布。
 
-| 文件/锚点 | rc3 修改 |
+| 文件/锚点 | rc2 修改 |
 |---|---|
-| `README.md:3`、`README_EN.md:3` | 当前版本改为 V1.4.4-rc3 (Pre-release) |
+| `README.md:3`、`README_EN.md:3` | 当前版本改为 V1.4.4-rc2 (Pre-release) |
 | README “内置 Web 客户端”段 | 写实际三项桌面导航、首页续看入口、视觉/控制层变化、原播放能力与验收边界 |
-| README 显式预发布安装例子 | 已存在的 rc1 指定版本例子同步到 V1.4.4-rc3；保留预发布需显式指定的说明 |
-| `Update.md` | 顶部新增精确 `## V1.4.4-rc3`；只记录已实现 UI 与验证，不覆盖 rc2 历史 |
-| `Update Plan.md:3` | 保持“稳定版 V1.4.3”；将括号内预发布改 rc3。未来计划按实际交付更新，不宣称正式 V1.4.4 已发布 |
-| `package.json` version | 1.0.0 → 1.4.4-rc3；scripts/运行依赖策略保留 |
-| `docker-compose.yml:6` build.args.VERSION | v1.4.4-rc1 → v1.4.4-rc3 |
-| `install.sh:237` 生成 compose 的 VERSION | v1.4.4-rc1 → v1.4.4-rc3；不改变下载/安装流程 |
-| `emby-in-one-cli.sh:4` 标题、`:8` VERSION | 标题 rc3，变量 `1.4.4-rc3`；保留动态 version_tag 的 Docker 更新路径 |
+| README 显式预发布安装例子 | 已存在的 rc1 指定版本例子同步到 V1.4.4-rc2；保留预发布需显式指定的说明 |
+| `Update.md` | 顶部新增精确 `## V1.4.4-rc2`；只记录已实现 UI 与验证，不覆盖 rc2 历史 |
+| `Update Plan.md:3` | 保持“稳定版 V1.4.3”；将括号内预发布改 rc2。未来计划按实际交付更新，不宣称正式 V1.4.4 已发布 |
+| `package.json` version | 1.0.0 → 1.4.4-rc2；scripts/运行依赖策略保留 |
+| `docker-compose.yml:6` build.args.VERSION | v1.4.4-rc1 → v1.4.4-rc2 |
+| `install.sh:237` 生成 compose 的 VERSION | v1.4.4-rc1 → v1.4.4-rc2；不改变下载/安装流程 |
+| `emby-in-one-cli.sh:4` 标题、`:8` VERSION | 标题 rc2，变量 `1.4.4-rc2`；保留动态 version_tag 的 Docker 更新路径 |
 | `cmd/emby-in-one/main.go:18` | 保持 Version="dev"，发布/本地构建用 ldflags 注入；不硬编码发行号 |
 | `Dockerfile:2`、安装器/CLI 内 Dockerfile ARG VERSION | dev 默认保持，正式构建由已有 build arg 传入 |
-| `release-install.sh` | 版本来自 Release tag，不增加 rc3 硬编码常量 |
+| `release-install.sh` | 版本来自 Release tag，不增加 rc2 硬编码常量 |
 | `internal/backend/handlers_system.go` Emby Version | 保持兼容声明 4.7.14.0，不能换成项目版本 |
-| `.github/workflows/release.yml` | 现有 V* tag/小写资产/rc 日志解析支持 rc3，无需改 workflow 或主动触发发布 |
+| `.github/workflows/release.yml` | 现有 V* tag/小写资产/rc 日志解析支持 rc2，无需改 workflow 或主动触发发布 |
 
-Web 缓存：改变内容的 app.js/data.js/新 UI 模块与 ui.css 引用统一 `?v=v1.4.4-rc3`；共享 tailwind 内容变更时其 Web 引用同步。未修改的内核/vendor 资源保持现有参数，不伪装升级 libmedia/JASSUB。所有引用改为 §2.3 的站内绝对路径后检查直接文档入口。
+Web 缓存：改变内容的 app.js/data.js/新 UI 模块与 ui.css 引用统一 `?v=v1.4.4-rc2`；共享 tailwind 内容变更时其 Web 引用同步。未修改的内核/vendor 资源保持现有参数，不伪装升级 libmedia/JASSUB。所有引用改为 §2.3 的站内绝对路径后检查直接文档入口。
 
 `Update.md` 新节至少包括：发行范围、UI/交互改动、保留的播放器链路、新增有界首页 Resume 请求、测试结果与未测边界。不得写外部播放器/自动连播/历史页/手动已看/相似推荐已完成。不要将设计预计值写成测试结果。
 
@@ -504,7 +504,7 @@ Web 缓存：改变内容的 app.js/data.js/新 UI 模块与 ui.css 引用统一
 - [ ] 原生/libmedia/HLS、字幕/seek 原回归保持；保护文件无未经范围解释的改动。
 - [ ] Tab/Enter、range、菜单 Esc、reduced-motion 和基础窄屏可用性通过；真实海报视觉已验证。
 - [ ] 四个现有前端回归、新行为测试、语法、Tailwind、Go build/vet/test 和既有 CI 检查完成。
-- [ ] V1.4.4-rc3 版本、缓存、README/Update 同步；纯嵌入资源验证通过。
+- [ ] V1.4.4-rc2 版本、缓存、README/Update 同步；纯嵌入资源验证通过。
 - [ ] 无外部播放入口/弹窗/deep link，无 history/标记/连播/Similar/首页 NextUp 新功能。
 - [ ] 交付 diff、验证记录、截图和明确的未测边界；不在此任务中自动发布或替换服务。
 
@@ -512,11 +512,11 @@ Web 缓存：改变内容的 app.js/data.js/新 UI 模块与 ui.css 引用统一
 
 ## 13. 给执行者的起始指令
 
-> 按 `design/web-ui/05-execution-plan-v1.4.4-rc3.md` 实施 V1.4.4-rc3 的 /web 前端 UI 改进。先重新读取 AGENT.md、工作区差异及本文涉及的源文件，以本执行文档覆盖旧设计中冲突的范围。完成本文固定页面、播放器控制层、状态、请求清理与验证；不实现外部播放直链，也不搭载本文列出的功能扩展。保持 Go 后端与播放/字幕内核业务行为，按模块拆分保持文件职责与行数约束。执行 P0–P4，完成验收与版本同步，提供代码 diff、测试记录和浏览器截图。本任务不含自动发布、推送或替换当前运行服务。
+> 按 `design/web-ui/05-execution-plan-v1.4.4-rc2.md` 实施 V1.4.4-rc2 的 /web 前端 UI 改进。先重新读取 AGENT.md、工作区差异及本文涉及的源文件，以本执行文档覆盖旧设计中冲突的范围。完成本文固定页面、播放器控制层、状态、请求清理与验证；不实现外部播放直链，也不搭载本文列出的功能扩展。保持 Go 后端与播放/字幕内核业务行为，按模块拆分保持文件职责与行数约束。执行 P0–P4，完成验收与版本同步，提供代码 diff、测试记录和浏览器截图。本任务不含自动发布、推送或替换当前运行服务。
 
 ## 14. 升级资源与回滚边界
 
-发布候选二进制必须在所有 UI 文件与生成 CSS 完成后重新 build，确保 public.Assets 内嵌的是本次文件。仅复制 rc3 的 app.js 或只换 HTML 都不是完整升级包。
+发布候选二进制必须在所有 UI 文件与生成 CSS 完成后重新 build，确保 public.Assets 内嵌的是本次文件。仅复制 rc2 的 app.js 或只换 HTML 都不是完整升级包。
 
 当前 `internal/backend/handlers_web.go:66`/`:120` 允许磁盘 public/web/web.html 覆盖内嵌文档。如果部署已有旧 public/web，单换二进制仍可能显示旧界面。升级说明必须要求备份后同步本版 public/web 全部文件和相应共享 Tailwind，或在独立配置验证后采用纯内嵌部署；本 UI 任务不修改安装器更新策略或擅自移走生产 public。新旧入口与模块需要成套交付，避免缓存参数更新而实际文件仍旧。
 

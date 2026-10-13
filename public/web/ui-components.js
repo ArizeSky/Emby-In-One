@@ -1,4 +1,4 @@
-/* Emby-in-One Web client — reusable Vue components (v1.4.4-rc3).
+/* Emby-in-One Web client — reusable Vue components (V1.4.4-rc2).
  *
  * Registered on the app before mount. Components are presentation-only:
  * they never call api()/apiRaw() and never add identity headers. The caller

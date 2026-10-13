@@ -1,6 +1,6 @@
 # Emby-In-One
 
-> **Version: V1.4.4-rc3 (Pre-release)**
+> **Version: V1.4.4-rc2 (Pre-release)**
 
 [![License: GPL v3](https://img.shields.io/github/license/ArizeSky/Emby-In-One?color=blue)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.23+-00ADD8?logo=go&logoColor=white)](https://go.dev/)
@@ -66,7 +66,7 @@ Based on Go language, it implements a multi-server Emby aggregation proxy — me
 
 Open `/web/` and sign in with a regular user created by the administrator. Admin accounts belong to `/admin/` and cannot sign in to the Web client. Libraries, search, seasons, source selection and watch progress follow the signed-in user's permissions.
 
-V1.4.4-rc3 rebuilds the desktop interface: a split sign-in screen, a 216 px desktop sidebar (Home / Favorites / Search), a home Hero with a "Continue watching · All" entry, library grid/list switching with paging, per-season detail plus version cards, and grouped search with recent searches. Home adds one bounded Resume request; everything else keeps the existing backend endpoints and authentication.
+V1.4.4-rc2 rebuilds the desktop interface: a split sign-in screen, a 216 px desktop sidebar (Home / Favorites / Search), a home Hero with a "Continue watching · All" entry, library grid/list switching with paging, per-season detail plus version cards, and grouped search with recent searches. Home adds one bounded Resume request; everything else keeps the existing backend endpoints and authentication.
 
 Item details let you choose a version, audio track and subtitle before playback; version names include their source server. The control layer auto-hides, supports click/double-click on the picture, keyboard shortcuts (Space/K, arrows, M, F, C, Esc), a seek preview bubble, volume and fullscreen; startup/runtime failures show a retryable error card, 429 is reported separately, and version/audio switching locks the controls while preserving position.
 
@@ -82,7 +82,7 @@ Development checks: `node --test tests/web-data.test.cjs tests/web-ui.test.cjs t
 
 > **Notice for Legacy Node.js Deployment**: If you wish to deploy the V1.2.1 stable Node.js version, please navigate to the [Releases page](https://github.com/ArizeSky/Emby-In-One/releases) of this repository, download the V1.2.1 Source code archive, extract it, and run `bash install.sh`. The `legacy/` directory in this repository keeps the V1.2.1 Node.js source **for reference only** (the Go ID virtualization was written against it); it takes part in no build, image or install of the Go version — see `legacy/README.md`.
 
-This project primarily recommends using Release binaries for V1.4.4-rc3 deployment directly on Linux servers (no local Go build required; this is a pre-release for early testing); Docker deployment is suitable for scenarios where you want to build the image yourself.
+This project primarily recommends using Release binaries for V1.4.4-rc2 deployment directly on Linux servers (no local Go build required; this is a pre-release for early testing); Docker deployment is suitable for scenarios where you want to build the image yourself.
 
 ### Method 1: Release Binary One-Click Install (Primary Recommendation)
 
@@ -94,7 +94,7 @@ sudo bash release-install.sh
 Optional: install a specific version.
 
 ```bash
-sudo bash release-install.sh V1.4.4-rc3
+sudo bash release-install.sh V1.4.4-rc2
 ```
 
 This script will automatically:
