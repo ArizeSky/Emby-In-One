@@ -207,3 +207,88 @@ func TestHLSManifestOversizedBodyReturnsBadGateway(t *testing.T) {
 		}
 	})
 }
+
+// patternSegmentReader serves a deterministic byte pattern so the reassembled
+// oversized-segment stream can be checked for prefix continuity, and records
+// Close so the wrapper's close-through behavior is observable.
+type patternSegmentReader struct {
+	remaining int64
+	pos       int64
+	closed    bool
+}
+
+func (r *patternSegmentReader) Read(p []byte) (int, error) {
+	if r.remaining <= 0 {
+		return 0, io.EOF
+	}
+	n := int64(len(p))
+	if n > r.remaining {
+		n = r.remaining
+	}
+	for i := int64(0); i < n; i++ {
+		p[i] = byte((r.pos + i) & 0xFF)
+	}
+	r.pos += n
+	r.remaining -= n
+	return int(n), nil
+}
+
+func (r *patternSegmentReader) Close() error {
+	r.closed = true
+	return nil
+}
+
+// TestHLSSegmentOversizedBodyFallsBackToStreaming covers the two oversized
+// branches of rewriteHLSSegmentBody: a declared ContentLength over the cap
+// skips reading entirely, and a chunked body that turns out oversized is
+// reassembled — the already-read prefix must lead the stream, the total length
+// must be preserved, and Close must reach the original upstream body.
+func TestHLSSegmentOversizedBodyFallsBackToStreaming(t *testing.T) {
+	storeHLSSegmentPositions("oversized", "main.m3u8", timelinePlaylist)
+
+	t.Run("declared oversized skips reading", func(t *testing.T) {
+		body := &patternSegmentReader{remaining: maxHLSSegmentRewriteSize + 16}
+		resp := &http.Response{StatusCode: 200, Header: http.Header{}, Body: body, ContentLength: maxHLSSegmentRewriteSize + 16}
+		rewritten, ok, err := rewriteHLSSegmentBody(httptest.NewRequest("GET", "/", nil), resp, "oversized", "1.mp4")
+		if ok || err != nil || rewritten != nil {
+			t.Fatalf("declared oversized segment must stream untouched, got ok=%v err=%v body=%v", ok, err, rewritten != nil)
+		}
+		if body.pos != 0 {
+			t.Fatalf("body was read %d bytes before the early return", body.pos)
+		}
+	})
+
+	t.Run("chunked oversized reassembles prefix and closes original", func(t *testing.T) {
+		total := int64(maxHLSSegmentRewriteSize) + 1024
+		body := &patternSegmentReader{remaining: total}
+		resp := &http.Response{StatusCode: 200, Header: http.Header{}, Body: body, ContentLength: -1}
+		rewritten, ok, err := rewriteHLSSegmentBody(httptest.NewRequest("GET", "/", nil), resp, "oversized", "1.mp4")
+		if ok || err != nil || rewritten != nil {
+			t.Fatalf("oversized segment must fall back to streaming, got ok=%v err=%v body=%v", ok, err, rewritten != nil)
+		}
+		// The wrapper must start with the already-read prefix in stream order,
+		// not with the unread remainder of the original body.
+		head := make([]byte, 8)
+		if _, err := io.ReadFull(resp.Body, head); err != nil {
+			t.Fatal(err)
+		}
+		for i := range head {
+			if head[i] != byte(i) {
+				t.Fatalf("reassembled body starts with %v; the read prefix must lead the stream", head)
+			}
+		}
+		rest, err := io.Copy(io.Discard, resp.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, want := rest+int64(len(head)), total; got != want {
+			t.Fatalf("reassembled body length = %d, want %d", got, want)
+		}
+		if err := resp.Body.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if !body.closed {
+			t.Fatal("Close must close the original upstream body")
+		}
+	})
+}
