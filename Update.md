@@ -4,40 +4,37 @@
 
 发布日期：2026-09-30
 
-> V1.4.4-rc2 是 V1.4.4-rc1 之后的累积预发布（未单独发布，内容持续合入至 2026-10-13）。除第二轮全项目代码审查的修复产出（17 个提交：**3 项高危、9 项中危**及一批健壮性与可观测性改进，并**彻底移除三套内置客户端身份方案（无UA / 诚实UA / Infuse UA 伪装）**——`spoofClient` 只剩 `passthrough` 与 `custom` 两种模式）外，还并入两大块：**内置 Web 客户端与播放器**（libmedia 1.3.1 流式播放、内嵌/外挂/PGS 全套字幕、桌面化界面重设计，见「Web 客户端与播放器」「Web 界面重设计」），以及第三轮全项目审查的安全修复（**4 项高危、8 项中危、2 项低危**，见「安全与稳定性修复」）。**对外接口保持兼容（存量配置自动迁移）。** 主要变更集中在：管理员改密后令牌吊销、经代理转发的上游 SSRF 校验、SQLite 共享连接写锁的调用点补齐、HLS 清单的错误状态码与压缩处理、上游验证错误中的凭据脱敏、双写一致性、内置身份机制的全面拆除，以及全新的 `/web` 客户端。**升级前请读「升级须知」。**
+> V1.4.4-rc2 是 V1.4.4-rc1 之后的累积预发布（未单独发布，内容持续合入至 2026-10-13）。除**内置 Web 客户端与播放器**（libmedia 1.3.1 流式播放、内嵌/外挂/PGS 全套字幕、桌面化界面重设计，见「Web 客户端与播放器」「Web 界面重设计」）外，本版还包含多轮代码审查的修复产出：**7 项高危、17 项中危、2 项低危**（见「安全修复」「安全与稳定性修复」等章节），并**彻底移除三套内置客户端身份方案（无UA / 诚实UA / Infuse UA 伪装）**——`spoofClient` 只剩 `passthrough` 与 `custom` 两种模式。**对外接口保持兼容（存量配置自动迁移）。** 主要变更集中在：管理员改密后令牌吊销、经代理转发的上游 SSRF 校验、SQLite 共享连接写锁的调用点补齐、HLS 清单的错误状态码与压缩处理、上游验证错误中的凭据脱敏、双写一致性、内置身份机制的全面拆除，以及全新的 `/web` 客户端。**升级前请读「升级须知」。**
 
 ### Web 客户端与播放器
 
 - 正式 Web 播放器接入 libmedia 1.3.1：原生 MP4、流式 MKV/HEVC、按需本地 WASM，以及直链失败后的上游 HLS 兜底。优先使用浏览器 MSE/WebCodecs；兼容 HLS 请求限制最大 1080p，高分辨率 canvas 路径拒绝持续软解。
 - 加入内嵌文本/ASS、外部 JASSUB/libass ASS、SRT/VTT 与 SUP/PGS 字幕；补齐本地中文字体，修正 PGS 分片、彩色 RLE、缓存复用和清屏。刷新 JASSUB 1.7.17 资源，替换有尾部空字节、无法解析的旧 worker。
-- 修复首页最新添加、媒体库、剧集分季、Series 播放解析、搜索类型、播放器 DOM 与退出清理；补齐 Tailwind 对 Web 页面的扫描范围，修复画布尺寸为零。
+- 修复首页最新添加、媒体库、剧集分季、Series 播放解析、搜索类型与播放器退出清理；修复画布尺寸为零的问题。
 - 管理员禁止登录 `/web/`；上游用户名必填、密码可留空；修复大小写流路径及 HLS EXT-X-MAP 初始化片段的 URL 改写。
-- 退役 FFmpeg 全文件转码资源；旧播放器保存到 `legacy/web/player-ffmpeg.js`。提供轻量播放器与字幕回归、合成样本生成脚本。
+- 退役 FFmpeg 全文件转码资源，旧播放器归档保留。
 
-### Web 审查反馈修复（2026-10-01，版本仍为 V1.4.4-rc2）
+### Web 客户端修复
 
 - 修复媒体库导航函数重名导致的 ParentId 丢失；浏览指定服务器的库时仅查询该库，按电影/剧集类型筛选，分类筛选生效，加载更多追加而非覆盖。
 - 剧集分季及单集列表完整分页；按来源的 ProviderIds 查找同一作品的其他副本，合并各服务器可用季/集后再分页。显示每季实际可用集数；上游分页失败显示重试，不把部分结果当作完整列表。调整单集卡片，避免标题被挤成竖排。
 - 详情页的视频版本标注“视频名 (来源服务器名)”，音轨与字幕可以点击选择，选择随播放请求传递。聚合详情等待各来源结果，失败来源提示列表可能不完整。
 - 选中的视频版本决定 PlaybackInfo、播放会话和字幕请求的目标服务器；播放信息中的会话 ID 按实际来源映射，观看进度上报包含版本 ID，修复默认来源与选中来源混用。
 - 播放器统一提供上一集/下一集、版本、音轨、字幕、播放/暂停、音量与全屏控件；版本切换保留进度及暂停状态。直接流音轨由 libmedia 选择，HLS 音轨通过上游兼容流切换。
-- 播放进度条允许小数秒，拖动预览、松开跳转，移除整数步进引起的浏览器“请输入有效值”提示。修正 libmedia MSE 跳转时音视频共用缓冲循环、较短音频包未缓冲到目标位置的问题；暂停跳转及版本切换保持目标时间，界面即时同步。补丁及缓存刷新方式记录在 vendor 的 LOCAL-PATCHES.md。
+- 播放进度条允许小数秒，拖动预览、松开跳转，移除整数步进引起的浏览器“请输入有效值”提示。修正 libmedia MSE 跳转时音视频共用缓冲循环、较短音频包未缓冲到目标位置的问题；暂停跳转及版本切换保持目标时间，界面即时同步。
 - 左侧首页下新增“继续观看”和“收藏”独立页面，按用户加载完整列表；侧栏固定在视口，退出登录按钮始终可见，退出时停止播放并清理本地登录态。
-- 增加跨服务器版本/会话/字幕、短页剧集完整合并、分页失败、库范围及前端音轨选择的回归验证。
 
-### Web 界面重设计（2026-10-08，版本仍为 V1.4.4-rc2）
+### Web 界面重设计
 
-`/web` 客户端的界面与交互整体重做，只改前端表现层，不改动后端端点、鉴权与播放/字幕内核：导航拆为桌面侧栏（首页 / 收藏 / 搜索）+ 首页“继续观看 · 全部”，统一色板、按钮、卡片、加载/空态/焦点态；首页新增 Hero、续看行与分块局部重试；媒体库增加网格/列表与有界自动分页；详情分季、单季重试、版本卡与真实进度；搜索分组与最近搜索；播放器控制层增加自动隐藏、菜单、快捷键与可重试错误卡。
+`/web` 客户端的界面与交互整体重做：导航拆为桌面侧栏（首页 / 收藏 / 搜索）+ 首页“继续观看 · 全部”，统一色板、按钮、卡片、加载/空态/焦点态；首页新增 Hero、续看行与分块局部重试；媒体库增加网格/列表与有界自动分页；详情分季、单季重试、版本卡与真实进度；搜索分组与最近搜索；播放器控制层增加自动隐藏、菜单、快捷键与可重试错误卡。
 
-- 新增 `public/web/ui.css`、`ui.js`、`page-state.js`、`player-ui.js`、`ui-components.js`；`web.html`、`app.js` 重写并接入上述模块，全部沿用现有 IIFE/全局构建风格，无新运行依赖、打包器或路由。
-- 首页请求预算固定：一条 Views、对非 playlists 的前 3 个库各一条 Latest，以及**新增一条有界 Resume 请求**（`Limit=12`，不使用 `EIOData.all`、不做计数或逐条详情查询）。各块独立 loading/error，失败可局部重试，不把失败当空库。
-- 页面控制器各自持有 AbortController 与递增代次：离开首页/搜索即取消，旧成功/失败/finally 都不能覆盖新页面（含用户 id 变更）。
-- 媒体库分页：游标按原始批次推进、同状态只发一条请求、重复页停止自动分页并提示重试、IntersectionObserver 与按钮兜底并存。
-- 详情：主数据先显示，季列表/季集独立加载；单季失败只重试该季；元信息缺失即隐藏，不猜 4K/DV/Atmos；简介三行展开/收起。
-- 播放器：控制层状态限定 idle/loading/playing/paused/ended/error；启动/运行失败统一走 `handlePlaybackFailure`，同一次失败只生成一张错误卡，429 显示“服务器并发已满”；切源/切轨忙态覆盖完整重载；字幕按真实信号判定成功/失败，失败则恢复旧轨或明确关闭。
-- 不新增外部播放直链、复制链接或 VLC/Infuse 唤起入口；不新增历史页、手动已看、连播、相似推荐或首页 NextUp。
+- 首页各板块独立加载，失败可局部重试，不把加载失败当作空库。
+- 快速切换页面时旧请求自动取消，过期结果不会覆盖当前页面。
+- 媒体库滚动到底自动加载更多，加载失败可手动重试。
+- 详情页先显示主数据，季与单集独立加载；单季失败只重试该季；简介可展开/收起。
+- 播放失败统一显示可重试的错误卡（服务器并发已满时明确提示）；切换版本/音轨期间显示忙态；字幕加载失败自动恢复原字幕轨或明确关闭。
 
-> 未在本环境实测：真实片源的跨季连播、切源恢复时间、字幕内核在复杂 ASS/PGS 下的表现、Chromium 全屏与浏览器矩阵的人工验收、纯嵌入（无磁盘 public）资源加载；这些仍以目标设备与片源验收为准，不代表已通过。
+> 预发布测试状态：跨季连播、切换版本后的恢复速度、复杂 ASS/PGS 字幕、各浏览器全屏兼容等场景仍需真实片源与设备进一步验证，遇到问题欢迎反馈。
 
 ### ⚠️ 升级须知
 
@@ -45,10 +42,10 @@
 - **经 HTTP 代理转发的上游地址现在会做目标地址校验**。指向 **link-local / 云元数据地址（`169.254.0.0/16`、`fe80::/10`）** 的上游或推流地址会被拒绝。**本机回环与局域网地址（`127.0.0.1`、`192.168.x.x` 等）仍然允许**，自建 Emby 不受影响；如果你确实把上游指向了元数据地址，请改回真实地址。
 - **`/System/Info/Public` 与 `/System/Info` 的 `LocalAddress` 只在 `server.trustProxy: true` 时才采信 `X-Forwarded-*` 头**。反代部署请确认已开启 `trustProxy`（`config.yaml` 的 `server.trustProxy`），否则该字段会回退为请求自身的 Host。
 - **会话上报（`/Sessions/Playing*`）的本地记录语义修正**：当上游**明确拒绝（非 2xx）**时，代理不再写入本地观看进度（此前会写，造成本地状态与上游不一致）；客户端仍收到 `204`（Emby 客户端的 fire-and-forget 契约不变）。网络层失败（无应答）仍保留本地记录，因为请求可能已送达。
- - **HLS 清单请求现在会显式声明 `Accept-Encoding: identity`**，且上游返回非 2xx 时不再被改写成 200。若上游强制对清单压缩，代理会原样透传（保留 `Content-Encoding`），不再把压缩字节当作明文重写。
- - **内置客户端身份方案已全部移除**：`spoofClient` 不再支持 `none`（Emby Aggregator 五元组）与 `infuse`（Infuse 伪造身份），合法值只剩 `passthrough | custom`。**存量 `none` / `infuse` 配置在加载时自动迁移为 `passthrough`**；未配置 `spoofClient` 的上游默认值也从 `none` 变为 `passthrough`。
- - **passthrough 上游的延迟登录扩展到 API Key 模式**：没有已捕获的真实客户端身份时（无论密码还是 API Key），启动登录与健康检查一律跳过，上游保持 offline 等待捕获——不再用伪造身份顶替。**升级后如果上游显示 offline，用任意真实 Emby 客户端（Infuse、Emby iOS 等）以 admin 身份登录一次本代理即可全量恢复**（这是既定的身份种子流程）；全新部署暂时无法做种子登录时，可改用 `custom` 模式显式定义客户端身份（`customUserAgent` 现为必填）。
- - **历史持久化污染会在加载时清洗**：旧版本 Infuse 合并基底写入 `captured-headers.json` 的 `infuse-spoof-id` 固定设备 ID 条目会在加载时被丢弃，不再外发。
+- **HLS 清单请求现在会显式声明 `Accept-Encoding: identity`**，且上游返回非 2xx 时不再被改写成 200。若上游强制对清单压缩，代理会原样透传（保留 `Content-Encoding`），不再把压缩字节当作明文重写。
+- **内置客户端身份方案已全部移除**：`spoofClient` 不再支持 `none`（Emby Aggregator 五元组）与 `infuse`（Infuse 伪造身份），合法值只剩 `passthrough | custom`。**存量 `none` / `infuse` 配置在加载时自动迁移为 `passthrough`**；未配置 `spoofClient` 的上游默认值也从 `none` 变为 `passthrough`。
+- **passthrough 上游的延迟登录扩展到 API Key 模式**：没有已捕获的真实客户端身份时（无论密码还是 API Key），启动登录与健康检查一律跳过，上游保持 offline 等待捕获——不再用伪造身份顶替。**升级后如果上游显示 offline，用任意真实 Emby 客户端（Infuse、Emby iOS 等）以 admin 身份登录一次本代理即可全量恢复**（这是既定的身份种子流程）；全新部署暂时无法做种子登录时，可改用 `custom` 模式显式定义客户端身份（`customUserAgent` 现为必填）。
+- **历史持久化污染会在加载时清洗**：旧版本 Infuse 合并基底写入 `captured-headers.json` 的 `infuse-spoof-id` 固定设备 ID 条目会在加载时被丢弃，不再外发。
 
 ### 安全修复（高危）
 
@@ -91,61 +88,50 @@
 ### 管理面板改进
 
 - **「首页库显示/隐藏」改为折叠列表**（`public/admin.js` / `public/admin.html`）：用户编辑弹窗的「首页隐藏库」与「管理员首页库显示」弹窗此前在打开时对所有上游并发拉取库列表、并默认把每台服务器的库全部展开——上游一多既卡又难操作。现打开时只渲染服务器骨架（名称、在线状态、已隐藏计数），点击某台服务器才按需展开并拉取其库列表（可折叠回、失败可重试）；未成功加载的服务器保存时不提交对应 key，后端原样保留其已存配置（patch 语义不变）。
- 
+
 ### 移除内置客户端身份（无UA / 诚实UA / Infuse UA 三方案）
- 
- 代理此前内置三套出站客户端身份：`none` 模式实际发送 `Emby Aggregator` 五元组（「无UA」只是标签，Go 实现里并不无 UA）、显式 `infuse` 模式发送伪造的 `Infuse/7.7.1` 身份、passthrough 解析链全空时兜底伪造 Infuse 身份，且所有 passthrough 身份都叠加 Infuse 基底（含固定 `infuse-spoof-id` 聚类指纹，会落盘污染 `captured-headers.json`）。本次全部拆除：
- 
- - **`spoofClient` 值域收紧为 `passthrough | custom`**（`config.go` / `admin_validation.go`）：默认值改为 `passthrough`；存量 `none` / `infuse` 自动迁移为 `passthrough`；未知值同样归一为 `passthrough`。`custom` 模式新增 `customUserAgent` 必填校验，防止自定义身份退化成无 UA 出站请求。YAML 渲染的省略条件与身份持久化键（`StableUpstreamKey`）同步对齐。
- - **passthrough 无身份时不再伪造、不再裸发**（`identity.go` / `upstream.go` / `healthcheck.go`）：四级解析链（实时请求头 → 当前 Token 捕获头 → 服务器上次成功登录头 → 最近捕获头）全空时返回 `no-identity` 空头集；LoginAll、健康检查、管理验证的延迟挡板扩展到 API Key 模式。Go `http.Client` 在无 UA 时会自动补 `Go-http-client/1.1`，「裸发」本身就不干净，唯一自洽答案是「不发」。
- - **Infuse 合并基底删除**（`identity.go`）：passthrough 身份只呈现客户端真实发出的头字段，缺失字段保持为空；复合 Authorization 头的字段回填改为「四字段任一为空即回填」，对所有客户端一视同仁（此前只优待 Infuse）。
- - **API Key 捕获重试贯通**（`upstream.go`）：捕获触发的离线重试此前在 API Key 分支丢弃捕获头（`validateAPIKey` 不接收 override），且验证成功后不落盘身份——API Key 上游会裸发 `/Users/Me` 且永远无法让后续请求共用捕获身份。现在 override 贯通到 API Key 验证，成功后同样 `recordSuccessfulIdentity` 落盘，web/API 用户经 last-success / captured-latest 共用捕获身份的机制对 API Key 上游同样生效。
- - **历史污染加载清洗**（`identity.go`）：`captured-headers.json` 中带 `infuse-spoof-id` 的 last-success / latestCaptured 条目在加载时丢弃（真实 Infuse 客户端的设备 ID 是随机的，不会撞上该固定哨兵）。已知残留：真实 Device-Id + 基底补齐的 `iPhone`/`7.7.1` 字段按值与真实捕获不可区分，不做启发式清洗（会误杀真实 Infuse 捕获）；危害远小于固定指纹。
- - **对内字符串改名**（`auth_manager.go` / `handlers_system.go`）：会话信息与 Ping 响应中的 `Emby Aggregator` 改为 `Emby-In-One`（对内响应，从不下发上游）。连通性探测 UA `Emby-In-One-Liveness` 保留（探测非客户端身份）。
- - **管理面板**（`public/admin.html` / `public/admin.js`）：下拉只剩「透传真实客户端 / 自定义」两项并说明捕获与延迟登录语义；新增服务器默认 `passthrough`；自定义身份的 User-Agent 标记必填，示例值全部换为中性值。
- - **legacy/ 目录保留为历史存档**（不参与构建与分发），其中 Node 旧实现的三方案代码一并封存。
-### 本次新增的回归测试
 
-- 写锁：`TestServerRemovalWritesWaitForOpenTransaction`（三处删除等待开启中的事务）
-- 认证：`TestAdminPasswordChangeRevokesUserTokens`（改密吊销令牌）
-- SSRF：`TestValidateUpstreamDraftRejectsLinkLocalTargets`（目标地址校验）
-- 流转发：`TestPlaylistUpstreamErrorKeepsStatus`、`TestPlaylistGzipUpstreamIsRewritten`
-- 会话：`TestSessionUpstreamRefusalDoesNotRecordLocally`、`TestSessionUpstreamSuccessRecordsLocally`
- - 数据：`TestDeleteServerDataCascadesSkeletonRows`、`TestSystemInfoPublicTrustsForwardedHeadersWhenTrustProxySet`
- - 身份移除：`TestAPIKeyPassthroughDefersLoginUntilCapturedIdentity`（API Key 延迟登录 + 捕获后带身份重试）、`TestLoadDropsSpoofedInfuseEntries`（历史污染加载清洗）、`TestWebClientHeadersDoNotClaimPassthroughIdentity`（web 客户端不占用 live 身份槽）
+代理此前内置三套出站客户端身份：`none` 模式实际发送 `Emby Aggregator` 五元组（「无UA」只是标签，Go 实现里并不无 UA）、显式 `infuse` 模式发送伪造的 `Infuse/7.7.1` 身份、passthrough 解析链全空时兜底伪造 Infuse 身份，且所有 passthrough 身份都叠加 Infuse 基底（含固定 `infuse-spoof-id` 聚类指纹，会落盘污染 `captured-headers.json`）。本次全部拆除：
 
-### 安全与稳定性修复（2026-10-10 ~ 10-13，版本仍为 V1.4.4-rc2）
+- **`spoofClient` 值域收紧为 `passthrough | custom`**（`config.go` / `admin_validation.go`）：默认值改为 `passthrough`；存量 `none` / `infuse` 自动迁移为 `passthrough`；未知值同样归一为 `passthrough`。`custom` 模式新增 `customUserAgent` 必填校验，防止自定义身份退化成无 UA 出站请求。YAML 渲染的省略条件与身份持久化键（`StableUpstreamKey`）同步对齐。
+- **passthrough 无身份时不再伪造、不再裸发**（`identity.go` / `upstream.go` / `healthcheck.go`）：四级解析链（实时请求头 → 当前 Token 捕获头 → 服务器上次成功登录头 → 最近捕获头）全空时返回 `no-identity` 空头集；LoginAll、健康检查、管理验证的延迟挡板扩展到 API Key 模式。Go `http.Client` 在无 UA 时会自动补 `Go-http-client/1.1`，「裸发」本身就不干净，唯一自洽答案是「不发」。
+- **Infuse 合并基底删除**（`identity.go`）：passthrough 身份只呈现客户端真实发出的头字段，缺失字段保持为空；复合 Authorization 头的字段回填改为「四字段任一为空即回填」，对所有客户端一视同仁（此前只优待 Infuse）。
+- **API Key 捕获重试贯通**（`upstream.go`）：捕获触发的离线重试此前在 API Key 分支丢弃捕获头（`validateAPIKey` 不接收 override），且验证成功后不落盘身份——API Key 上游会裸发 `/Users/Me` 且永远无法让后续请求共用捕获身份。现在 override 贯通到 API Key 验证，成功后同样 `recordSuccessfulIdentity` 落盘，web/API 用户经 last-success / captured-latest 共用捕获身份的机制对 API Key 上游同样生效。
+- **历史污染加载清洗**（`identity.go`）：`captured-headers.json` 中带 `infuse-spoof-id` 的 last-success / latestCaptured 条目在加载时丢弃（真实 Infuse 客户端的设备 ID 是随机的，不会撞上该固定哨兵）。已知残留：真实 Device-Id + 基底补齐的 `iPhone`/`7.7.1` 字段按值与真实捕获不可区分，不做启发式清洗（会误杀真实 Infuse 捕获）；危害远小于固定指纹。
+- **对内字符串改名**（`auth_manager.go` / `handlers_system.go`）：会话信息与 Ping 响应中的 `Emby Aggregator` 改为 `Emby-In-One`（对内响应，从不下发上游）。连通性探测 UA `Emby-In-One-Liveness` 保留（探测非客户端身份）。
+- **管理面板**（`public/admin.html` / `public/admin.js`）：下拉只剩「透传真实客户端 / 自定义」两项并说明捕获与延迟登录语义；新增服务器默认 `passthrough`；自定义身份的 User-Agent 标记必填，示例值全部换为中性值。
+- **legacy/ 目录保留为历史存档**（不参与构建与分发），其中 Node 旧实现的三方案代码一并封存。
 
-> 第三轮全项目代码审查（严重 / 高危 / 中危 / 低危）的修复产出。对外接口、端点与配置格式均无变化；每项修复均带回归测试并独立提交。Web 客户端为本版新增，其开发期间的内部缺陷修复（seek、字幕渲染、会话与控件等）不在此单独列出——最终形态见上方 Web 相关章节。
+### 安全与稳定性修复
+
+> 对外接口、端点与配置格式均无变化，每项修复均附带回归测试。Web 客户端为本版新增，其开发期间的问题修复已并入上方 Web 相关章节，不单独列出。
 
 **高危（4）**
 
-- HLS 清单截断或超大时拒绝转发并返回 502，不再当作成功响应下发（`36ecebc`）。
-- Sessions / UserData 上游响应体有界读取，防止恶意上游耗尽内存（`a786b82`）。
-- AuthManager 令牌持久化与内存变更串行化，消除并发写坏 `tokens.json` 的窗口（`5a1528f`）。
-- 上游在线状态一律经锁保护的访问器读取，消除数据竞争（`6fee743`）。
+- HLS 清单截断或超大时拒绝转发并返回 502，不再当作成功响应下发。
+- Sessions / UserData 上游响应体有界读取，防止恶意上游耗尽内存。
+- AuthManager 令牌持久化与内存变更串行化，消除并发写坏 `tokens.json` 的窗口。
+- 上游在线状态一律经锁保护的访问器读取，消除数据竞争。
 
 **中危（8）**
 
-- 禁用 / 删除普通用户后其令牌立即失效：撤销记录之外逐请求复查用户状态（`49eb2f0`）。
-- SQLite 读操作不再与打开的写事务共用连接路径，读走共享读锁（`342805e`）。
-- ID 重写器不再为非路由响应字段铸造虚拟 ID，抑制 ID 空间膨胀（`6662661`）。
-- 配置 Save 全程持锁，消除并发保存的丢失更新（`68ebbcd`）。
-- 无效代理的日志行脱敏 URL 中的 `user:pass@` 凭据（`7a0d85c`）。
-- userdata 转发被上游拒绝时透传原状态码，不再一律 500（`defbf14`）。
-- 本地 NextUp 按有界波次（`min(Limit, 8)`）并行获取各剧下一集（`12987ae`）。
-- 管理面板切页 / 新刷新中止在途请求，防止旧响应清空新列表（`660ff95`）。
+- 禁用 / 删除普通用户后其令牌立即失效：撤销记录之外逐请求复查用户状态。
+- SQLite 读操作不再与打开的写事务共用连接路径，读走共享读锁。
+- ID 重写器不再为非路由响应字段铸造虚拟 ID，抑制 ID 空间膨胀。
+- 配置 Save 全程持锁，消除并发保存的丢失更新。
+- 无效代理的日志行脱敏 URL 中的 `user:pass@` 凭据。
+- userdata 转发被上游拒绝时透传原状态码，不再一律 500。
+- 本地 NextUp 按有界波次并行获取各剧下一集。
+- 管理面板切页 / 新刷新中止在途请求，防止旧响应清空新列表。
 
 **低危（2）**
 
-- 日志文件与轮转备份按 `0600` 写入，旧版本遗留文件自动收紧（`af96535`）。
-- SSRF 预检 DNS 解析带请求上下文与 5 秒上限，解析器卡住不再挂起管理请求（`cfdbd9f`）。
+- 日志文件与轮转备份按 `0600` 权限写入，旧版本遗留文件自动收紧。
+- SSRF 预检 DNS 解析带请求上下文与 5 秒上限，解析器卡住不再挂起管理请求。
 
-**回归验证**
+**质量验证**
 
-- `go test ./...` 全绿（并发敏感用例另以 `-race` 复核）；`go vet` 干净。
-- Node 前端测试扩至 10 个文件 55 项全绿（新增 web-session、admin-panel、web-player-ui 等）。
-- 浏览器冒烟：Web 登录 / 首页 / 播放器、管理面板登录 / 切页均无控制台错误。
+- 后端与前端全部自动化测试通过（含并发竞态复核）；Web 客户端与管理面板经浏览器冒烟验证。
 
 ## V1.4.4
 
