@@ -21,6 +21,16 @@ jobs:
         run: go build ./...
       - name: Vet
         run: go vet ./...
+      # gofmt is a gate, not a suggestion: this tree once shipped 900+ lines of
+      # stray leading whitespace because nothing checked it.
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l cmd internal)"
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-clean:" >&2
+            echo "$unformatted" >&2
+            exit 1
+          fi
       # -race is not optional here: the ID store, the watch store and the playback limiter
       # are all shared across request goroutines, and several fixes in this tree are about
       # that sharing.
@@ -65,3 +75,17 @@ jobs:
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
           shellcheck --severity=error install.sh release-install.sh emby-in-one-cli.sh
+
+  js:
+    name: Web client tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      # The 55 cases under tests/ cover the seek queue, subtitles, the player UI
+      # and the admin panel. They ran only by hand before, so a front-end
+      # regression could reach main unnoticed.
+      - name: Run the browser-logic tests
+        run: npm test

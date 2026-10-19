@@ -1,0 +1,7 @@
+# Commits whose changes are whitespace-only and should be ignored by git blame.
+# See https://git-scm.com/docs/git-blame#Documentation/git-blame.txt---ignore-revs-file
+#
+# gofmt -w cmd internal: repaired 914 lines across 26 files that had a stray
+# leading space before the indentation (17 files failed gofmt -l). No behaviour
+# change; excluding it keeps blame readable.
+f269671f4c01274fb3ff1cf6939e80657c84f870
