@@ -266,5 +266,14 @@ func resolveMediaSourceInPath(rest string, idStore *IDStore) string {
 	if resolved := idStore.ResolveVirtualID(firstSeg); resolved != nil {
 		return resolved.OriginalID + after
 	}
+	// Emby clients (notably Android TV) build the subtitle/attachment path as
+	// "mediasource_<itemId>" rather than echoing the MediaSourceId we issued.
+	// Strip that prefix and resolve the embedded virtual item ID, then re-add
+	// it because some upstreams also address their sources as "mediasource_<id>".
+	if strings.HasPrefix(firstSeg, "mediasource_") {
+		if resolved := idStore.ResolveVirtualID(strings.TrimPrefix(firstSeg, "mediasource_")); resolved != nil {
+			return "mediasource_" + resolved.OriginalID + after
+		}
+	}
 	return rest
 }
