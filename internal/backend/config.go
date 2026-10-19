@@ -288,21 +288,21 @@ func (s *ConfigStore) Replace(cfg Config) {
 	s.config = &clone
 }
 
- // Save renders the current config and writes it atomically. The lock is held
- // across both steps: rendering under RLock and writing it afterwards let two
- // concurrent saves interleave their writes, so an older render could
- // overwrite a newer one and silently drop the mutations the newer render
- // already contained.
- func (s *ConfigStore) Save() error {
- 	s.mu.Lock()
- 	defer s.mu.Unlock()
- 	content := renderConfigYAML(s.config)
- 	path := s.config.Path
- 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
- 		return err
- 	}
- 	return WriteFileAtomic(path, []byte(content), 0o600)
- }
+// Save renders the current config and writes it atomically. The lock is held
+// across both steps: rendering under RLock and writing it afterwards let two
+// concurrent saves interleave their writes, so an older render could
+// overwrite a newer one and silently drop the mutations the newer render
+// already contained.
+func (s *ConfigStore) Save() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	content := renderConfigYAML(s.config)
+	path := s.config.Path
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return WriteFileAtomic(path, []byte(content), 0o600)
+}
 
 func parseConfigYAML(raw string) (*Config, error) {
 	cfg := &Config{Proxies: []ProxyConfig{}, Upstream: []UpstreamConfig{}}

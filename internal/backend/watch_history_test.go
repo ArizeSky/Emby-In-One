@@ -365,9 +365,9 @@ func TestUserDataPlayedIsNotRecordedLocallyWhenUpstreamFails(t *testing.T) {
 		rr = doAuthJSON(t, handler, http.MethodPost,
 			fmt.Sprintf("/Users/%s/Items/%s/UserData", app.Auth.ProxyUserID(), virtualMovieID),
 			map[string]any{"Played": true}, childToken)
- 		if rr.Code != http.StatusBadGateway {
- 			t.Fatalf("userdata POST status=%d body=%s", rr.Code, rr.Body.String())
- 		}
+		if rr.Code != http.StatusBadGateway {
+			t.Fatalf("userdata POST status=%d body=%s", rr.Code, rr.Body.String())
+		}
 
 		// The local record follows the upstream, not the other way round: writing it first
 		// left the local state "played" while the upstream still had it unwatched, and the

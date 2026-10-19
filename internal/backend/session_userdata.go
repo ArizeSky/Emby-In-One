@@ -305,23 +305,23 @@ func (a *App) forwardJSONOrNoContent(r *http.Request, client *UpstreamClient, me
 	}
 	return readUpstreamJSONOrNoContent(resp)
 }
- 
- // writeUserdataForwardError maps a forwarded userdata error to the status the
- // client should see: an explicit upstream refusal keeps its own status code,
- // a preparation failure keeps its status, and a transport failure is a bad
- // gateway. Answering 500 for an upstream 401/404 made clients treat a
- // refusal as a server bug and hid the real cause.
- func (a *App) writeUserdataForwardError(w http.ResponseWriter, err error) {
- 	if uhe, ok := asUpstreamHTTPError(err); ok {
- 		writeJSON(w, uhe.StatusCode, map[string]any{"message": "Upstream rejected the request: " + uhe.Status})
- 		return
- 	}
- 	if status, ok := preparationErrorStatus(err); ok {
- 		writeJSON(w, status, preparationErrorBody(err))
- 		return
- 	}
- 	writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Upstream request failed"})
- }
+
+// writeUserdataForwardError maps a forwarded userdata error to the status the
+// client should see: an explicit upstream refusal keeps its own status code,
+// a preparation failure keeps its status, and a transport failure is a bad
+// gateway. Answering 500 for an upstream 401/404 made clients treat a
+// refusal as a server bug and hid the real cause.
+func (a *App) writeUserdataForwardError(w http.ResponseWriter, err error) {
+	if uhe, ok := asUpstreamHTTPError(err); ok {
+		writeJSON(w, uhe.StatusCode, map[string]any{"message": "Upstream rejected the request: " + uhe.Status})
+		return
+	}
+	if status, ok := preparationErrorStatus(err); ok {
+		writeJSON(w, status, preparationErrorBody(err))
+		return
+	}
+	writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Upstream request failed"})
+}
 
 func asBodyMap(payload any) (map[string]any, bool) {
 	if payload == nil {
@@ -587,10 +587,10 @@ func (a *App) handleUserItemUserData(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	status, payload, err := a.forwardJSONOrNoContent(r, resolved.Client, http.MethodPost, fmt.Sprintf("/Users/%s/Items/%s/UserData", resolved.Client.clientUserID(), resolved.OriginalID), nil, body)
- 	if err != nil {
- 		a.writeUserdataForwardError(w, err)
- 		return
- 	}
+	if err != nil {
+		a.writeUserdataForwardError(w, err)
+		return
+	}
 	// Dual-write: record played status to WatchStore for non-admin users. This runs
 	// only after the upstream accepted the change, matching handleFavoriteItemAdd and
 	// handleFavoriteItemRemove. Writing first left the local state permanently ahead of
@@ -633,10 +633,10 @@ func (a *App) handleFavoriteItemAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	status, payload, err := a.forwardJSONOrNoContent(r, resolved.Client, http.MethodPost, fmt.Sprintf("/Users/%s/FavoriteItems/%s", resolved.Client.clientUserID(), resolved.OriginalID), nil, body)
- 	if err != nil {
- 		a.writeUserdataForwardError(w, err)
- 		return
- 	}
+	if err != nil {
+		a.writeUserdataForwardError(w, err)
+		return
+	}
 	// Dual-write favorite
 	if a.WatchStore != nil {
 		if reqCtx := requestContextFrom(r.Context()); reqCtx != nil && reqCtx.ProxyUser != nil && reqCtx.ProxyUser.Role != "admin" {
@@ -674,10 +674,10 @@ func (a *App) handleFavoriteItemRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	status, payload, err := a.forwardJSONOrNoContent(r, resolved.Client, http.MethodDelete, fmt.Sprintf("/Users/%s/FavoriteItems/%s", resolved.Client.clientUserID(), resolved.OriginalID), nil, body)
- 	if err != nil {
- 		a.writeUserdataForwardError(w, err)
- 		return
- 	}
+	if err != nil {
+		a.writeUserdataForwardError(w, err)
+		return
+	}
 	// Dual-write favorite removal
 	if a.WatchStore != nil {
 		if reqCtx := requestContextFrom(r.Context()); reqCtx != nil && reqCtx.ProxyUser != nil && reqCtx.ProxyUser.Role != "admin" {

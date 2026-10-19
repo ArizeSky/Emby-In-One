@@ -35,10 +35,10 @@ func TestLocalNextUpFetchesSeriesConcurrently(t *testing.T) {
 			series := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/Users/user-a/Shows/"), "/Episodes")
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"Items": []map[string]any{{
-					"Id":               "next-" + series,
-					"SeriesId":         series,
+					"Id":                "next-" + series,
+					"SeriesId":          series,
 					"ParentIndexNumber": 1,
-					"IndexNumber":      2,
+					"IndexNumber":       2,
 				}},
 			})
 		default:

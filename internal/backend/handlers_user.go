@@ -125,29 +125,29 @@ func (a *App) handleUsersPublic(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, users)
 }
 
- func (a *App) handleUserObject(w http.ResponseWriter, r *http.Request) {
- 	reqCtx := requestContextFrom(r.Context())
- 	if reqCtx != nil && reqCtx.ProxyUser != nil && reqCtx.ProxyUser.Role == "user" {
- 		if a.UserStore == nil {
- 			// A user-role token with no user store behind it has no backing
- 			// account; answering with the admin object would hand over the
- 			// administrator's profile.
- 			writeJSON(w, http.StatusUnauthorized, map[string]any{"message": "User store unavailable"})
- 			return
- 		}
- 		user := a.UserStore.Get(reqCtx.ProxyUser.UserID)
- 		if user != nil && user.Enabled {
- 			writeJSON(w, http.StatusOK, a.Auth.BuildUserObjectForUser(user))
- 			return
- 		}
- 		// A missing or disabled account must never fall through to the admin
- 		// object below: that would hand a disabled user the administrator's
- 		// profile — including its IsAdministrator flag — as its own.
- 		writeJSON(w, http.StatusUnauthorized, map[string]any{"message": "User no longer exists or is disabled"})
- 		return
- 	}
- 	writeJSON(w, http.StatusOK, a.Auth.BuildUserObject())
- }
+func (a *App) handleUserObject(w http.ResponseWriter, r *http.Request) {
+	reqCtx := requestContextFrom(r.Context())
+	if reqCtx != nil && reqCtx.ProxyUser != nil && reqCtx.ProxyUser.Role == "user" {
+		if a.UserStore == nil {
+			// A user-role token with no user store behind it has no backing
+			// account; answering with the admin object would hand over the
+			// administrator's profile.
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"message": "User store unavailable"})
+			return
+		}
+		user := a.UserStore.Get(reqCtx.ProxyUser.UserID)
+		if user != nil && user.Enabled {
+			writeJSON(w, http.StatusOK, a.Auth.BuildUserObjectForUser(user))
+			return
+		}
+		// A missing or disabled account must never fall through to the admin
+		// object below: that would hand a disabled user the administrator's
+		// profile — including its IsAdministrator flag — as its own.
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"message": "User no longer exists or is disabled"})
+		return
+	}
+	writeJSON(w, http.StatusOK, a.Auth.BuildUserObject())
+}
 
 func (a *App) handleUserViews(w http.ResponseWriter, r *http.Request) {
 	reqCtx := requestContextFrom(r.Context())

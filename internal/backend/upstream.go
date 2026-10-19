@@ -230,40 +230,40 @@ func findProxy(proxies []ProxyConfig, id string) *ProxyConfig {
 	return nil
 }
 
- // redactProxyURLForLog keeps a proxy URL's scheme, host, path and query but
- // never its userinfo, so a credential-bearing URL cannot reach the log intact
- // even when it is too malformed to parse (the userinfo is stripped by hand in
- // that case).
- func redactProxyURLForLog(raw string) string {
- 	trimmed := strings.TrimSpace(raw)
- 	if parsed, err := url.Parse(trimmed); err == nil && parsed.Host != "" {
- 		parsed.User = nil
- 		return parsed.String()
- 	}
- 	if at := strings.LastIndex(trimmed, "@"); at >= 0 {
- 		return "<redacted-userinfo>@" + trimmed[at+1:]
- 	}
- 	return "<unparsable-url>"
- }
- 
- // buildProxyTransport creates an http.Transport that routes requests through the given proxy URL.
- // Returns (transport, true) on success, or (sharedTransport, false) on failure.
- func buildProxyTransport(proxyURL string, logger *Logger, serverName string) (http.RoundTripper, bool) {
- 	parsed, err := url.Parse(proxyURL)
- 	if err != nil {
- 		if logger != nil {
- 			// Both the URL and the parse error can carry the credentials (the
- 			// error embeds the raw URL); only redacted forms are logged.
- 			logger.Errorf("[%s] Invalid proxy URL %q: %s, falling back to direct", serverName, redactProxyURLForLog(proxyURL), redactURLInError(err))
- 		}
- 		return sharedTransport, false
- 	}
- 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
- 		if logger != nil {
- 			logger.Errorf("[%s] Proxy URL must be http or https, got %q, falling back to direct", serverName, parsed.Scheme)
- 		}
- 		return sharedTransport, false
- 	}
+// redactProxyURLForLog keeps a proxy URL's scheme, host, path and query but
+// never its userinfo, so a credential-bearing URL cannot reach the log intact
+// even when it is too malformed to parse (the userinfo is stripped by hand in
+// that case).
+func redactProxyURLForLog(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if parsed, err := url.Parse(trimmed); err == nil && parsed.Host != "" {
+		parsed.User = nil
+		return parsed.String()
+	}
+	if at := strings.LastIndex(trimmed, "@"); at >= 0 {
+		return "<redacted-userinfo>@" + trimmed[at+1:]
+	}
+	return "<unparsable-url>"
+}
+
+// buildProxyTransport creates an http.Transport that routes requests through the given proxy URL.
+// Returns (transport, true) on success, or (sharedTransport, false) on failure.
+func buildProxyTransport(proxyURL string, logger *Logger, serverName string) (http.RoundTripper, bool) {
+	parsed, err := url.Parse(proxyURL)
+	if err != nil {
+		if logger != nil {
+			// Both the URL and the parse error can carry the credentials (the
+			// error embeds the raw URL); only redacted forms are logged.
+			logger.Errorf("[%s] Invalid proxy URL %q: %s, falling back to direct", serverName, redactProxyURLForLog(proxyURL), redactURLInError(err))
+		}
+		return sharedTransport, false
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		if logger != nil {
+			logger.Errorf("[%s] Proxy URL must be http or https, got %q, falling back to direct", serverName, parsed.Scheme)
+		}
+		return sharedTransport, false
+	}
 	return &http.Transport{
 		Proxy:                 http.ProxyURL(parsed),
 		MaxIdleConns:          64,

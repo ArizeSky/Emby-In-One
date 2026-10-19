@@ -159,12 +159,12 @@ func (ws *WatchStore) SetFavorite(proxyUserID, virtualItemID string, favorite bo
 	`, proxyUserID, virtualItemID, boolToInt(favorite), time.Now().UnixMilli())
 }
 
- // GetResumeItems returns items with position > 0 and not fully played, ordered by last_played desc.
- func (ws *WatchStore) GetResumeItems(proxyUserID string, limit int) ([]WatchProgress, error) {
- 	if limit <= 0 {
- 		limit = 20
- 	}
- 	return ws.queryProgress(proxyUserID, `
+// GetResumeItems returns items with position > 0 and not fully played, ordered by last_played desc.
+func (ws *WatchStore) GetResumeItems(proxyUserID string, limit int) ([]WatchProgress, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	return ws.queryProgress(proxyUserID, `
  		SELECT virtual_item_id, server_id, original_item_id, item_type,
  			series_virtual_id, series_original_id, series_name,
  			parent_index_number, index_number, name, production_year, provider_tmdb,
@@ -184,11 +184,11 @@ func (ws *WatchStore) SetFavorite(proxyUserID, virtualItemID string, favorite bo
  		ORDER BY last_played DESC
  		LIMIT ?
  	`, proxyUserID, limit)
- }
+}
 
- // GetFavoriteItems returns all favorited items for a user.
- func (ws *WatchStore) GetFavoriteItems(proxyUserID string) ([]WatchProgress, error) {
- 	return ws.queryProgress(proxyUserID, `
+// GetFavoriteItems returns all favorited items for a user.
+func (ws *WatchStore) GetFavoriteItems(proxyUserID string) ([]WatchProgress, error) {
+	return ws.queryProgress(proxyUserID, `
  		SELECT virtual_item_id, server_id, original_item_id, item_type,
  			series_virtual_id, series_original_id, series_name,
  			parent_index_number, index_number, name, production_year, provider_tmdb,
@@ -197,11 +197,11 @@ func (ws *WatchStore) SetFavorite(proxyUserID, virtualItemID string, favorite bo
  		WHERE proxy_user_id = ? AND is_favorite = 1
  		ORDER BY last_played DESC
  	`, proxyUserID)
- }
- 
- // GetPlayedItems returns every item the user has marked as played.
- func (ws *WatchStore) GetPlayedItems(proxyUserID string) ([]WatchProgress, error) {
- 	return ws.queryProgress(proxyUserID, `
+}
+
+// GetPlayedItems returns every item the user has marked as played.
+func (ws *WatchStore) GetPlayedItems(proxyUserID string) ([]WatchProgress, error) {
+	return ws.queryProgress(proxyUserID, `
  		SELECT virtual_item_id, server_id, original_item_id, item_type,
  			series_virtual_id, series_original_id, series_name,
  			parent_index_number, index_number, name, production_year, provider_tmdb,
@@ -210,13 +210,13 @@ func (ws *WatchStore) SetFavorite(proxyUserID, virtualItemID string, favorite bo
  		WHERE proxy_user_id = ? AND played = 1
  		ORDER BY last_played DESC
  	`, proxyUserID)
- }
- 
- // GetResumableItems returns the items the user is part-way through. It is the same
- // predicate as GetResumeItems without the one-episode-per-series fold, because a
- // list filter has to see every matching item to page and count them.
- func (ws *WatchStore) GetResumableItems(proxyUserID string) ([]WatchProgress, error) {
- 	return ws.queryProgress(proxyUserID, `
+}
+
+// GetResumableItems returns the items the user is part-way through. It is the same
+// predicate as GetResumeItems without the one-episode-per-series fold, because a
+// list filter has to see every matching item to page and count them.
+func (ws *WatchStore) GetResumableItems(proxyUserID string) ([]WatchProgress, error) {
+	return ws.queryProgress(proxyUserID, `
  		SELECT virtual_item_id, server_id, original_item_id, item_type,
  			series_virtual_id, series_original_id, series_name,
  			parent_index_number, index_number, name, production_year, provider_tmdb,
@@ -225,14 +225,14 @@ func (ws *WatchStore) SetFavorite(proxyUserID, virtualItemID string, favorite bo
  		WHERE proxy_user_id = ? AND position_ticks > 0 AND played = 0
  		ORDER BY last_played DESC
  	`, proxyUserID)
- }
+}
 
- // GetProgress returns the watch progress for a specific user+item, or (nil, nil)
- // when there is no record. A database failure is reported as an error so callers
- // can tell "no local record" apart from "the read failed" — the overlay layer
- // clears upstream userdata on the former, and must not do so on the latter.
- func (ws *WatchStore) GetProgress(proxyUserID, virtualItemID string) (*WatchProgress, error) {
- 	rows, err := ws.queryProgress(proxyUserID, `
+// GetProgress returns the watch progress for a specific user+item, or (nil, nil)
+// when there is no record. A database failure is reported as an error so callers
+// can tell "no local record" apart from "the read failed" — the overlay layer
+// clears upstream userdata on the former, and must not do so on the latter.
+func (ws *WatchStore) GetProgress(proxyUserID, virtualItemID string) (*WatchProgress, error) {
+	rows, err := ws.queryProgress(proxyUserID, `
  		SELECT virtual_item_id, server_id, original_item_id, item_type,
  			series_virtual_id, series_original_id, series_name,
  			parent_index_number, index_number, name, production_year, provider_tmdb,
@@ -240,19 +240,19 @@ func (ws *WatchStore) SetFavorite(proxyUserID, virtualItemID string, favorite bo
  		FROM user_watch_progress
  		WHERE proxy_user_id = ? AND virtual_item_id = ?
  	`, proxyUserID, virtualItemID)
- 	if err != nil {
- 		return nil, err
- 	}
- 	if len(rows) == 0 {
- 		return nil, nil
- 	}
- 	return &rows[0], nil
- }
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	return &rows[0], nil
+}
 
- // GetNextUpSeries returns one row per series the user has played episodes of,
- // with the most-recently-played episode per series.
- func (ws *WatchStore) GetNextUpSeries(proxyUserID string) ([]WatchProgress, error) {
- 	all, err := ws.queryProgress(proxyUserID, `
+// GetNextUpSeries returns one row per series the user has played episodes of,
+// with the most-recently-played episode per series.
+func (ws *WatchStore) GetNextUpSeries(proxyUserID string) ([]WatchProgress, error) {
+	all, err := ws.queryProgress(proxyUserID, `
  		SELECT virtual_item_id, server_id, original_item_id, item_type,
  			series_virtual_id, series_original_id, series_name,
  			parent_index_number, index_number, name, production_year, provider_tmdb,
@@ -262,33 +262,33 @@ func (ws *WatchStore) SetFavorite(proxyUserID, virtualItemID string, favorite bo
  			AND (played = 1 OR position_ticks > 0)
  		ORDER BY series_name, parent_index_number DESC, index_number DESC
  	`, proxyUserID)
- 	if err != nil {
- 		return nil, err
- 	}
- 	// Deduplicate: keep only the highest-numbered episode per series. The series identity
- 	// is the virtual ID, not the display name — two different series can share a name, and
- 	// folding them together would hide one of them from Continue Watching.
- 	seen := map[string]bool{}
- 	result := make([]WatchProgress, 0)
- 	for _, row := range all {
- 		key := row.SeriesVirtualID
- 		if key == "" {
- 			key = row.SeriesName
- 		}
- 		if seen[key] {
- 			continue
- 		}
- 		seen[key] = true
- 		result = append(result, row)
- 	}
- 	return result, nil
- }
- 
- // GetNextUpForSeries returns the highest-numbered episode the user has watched
- // (played or in-progress) for a specific series, identified by virtual series ID.
- // Like GetProgress it reports read failures as an error instead of a bare nil.
- func (ws *WatchStore) GetNextUpForSeries(proxyUserID, seriesVirtualID string) (*WatchProgress, error) {
- 	rows, err := ws.queryProgress(proxyUserID, `
+	if err != nil {
+		return nil, err
+	}
+	// Deduplicate: keep only the highest-numbered episode per series. The series identity
+	// is the virtual ID, not the display name — two different series can share a name, and
+	// folding them together would hide one of them from Continue Watching.
+	seen := map[string]bool{}
+	result := make([]WatchProgress, 0)
+	for _, row := range all {
+		key := row.SeriesVirtualID
+		if key == "" {
+			key = row.SeriesName
+		}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		result = append(result, row)
+	}
+	return result, nil
+}
+
+// GetNextUpForSeries returns the highest-numbered episode the user has watched
+// (played or in-progress) for a specific series, identified by virtual series ID.
+// Like GetProgress it reports read failures as an error instead of a bare nil.
+func (ws *WatchStore) GetNextUpForSeries(proxyUserID, seriesVirtualID string) (*WatchProgress, error) {
+	rows, err := ws.queryProgress(proxyUserID, `
  		SELECT virtual_item_id, server_id, original_item_id, item_type,
  			series_virtual_id, series_original_id, series_name,
  			parent_index_number, index_number, name, production_year, provider_tmdb,
@@ -299,14 +299,14 @@ func (ws *WatchStore) SetFavorite(proxyUserID, virtualItemID string, favorite bo
  		ORDER BY parent_index_number DESC, index_number DESC
  		LIMIT 1
  	`, proxyUserID, seriesVirtualID)
- 	if err != nil {
- 		return nil, err
- 	}
- 	if len(rows) == 0 {
- 		return nil, nil
- 	}
- 	return &rows[0], nil
- }
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	return &rows[0], nil
+}
 
 // DeleteUser removes all watch data for a proxy user.
 func (ws *WatchStore) DeleteUser(proxyUserID string) error {
@@ -334,28 +334,28 @@ func (ws *WatchStore) DeleteServerData(serverID string) error {
 	})
 }
 
- // queryProgress runs a read-only progress query under the store lock and the
- // connection read lock, so a read in progress can never interleave with
- // another store's open transaction on the shared SQLite connection.
- func (ws *WatchStore) queryProgress(proxyUserID, query string, args ...any) (rows []WatchProgress, err error) {
- 	ws.mu.Lock()
- 	defer ws.mu.Unlock()
- 	err = ws.db.withReadLock(func() error {
- 		stmt, err := ws.db.prepare(query)
- 		if err != nil {
- 			return err
- 		}
- 		defer stmt.finalize()
- 		if err := stmt.bindAll(args...); err != nil {
- 			return err
- 		}
- 		rows, err = ws.scanRows(proxyUserID, stmt)
- 		return err
- 	})
- 	return rows, err
- }
- 
- func (ws *WatchStore) scanRows(proxyUserID string, stmt *sqliteStmt) ([]WatchProgress, error) {
+// queryProgress runs a read-only progress query under the store lock and the
+// connection read lock, so a read in progress can never interleave with
+// another store's open transaction on the shared SQLite connection.
+func (ws *WatchStore) queryProgress(proxyUserID, query string, args ...any) (rows []WatchProgress, err error) {
+	ws.mu.Lock()
+	defer ws.mu.Unlock()
+	err = ws.db.withReadLock(func() error {
+		stmt, err := ws.db.prepare(query)
+		if err != nil {
+			return err
+		}
+		defer stmt.finalize()
+		if err := stmt.bindAll(args...); err != nil {
+			return err
+		}
+		rows, err = ws.scanRows(proxyUserID, stmt)
+		return err
+	})
+	return rows, err
+}
+
+func (ws *WatchStore) scanRows(proxyUserID string, stmt *sqliteStmt) ([]WatchProgress, error) {
 	var results []WatchProgress
 	for {
 		hasRow, err := stmt.step()
