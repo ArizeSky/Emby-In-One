@@ -86,6 +86,9 @@ func (a *App) handleLocalResume(w http.ResponseWriter, r *http.Request, reqCtx *
 	}
 
 	enriched := a.enrichWatchItems(r, reqCtx, items)
+	if maxR := a.maxRatingFor(r); maxR > 0 {
+		enriched = filterItemsByRating(enriched, maxR)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"Items":            toAnySlice(enriched),
 		"TotalRecordCount": len(enriched),
