@@ -193,9 +193,40 @@ func TestUpstreamConnectFailureDoesNotLeakToken(t *testing.T) {
 // The refused redirect stays identifiable through the redaction wrapper, and the
 // wrapper keeps errors.Is working for the cancellation checks handlers rely on.
 func TestUpstreamRedirectPolicyShape(t *testing.T) {
-	if redirectPolicy(true) != nil {
-		t.Fatalf("following must be delegated to net/http by leaving CheckRedirect nil")
+	follow := redirectPolicy(true)
+	if follow == nil {
+		t.Fatalf("following must install a CheckRedirect so cross-origin credentials can be stripped")
 	}
+
+	// A same-origin hop keeps the credential headers and query untouched.
+	sameVia := []*http.Request{httptest.NewRequest(http.MethodGet, "http://up.test/start", nil)}
+	sameOrigin := httptest.NewRequest(http.MethodGet, "http://up.test/Items", nil)
+	sameOrigin.Header.Set("X-Emby-Token", redirectUpstreamToken)
+	if err := follow(sameOrigin, sameVia); err != nil {
+		t.Fatalf("same-origin redirect rejected: %v", err)
+	}
+	if sameOrigin.Header.Get("X-Emby-Token") != redirectUpstreamToken {
+		t.Fatalf("same-origin redirect dropped the credential header")
+	}
+
+	// A cross-origin hop must not carry the upstream credential or api_key.
+	cross := httptest.NewRequest(http.MethodGet, "http://cdn.example/Items?api_key="+redirectUpstreamToken, nil)
+	cross.Header.Set("X-Emby-Token", redirectUpstreamToken)
+	cross.Header.Set("X-Emby-Authorization", `Emby UserId="u"`)
+	cross.Header.Set("Authorization", "Bearer x")
+	cross.Header.Set("Cookie", "s=1")
+	if err := follow(cross, sameVia); err != nil {
+		t.Fatalf("cross-origin redirect rejected: %v", err)
+	}
+	for _, h := range []string{"X-Emby-Token", "X-Emby-Authorization", "Authorization", "Cookie"} {
+		if v := cross.Header.Get(h); v != "" {
+			t.Fatalf("cross-origin redirect leaked %s=%q", h, v)
+		}
+	}
+	if strings.Contains(cross.URL.RawQuery, redirectUpstreamToken) {
+		t.Fatalf("cross-origin redirect leaked api_key: %s", cross.URL.RawQuery)
+	}
+
 	check := redirectPolicy(false)
 	if check == nil {
 		t.Fatalf("not following must install a CheckRedirect")
