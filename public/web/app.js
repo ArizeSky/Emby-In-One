@@ -539,12 +539,20 @@
       }));
 
       /* ---- playback entry ---- */
+      let playItemSerial = 0; // bumped per playItem call to detect a superseded Series resolution
+
       async function playItem(item, mediaSourceId, options = {}) {
+        // Bumping a serial lets a Series resolution that is still awaiting notice
+        // that a newer play request superseded it. Without it, a slow NextUp for
+        // episode A can resolve after the user already picked episode B and
+        // overwrite the newer selection.
+        const serial = ++playItemSerial;
         if (navPage.value !== 'player') playerReturnRoute = window.location.hash || '#/home';
         // A series has no media sources of its own: PlaybackInfo against a
         // series fails upstream. Resolve to NextUp or the first episode.
         if (item?.Type === 'Series') {
           const ep = await resolveSeriesEpisode(item.Id);
+          if (serial !== playItemSerial) return; // superseded by a newer playItem call
           if (!ep) { toasts.push({ message: '该剧集没有可播放的集', kind: 'error' }); return; }
           item = ep; options = {}; mediaSourceId = null;
         }
