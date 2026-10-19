@@ -9,6 +9,22 @@ import (
 	"time"
 )
 
+// maxRatingFor returns the requesting proxy user's parental ceiling.
+// 0 means "no restriction" (also returned for admins and unknown users).
+func (a *App) maxRatingFor(r *http.Request) int {
+	if a.UserStore == nil {
+		return 0
+	}
+	uid := a.clientFacingUserIDFor(r)
+	if uid == "" {
+		return 0
+	}
+	if u := a.UserStore.Get(uid); u != nil {
+		return u.MaxParentalRating
+	}
+	return 0
+}
+
 func (a *App) handleItemsCollection(w http.ResponseWriter, r *http.Request) {
 	query := cloneValues(r.URL.Query())
 	if !hasBatchIDQuery(query) {
@@ -56,6 +72,9 @@ func (a *App) handleItemsCollection(w http.ResponseWriter, r *http.Request) {
 	}, tasks)
 	merged := a.mergedItemsPayload(collected, a.clientFacingUserIDFor(r))
 	items := asItems(merged)
+	if maxR := a.maxRatingFor(r); maxR > 0 {
+		items = filterItemsByRating(items, maxR)
+	}
 	if localFilter {
 		kept, recency := a.filterItemsByLocalUserState(r, items, filter)
 		localItemSort(kept, r.URL.Query(), recency)
@@ -68,6 +87,15 @@ func (a *App) handleItemsCollection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.overlayLocalUserDataItems(r, items)
+	if maxR := a.maxRatingFor(r); maxR > 0 {
+		items = filterItemsByRating(items, maxR)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"Items":            toAnySlice(items),
+			"TotalRecordCount": len(items),
+			"StartIndex":       0,
+		})
+		return
+	}
 	writeJSON(w, http.StatusOK, merged)
 }
 
@@ -96,6 +124,13 @@ func (a *App) handleUserItems(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		items := a.rewriteItems(asItems(payload), resolved.ServerID, a.clientFacingUserIDFor(r))
+		if maxR := a.maxRatingFor(r); maxR > 0 {
+			items = filterItemsByRating(items, maxR)
+			if m, ok := payload.(map[string]any); ok {
+				m["Items"] = toAnySlice(items)
+				m["TotalRecordCount"] = len(items)
+			}
+		}
 		if localFilter {
 			kept, recency := a.filterItemsByLocalUserState(r, items, filter)
 			localItemSort(kept, r.URL.Query(), recency)

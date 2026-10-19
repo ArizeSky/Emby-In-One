@@ -614,13 +614,14 @@ func (a *App) handleAdminUsersList(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		result = append(result, map[string]any{
-			"id":              u.ID,
-			"username":        u.Username,
-			"enabled":         u.Enabled,
-			"allowedServers":  u.AllowedServers,
-			"hiddenLibraries": a.hiddenLibrariesJSONFor(u.ID),
-			"serverNames":     serverNames,
-			"createdAt":       u.CreatedAt,
+			"id":                u.ID,
+			"username":          u.Username,
+			"enabled":           u.Enabled,
+			"allowedServers":    u.AllowedServers,
+			"hiddenLibraries":   a.hiddenLibrariesJSONFor(u.ID),
+			"maxParentalRating": u.MaxParentalRating,
+			"serverNames":       serverNames,
+			"createdAt":         u.CreatedAt,
 		})
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -632,9 +633,10 @@ func (a *App) handleAdminUsersCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct {
-		Username       string   `json:"username"`
-		Password       string   `json:"password"`
-		AllowedServers []string `json:"allowedServers"`
+		Username          string   `json:"username"`
+		Password          string   `json:"password"`
+		AllowedServers    []string `json:"allowedServers"`
+		MaxParentalRating int      `json:"maxParentalRating"`
 	}
 	if err := decodeJSONBody(r, &input); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "Invalid request body"})
@@ -662,7 +664,13 @@ func (a *App) handleAdminUsersCreate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"id": user.ID, "username": user.Username})
+	if input.MaxParentalRating > 0 {
+		if err := a.UserStore.SetMaxParentalRating(user.ID, input.MaxParentalRating); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"id": user.ID, "username": user.Username, "maxParentalRating": input.MaxParentalRating})
 }
 
 func (a *App) handleAdminUsersUpdate(w http.ResponseWriter, r *http.Request) {
@@ -672,11 +680,12 @@ func (a *App) handleAdminUsersUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	id := r.PathValue("id")
 	var input struct {
-		Username        *string              `json:"username"`
-		Password        *string              `json:"password"`
-		Enabled         *bool                `json:"enabled"`
-		AllowedServers  *[]string            `json:"allowedServers"`
-		HiddenLibraries map[string]*[]string `json:"hiddenLibraries"`
+		Username          *string              `json:"username"`
+		Password          *string              `json:"password"`
+		Enabled           *bool                `json:"enabled"`
+		AllowedServers    *[]string            `json:"allowedServers"`
+		HiddenLibraries   map[string]*[]string `json:"hiddenLibraries"`
+		MaxParentalRating *int                 `json:"maxParentalRating"`
 	}
 	if err := decodeJSONBody(r, &input); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "Invalid request body"})
@@ -698,6 +707,12 @@ func (a *App) handleAdminUsersUpdate(w http.ResponseWriter, r *http.Request) {
 	if err := a.UserStore.Update(id, input.Username, input.Password, input.Enabled, input.AllowedServers); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
+	}
+	if input.MaxParentalRating != nil {
+		if err := a.UserStore.SetMaxParentalRating(id, *input.MaxParentalRating); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
 	}
 	if a.HiddenLibraries != nil {
 		if input.HiddenLibraries != nil {

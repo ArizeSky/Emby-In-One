@@ -284,6 +284,20 @@
       <div class="space-y-4">
         <div><label class="text-sm font-medium">用户名</label><input type="text" v-model="userForm.username" class="w-full px-4 py-2 border rounded-lg outline-none"></div>
         <div><label class="text-sm font-medium">密码</label><input type="password" v-model="userForm.password" minlength="8" maxlength="128" :placeholder="editUserId ? '留空不修改' : '8–128 字符'" class="w-full px-4 py-2 border rounded-lg outline-none"><p class="mt-1 text-xs text-slate-400">长度需为 8–128 字符{{ editUserId ? '；留空表示不修改' : '' }}。</p></div>
+        <div>
+          <label class="text-sm font-medium">内容分级上限</label>
+          <select v-model.number="userForm.maxParentalRating" class="w-full px-4 py-2 border rounded-lg outline-none">
+            <option :value="0">不限制</option>
+            <option :value="1">1 · 幼儿（G / TV-Y）</option>
+            <option :value="5">5 · 儿童（PG）</option>
+            <option :value="7">7 · 青少年（PG-13）</option>
+            <option :value="8">8 · 16+（TV-14）</option>
+            <option :value="9">9 · 成人（R / TV-MA）</option>
+            <option :value="10">10 · 限制级（NC-17）</option>
+            <option :value="15">15 · 全部（含 XXX）</option>
+          </select>
+          <p class="mt-1 text-xs text-slate-400">超过该分级的影片和剧集不会显示给此用户（0 = 不限制）。</p>
+        </div>
         <div v-if="editUserId" class="flex items-center space-x-2"><input type="checkbox" v-model="userForm.enabled" class="w-4 h-4 rounded border-slate-300 text-blue-600"><label class="text-sm font-medium">启用</label></div>
         <div><label class="text-sm font-medium block mb-2">允许访问的服务器</label>
           <p class="text-xs text-slate-400 mb-2">不勾选任何服务器表示允许访问全部</p>

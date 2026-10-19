@@ -15,6 +15,9 @@ type User struct {
 	Enabled        bool
 	AllowedServers []string
 	CreatedAt      int64 // Unix milliseconds
+	// MaxParentalRating hides items whose Emby parental score exceeds this
+	// value (see parental.go). 0 = no restriction.
+	MaxParentalRating int
 }
 
 type UserStore struct {
@@ -36,7 +39,8 @@ func NewUserStore(db *sqliteDB, logger *Logger) (*UserStore, error) {
 			username TEXT UNIQUE NOT NULL COLLATE NOCASE,
 			password TEXT NOT NULL,
 			enabled INTEGER NOT NULL DEFAULT 1,
-			created_at INTEGER NOT NULL
+			created_at INTEGER NOT NULL,
+			max_parental_rating INTEGER NOT NULL DEFAULT 0
 		);
 		CREATE TABLE IF NOT EXISTS user_servers (
 			user_id TEXT NOT NULL,
@@ -46,6 +50,9 @@ func NewUserStore(db *sqliteDB, logger *Logger) (*UserStore, error) {
 		);
 	`); err != nil {
 		return nil, fmt.Errorf("user_store: create tables: %w", err)
+	}
+	if err := migrateUsersTable(db); err != nil {
+		return nil, fmt.Errorf("user_store: migrate: %w", err)
 	}
 	store := &UserStore{
 		db:     db,
@@ -62,11 +69,50 @@ func NewUserStore(db *sqliteDB, logger *Logger) (*UserStore, error) {
 	return store, nil
 }
 
+// migrateUsersTable adds columns introduced after the initial schema, so
+// existing deployments keep their users when upgrading.
+func migrateUsersTable(db *sqliteDB) error {
+	stmt, err := db.prepare(`PRAGMA table_info(users)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.finalize()
+	for {
+		hasRow, err := stmt.step()
+		if err != nil {
+			return err
+		}
+		if !hasRow {
+			break
+		}
+		if stmt.columnText(1) == "max_parental_rating" {
+			return nil
+		}
+	}
+	return db.exec(`ALTER TABLE users ADD COLUMN max_parental_rating INTEGER NOT NULL DEFAULT 0`)
+}
+
+// SetMaxParentalRating updates a user's parental ceiling (0 = unrestricted).
+func (s *UserStore) SetMaxParentalRating(id string, rating int) error {
+	if rating < 0 {
+		rating = 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.db.execParams(`UPDATE users SET max_parental_rating = ? WHERE id = ?`, rating, id); err != nil {
+		return err
+	}
+	if u, ok := s.users[id]; ok {
+		u.MaxParentalRating = rating
+	}
+	return nil
+}
+
 func (s *UserStore) loadAll() error {
 	s.users = make(map[string]*User)
 	s.byName = make(map[string]*User)
 
-	stmt, err := s.db.prepare(`SELECT id, username, password, enabled, created_at FROM users`)
+	stmt, err := s.db.prepare(`SELECT id, username, password, enabled, created_at, max_parental_rating FROM users`)
 	if err != nil {
 		return err
 	}
@@ -80,11 +126,12 @@ func (s *UserStore) loadAll() error {
 			break
 		}
 		user := &User{
-			ID:        stmt.columnText(0),
-			Username:  stmt.columnText(1),
-			Password:  stmt.columnText(2),
-			Enabled:   stmt.columnInt(3) != 0,
-			CreatedAt: stmt.columnInt64(4),
+			ID:                stmt.columnText(0),
+			Username:          stmt.columnText(1),
+			Password:          stmt.columnText(2),
+			Enabled:           stmt.columnInt(3) != 0,
+			CreatedAt:         stmt.columnInt64(4),
+			MaxParentalRating: stmt.columnInt(5),
 		}
 		s.users[user.ID] = user
 		s.byName[strings.ToLower(user.Username)] = user
@@ -215,19 +262,19 @@ func (s *UserStore) List() []*User {
 	})
 	return result
 }
- 
- // IsUserEnabled reports whether the given proxy user exists and is enabled.
- // It exists so the per-request auth path can re-check the flag without copying
- // the whole user record on every request.
- func (s *UserStore) IsUserEnabled(id string) bool {
- 	if id == "" {
- 		return false
- 	}
- 	s.mu.RLock()
- 	defer s.mu.RUnlock()
- 	user, ok := s.users[id]
- 	return ok && user.Enabled
- }
+
+// IsUserEnabled reports whether the given proxy user exists and is enabled.
+// It exists so the per-request auth path can re-check the flag without copying
+// the whole user record on every request.
+func (s *UserStore) IsUserEnabled(id string) bool {
+	if id == "" {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	user, ok := s.users[id]
+	return ok && user.Enabled
+}
 
 func (s *UserStore) Update(id string, username *string, password *string, enabled *bool, allowedServers *[]string) error {
 	s.mu.Lock()
@@ -367,11 +414,12 @@ func (s *UserStore) replaceAllowedServersParams(id string, servers []string) err
 
 func (s *UserStore) copyUser(user *User) *User {
 	return &User{
-		ID:             user.ID,
-		Username:       user.Username,
-		Password:       user.Password,
-		Enabled:        user.Enabled,
-		AllowedServers: append([]string(nil), user.AllowedServers...),
-		CreatedAt:      user.CreatedAt,
+		ID:                user.ID,
+		Username:          user.Username,
+		Password:          user.Password,
+		Enabled:           user.Enabled,
+		AllowedServers:    append([]string(nil), user.AllowedServers...),
+		CreatedAt:         user.CreatedAt,
+		MaxParentalRating: user.MaxParentalRating,
 	}
 }
