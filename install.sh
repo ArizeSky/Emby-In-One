@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# pipefail: 源码 tarball 的 `curl | tar` 里 curl 被截断时，
-# 退出码不能只由 tar 决定（tar 可能对截断的归档正常退出）。
+# pipefail: 远程源码下载与校验任一环节失败都必须以非零码退出，
+# 不能只由后续命令（如 tar）的退出码决定。
 set -e
 set -o pipefail
 
@@ -9,8 +9,8 @@ set -o pipefail
 # ╚════════════════════════════════════════════════════╝
 
 PROJECT_DIR="/opt/emby-in-one"
-# 远程安装时使用的 tarball 地址
-REPO_URL="https://github.com/ArizeSky/Emby-In-One/archive/refs/heads/main.tar.gz"
+# 远程安装时使用的 tarball 地址（可用 EIO_SOURCE_URL 覆盖）
+REPO_URL="${EIO_SOURCE_URL:-https://github.com/ArizeSky/Emby-In-One/archive/refs/heads/main.tar.gz}"
 
 # ── 颜色 ──
 RED='\033[0;31m'
@@ -289,7 +289,33 @@ else
   fi
   info "未找到本地项目文件，从远程下载..."
   TMP_DIR=$(mktemp -d)
-  curl -fsSL "${REPO_URL}" | tar -xz -C "${TMP_DIR}" --strip-components=1
+  SRC_TARBALL="${TMP_DIR}/source.tar.gz"
+  info "正在下载源码: ${REPO_URL}"
+  if ! curl -fsSL --max-time 180 -o "${SRC_TARBALL}" "${REPO_URL}"; then
+    rm -rf "${TMP_DIR}"
+    error "下载源码失败: ${REPO_URL}"
+  fi
+  # Integrity gate: verify the tarball before extracting it. The default URL is
+  # a mutable branch (main), which is not reproducible, so an operator-supplied
+  # digest is required to pin the exact bytes; skipping the check has to be an
+  # explicit, logged choice rather than the silent default it used to be.
+  if [[ -n "${SOURCE_SHA256:-}" ]]; then
+    actual_sha=$(sha256sum "${SRC_TARBALL}" | awk '{print $1}')
+    if [[ "${actual_sha,,}" != "${SOURCE_SHA256,,}" ]]; then
+      rm -rf "${TMP_DIR}"
+      error "源码校验失败：期望 ${SOURCE_SHA256}，实际 ${actual_sha}\n  已中止安装。"
+    fi
+    info "源码完整性校验通过"
+  elif [[ "${ALLOW_UNVERIFIED_SOURCE:-false}" == true ]]; then
+    warn "未设置 SOURCE_SHA256，已按 ALLOW_UNVERIFIED_SOURCE=true 跳过源码校验（不推荐）"
+  else
+    rm -rf "${TMP_DIR}"
+    error "远程源码安装需要完整性校验，但未设置 SOURCE_SHA256。\n  请设置 SOURCE_SHA256=<该 tarball 的 sha256> 后重试，\n  或设置 ALLOW_UNVERIFIED_SOURCE=true 明确接受未校验源码（不推荐）。"
+  fi
+  if ! tar -xzf "${SRC_TARBALL}" -C "${TMP_DIR}" --strip-components=1; then
+    rm -rf "${TMP_DIR}"
+    error "解压源码失败"
+  fi
   if ! copy_project_files_from "${TMP_DIR}"; then
     rm -rf "${TMP_DIR}"
     error "下载内容中未找到可部署的 Go 项目文件"

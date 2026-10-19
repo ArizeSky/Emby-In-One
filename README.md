@@ -114,6 +114,8 @@ bash install.sh
 
 脚本将为您自动安装 Docker 环境、分配随机管理员密码、构建 Go 版镜像并启动服务。后续如需管理，通过 SSH 输入 `emby-in-one` 即可呼出管理菜单。
 
+> **远程源码安装的完整性校验**：当本地没有项目文件、脚本改为从远程下载源码时，必须提供 `SOURCE_SHA256=<tarball 的 sha256>` 才会继续，未提供会中止安装。确实要接受未校验源码时，显式设置 `ALLOW_UNVERIFIED_SOURCE=true`。默认 `REPO_URL` 指向 `main` 分支，可用 `EIO_SOURCE_URL` 覆盖为固定 tag 或镜像地址。
+
 > **说明**：源码仓库安装脚本在 builder 阶段会同时复制 `cmd/`、`internal/`、`third_party/` 和 `public/` 参与 Go 编译。若您自行定制 `Dockerfile` 或手动复制文件，请确保 `public/` 目录也被包含在构建上下文中，否则会在构建时出现 `package emby-in-one/public is not in std` 错误。
 
 ### 方式三：手动 Docker Compose 部署

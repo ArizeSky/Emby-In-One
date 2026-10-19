@@ -94,9 +94,12 @@ verify_sha256() {
   local sha_file="${file}.sha256"
   if ! curl -fsSL --max-time 30 -o "${sha_file}" "${url}.sha256" 2>/dev/null; then
     rm -f "${sha_file}"
-    warn "未找到校验和文件: ${url}.sha256"
-    warn "该 Release 未附带校验和产物，无法确认下载内容是否被篡改，已跳过校验"
-    return 0
+    # SKIP_SHA256 is true only for releases that predate the .sha256 artifacts
+    # (<= V1.4.3) and that path already returned above. Reaching here means a
+    # release that should publish a checksum did not: fail closed, because
+    # installing an unverified binary is exactly what this check exists to
+    # prevent. The documented escape hatch is SKIP_SHA256=true.
+    error "未找到校验和文件: ${url}.sha256\n  该 Release 未附带校验和产物，无法确认下载内容是否被篡改，已中止安装。\n  确认信任该来源后可设置 SKIP_SHA256=true 重新运行。"
   fi
   local expected actual
   # 优先取文件名匹配的那一行，兼容"单文件"和"多文件合并"两种校验和格式
