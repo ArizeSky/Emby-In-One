@@ -1,6 +1,21 @@
 package backend
 
-import "net/http"
+import (
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/url"
+)
+
+// firstNonEmpty 返回第一个非空字符串。
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
 
 func (a *App) handleAuthenticateByName(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r, a.ConfigStore.Snapshot().Server.TrustProxy)
@@ -16,7 +31,19 @@ func (a *App) handleAuthenticateByName(w http.ResponseWriter, r *http.Request) {
 		Pw       string `json:"Pw"`
 		Password string `json:"Password"`
 	}
-	if err := decodeJSONBody(r, &body); err != nil {
+	raw, readErr := io.ReadAll(r.Body)
+	defer r.Body.Close()
+	if readErr == nil {
+		// 先按 JSON 解（Emby Web / Flymby 等）
+		if err := json.Unmarshal(raw, &body); err != nil || body.Username == "" {
+			// 回退：Emby 官方 Android TV 客户端用 application/x-www-form-urlencoded
+			if vals, perr := url.ParseQuery(string(raw)); perr == nil && len(vals) > 0 {
+				body.Username = firstNonEmpty(vals.Get("username"), vals.Get("Username"), vals.Get("name"))
+				body.Pw = firstNonEmpty(vals.Get("pw"), vals.Get("Pw"), vals.Get("password"), vals.Get("Password"))
+			}
+		}
+	}
+	if readErr != nil || body.Username == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "Invalid request body"})
 		return
 	}
