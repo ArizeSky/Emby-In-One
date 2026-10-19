@@ -23,7 +23,7 @@ func (a *App) adminFileServer() http.Handler {
 	if dir := detectPublicDir(); dir != "" {
 		handler = preferDiskFileServer(dir, handler)
 	}
-	return http.StripPrefix("/admin/", handler)
+	return http.StripPrefix("/admin/", revalidateStatic(handler))
 }
 
 // handleAdminPanel answers /admin/ with the panel markup instead of the directory

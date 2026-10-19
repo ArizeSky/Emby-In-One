@@ -25,7 +25,20 @@ func (a *App) webFileServer() http.Handler {
 	if dir := detectWebDir(); dir != "" {
 		handler = preferDiskFileServer(dir, handler)
 	}
-	return http.StripPrefix("/web/", handler)
+	return http.StripPrefix("/web/", revalidateStatic(handler))
+}
+
+// revalidateStatic marks a static-asset handler's responses as revalidatable
+// instead of heuristically cacheable. The files carry Last-Modified (and an
+// ETag from http.ServeContent), so "no-cache" lets the browser keep the bytes
+// but check back on every load. An upgrade replaces a file under an unchanged
+// URL, and this guarantees the browser picks it up instead of serving a stale
+// copy for the lifetime of a bare Last-Modified heuristic.
+func revalidateStatic(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache")
+		next.ServeHTTP(w, r)
+	})
 }
 
 // handleWebPanel answers /web/ with the client markup instead of a directory
