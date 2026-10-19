@@ -1,5 +1,35 @@
 # Emby-In-One 更新日志
 
+## V1.4.4-rc3
+
+发布日期：2026-10-19
+
+> V1.4.4-rc3 是 V1.4.4-rc2 之后的预发布，聚焦**代码审查修复与工程门禁**：修复授权快照过期、令牌撤销持久化失败、跨主机重定向转发上游凭据三项安全/权限问题，修复 Series 播放乱序与静态资源陈旧缓存两项前端/资源问题，修正安装脚本完整性校验 fail-open，并补齐 `gofmt` 与前端测试的 CI 门禁。**对外接口与配置保持兼容，无升级迁移动作。**
+
+### 安全与权限修复
+
+- **授权快照过期**（`auth_context.go` / `user_store.go`）：用户令牌在登录时快照 `AllowedServers` 且令牌永不过期，此前每请求只复查账号是否启用，收窄用户服务器权限对已签发令牌不生效。现 `withContext` 每请求经新增的 `UserStore.LiveGrants` 实时刷新授权集，收窄/放宽在下一次请求即生效；禁用/删除账号仍直接拒绝。新增 `auth_live_grants_test.go` 覆盖。
+- **令牌撤销持久化失败被静默忽略**（`auth_manager.go`）：`RevokeToken`、`RevokeAllTokens`、`RevokeTokensByUserID` 此前用 `_ = m.save()` 丢弃写盘错误，撤销可能“报告成功”却在重启后复活。现记录错误并把受影响令牌回滚回内存，保持内存与 `tokens.json` 一致。
+- **跨主机重定向转发上游凭据**（`upstream.go` / `upstream_outbound.go`）：跟随重定向时 net/http 只在跨主机时剥离 `Authorization`/`Cookie`，而本代理把上游凭据放在自定义头 `X-Emby-Token`/`X-Emby-Authorization` 与 `api_key` 查询里，会被原样转发到跳转目标主机。现 `redirectPolicy` 始终安装 `CheckRedirect`，保留 10 跳上限，并在主机或协议变化时剥离上述凭据。
+
+### 前端与静态资源修复
+
+- **Series 播放乱序覆盖**（`public/web/app.js`）：`playItem` 解析剧集存在 `await`，慢的 NextUp 可能在后一次点击之后才返回并覆盖新选择。现加每次调用序号，被更新请求取代的解析结果直接丢弃。
+- **静态资源陈旧缓存**（`handlers_web.go` / `admin_validation.go` / `web.html`）：`/web`、`/admin` 静态资源此前只有 `Last-Modified` 而无 `Cache-Control`，浏览器启发式缓存可能升级后仍跑旧 `admin.js`/`app.js`。现两个文件服务统一返回 `Cache-Control: no-cache`（未变更时走 304 重验证），并把 `web.html` 资源版本参数统一到 `v1.4.4-rc3`。
+
+### 安装脚本
+
+- **完整性校验 fail-open**（`release-install.sh` / `install.sh`）：`release-install.sh` 在缺失 `.sha256` 时静默放行，现对应当发布校验和的版本改为**中止**（`≤ V1.4.3` 仍跳过）；`install.sh` 远程源码此前 `curl | tar` 无校验，现下载到文件后要求 `SOURCE_SHA256`（或显式 `ALLOW_UNVERIFIED_SOURCE=true`）才解压，`REPO_URL` 可用 `EIO_SOURCE_URL` 覆盖。
+
+### 工程与 CI
+
+- **gofmt 归位**：全量 `gofmt -w cmd internal`，修复此前提交进 HEAD 的 914 行行首多余空格（26 个文件，17 个 `gofmt -l` 不通过）；新增 `.git-blame-ignore-revs` 忽略该纯空白提交。
+- **CI 门禁**：`.github/workflows/ci.yml` 的 go job 增加 `gofmt` 校验，新增 `js` job 运行 `tests/` 下 55 个前端用例；`package.json` 增加 `test` 脚本。
+- **文件拆分**：身份头与重定向/超时辅助从 `upstream.go` 拆到 `upstream_outbound.go`，`upstream.go` 回到 1000 行以内。
+
+### 验证
+
+- `go build -p 1 ./...`、`go vet -p 1 ./...` 通过；`go test -race -p 1 -parallel 2 -timeout 20m ./...` 通过（无数据竞争）；`node --test tests/*.test.cjs` 55/55；`bash -n` 三个脚本通过。
 ## V1.4.4-rc2
 
 发布日期：2026-09-30

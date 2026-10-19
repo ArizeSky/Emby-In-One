@@ -234,7 +234,7 @@ services:
     build:
       context: .
       args:
-        VERSION: v1.4.4-rc2
+        VERSION: v1.4.4-rc3
     container_name: emby-in-one
     # 容器以 uid 1000 运行，挂载目录需先 chown 1000:1000（install.sh 已处理）
     user: "1000:1000"

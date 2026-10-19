@@ -1,6 +1,6 @@
 {
   "name": "emby-in-one",
-  "version": "1.4.4-rc2",
+  "version": "1.4.4-rc3",
   "description": "Emby multi-server aggregation proxy (Go). The panel build lives here; the legacy Node implementation is under legacy/.",
   "scripts": {
     "build:panel": "npx --yes tailwindcss@3.4.17 -c tailwind.config.js -i assets/panel.css -o public/vendor/tailwind.css --minify",
