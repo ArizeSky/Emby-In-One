@@ -27,7 +27,9 @@ func (a *App) maxRatingFor(r *http.Request) int {
 
 func (a *App) handleItemsCollection(w http.ResponseWriter, r *http.Request) {
 	query := cloneValues(r.URL.Query())
-	if !hasBatchIDQuery(query) {
+	// Search queries are aggregated too, so the parental filter applies.
+	// Only opaque pass-through requests fall back.
+	if !hasBatchIDQuery(query) && strings.TrimSpace(query.Get("SearchTerm")) == "" {
 		a.handleFallbackProxy(w, r)
 		return
 	}
@@ -201,6 +203,9 @@ func (a *App) handleUserItemsLatest(w http.ResponseWriter, r *http.Request) {
 		items := asItems(payload)
 		a.rewriteItems(items, resolved.ServerID, a.clientFacingUserIDFor(r))
 		a.overlayLocalUserDataItems(r, items)
+		if maxR := a.maxRatingFor(r); maxR > 0 {
+			items = filterItemsByRating(items, maxR)
+		}
 		writeJSON(w, http.StatusOK, items)
 		return
 	}
@@ -240,6 +245,9 @@ func (a *App) handleUserItemsLatest(w http.ResponseWriter, r *http.Request) {
 		allItems = append(allItems, result.Items...)
 	}
 	a.overlayLocalUserDataItems(r, allItems)
+	if maxR := a.maxRatingFor(r); maxR > 0 {
+		allItems = filterItemsByRating(allItems, maxR)
+	}
 	writeJSON(w, http.StatusOK, allItems)
 }
 
@@ -274,6 +282,12 @@ func (a *App) handleUserItemByID(w http.ResponseWriter, r *http.Request) {
 		annotateItemSources(payload, resolved.Client)
 		rewriteResponseIDs(payload, resolved.ServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 		a.overlayLocalUserData(r, r.PathValue("itemId"), payload)
+		if maxR := a.maxRatingFor(r); maxR > 0 {
+			if m, ok := payload.(map[string]any); ok && !itemAllowedByRating(m, maxR) {
+				writeJSON(w, http.StatusForbidden, map[string]any{"message": "Content restricted by parental rating"})
+				return
+			}
+		}
 		writeJSON(w, http.StatusOK, payload)
 		return
 	}

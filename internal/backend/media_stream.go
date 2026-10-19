@@ -25,6 +25,23 @@ func (a *App) handleVideoProxy(w http.ResponseWriter, r *http.Request) {
 	a.proxyStream(w, r, videoStreamRoute)
 }
 
+// streamAllowedByRating reports whether the item behind resolved is within maxRating.
+// On lookup failure it allows the request: the parental gate must not break
+// playback for reasons unrelated to ratings.
+func (a *App) streamAllowedByRating(r *http.Request, resolved *routeResolution, maxR int) bool {
+	payload, err := resolved.Client.RequestJSON(r.Context(), requestContextFrom(r.Context()), a.Identity,
+		http.MethodGet, "/Users/"+resolved.Client.clientUserID()+"/Items/"+resolved.OriginalID,
+		url.Values{"Fields": []string{"OfficialRating"}}, nil)
+	if err != nil {
+		return true
+	}
+	m, ok := payload.(map[string]any)
+	if !ok {
+		return true
+	}
+	return itemAllowedByRating(m, maxR)
+}
+
 func (a *App) handleAudioProxy(w http.ResponseWriter, r *http.Request) {
 	a.proxyStream(w, r, audioStreamRoute)
 }
@@ -49,6 +66,14 @@ func (a *App) proxyStream(w http.ResponseWriter, r *http.Request, route streamRo
 	}
 	if !a.requireServerAccess(w, r, resolved) {
 		return
+	}
+	// Parental gate: block direct stream requests for items above the user's ceiling.
+	// Clients cannot see these items in lists, but a known id must not be playable.
+	if maxR := a.maxRatingFor(r); maxR > 0 {
+		if !a.streamAllowedByRating(r, resolved, maxR) {
+			writeJSON(w, http.StatusForbidden, map[string]any{"message": "Content restricted by parental rating"})
+			return
+		}
 	}
 
 	rest := r.PathValue("rest")
