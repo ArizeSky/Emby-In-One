@@ -37,8 +37,20 @@ func (a *App) withContext(next http.HandlerFunc) http.HandlerFunc {
 			// handleUserObject even answered it with the admin user object.
 			// A user-role token with no user store at all has no backing
 			// account either, so it is rejected the same way.
-			if proxyUser != nil && proxyUser.Role == "user" && (a.UserStore == nil || !a.UserStore.IsUserEnabled(proxyUser.UserID)) {
-				proxyUser = nil
+			// A user-role token carries a snapshot of AllowedServers taken at
+			// login, and tokens never expire. Re-read the live grants here so
+			// narrowing (or widening) a user's server access applies on the
+			// next request rather than lingering until the token is revoked or
+			// the user logs in again. A missing or disabled account has no
+			// backing grants and is rejected.
+			if proxyUser != nil && proxyUser.Role == "user" {
+				if a.UserStore == nil {
+					proxyUser = nil
+				} else if live, ok := a.UserStore.LiveGrants(proxyUser.UserID); ok {
+					proxyUser.AllowedServers = live
+				} else {
+					proxyUser = nil
+				}
 			}
 		}
 		ctx := context.WithValue(r.Context(), requestContextKey{}, &RequestContext{

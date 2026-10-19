@@ -229,6 +229,24 @@ func (s *UserStore) IsUserEnabled(id string) bool {
 	return ok && user.Enabled
 }
 
+// LiveGrants reports whether the user exists and is enabled, and returns a copy
+// of its current AllowedServers. The per-request auth path uses it to refresh
+// the permission snapshot baked into a token, so narrowing or widening a user's
+// server access takes effect on the next request instead of at the next login.
+// A nil slice means "all servers" (this project's unrestricted marker).
+func (s *UserStore) LiveGrants(id string) (allowed []string, found bool) {
+	if id == "" {
+		return nil, false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	user, ok := s.users[id]
+	if !ok || !user.Enabled {
+		return nil, false
+	}
+	return append([]string(nil), user.AllowedServers...), true
+}
+
 func (s *UserStore) Update(id string, username *string, password *string, enabled *bool, allowedServers *[]string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

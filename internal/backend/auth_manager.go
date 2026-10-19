@@ -268,18 +268,29 @@ func (m *AuthManager) RevokeToken(token string) bool {
 		return false
 	}
 	m.mu.Lock()
-	_, ok := m.tokens[token]
+	info, ok := m.tokens[token]
 	if ok {
 		delete(m.tokens, token)
 	}
 	m.mu.Unlock()
-	if ok {
-		if m.identity != nil {
-			m.identity.DeleteCaptured(token)
-		}
-		_ = m.save()
+	if !ok {
+		return false
 	}
-	return ok
+	if m.identity != nil {
+		m.identity.DeleteCaptured(token)
+	}
+	if err := m.save(); err != nil {
+		if m.logger != nil {
+			m.logger.Errorf("revoke token: persisting tokens.json failed, keeping the token: %s", err)
+		}
+		// A revocation we could not persist must not be reported as done: put
+		// the token back so memory matches the file the next restart reads.
+		m.mu.Lock()
+		m.tokens[token] = info
+		m.mu.Unlock()
+		return false
+	}
+	return true
 }
 
 // RevokeAllTokens removes all proxy tokens and their associated captured identity data.
@@ -294,7 +305,18 @@ func (m *AuthManager) RevokeAllTokens() {
 			m.identity.DeleteCaptured(token)
 		}
 	}
-	_ = m.save()
+	if err := m.save(); err != nil {
+		if m.logger != nil {
+			m.logger.Errorf("revoke all tokens: persisting tokens.json failed: %s", err)
+		}
+		// Restore the in-memory set so it does not diverge from the file; the
+		// old tokens stay valid (matching disk) until a later save succeeds.
+		m.mu.Lock()
+		for token, info := range old {
+			m.tokens[token] = info
+		}
+		m.mu.Unlock()
+	}
 }
 
 // AuthenticateUser generates a token for an already-verified user from UserStore.
@@ -383,8 +405,10 @@ func (m *AuthManager) BuildUserObjectForUser(user *User) map[string]any {
 // RevokeTokensByUserID removes all tokens belonging to a specific user.
 func (m *AuthManager) RevokeTokensByUserID(userID string) {
 	m.mu.Lock()
+	removed := make(map[string]tokenInfo)
 	for token, info := range m.tokens {
 		if info.UserID == userID {
+			removed[token] = info
 			delete(m.tokens, token)
 			if m.identity != nil {
 				m.identity.DeleteCaptured(token)
@@ -392,7 +416,21 @@ func (m *AuthManager) RevokeTokensByUserID(userID string) {
 		}
 	}
 	m.mu.Unlock()
-	_ = m.save()
+	if len(removed) == 0 {
+		return
+	}
+	if err := m.save(); err != nil {
+		if m.logger != nil {
+			m.logger.Errorf("revoke tokens for user %s: persisting tokens.json failed: %s", userID, err)
+		}
+		// Put the tokens back so memory matches the file; the caller (disable or
+		// delete a user) must not believe a revocation landed when it did not.
+		m.mu.Lock()
+		for token, info := range removed {
+			m.tokens[token] = info
+		}
+		m.mu.Unlock()
+	}
 }
 
 func (m *AuthManager) ProxyUserID() string {
