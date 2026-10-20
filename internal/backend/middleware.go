@@ -135,6 +135,9 @@ func identifyTokenSource(r *http.Request) string {
 	if r.URL.Query().Get("ApiKey") != "" {
 		return "ApiKey"
 	}
+	if r.URL.Query().Get("X-Emby-Token") != "" || r.URL.Query().Get("x-emby-token") != "" {
+		return "query:X-Emby-Token"
+	}
 	if r.Header.Get("X-Emby-Authorization") != "" {
 		return "X-Emby-Authorization"
 	}

@@ -22,35 +22,35 @@ type RequestContext struct {
 	Identifiers *IdentifierLookup
 }
 
- func (a *App) withContext(next http.HandlerFunc) http.HandlerFunc {
- 	return func(w http.ResponseWriter, r *http.Request) {
- 		token := extractToken(r)
- 		var proxyUser *tokenInfo
- 		if token != "" {
- 			proxyUser = a.Auth.ValidateToken(token)
- 			// A token outlives the account it belongs to: disabling or deleting
- 			// the user must take effect on the next request, not at the next
- 			// login. The admin API revokes tokens when it disables an account,
- 			// but tokens.json and the user store are separate files that can
- 			// drift (a restored database, a failed store init). Without this
- 			// re-check requireAuth kept accepting such a token, and
- 			// handleUserObject even answered it with the admin user object.
- 			// A user-role token with no user store at all has no backing
- 			// account either, so it is rejected the same way.
- 			if proxyUser != nil && proxyUser.Role == "user" && (a.UserStore == nil || !a.UserStore.IsUserEnabled(proxyUser.UserID)) {
- 				proxyUser = nil
- 			}
- 		}
- 		ctx := context.WithValue(r.Context(), requestContextKey{}, &RequestContext{
- 			Headers:           r.Header.Clone(),
- 			ProxyToken:        token,
- 			ProxyUser:         proxyUser,
- 			LegacyProxyUserID: a.Auth.ProxyUserID(),
- 			Identifiers:       a.newRequestIdentifierLookup(),
- 		})
- 		next(w, r.WithContext(ctx))
- 	}
- }
+func (a *App) withContext(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		token := extractToken(r)
+		var proxyUser *tokenInfo
+		if token != "" {
+			proxyUser = a.Auth.ValidateToken(token)
+			// A token outlives the account it belongs to: disabling or deleting
+			// the user must take effect on the next request, not at the next
+			// login. The admin API revokes tokens when it disables an account,
+			// but tokens.json and the user store are separate files that can
+			// drift (a restored database, a failed store init). Without this
+			// re-check requireAuth kept accepting such a token, and
+			// handleUserObject even answered it with the admin user object.
+			// A user-role token with no user store at all has no backing
+			// account either, so it is rejected the same way.
+			if proxyUser != nil && proxyUser.Role == "user" && (a.UserStore == nil || !a.UserStore.IsUserEnabled(proxyUser.UserID)) {
+				proxyUser = nil
+			}
+		}
+		ctx := context.WithValue(r.Context(), requestContextKey{}, &RequestContext{
+			Headers:           r.Header.Clone(),
+			ProxyToken:        token,
+			ProxyUser:         proxyUser,
+			LegacyProxyUserID: a.Auth.ProxyUserID(),
+			Identifiers:       a.newRequestIdentifierLookup(),
+		})
+		next(w, r.WithContext(ctx))
+	}
+}
 
 func (a *App) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -142,6 +142,14 @@ func extractToken(r *http.Request) string {
 	}
 	if token := r.URL.Query().Get("ApiKey"); token != "" {
 		return token
+	}
+	// Some Emby clients (notably Android TV) append the token as a query
+	// parameter instead of an api_key or a header. Accept it here so they
+	// authenticate instead of falling back to a stale header token.
+	for _, key := range []string{"X-Emby-Token", "x-emby-token", "X-EMBY-TOKEN"} {
+		if token := r.URL.Query().Get(key); token != "" {
+			return token
+		}
 	}
 	for _, headerName := range []string{"X-Emby-Authorization", "Authorization"} {
 		if auth := r.Header.Get(headerName); auth != "" {

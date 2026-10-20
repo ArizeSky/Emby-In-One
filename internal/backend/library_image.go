@@ -19,6 +19,7 @@ func (a *App) registerLibraryAndImageRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /Library/VirtualFolders", a.withContext(a.requireAuth(a.handleLibraryVirtualFolders)))
 	mux.HandleFunc("GET /Library/SelectableRemoteLibraries", a.withContext(a.requireAuth(a.handleLibrarySelectableRemoteLibraries)))
 	mux.HandleFunc("GET /Library/MediaFolders", a.withContext(a.requireAuth(a.handleLibraryMediaFolders)))
+	mux.HandleFunc("GET /Items/Prefixes", a.withContext(a.requireAuth(a.handleItemsPrefixes)))
 	for _, endpoint := range []string{"Genres", "MusicGenres", "Studios", "Persons", "Artists", "Artists/AlbumArtists"} {
 		current := endpoint
 		mux.HandleFunc("GET /"+current, a.withContext(a.requireAuth(func(w http.ResponseWriter, r *http.Request) {
@@ -99,6 +100,18 @@ func (a *App) handleLibraryTaxonomy(w http.ResponseWriter, r *http.Request, endp
 	groups := fanOutClients(clients, func(c *UpstreamClient) []map[string]any {
 		query := cloneValues(r.URL.Query())
 		query.Set("UserId", c.clientUserID())
+		// Taxonomies scoped to a library arrive with a *virtual* ParentId. Translate it
+		// per upstream and skip servers that do not own that library, otherwise the
+		// upstream cannot resolve the id and the genre/studio tab renders empty.
+		if pid := firstQueryValue(query, "ParentId", "parentId", "parentid"); pid != "" {
+			resolvedParent := a.resolveRouteID(pid)
+			if resolvedParent == nil || resolvedParent.ServerID != c.ID {
+				return nil
+			}
+			query.Set("ParentId", resolvedParent.OriginalID)
+			query.Del("parentId")
+			query.Del("parentid")
+		}
 		if hasBatchIDQuery(query) {
 			translated, ok := translateBatchIDQueryForServer(query, c.ID, a.IDStore)
 			if !ok {

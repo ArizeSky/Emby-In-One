@@ -86,6 +86,18 @@ func (a *App) handleUserItems(w http.ResponseWriter, r *http.Request) {
 		query.Set("ParentId", resolved.OriginalID)
 		query.Del("parentId")
 		query.Del("parentid")
+		// Drilling into a genre sends GenreIds=<virtual genre id>. The upstream has
+		// no idea what that id is, silently ignores the filter and returns the whole
+		// library, so every genre looked identical. Translate it per upstream and
+		// answer empty when the id belongs to a different server.
+		if translated, ok := a.translateTaxonomyIDs(firstQueryValue(query, "GenreIds", "genreIds", "genreids"), resolved.ServerID); ok {
+			query.Set("GenreIds", translated)
+			query.Del("genreIds")
+			query.Del("genreids")
+		} else if firstQueryValue(query, "GenreIds", "genreIds", "genreids") != "" {
+			writeJSON(w, http.StatusOK, map[string]any{"Items": []any{}, "TotalRecordCount": 0, "StartIndex": 0})
+			return
+		}
 		// A user-state filter is answered from the local record: the upstream still
 		// scopes the query to the requested container, but it no longer decides which
 		// of that container's items the user sees.
@@ -572,4 +584,31 @@ func firstQueryValue(values url.Values, keys ...string) string {
 		}
 	}
 	return ""
+}
+
+// translateTaxonomyIDs rewrites a comma-separated list of virtual taxonomy ids
+// (genres/studios/persons) into the ids the given upstream understands. It
+// reports false when any id is unknown or belongs to another server, so the
+// caller can return an empty result instead of an unfiltered library.
+func (a *App) translateTaxonomyIDs(raw, serverID string) (string, bool) {
+	if strings.TrimSpace(raw) == "" {
+		return "", false
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		id := strings.TrimSpace(part)
+		if id == "" {
+			continue
+		}
+		resolved := a.IDStore.ResolveVirtualID(id)
+		if resolved == nil || resolved.ServerID != serverID {
+			return "", false
+		}
+		out = append(out, resolved.OriginalID)
+	}
+	if len(out) == 0 {
+		return "", false
+	}
+	return strings.Join(out, ","), true
 }

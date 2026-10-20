@@ -41,6 +41,11 @@ func (a *App) registerMediaRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /Items/{itemId}/PlaybackInfo", a.withContext(a.requireAuth(a.handlePlaybackInfo)))
 	mux.HandleFunc("GET /Videos/{itemId}/{rest...}", a.withContext(a.requireAuth(a.handleVideoProxy)))
 	mux.HandleFunc("GET /Audio/{itemId}/{rest...}", a.withContext(a.requireAuth(a.handleAudioProxy)))
+	// Some clients (montage, Emby ATV) lowercase the route. Without these the
+	// request falls through to the plain pass-through proxy, which forwards the
+	// virtual item/mediaSource ids unchanged and the player stalls.
+	mux.HandleFunc("GET /videos/{itemId}/{rest...}", a.withContext(a.requireAuth(a.handleVideoProxy)))
+	mux.HandleFunc("GET /audio/{itemId}/{rest...}", a.withContext(a.requireAuth(a.handleAudioProxy)))
 	mux.HandleFunc("DELETE /Videos/ActiveEncodings", a.withContext(a.requireAuth(a.handleDeleteActiveEncodings)))
 }
 
