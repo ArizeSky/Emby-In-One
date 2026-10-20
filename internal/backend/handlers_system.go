@@ -21,7 +21,7 @@ func decodeJSONBody(r *http.Request, out any) error {
 func (a *App) handleSystemInfoPublic(w http.ResponseWriter, r *http.Request) {
 	cfg := a.ConfigStore.Snapshot()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"LocalAddress":                         requestOrigin(r),
+		"LocalAddress":                         a.requestOrigin(r),
 		"ServerName":                           cfg.Server.Name,
 		"Version":                              "4.7.14.0",
 		"ProductName":                          "Emby Server",
@@ -39,7 +39,7 @@ func (a *App) handleSystemInfoPublic(w http.ResponseWriter, r *http.Request) {
 func (a *App) handleSystemInfo(w http.ResponseWriter, r *http.Request) {
 	cfg := a.ConfigStore.Snapshot()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"LocalAddress":                         requestOrigin(r),
+		"LocalAddress":                         a.requestOrigin(r),
 		"WanAddress":                           "",
 		"ServerName":                           cfg.Server.Name,
 		"Version":                              "4.7.14.0",
@@ -70,7 +70,7 @@ func (a *App) handleSystemEndpoint(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleSystemPing(w http.ResponseWriter, r *http.Request) {
-	_, _ = w.Write([]byte("Emby Aggregator"))
+	_, _ = w.Write([]byte("Emby-In-One"))
 }
 
 func (a *App) handleRoot(w http.ResponseWriter, r *http.Request) {

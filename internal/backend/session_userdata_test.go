@@ -1,8 +1,10 @@
 package backend
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -342,4 +344,125 @@ func TestUserStateRoutesResolveIDsAndRewriteJSONResponses(t *testing.T) {
 			t.Fatalf("favorite delete nested item id not rewritten: %#v", payload)
 		}
 	})
+}
+
+// TestSessionUpstreamRefusalDoesNotRecordLocally is the regression for the session
+// dual-write rule: when the upstream answers a play/progress/stop event with a
+// non-2xx status, the event was refused and must not be recorded in the local
+// watch store. Only a transport failure (no answer at all) keeps the best-effort
+// local record.
+func TestSessionUpstreamRefusalDoesNotRecordLocally(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/Users/AuthenticateByName" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"AccessToken": "tok-a", "User": map[string]any{"Id": "user-a"}})
+			return
+		}
+		if r.Method == http.MethodPost && (r.URL.Path == "/Sessions/Playing" || r.URL.Path == "/Sessions/Playing/Progress" || r.URL.Path == "/Sessions/Playing/Stopped") {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer upstream.Close()
+
+	withTempAppConfig(t, singleUpstreamConfig(upstream.URL), func(app *App, handler http.Handler) {
+		userToken := createRegularUser(t, handler)
+		virtualItem := app.IDStore.GetOrCreateVirtualID("item-a", app.Upstream.Clients()[0].ID)
+		userID := watchUserID(t, app, "child")
+
+		body := map[string]any{"ItemId": virtualItem, "PositionTicks": 12345}
+		for _, route := range []string{"/Sessions/Playing", "/Sessions/Playing/Progress", "/Sessions/Playing/Stopped"} {
+			rr := doAuthJSON(t, handler, http.MethodPost, route, body, userToken)
+			// Session events keep their fire-and-forget 204 contract even on an
+			// upstream refusal; what changes is that nothing is recorded locally.
+			if rr.Code != http.StatusNoContent {
+				t.Fatalf("%s: status = %d, want 204 (body=%s)", route, rr.Code, rr.Body.String())
+			}
+		}
+
+		if progress, _ := app.WatchStore.GetProgress(userID, virtualItem); progress != nil {
+			t.Fatalf("local watch record written despite an upstream refusal: %#v", progress)
+		}
+	})
+}
+
+// TestSessionUpstreamSuccessRecordsLocally is the other half: a 2xx answer still
+// records the session locally, so the refusal path cannot simply delete the
+// dual-write.
+func TestSessionUpstreamSuccessRecordsLocally(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/Users/AuthenticateByName" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"AccessToken": "tok-a", "User": map[string]any{"Id": "user-a"}})
+			return
+		}
+		if r.Method == http.MethodPost && r.URL.Path == "/Sessions/Playing" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer upstream.Close()
+
+	withTempAppConfig(t, singleUpstreamConfig(upstream.URL), func(app *App, handler http.Handler) {
+		userToken := createRegularUser(t, handler)
+		virtualItem := app.IDStore.GetOrCreateVirtualID("item-a", app.Upstream.Clients()[0].ID)
+		userID := watchUserID(t, app, "child")
+
+		rr := doAuthJSON(t, handler, http.MethodPost, "/Sessions/Playing", map[string]any{"ItemId": virtualItem, "PositionTicks": 12345}, userToken)
+		if rr.Code != http.StatusNoContent {
+			t.Fatalf("status = %d, want 204 (body=%s)", rr.Code, rr.Body.String())
+		}
+		if progress, _ := app.WatchStore.GetProgress(userID, virtualItem); progress == nil {
+			t.Fatal("no local watch record after a successful session forward")
+		}
+	})
+}
+
+func TestReadUpstreamJSONOrNoContentBoundsBodies(t *testing.T) {
+	// An error body is truncated to the same 64 KiB cap RequestJSON uses.
+	resp := &http.Response{
+		StatusCode: http.StatusInternalServerError,
+		Status:     "500 Internal Server Error",
+		Header:     http.Header{},
+		Body:       io.NopCloser(bytes.NewReader(make([]byte, 128*1024))),
+	}
+	_, _, err := readUpstreamJSONOrNoContent(resp)
+	httpErr, ok := asUpstreamHTTPError(err)
+	if !ok {
+		t.Fatalf("expected upstreamHTTPError, got %T (%v)", err, err)
+	}
+	if len(httpErr.Body) > maxUpstreamErrorBodySize {
+		t.Fatalf("error body not truncated: %d bytes", len(httpErr.Body))
+	}
+
+	// A success body above the cap is rejected instead of being parsed.
+	resp = &http.Response{
+		StatusCode: http.StatusOK,
+		Status:     "200 OK",
+		Header:     http.Header{},
+		Body:       io.NopCloser(bytes.NewReader(bytes.Repeat([]byte("x"), maxUpstreamSessionBodySize+1))),
+	}
+	if _, payload, err := readUpstreamJSONOrNoContent(resp); err == nil || payload != nil {
+		t.Fatalf("oversized body accepted: payload=%v err=%v", payload, err)
+	}
+
+	// Small JSON and 204 still behave as before.
+	resp = &http.Response{
+		StatusCode: http.StatusOK,
+		Status:     "200 OK",
+		Header:     http.Header{},
+		Body:       io.NopCloser(bytes.NewReader([]byte(`{"ok":true}`))),
+	}
+	if _, payload, err := readUpstreamJSONOrNoContent(resp); err != nil || payload == nil {
+		t.Fatalf("small json rejected: payload=%v err=%v", payload, err)
+	}
+	resp = &http.Response{
+		StatusCode: http.StatusNoContent,
+		Status:     "204 No Content",
+		Header:     http.Header{},
+		Body:       io.NopCloser(bytes.NewReader(nil)),
+	}
+	if _, payload, err := readUpstreamJSONOrNoContent(resp); err != nil || payload != nil {
+		t.Fatalf("204 rejected: payload=%v err=%v", payload, err)
+	}
 }

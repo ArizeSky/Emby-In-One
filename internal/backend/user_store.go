@@ -215,6 +215,19 @@ func (s *UserStore) List() []*User {
 	})
 	return result
 }
+ 
+ // IsUserEnabled reports whether the given proxy user exists and is enabled.
+ // It exists so the per-request auth path can re-check the flag without copying
+ // the whole user record on every request.
+ func (s *UserStore) IsUserEnabled(id string) bool {
+ 	if id == "" {
+ 		return false
+ 	}
+ 	s.mu.RLock()
+ 	defer s.mu.RUnlock()
+ 	user, ok := s.users[id]
+ 	return ok && user.Enabled
+ }
 
 func (s *UserStore) Update(id string, username *string, password *string, enabled *bool, allowedServers *[]string) error {
 	s.mu.Lock()
@@ -318,7 +331,7 @@ func (s *UserStore) RemoveServerGrants(serverID string) error {
 	defer s.mu.Unlock()
 
 	if s.db != nil {
-		if err := s.db.execParams(`DELETE FROM user_servers WHERE server_id = ?`, serverID); err != nil {
+		if err := s.db.writeParams(`DELETE FROM user_servers WHERE server_id = ?`, serverID); err != nil {
 			return err
 		}
 	}

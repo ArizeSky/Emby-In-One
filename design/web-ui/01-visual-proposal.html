@@ -1,0 +1,904 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Emby-in-One · /web UI 优化方案</title>
+<style>
+/* ============ 文档自身即方案示范：使用提议的设计令牌 ============ */
+:root{
+  --bg-0:#070a12; --bg-1:#0d1322; --bg-2:#151d31; --bg-3:#1e2942;
+  --line:rgba(148,163,184,.14); --line-2:rgba(148,163,184,.24);
+  --t1:#f1f5f9; --t2:#94a3b8; --t3:#5b6b85;
+  --ac:#6366f1; --ac2:#8b5cf6;
+  --ac-grad:linear-gradient(135deg,#6366f1 0%,#8b5cf6 100%);
+  --ac-glow:rgba(99,102,241,.35);
+  --gold:#f5b544; --dv:#a78bfa; --atmos:#34d399; --danger:#f87171;
+  --r-card:14px; --r-btn:10px; --r-pill:999px;
+  --sh-card:0 10px 34px rgba(0,0,0,.45);
+  --sh-pop:0 18px 50px rgba(0,0,0,.6);
+  --glass:rgba(13,19,34,.72);
+  --ease:cubic-bezier(.22,.61,.36,1);
+  --dur:.22s;
+}
+*{margin:0;padding:0;box-sizing:border-box;}
+html{scroll-behavior:smooth;}
+body{
+  background:
+    radial-gradient(1100px 500px at 85% -100px, rgba(99,102,241,.14), transparent 60%),
+    radial-gradient(800px 400px at -10% 30%, rgba(139,92,246,.08), transparent 60%),
+    var(--bg-0);
+  color:var(--t1);
+  font-family:"Inter","Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  line-height:1.65; -webkit-font-smoothing:antialiased;
+}
+::selection{background:rgba(99,102,241,.4);}
+.wrap{max-width:1180px;margin:0 auto;padding:0 28px 90px;}
+
+/* ---------- 文档头部 ---------- */
+.doc-hero{padding:72px 0 40px;}
+.doc-kicker{display:inline-flex;align-items:center;gap:8px;font-size:12px;font-weight:600;letter-spacing:.18em;color:var(--t2);
+  border:1px solid var(--line-2);border-radius:var(--r-pill);padding:6px 14px;background:var(--bg-1);}
+.doc-kicker .dot{width:6px;height:6px;border-radius:50%;background:var(--ac);box-shadow:0 0 10px var(--ac);}
+.doc-hero h1{font-size:clamp(30px,4.5vw,46px);font-weight:800;letter-spacing:-.03em;margin:22px 0 10px;}
+.doc-hero h1 em{font-style:normal;background:var(--ac-grad);-webkit-background-clip:text;background-clip:text;color:transparent;}
+.doc-hero p{color:var(--t2);max-width:760px;font-size:15.5px;}
+.doc-meta{display:flex;gap:10px;flex-wrap:wrap;margin-top:22px;}
+.doc-meta span{font-size:12.5px;color:var(--t2);background:var(--bg-1);border:1px solid var(--line);border-radius:8px;padding:5px 12px;}
+.doc-meta b{color:var(--t1);font-weight:600;}
+
+/* ---------- 顶部导航 ---------- */
+nav{position:sticky;top:0;z-index:50;backdrop-filter:blur(14px);background:rgba(7,10,18,.78);
+  border-bottom:1px solid var(--line);margin:0 -28px;padding:0 28px;}
+nav .in{max-width:1180px;margin:0 auto;display:flex;gap:4px;overflow-x:auto;scrollbar-width:none;}
+nav .in::-webkit-scrollbar{display:none;}
+nav a{flex:none;color:var(--t2);text-decoration:none;font-size:13.5px;font-weight:500;padding:15px 14px;position:relative;transition:color var(--dur) var(--ease);}
+nav a:hover{color:var(--t1);}
+nav a::after{content:"";position:absolute;left:14px;right:14px;bottom:0;height:2px;border-radius:2px;background:var(--ac-grad);opacity:0;transition:opacity var(--dur);}
+nav a:hover::after{opacity:1;}
+
+/* ---------- 章节 ---------- */
+section{padding-top:76px;}
+.sec-head{display:flex;align-items:baseline;gap:16px;margin-bottom:8px;}
+.sec-no{font-size:13px;font-weight:700;letter-spacing:.14em;background:var(--ac-grad);-webkit-background-clip:text;background-clip:text;color:transparent;}
+.sec-head h2{font-size:26px;font-weight:750;letter-spacing:-.02em;}
+.sec-sub{color:var(--t2);font-size:14.5px;max-width:820px;margin-bottom:28px;}
+
+/* ---------- 通用卡片/演示框 ---------- */
+.panel{background:var(--bg-1);border:1px solid var(--line);border-radius:var(--r-card);box-shadow:var(--sh-card);}
+.demo{background:var(--bg-0);border:1px solid var(--line);border-radius:12px;padding:22px;overflow:hidden;position:relative;}
+.grid{display:grid;gap:18px;}
+.g2{grid-template-columns:1fr 1fr;}
+.g3{grid-template-columns:repeat(3,1fr);}
+@media(max-width:900px){.g2,.g3{grid-template-columns:1fr;}}
+
+/* 现状 / 方案 标签 */
+.tagline{display:flex;align-items:center;gap:10px;margin-bottom:14px;}
+.tagline .lab{font-size:12px;font-weight:700;letter-spacing:.1em;padding:4px 12px;border-radius:var(--r-pill);}
+.lab-cur{color:var(--t2);background:var(--bg-2);border:1px solid var(--line-2);}
+.lab-new{color:#fff;background:var(--ac-grad);box-shadow:0 4px 14px var(--ac-glow);}
+.tagline .why{font-size:12.5px;color:var(--t3);}
+h4.comp{font-size:17px;font-weight:700;margin:34px 0 14px;letter-spacing:-.01em;}
+h4.comp:first-of-type{margin-top:0;}
+h4.comp small{font-weight:500;color:var(--t3);font-size:12.5px;margin-left:10px;}
+
+/* ============ 现状复刻样式（模拟当前 web.html 的观感） ============ */
+.cur-card{background:#1e293b;border-radius:8px;overflow:hidden;transition:transform .15s;}
+.cur-card:hover{transform:scale(1.03);}
+.cur-poster{aspect-ratio:2/3;display:flex;align-items:flex-end;padding:10px;font-size:13px;font-weight:600;color:#fff;}
+.cur-card .t{padding:8px;font-size:13px;font-weight:500;color:#e2e8f0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.cur-btn{background:#3b82f6;color:#fff;border:none;border-radius:8px;padding:10px 22px;font-weight:600;font-size:14px;cursor:pointer;}
+.cur-btn2{background:rgba(51,65,85,.6);color:#fff;border:none;border-radius:8px;padding:10px 18px;font-size:14px;cursor:pointer;}
+.cur-select{background:#1e293b;border:1px solid #475569;border-radius:8px;color:#e2e8f0;padding:6px 10px;font-size:13px;}
+.cur-chip{display:inline-flex;align-items:center;padding:2px 8px;border-radius:999px;font-size:12px;font-weight:600;}
+.cur-chip.hdr{background:#f59e0b;color:#000;} .cur-chip.dv{background:#7c3aed;color:#fff;} .cur-chip.atm{background:#10b981;color:#000;}
+.cur-input{background:#1e293b;border:1px solid #475569;border-radius:8px;color:#e2e8f0;padding:10px 14px;font-size:14px;width:100%;}
+.cur-pbar{width:100%;height:4px;background:rgba(255,255,255,.25);border-radius:2px;position:relative;}
+.cur-pbar i{position:absolute;inset:0 auto 0 0;width:38%;background:#3b82f6;border-radius:2px;}
+
+/* ============ 方案组件样式 ============ */
+/* 海报卡 */
+.np-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:16px;}
+.np-card{border-radius:var(--r-card);overflow:hidden;position:relative;cursor:pointer;
+  background:var(--bg-2);border:1px solid var(--line);
+  transition:transform var(--dur) var(--ease),box-shadow var(--dur) var(--ease),border-color var(--dur);}
+.np-card:hover{transform:translateY(-6px);box-shadow:var(--sh-pop);border-color:rgba(99,102,241,.45);}
+.np-poster{aspect-ratio:2/3;position:relative;display:flex;align-items:flex-end;}
+.np-poster .scrim{position:absolute;inset:auto 0 0 0;height:62%;background:linear-gradient(transparent,rgba(4,7,14,.92));
+  display:flex;flex-direction:column;justify-content:flex-end;padding:12px 12px 10px;
+  transform:translateY(14px);opacity:.92;transition:transform var(--dur) var(--ease),opacity var(--dur);}
+.np-card:hover .scrim{transform:translateY(0);opacity:1;}
+.np-title{font-size:13.5px;font-weight:650;letter-spacing:-.01em;line-height:1.35;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}
+.np-meta{font-size:11.5px;color:var(--t2);margin-top:3px;display:flex;align-items:center;gap:6px;}
+.np-meta .star{color:var(--gold);font-weight:700;}
+.np-badge{position:absolute;top:10px;right:10px;font-size:10.5px;font-weight:700;letter-spacing:.06em;
+  padding:3px 9px;border-radius:var(--r-pill);color:#fff;background:rgba(7,10,18,.55);
+  border:1px solid rgba(255,255,255,.22);backdrop-filter:blur(8px);}
+.np-badge.dv{color:var(--dv);border-color:rgba(167,139,250,.5);}
+.np-play{position:absolute;left:50%;top:44%;transform:translate(-50%,-50%) scale(.6);width:46px;height:46px;
+  border-radius:50%;border:1px solid rgba(255,255,255,.35);background:rgba(7,10,18,.55);backdrop-filter:blur(8px);
+  display:flex;align-items:center;justify-content:center;color:#fff;opacity:0;
+  transition:all var(--dur) var(--ease);}
+.np-card:hover .np-play{opacity:1;transform:translate(-50%,-50%) scale(1);}
+.np-play svg{width:18px;height:18px;fill:currentColor;margin-left:2px;}
+.np-prog{position:absolute;left:0;right:0;bottom:0;height:3px;background:rgba(255,255,255,.18);}
+.np-prog i{display:block;height:100%;width:42%;background:var(--ac-grad);box-shadow:0 0 8px var(--ac-glow);}
+
+/* 玻璃胶囊 chips */
+.gchips{display:flex;gap:8px;flex-wrap:wrap;}
+.gchip{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;font-weight:650;letter-spacing:.04em;
+  padding:4px 11px;border-radius:var(--r-pill);color:var(--t1);
+  background:rgba(13,19,34,.6);border:1px solid rgba(255,255,255,.16);backdrop-filter:blur(8px);}
+.gchip .d{width:5px;height:5px;border-radius:50%;}
+.gchip.k4k .d{background:var(--gold);} .gchip.dv .d{background:var(--dv);} .gchip.atm .d{background:var(--atmos);}
+.gchip.plain .d{background:var(--t3);}
+
+/* 主/次按钮 */
+.btn-p{display:inline-flex;align-items:center;gap:9px;background:var(--ac-grad);color:#fff;border:none;
+  border-radius:var(--r-btn);padding:12px 26px;font-size:14.5px;font-weight:650;cursor:pointer;
+  box-shadow:0 6px 22px var(--ac-glow);transition:transform var(--dur) var(--ease),box-shadow var(--dur),filter var(--dur);}
+.btn-p:hover{transform:translateY(-2px);box-shadow:0 10px 30px var(--ac-glow);filter:brightness(1.08);}
+.btn-p svg{width:16px;height:16px;fill:currentColor;}
+.btn-g{display:inline-flex;align-items:center;gap:9px;background:rgba(21,29,49,.7);color:var(--t1);
+  border:1px solid var(--line-2);border-radius:var(--r-btn);padding:12px 22px;font-size:14px;font-weight:600;
+  cursor:pointer;backdrop-filter:blur(8px);transition:all var(--dur) var(--ease);}
+.btn-g:hover{border-color:rgba(99,102,241,.5);background:var(--bg-3);}
+.btn-g svg{width:15px;height:15px;fill:currentColor;}
+
+/* 媒体库卡 */
+.lib-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:16px;}
+.lib-card{position:relative;border-radius:var(--r-card);overflow:hidden;cursor:pointer;min-height:112px;
+  border:1px solid var(--line);display:flex;align-items:flex-end;padding:16px;
+  transition:transform var(--dur) var(--ease),box-shadow var(--dur),border-color var(--dur);}
+.lib-card:hover{transform:translateY(-4px);box-shadow:var(--sh-pop);border-color:rgba(99,102,241,.45);}
+.lib-card .bg{position:absolute;inset:0;}
+.lib-card .veil{position:absolute;inset:0;background:linear-gradient(100deg,rgba(7,10,18,.82) 20%,rgba(7,10,18,.25));}
+.lib-name{position:relative;font-size:16px;font-weight:700;letter-spacing:-.01em;}
+.lib-count{position:relative;font-size:12px;color:var(--t2);margin-top:2px;}
+
+/* Hero 焦点区 */
+.hero{position:relative;border-radius:18px;overflow:hidden;min-height:340px;display:flex;align-items:flex-end;
+  border:1px solid var(--line);box-shadow:var(--sh-card);}
+.hero .bg{position:absolute;inset:0;background:
+  radial-gradient(700px 340px at 72% 18%,rgba(99,102,241,.4),transparent 65%),
+  radial-gradient(500px 300px at 30% 80%,rgba(139,92,246,.22),transparent 60%),
+  linear-gradient(115deg,#1b1e4b 0%,#0d1327 55%,#070a12 100%);}
+.hero .veil{position:absolute;inset:0;background:linear-gradient(to top,rgba(7,10,18,.96) 8%,rgba(7,10,18,.35) 55%,transparent);}
+.hero .content{position:relative;padding:30px 34px;max-width:640px;}
+.hero h3{font-size:clamp(24px,3vw,34px);font-weight:800;letter-spacing:-.025em;margin:12px 0 6px;}
+.hero .meta{color:var(--t2);font-size:13.5px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;}
+.hero .meta .star{color:var(--gold);font-weight:700;}
+.hero p{color:var(--t2);font-size:13.5px;margin:12px 0 20px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}
+.hero .dots{position:absolute;right:26px;bottom:26px;display:flex;gap:7px;}
+.hero .dots i{width:7px;height:7px;border-radius:50%;background:rgba(255,255,255,.25);transition:all var(--dur);}
+.hero .dots i.on{background:#fff;width:22px;border-radius:4px;}
+
+/* 播放器控制条 */
+.pbar{position:relative;height:4px;border-radius:3px;background:rgba(255,255,255,.18);cursor:pointer;transition:height var(--dur);}
+.pbar:hover{height:6px;}
+.pbar .buf{position:absolute;inset:0 auto 0 0;width:64%;background:rgba(255,255,255,.3);border-radius:3px;}
+.pbar .cur{position:absolute;inset:0 auto 0 0;width:38%;background:var(--ac-grad);border-radius:3px;box-shadow:0 0 10px var(--ac-glow);}
+.pbar .thumb{position:absolute;top:50%;left:38%;width:13px;height:13px;border-radius:50%;background:#fff;
+  transform:translate(-50%,-50%) scale(0);transition:transform var(--dur);box-shadow:0 2px 8px rgba(0,0,0,.5);}
+.pbar:hover .thumb{transform:translate(-50%,-50%) scale(1);}
+.pbar .bubble{position:absolute;bottom:16px;left:38%;transform:translateX(-50%);font-size:11px;font-weight:600;
+  background:rgba(7,10,18,.9);border:1px solid var(--line-2);border-radius:7px;padding:4px 9px;
+  opacity:0;transition:opacity var(--dur);pointer-events:none;}
+.pbar:hover .bubble{opacity:1;}
+.ctrlbar{margin-top:14px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;}
+.ibtn{width:38px;height:38px;border-radius:10px;display:flex;align-items:center;justify-content:center;
+  background:transparent;border:none;color:var(--t1);cursor:pointer;transition:all var(--dur);}
+.ibtn:hover{background:var(--bg-3);}
+.ibtn svg{width:19px;height:19px;fill:currentColor;}
+.ibtn.big{width:46px;height:46px;border-radius:50%;background:var(--ac-grad);box-shadow:0 6px 18px var(--ac-glow);}
+.ibtn.big:hover{transform:scale(1.06);}
+.ibtn.big svg{width:20px;height:20px;}
+.ptime{font-size:12.5px;color:var(--t2);font-variant-numeric:tabular-nums;}
+.ptime b{color:var(--t1);font-weight:600;}
+.vol{display:flex;align-items:center;gap:8px;}
+.vol input{width:76px;accent-color:var(--ac);cursor:pointer;}
+.spacer{flex:1;}
+.gpill{display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:600;color:var(--t1);
+  background:rgba(13,19,34,.6);border:1px solid var(--line-2);border-radius:var(--r-pill);
+  padding:7px 13px;cursor:pointer;backdrop-filter:blur(8px);transition:all var(--dur);}
+.gpill:hover{border-color:rgba(99,102,241,.55);background:var(--bg-3);}
+.gpill svg{width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round;}
+.gpill .v{color:var(--t2);font-weight:500;}
+
+/* 登录分栏 */
+.login-split{display:grid;grid-template-columns:1.05fr 1fr;border-radius:18px;overflow:hidden;border:1px solid var(--line);box-shadow:var(--sh-card);min-height:380px;}
+@media(max-width:760px){.login-split{grid-template-columns:1fr;}}
+.login-brand{position:relative;padding:36px;display:flex;flex-direction:column;justify-content:space-between;
+  background:radial-gradient(500px 300px at 20% 15%,rgba(99,102,241,.45),transparent 60%),
+  radial-gradient(400px 260px at 85% 90%,rgba(139,92,246,.3),transparent 60%),
+  linear-gradient(140deg,#141a3a 0%,#0a0f1f 70%);}
+.login-brand .gridlines{position:absolute;inset:0;opacity:.5;
+  background-image:linear-gradient(rgba(255,255,255,.045) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.045) 1px,transparent 1px);
+  background-size:34px 34px;}
+.login-brand .mark{position:relative;width:52px;height:52px;border-radius:14px;background:var(--ac-grad);
+  display:flex;align-items:center;justify-content:center;box-shadow:0 8px 26px var(--ac-glow);}
+.login-brand .mark svg{width:24px;height:24px;fill:#fff;}
+.login-brand h5{position:relative;font-size:24px;font-weight:800;letter-spacing:-.02em;margin-top:26px;}
+.login-brand p{position:relative;color:var(--t2);font-size:13.5px;margin-top:8px;max-width:300px;}
+.login-brand .foot{position:relative;font-size:12px;color:var(--t3);}
+.login-form{background:var(--bg-1);padding:36px;display:flex;flex-direction:column;justify-content:center;gap:16px;}
+.login-form label{font-size:12.5px;font-weight:650;color:var(--t2);display:block;margin-bottom:7px;letter-spacing:.02em;}
+.login-form .fld input{width:100%;background:var(--bg-0);border:1px solid var(--line-2);border-radius:var(--r-btn);
+  color:var(--t1);padding:12px 15px;font-size:14px;outline:none;transition:border-color var(--dur),box-shadow var(--dur);}
+.login-form .fld input:focus{border-color:var(--ac);box-shadow:0 0 0 3px rgba(99,102,241,.22);}
+.login-form .hint{font-size:12px;color:var(--t3);}
+
+/* 搜索 */
+.search-new{position:relative;}
+.search-new svg{position:absolute;left:18px;top:50%;transform:translateY(-50%);width:19px;height:19px;fill:none;stroke:var(--t3);stroke-width:2.2;stroke-linecap:round;}
+.search-new input{width:100%;background:var(--bg-1);border:1px solid var(--line-2);border-radius:var(--r-pill);
+  color:var(--t1);padding:15px 22px 15px 50px;font-size:15.5px;outline:none;
+  transition:border-color var(--dur),box-shadow var(--dur),background var(--dur);}
+.search-new input:focus{border-color:var(--ac);background:var(--bg-0);box-shadow:0 0 0 4px rgba(99,102,241,.18),0 10px 34px rgba(0,0,0,.4);}
+.search-new input::placeholder{color:var(--t3);}
+.res-card{display:flex;gap:16px;padding:14px;border-radius:var(--r-card);background:var(--bg-1);
+  border:1px solid var(--line);cursor:pointer;transition:all var(--dur);}
+.res-card:hover{border-color:rgba(99,102,241,.5);transform:translateX(4px);}
+.res-card .thumb{width:56px;aspect-ratio:2/3;border-radius:8px;flex:none;}
+.res-card .rt{font-size:14.5px;font-weight:650;}
+.res-card .rm{font-size:12px;color:var(--t2);margin-top:2px;}
+.res-card .ro{font-size:12px;color:var(--t3);margin-top:5px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}
+
+/* 骨架屏 */
+.skel{border-radius:10px;background:linear-gradient(100deg,var(--bg-2) 40%,var(--bg-3) 50%,var(--bg-2) 60%);
+  background-size:200% 100%;animation:shimmer 1.4s infinite linear;}
+@keyframes shimmer{to{background-position:-200% 0;}}
+.skel-poster{aspect-ratio:2/3;}
+.skel-row{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;}
+.skel-line{height:12px;margin-top:10px;}
+.skel-line.s{width:55%;}
+
+/* 侧栏 */
+.side{width:212px;flex:none;background:var(--bg-1);border-right:1px solid var(--line);display:flex;flex-direction:column;padding:18px 14px;}
+.side .logo{display:flex;align-items:center;gap:11px;padding:6px 10px 18px;}
+.side .logo .m{width:34px;height:34px;border-radius:10px;background:var(--ac-grad);display:flex;align-items:center;justify-content:center;box-shadow:0 6px 18px var(--ac-glow);}
+.side .logo .m svg{width:16px;height:16px;fill:#fff;}
+.side .logo b{font-size:15px;letter-spacing:-.01em;}
+.side .nav-i{display:flex;align-items:center;gap:12px;padding:11px 13px;border-radius:var(--r-btn);
+  color:var(--t2);font-size:13.5px;font-weight:550;cursor:pointer;transition:all var(--dur);position:relative;}
+.side .nav-i svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex:none;}
+.side .nav-i:hover{color:var(--t1);background:var(--bg-2);}
+.side .nav-i.on{color:#fff;background:linear-gradient(90deg,rgba(99,102,241,.28),rgba(139,92,246,.1));}
+.side .nav-i.on::before{content:"";position:absolute;left:-14px;top:9px;bottom:9px;width:3px;border-radius:3px;background:var(--ac-grad);box-shadow:0 0 12px var(--ac-glow);}
+.side .user{margin-top:auto;display:flex;align-items:center;gap:10px;padding:11px 13px;border-radius:var(--r-btn);background:var(--bg-2);border:1px solid var(--line);}
+.side .avatar{width:30px;height:30px;border-radius:50%;background:var(--ac-grad);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;flex:none;}
+.side .user .n{font-size:12.5px;font-weight:600;}
+.side .user .s{font-size:10.5px;color:var(--t3);}
+
+/* 浏览器框架 */
+.frame{border-radius:16px;overflow:hidden;border:1px solid var(--line-2);box-shadow:var(--sh-pop);background:var(--bg-0);}
+.frame .bar{display:flex;align-items:center;gap:8px;padding:11px 16px;background:var(--bg-1);border-bottom:1px solid var(--line);}
+.frame .bar .c{width:11px;height:11px;border-radius:50%;}
+.frame .bar .c1{background:#ff5f57;} .frame .bar .c2{background:#febc2e;} .frame .bar .c3{background:#28c840;}
+.frame .bar .url{flex:1;text-align:center;font-size:12px;color:var(--t3);background:var(--bg-0);border-radius:8px;padding:5px 14px;margin-left:12px;}
+
+/* 首页 mockup 组合 */
+.home-mock{display:flex;min-height:620px;}
+.home-main{flex:1;min-width:0;display:flex;flex-direction:column;background:var(--bg-0);}
+.home-main .hero{border-radius:0;border:none;border-bottom:1px solid var(--line);min-height:300px;box-shadow:none;}
+.home-main .hero .content{padding:26px 30px 34px;max-width:560px;}
+.row{padding:22px 30px 6px;}
+.row .rh{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:14px;}
+.row .rh h6{font-size:16.5px;font-weight:700;letter-spacing:-.01em;}
+.row .rh a{font-size:12.5px;color:var(--t3);text-decoration:none;}
+.row .rh a:hover{color:var(--ac);}
+.hscroll{display:grid;grid-auto-flow:column;grid-auto-columns:clamp(120px,15vw,158px);gap:16px;overflow-x:auto;padding-bottom:18px;scrollbar-width:thin;scrollbar-color:var(--bg-3) transparent;}
+.rise{animation:rise .55s var(--ease) both;}
+@keyframes rise{from{opacity:0;transform:translateY(16px);}to{opacity:1;transform:none;}}
+
+/* 播放器 mockup */
+.player-mock{position:relative;aspect-ratio:16/8.6;background:
+  radial-gradient(800px 380px at 65% 28%,rgba(99,102,241,.28),transparent 62%),
+  radial-gradient(500px 300px at 20% 75%,rgba(139,92,246,.16),transparent 60%),
+  linear-gradient(160deg,#10163a 0%,#0a0f22 55%,#05070d 100%);overflow:hidden;}
+.player-mock .vlabel{position:absolute;left:50%;top:42%;transform:translate(-50%,-50%);text-align:center;color:rgba(255,255,255,.85);}
+.player-mock .vlabel .b1{font-size:19px;font-weight:750;letter-spacing:-.01em;}
+.player-mock .vlabel .b2{font-size:12px;color:var(--t2);margin-top:7px;letter-spacing:.16em;}
+.player-mock .topbar{position:absolute;top:0;left:0;right:0;padding:18px 24px;display:flex;align-items:center;gap:14px;
+  background:linear-gradient(rgba(5,7,13,.75),transparent);}
+.player-mock .topbar .back{width:36px;height:36px;border-radius:50%;background:rgba(7,10,18,.5);border:1px solid rgba(255,255,255,.18);display:flex;align-items:center;justify-content:center;cursor:pointer;}
+.player-mock .topbar .back svg{width:16px;height:16px;fill:none;stroke:#fff;stroke-width:2.4;stroke-linecap:round;stroke-linejoin:round;}
+.player-mock .topbar .tt{font-size:14px;font-weight:650;color:#fff;text-shadow:0 1px 6px rgba(0,0,0,.6);}
+.player-mock .topbar .tt small{color:var(--t2);font-weight:500;margin-left:8px;}
+.player-mock .sub{position:absolute;bottom:110px;left:0;right:0;text-align:center;font-size:clamp(14px,1.6vw,19px);color:#fff;
+  text-shadow:1px 1px 3px #000,-1px -1px 3px #000;pointer-events:none;}
+.player-mock .ctrls{position:absolute;bottom:0;left:0;right:0;padding:16px 24px 18px;
+  background:linear-gradient(transparent,rgba(5,7,13,.88) 55%);}
+.player-mock .ctrls .inner{background:var(--glass);border:1px solid rgba(255,255,255,.1);border-radius:16px;
+  backdrop-filter:blur(16px);padding:14px 18px;box-shadow:0 14px 40px rgba(0,0,0,.5);}
+
+/* 令牌展示 */
+.swatches{display:grid;grid-template-columns:repeat(auto-fill,minmax(128px,1fr));gap:14px;}
+.sw{border-radius:12px;overflow:hidden;border:1px solid var(--line);background:var(--bg-1);}
+.sw .c{height:56px;}
+.sw .l{padding:10px 12px;}
+.sw .l b{display:block;font-size:12.5px;font-weight:650;}
+.sw .l span{font-size:11px;color:var(--t3);font-family:ui-monospace,Consolas,monospace;}
+.typerow{display:flex;align-items:baseline;gap:22px;padding:13px 0;border-bottom:1px solid var(--line);}
+.typerow .demo-t{flex:none;min-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.typerow .spec{font-size:11.5px;color:var(--t3);font-family:ui-monospace,Consolas,monospace;}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:10px 22px;font-size:13px;}
+.kv b{color:var(--t2);font-weight:600;white-space:nowrap;}
+.kv span{font-family:ui-monospace,Consolas,monospace;font-size:12.5px;color:var(--t1);}
+
+/* 落地表 */
+table.map{width:100%;border-collapse:collapse;font-size:13.5px;}
+table.map th{text-align:left;font-size:12px;letter-spacing:.08em;color:var(--t3);font-weight:700;padding:10px 14px;border-bottom:1px solid var(--line-2);}
+table.map td{padding:13px 14px;border-bottom:1px solid var(--line);vertical-align:top;color:var(--t2);}
+table.map td:first-child{color:var(--t1);font-weight:600;white-space:nowrap;}
+table.map code{font-family:ui-monospace,Consolas,monospace;font-size:12px;background:var(--bg-2);border:1px solid var(--line);border-radius:6px;padding:2px 7px;color:#c7d2fe;}
+.eff{display:inline-block;font-size:11px;font-weight:700;padding:3px 10px;border-radius:var(--r-pill);}
+.eff.s{background:rgba(52,211,153,.14);color:var(--atmos);}
+.eff.m{background:rgba(245,181,68,.14);color:var(--gold);}
+
+footer{margin-top:80px;padding-top:26px;border-top:1px solid var(--line);color:var(--t3);font-size:12.5px;display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap;}
+
+/* 海报渐变库 */
+.g1{background:linear-gradient(160deg,#312e81 0%,#0c1327 85%);} .g2{background:linear-gradient(160deg,#7c2d12 0%,#0c1327 85%);}
+.g3{background:linear-gradient(160deg,#14532d 0%,#0c1327 85%);} .g4{background:linear-gradient(160deg,#701a4d 0%,#0c1327 85%);}
+.g5{background:linear-gradient(160deg,#0e7490 0%,#0c1327 85%);} .g6{background:linear-gradient(160deg,#b45309 0%,#0c1327 85%);}
+.g7{background:linear-gradient(160deg,#4c1d95 0%,#0c1327 85%);} .g8{background:linear-gradient(160deg,#164e63 0%,#0c1327 85%);}
+.g9{background:linear-gradient(160deg,#831843 0%,#0c1327 85%);} .g10{background:linear-gradient(160deg,#1e3a5f 0%,#0c1327 85%);}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<!-- ================= 文档头 ================= -->
+<div class="doc-hero">
+  <span class="doc-kicker"><span class="dot"></span>DESIGN PROPOSAL · V1</span>
+  <h1>/web UI <em>优化方案</em></h1>
+  <p>针对 <b>public/web/web.html</b>（390 行单文件 Vue 3 + Tailwind 客户端）的纯视觉层改造：不动数据流、不动 app.js 业务逻辑（Hero 轮播除外），通过设计令牌、组件重绘与动效体系，把"后台管理面板感"升级为"流媒体产品感"。</p>
+  <div class="doc-meta">
+    <span>目标文件 <b>public/web/web.html</b></span>
+    <span>改动范围 <b>仅 &lt;style&gt; 块 + 模板类名 + 少量结构</b></span>
+    <span>新增依赖 <b>无</b></span>
+    <span>预计工作量 <b>1 人日</b></span>
+  </div>
+</div>
+
+<nav><div class="in">
+  <a href="#s1">01 现状诊断</a>
+  <a href="#s2">02 设计令牌</a>
+  <a href="#s3">03 组件对比</a>
+  <a href="#s4">04 首页预览</a>
+  <a href="#s5">05 播放器预览</a>
+  <a href="#s6">06 落地清单</a>
+</div></nav>
+
+<!-- ================= 01 诊断 ================= -->
+<section id="s1">
+  <div class="sec-head"><span class="sec-no">01</span><h2>现状诊断</h2></div>
+  <p class="sec-sub">当前 UI 的问题不在功能，而在"视觉语言"：所有界面共用同一种扁平灰蓝面板、默认蓝按钮，没有任何媒体产品应有的层次、焦点与氛围。六个核心问题：</p>
+  <div class="grid g3">
+    <div class="panel" style="padding:20px;">
+      <div style="font-weight:700;font-size:14.5px;margin-bottom:6px;">① 表面扁平，无层级</div>
+      <div style="color:var(--t2);font-size:13px;margin-bottom:14px;">侧栏、卡片、输入框全部是同一档 slate-800 灰，前后景没有深浅差，界面"糊"成一片。</div>
+      <div class="demo" style="padding:14px;display:flex;gap:10px;">
+        <div style="flex:1;background:#1e293b;border-radius:8px;height:52px;"></div>
+        <div style="flex:1;background:#1e293b;border-radius:8px;height:52px;"></div>
+        <div style="flex:1;background:#1e293b;border-radius:8px;height:52px;"></div>
+      </div>
+    </div>
+    <div class="panel" style="padding:20px;">
+      <div style="font-weight:700;font-size:14.5px;margin-bottom:6px;">② 无品牌记忆点</div>
+      <div style="color:var(--t2);font-size:13px;margin-bottom:14px;">默认 Tailwind blue-600 按钮 + 无渐变、无光效、无图形语言，任何后台模板都长这样。</div>
+      <div class="demo" style="padding:14px;display:flex;gap:10px;align-items:center;">
+        <button class="cur-btn" style="font-size:12.5px;padding:8px 16px;">播放</button>
+        <button class="cur-btn2" style="font-size:12.5px;padding:8px 14px;">收藏</button>
+        <span style="font-size:11.5px;color:var(--t3);">← 与千篇一律的后台无异</span>
+      </div>
+    </div>
+    <div class="panel" style="padding:20px;">
+      <div style="font-weight:700;font-size:14.5px;margin-bottom:6px;">③ 海报卡信息密度低</div>
+      <div style="color:var(--t2);font-size:13px;margin-bottom:14px;">hover 只有 scale(1.03)，无播放入口、无评分、无年份、无观看进度，用户必须点进详情才能决策。</div>
+      <div class="demo" style="padding:14px;">
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;">
+          <div class="cur-card"><div class="cur-poster g7"></div><div class="t">三体</div></div>
+          <div class="cur-card"><div class="cur-poster g1"></div><div class="t">沙丘：第二部</div></div>
+          <div class="cur-card"><div class="cur-poster g5"></div><div class="t">流浪地球2</div></div>
+        </div>
+      </div>
+    </div>
+    <div class="panel" style="padding:20px;">
+      <div style="font-weight:700;font-size:14.5px;margin-bottom:6px;">④ 首页没有焦点区</div>
+      <div style="color:var(--t2);font-size:13px;margin-bottom:14px;">媒体库是图标方块、内容直接铺海报网格，页面没有视觉锚点，像列表页而不是"首页"。</div>
+      <div class="demo" style="padding:14px;display:grid;grid-template-columns:repeat(4,1fr);gap:10px;">
+        <div style="background:#1e293b;border-radius:8px;padding:12px;text-align:center;font-size:11px;color:#94a3b8;">▣ 电影</div>
+        <div style="background:#1e293b;border-radius:8px;padding:12px;text-align:center;font-size:11px;color:#94a3b8;">▣ 剧集</div>
+        <div style="background:#1e293b;border-radius:8px;padding:12px;text-align:center;font-size:11px;color:#94a3b8;">▣ 音乐</div>
+        <div style="background:#1e293b;border-radius:8px;padding:12px;text-align:center;font-size:11px;color:#94a3b8;">▣ …</div>
+      </div>
+    </div>
+    <div class="panel" style="padding:20px;">
+      <div style="font-weight:700;font-size:14.5px;margin-bottom:6px;">⑤ 播放器控件"文字化"</div>
+      <div style="color:var(--t2);font-size:13px;margin-bottom:14px;">"暂停/上一集/下一集"是文字按钮，版本/音轨/字幕挤成一排 select，工具栏像表单不像播放器。</div>
+      <div class="demo" style="padding:14px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+        <button style="background:none;border:none;color:#fff;font-size:12px;cursor:pointer;">暂停</button>
+        <button style="background:none;border:none;color:#fff;font-size:12px;cursor:pointer;">上一集</button>
+        <select class="cur-select" style="font-size:11.5px;"><option>版本</option></select>
+        <select class="cur-select" style="font-size:11.5px;"><option>音频</option></select>
+        <select class="cur-select" style="font-size:11.5px;"><option>字幕</option></select>
+      </div>
+    </div>
+    <div class="panel" style="padding:20px;">
+      <div style="font-weight:700;font-size:14.5px;margin-bottom:6px;">⑥ 加载/空状态粗糙</div>
+      <div style="color:var(--t2);font-size:13px;margin-bottom:14px;">全页共用一个 40px spinner，空状态是一行灰字，等待期间界面"塌陷"。</div>
+      <div class="demo" style="padding:18px;display:flex;gap:18px;align-items:center;">
+        <div style="width:34px;height:34px;border-radius:50%;border:3px solid rgba(255,255,255,.2);border-top-color:#3b82f6;animation:spin 1s linear infinite;"></div>
+        <span style="font-size:12px;color:var(--t3);">暂无观看记录</span>
+      </div>
+    </div>
+  </div>
+</section>
+<style>@keyframes spin{to{transform:rotate(360deg);}}</style>
+
+<!-- ================= 02 令牌 ================= -->
+<section id="s2">
+  <div class="sec-head"><span class="sec-no">02</span><h2>设计令牌</h2></div>
+  <p class="sec-sub">一套 CSS 变量收口全部视觉决策（写入 web.html <code style="font-family:ui-monospace,Consolas,monospace;font-size:12px;background:var(--bg-2);border:1px solid var(--line);border-radius:6px;padding:2px 7px;color:#c7d2fe;">&lt;style&gt;</code> 顶部），后续调主题只改这一处。核心思路：<b style="color:var(--t1);">近黑蓝基底 + 三档表面分层 + indigo→violet 渐变主色 + 玻璃拟态浮层</b>。</p>
+
+  <div class="panel" style="padding:24px;margin-bottom:18px;">
+    <div style="font-weight:700;font-size:14.5px;margin-bottom:16px;">色彩系统</div>
+    <div class="swatches">
+      <div class="sw"><div class="c" style="background:#070a12;"></div><div class="l"><b>基底 bg-0</b><span>#070A12</span></div></div>
+      <div class="sw"><div class="c" style="background:#0d1322;"></div><div class="l"><b>表面 bg-1</b><span>#0D1322</span></div></div>
+      <div class="sw"><div class="c" style="background:#151d31;"></div><div class="l"><b>表面 bg-2</b><span>#151D31</span></div></div>
+      <div class="sw"><div class="c" style="background:#1e2942;"></div><div class="l"><b>表面 bg-3</b><span>#1E2942</span></div></div>
+      <div class="sw"><div class="c" style="background:linear-gradient(135deg,#6366f1,#8b5cf6);"></div><div class="l"><b>主色渐变</b><span>#6366F1→#8B5CF6</span></div></div>
+      <div class="sw"><div class="c" style="background:#f1f5f9;"></div><div class="l"><b>文字 t1</b><span>#F1F5F9</span></div></div>
+      <div class="sw"><div class="c" style="background:#94a3b8;"></div><div class="l"><b>文字 t2</b><span>#94A3B8</span></div></div>
+      <div class="sw"><div class="c" style="background:#5b6b85;"></div><div class="l"><b>文字 t3</b><span>#5B6B85</span></div></div>
+      <div class="sw"><div class="c" style="background:#f5b544;"></div><div class="l"><b>4K / HDR</b><span>#F5B544</span></div></div>
+      <div class="sw"><div class="c" style="background:#a78bfa;"></div><div class="l"><b>Dolby Vision</b><span>#A78BFA</span></div></div>
+      <div class="sw"><div class="c" style="background:#34d399;"></div><div class="l"><b>Atmos</b><span>#34D399</span></div></div>
+    </div>
+    <div style="margin-top:16px;font-size:12.5px;color:var(--t3);">规格徽章从"实心色块"降为"玻璃胶囊 + 彩色指示点"：保留色彩语义，去掉大面积撞色（见 03-4）。</div>
+  </div>
+
+  <div class="grid g2">
+    <div class="panel" style="padding:24px;">
+      <div style="font-weight:700;font-size:14.5px;margin-bottom:8px;">字体层级（Inter + Noto Sans SC，标题收紧字距）</div>
+      <div class="typerow"><span class="demo-t" style="font-size:30px;font-weight:800;letter-spacing:-.025em;">沙丘：第二部</span><span class="spec">display · 30/800 · -0.025em</span></div>
+      <div class="typerow"><span class="demo-t" style="font-size:20px;font-weight:700;letter-spacing:-.02em;">视频版本</span><span class="spec">h3 · 20/700</span></div>
+      <div class="typerow"><span class="demo-t" style="font-size:14.5px;font-weight:600;">4K HDR · 服务器A · hevc</span><span class="spec">body-strong · 14.5/650</span></div>
+      <div class="typerow"><span class="demo-t" style="font-size:13px;color:var(--t2);">2024 · 科幻/冒险 · 166 分钟</span><span class="spec">meta · 13/500 · t2</span></div>
+      <div class="typerow" style="border:none;"><span class="demo-t" style="font-size:11.5px;color:var(--t3);letter-spacing:.06em;">EXTERNAL · 外挂字幕</span><span class="spec">caption · 11.5/650 · +0.06em</span></div>
+    </div>
+    <div class="panel" style="padding:24px;">
+      <div style="font-weight:700;font-size:14.5px;margin-bottom:14px;">圆角 / 阴影 / 动效</div>
+      <div class="kv">
+        <b>卡片圆角</b><span>14px（现状 8px，偏"控件感"）</span>
+        <b>按钮圆角</b><span>10px · 胶囊 999px</span>
+        <b>卡片阴影</b><span>0 10px 34px rgba(0,0,0,.45)</span>
+        <b>悬浮阴影</b><span>0 18px 50px rgba(0,0,0,.6) + 主色描边</span>
+        <b>主按钮光晕</b><span>0 6px 22px rgba(99,102,241,.35)</span>
+        <b>缓动</b><span>cubic-bezier(.22,.61,.36,1) · 220ms</span>
+        <b>入场</b><span>卡片 stagger 上浮 16px / 550ms</span>
+        <b>悬停位移</b><span>translateY(-6px) 替代 scale(1.03)</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 03 组件对比 ================= -->
+<section id="s3">
+  <div class="sec-head"><span class="sec-no">03</span><h2>组件对比（现状 → 方案）</h2></div>
+  <p class="sec-sub">左侧按当前 web.html 的类名复刻现状，右侧为同数据结构下的重绘效果。<b style="color:var(--t1);">悬停方案侧的卡片、按钮、进度条可交互预览。</b></p>
+
+  <!-- 3.1 海报卡 -->
+  <h4 class="comp">3.1 海报卡片 <small>.poster-card → .np-card</small></h4>
+  <div class="grid g2">
+    <div>
+      <div class="tagline"><span class="lab lab-cur">现状</span><span class="why">hover 仅放大，信息只有标题</span></div>
+      <div class="demo"><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;">
+        <div class="cur-card"><div class="cur-poster g7"></div><div class="t">三体</div></div>
+        <div class="cur-card"><div class="cur-poster g2"></div><div class="t">奥本海默</div></div>
+        <div class="cur-card"><div class="cur-poster g5"></div><div class="t">流浪地球2</div></div>
+      </div></div>
+    </div>
+    <div>
+      <div class="tagline"><span class="lab lab-new">方案</span><span class="why">遮罩上浮 + 播放钮 + 评分/年份 + 规格徽章 + 进度条</span></div>
+      <div class="demo"><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;">
+        <div class="np-card"><div class="np-poster g7">
+          <span class="np-badge">4K · HDR</span>
+          <button class="np-play"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button>
+          <div class="scrim"><div class="np-title">三体</div><div class="np-meta"><span class="star">★ 8.7</span><span>2023</span></div></div>
+          <div class="np-prog"><i style="width:65%;"></i></div>
+        </div></div>
+        <div class="np-card"><div class="np-poster g2">
+          <button class="np-play"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button>
+          <div class="scrim"><div class="np-title">奥本海默</div><div class="np-meta"><span class="star">★ 8.4</span><span>2023</span></div></div>
+        </div></div>
+        <div class="np-card"><div class="np-poster g5">
+          <span class="np-badge dv">DV</span>
+          <button class="np-play"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button>
+          <div class="scrim"><div class="np-title">流浪地球2</div><div class="np-meta"><span class="star">★ 8.2</span><span>2023</span></div></div>
+        </div></div>
+      </div></div>
+    </div>
+  </div>
+
+  <!-- 3.2 媒体库入口 -->
+  <h4 class="comp">3.2 媒体库入口 <small>图标方块 → 封面背景卡</small></h4>
+  <div class="grid g2">
+    <div>
+      <div class="tagline"><span class="lab lab-cur">现状</span><span class="why">图标 + 文字，无内容预览</span></div>
+      <div class="demo"><div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px;">
+        <div style="background:#1e293b;border-radius:8px;padding:18px;text-align:center;color:#94a3b8;font-size:12.5px;">▣<br>电影</div>
+        <div style="background:#1e293b;border-radius:8px;padding:18px;text-align:center;color:#94a3b8;font-size:12.5px;">▤<br>剧集</div>
+      </div></div>
+    </div>
+    <div>
+      <div class="tagline"><span class="lab lab-new">方案</span><span class="why">库内海报拼贴做底 + 数量角标，hover 抬升</span></div>
+      <div class="demo"><div class="lib-grid" style="grid-template-columns:1fr 1fr;">
+        <div class="lib-card"><div class="bg g1"></div><div class="veil"></div>
+          <div><div class="lib-name">电影</div><div class="lib-count">1,284 部 · 12 个版本</div></div></div>
+        <div class="lib-card"><div class="bg g7"></div><div class="veil"></div>
+          <div><div class="lib-name">剧集</div><div class="lib-count">96 部 · 2,410 集</div></div></div>
+      </div></div>
+    </div>
+  </div>
+
+  <!-- 3.3 Hero -->
+  <h4 class="comp">3.3 首页焦点区 Hero <small>新增组件</small></h4>
+  <div class="grid g2">
+    <div>
+      <div class="tagline"><span class="lab lab-cur">现状</span><span class="why">无焦点区，最新内容直接平铺</span></div>
+      <div class="demo" style="display:flex;flex-direction:column;gap:10px;">
+        <div style="font-size:13px;color:var(--t3);">（首页顶部只有"媒体库"图标网格）</div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;">
+          <div style="aspect-ratio:2/3;background:#1e293b;border-radius:8px;"></div>
+          <div style="aspect-ratio:2/3;background:#1e293b;border-radius:8px;"></div>
+          <div style="aspect-ratio:2/3;background:#1e293b;border-radius:8px;"></div>
+          <div style="aspect-ratio:2/3;background:#1e293b;border-radius:8px;"></div>
+        </div>
+      </div>
+    </div>
+    <div>
+      <div class="tagline"><span class="lab lab-new">方案</span><span class="why">取"最新添加"前 5 项轮播，8s 自动切换</span></div>
+      <div class="hero">
+        <div class="bg"></div><div class="veil"></div>
+        <div class="content">
+          <div class="gchips">
+            <span class="gchip k4k"><span class="d"></span>4K</span>
+            <span class="gchip dv"><span class="d"></span>Dolby Vision</span>
+            <span class="gchip plain"><span class="d"></span>Atmos</span>
+          </div>
+          <h3>沙丘：第二部</h3>
+          <div class="meta"><span>2024</span>·<span>科幻 / 冒险</span>·<span>166 分钟</span>·<span class="star">★ 8.3</span></div>
+          <p>保罗·艾特里奥执导的史诗科幻续章。厄崔迪家族联合弗雷曼人，在沙丘星球展开复仇与圣战，命运的风暴席卷整个宇宙。</p>
+          <div style="display:flex;gap:12px;">
+            <button class="btn-p"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>播放</button>
+            <button class="btn-g">详情</button>
+          </div>
+        </div>
+        <div class="dots"><i class="on"></i><i></i><i></i><i></i><i></i></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 3.4 chips -->
+  <h4 class="comp">3.4 规格徽章 <small>.chip → .gchip 玻璃胶囊</small></h4>
+  <div class="grid g2">
+    <div>
+      <div class="tagline"><span class="lab lab-cur">现状</span><span class="why">实心高饱和色块，在详情页排成一行很吵</span></div>
+      <div class="demo" style="display:flex;gap:8px;flex-wrap:wrap;align-content:center;min-height:90px;">
+        <span class="cur-chip hdr">4K</span><span class="cur-chip hdr">HDR</span>
+        <span class="cur-chip dv">Dolby Vision</span><span class="cur-chip atm">Atmos</span>
+        <span style="background:#334155;padding:2px 8px;border-radius:4px;font-size:12px;color:#e2e8f0;">R</span>
+      </div>
+    </div>
+    <div>
+      <div class="tagline"><span class="lab lab-new">方案</span><span class="why">半透玻璃 + 彩色指示点，语义保留、噪音降低</span></div>
+      <div class="demo" style="display:flex;gap:8px;flex-wrap:wrap;align-content:center;min-height:90px;background:linear-gradient(120deg,#131a36,#0a0f1f);">
+        <span class="gchip k4k"><span class="d"></span>4K</span>
+        <span class="gchip k4k"><span class="d"></span>HDR10</span>
+        <span class="gchip dv"><span class="d"></span>Dolby Vision</span>
+        <span class="gchip plain"><span class="d"></span>Atmos</span>
+        <span class="gchip plain"><span class="d"></span>R 级</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 3.5 播放器工具栏 -->
+  <h4 class="comp">3.5 播放器工具栏 <small>.play-toolbar → 玻璃控制条</small></h4>
+  <div class="grid g2">
+    <div>
+      <div class="tagline"><span class="lab lab-cur">现状</span><span class="why">文字按钮 + 一排 select，像设置表单</span></div>
+      <div class="demo" style="background:#000;">
+        <div class="cur-pbar"><i></i></div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:12px;font-size:12.5px;color:#fff;">
+          <button style="background:none;border:none;color:#fff;cursor:pointer;">暂停</button>
+          <span style="color:#94a3b8;">18:42 / 46:00</span>
+          <button style="background:none;border:none;color:#fff;cursor:pointer;">上一集</button>
+          <button style="background:none;border:none;color:#fff;cursor:pointer;">下一集</button>
+          <label style="display:flex;gap:5px;align-items:center;color:#e2e8f0;">版本 <select class="cur-select"><option>4K HDR</option></select></label>
+          <label style="display:flex;gap:5px;align-items:center;color:#e2e8f0;">音频 <select class="cur-select"><option>中文 5.1</option></select></label>
+          <label style="display:flex;gap:5px;align-items:center;color:#e2e8f0;">字幕 <select class="cur-select"><option>中文 ASS</option></select></label>
+          <button style="background:none;border:none;color:#fff;cursor:pointer;">全屏</button>
+        </div>
+      </div>
+    </div>
+    <div>
+      <div class="tagline"><span class="lab lab-new">方案</span><span class="why">图标分组 + 缓冲进度 + 悬停时间气泡（悬停试试）</span></div>
+      <div class="demo" style="background:radial-gradient(600px 240px at 60% 20%,rgba(99,102,241,.2),transparent 60%),#04060c;">
+        <div class="pbar"><span class="buf"></span><span class="cur"></span><span class="thumb"></span><span class="bubble">18:42</span></div>
+        <div class="ctrlbar">
+          <button class="ibtn" title="上一集"><svg viewBox="0 0 24 24"><path d="M6 6h2.4v12H6zM20 6l-9.5 6L20 18z"/></svg></button>
+          <button class="ibtn big" title="播放/暂停"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button>
+          <button class="ibtn" title="下一集"><svg viewBox="0 0 24 24"><path d="M15.6 6H18v12h-2.4zM4 6l9.5 6L4 18z"/></svg></button>
+          <div class="vol">
+            <button class="ibtn" title="音量"><svg viewBox="0 0 24 24"><path d="M3 10v4h4l5 4V6L7 10H3z"/><path d="M16 8.5a5 5 0 010 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
+            <input type="range" value="80">
+          </div>
+          <span class="ptime"><b>18:42</b> / 46:00</span>
+          <span class="spacer"></span>
+          <button class="gpill"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h10" /><path d="M4 18h7"/></svg>字幕 <span class="v">中文</span></button>
+          <button class="gpill"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg>音轨 <span class="v">5.1</span></button>
+          <button class="gpill"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h10M4 18h7"/></svg>4K</button>
+          <button class="ibtn" title="全屏"><svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg></button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 3.6 登录 -->
+  <h4 class="comp">3.6 登录页 <small>居中卡片 → 品牌分栏</small></h4>
+  <div class="grid g2">
+    <div>
+      <div class="tagline"><span class="lab lab-cur">现状</span><span class="why">通用后台登录卡</span></div>
+      <div class="demo" style="display:flex;justify-content:center;background:#0f172a;">
+        <div style="width:78%;background:#1e293b;border-radius:16px;padding:26px;text-align:center;margin:14px 0;">
+          <div style="width:52px;height:52px;border-radius:14px;background:#3b82f6;margin:0 auto 12px;display:flex;align-items:center;justify-content:center;color:#fff;">▶</div>
+          <div style="font-weight:700;font-size:17px;color:#f1f5f9;">Emby-in-One</div>
+          <div style="font-size:12px;color:#64748b;margin:2px 0 16px;">网页播放器</div>
+          <input class="cur-input" placeholder="用户名" style="margin-bottom:10px;">
+          <input class="cur-input" placeholder="密码" style="margin-bottom:12px;">
+          <button class="cur-btn" style="width:100%;">登录</button>
+        </div>
+      </div>
+    </div>
+    <div>
+      <div class="tagline"><span class="lab lab-new">方案</span><span class="why">左品牌右表单；窄屏自动堆叠</span></div>
+      <div class="login-split">
+        <div class="login-brand">
+          <div class="gridlines"></div>
+          <div>
+            <div class="mark"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div>
+            <h5>Emby-in-One</h5>
+            <p>多台 Emby 服务器，一个入口。你的媒体库、进度与收藏，随处续播。</p>
+          </div>
+          <div class="foot">普通用户登录 · 管理员请前往 /admin</div>
+        </div>
+        <div class="login-form">
+          <div class="fld"><label>用户名</label><input value="demo"></div>
+          <div class="fld"><label>密码</label><input type="password" value="••••••••"></div>
+          <button class="btn-p" style="justify-content:center;">登 录</button>
+          <div class="hint">忘记密码请联系管理员重置</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 3.7 搜索 -->
+  <h4 class="comp">3.7 搜索框与结果卡 <small>聚焦光晕 + 亮边结果卡</small></h4>
+  <div class="grid g2">
+    <div>
+      <div class="tagline"><span class="lab lab-cur">现状</span><span class="why">普通输入框，结果卡无 hover 反馈</span></div>
+      <div class="demo">
+        <input class="cur-input" placeholder="搜索电影、剧集、演员..." style="border-radius:12px;padding:12px 16px;font-size:15px;">
+        <div style="margin-top:12px;background:#1e293b;border-radius:12px;padding:12px;display:flex;gap:12px;">
+          <div style="width:44px;aspect-ratio:2/3;border-radius:8px;" class="g1"></div>
+          <div><div style="font-size:13.5px;font-weight:600;color:#e2e8f0;">沙丘：第二部</div><div style="font-size:11.5px;color:#64748b;">Movie · 2024</div></div>
+        </div>
+      </div>
+    </div>
+    <div>
+      <div class="tagline"><span class="lab lab-new">方案</span><span class="why">胶囊大输入框（点击聚焦看光晕）+ 结果右移亮边</span></div>
+      <div class="demo">
+        <div class="search-new">
+          <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>
+          <input placeholder="搜索电影、剧集、演员…" value="沙丘">
+        </div>
+        <div style="margin-top:12px;">
+          <div class="res-card">
+            <div class="thumb g1"></div>
+            <div><div class="rt">沙丘：第二部</div><div class="rm">Movie · 2024 · 科幻/冒险 · ★ 8.3</div>
+            <div class="ro">保罗·艾特里奥执导的史诗科幻续章，厄崔迪家族的复仇之战在沙丘星球全面展开。</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 3.8 骨架屏 -->
+  <h4 class="comp">3.8 加载状态 <small>spinner → 骨架屏</small></h4>
+  <div class="grid g2">
+    <div>
+      <div class="tagline"><span class="lab lab-cur">现状</span><span class="why">整页一个 spinner，布局塌陷</span></div>
+      <div class="demo" style="display:flex;align-items:center;justify-content:center;min-height:170px;">
+        <div style="width:38px;height:38px;border-radius:50%;border:3px solid rgba(255,255,255,.2);border-top-color:#3b82f6;animation:spin 1s linear infinite;"></div>
+      </div>
+    </div>
+    <div>
+      <div class="tagline"><span class="lab lab-new">方案</span><span class="why">占位骨架保持布局稳定，微光扫过</span></div>
+      <div class="demo">
+        <div class="skel-row">
+          <div><div class="skel skel-poster"></div><div class="skel skel-line"></div><div class="skel skel-line s"></div></div>
+          <div><div class="skel skel-poster"></div><div class="skel skel-line"></div><div class="skel skel-line s"></div></div>
+          <div><div class="skel skel-poster"></div><div class="skel skel-line"></div><div class="skel skel-line s"></div></div>
+          <div><div class="skel skel-poster"></div><div class="skel skel-line"></div><div class="skel skel-line s"></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 3.9 侧栏 -->
+  <h4 class="comp">3.9 侧栏 <small>active 高亮 → 渐变胶囊 + 光条</small></h4>
+  <div class="grid g2">
+    <div>
+      <div class="tagline"><span class="lab lab-cur">现状</span><span class="why">active 是整块实心蓝</span></div>
+      <div class="demo" style="padding:0;">
+        <div style="width:200px;background:#1e293b;padding:16px 12px;border-right:1px solid #334155;">
+          <div style="font-weight:700;font-size:14px;color:#f1f5f9;padding:8px 10px 16px;">▶ Emby-in-One</div>
+          <div style="display:flex;gap:10px;align-items:center;padding:10px 12px;border-radius:8px;background:#3b82f6;color:#fff;font-size:13px;margin-bottom:4px;">⌂ 首页</div>
+          <div style="display:flex;gap:10px;align-items:center;padding:10px 12px;border-radius:8px;color:#cbd5e1;font-size:13px;margin-bottom:4px;">↻ 继续观看</div>
+          <div style="display:flex;gap:10px;align-items:center;padding:10px 12px;border-radius:8px;color:#cbd5e1;font-size:13px;">♥ 收藏</div>
+        </div>
+      </div>
+    </div>
+    <div>
+      <div class="tagline"><span class="lab lab-new">方案</span><span class="why">渐变胶囊 + 左侧光条，底部用户芯片</span></div>
+      <div class="demo" style="padding:0;">
+        <div class="side" style="width:200px;">
+          <div class="logo"><div class="m"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div><b>Emby-in-One</b></div>
+          <div class="nav-i on"><svg viewBox="0 0 24 24"><path d="M3 10.5L12 3l9 7.5"/><path d="M5 10v10h14V10"/></svg>首页</div>
+          <div class="nav-i"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg>继续观看</div>
+          <div class="nav-i"><svg viewBox="0 0 24 24"><path d="M12 20s-7-4.6-9-9c-1.3-3 1-7 5-7 2.5 0 4 2 4 2s1.5-2 4-2 6.3 4 5 7c-2 4.4-9 9-9 9z"/></svg>收藏</div>
+          <div class="nav-i"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>搜索</div>
+          <div class="user"><div class="avatar">演</div><div><div class="n">演示用户</div><div class="s">已登录</div></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 04 首页预览 ================= -->
+<section id="s4">
+  <div class="sec-head"><span class="sec-no">04</span><h2>首页整页预览</h2></div>
+  <p class="sec-sub">方案组件组合后的首页全貌（浏览器框架内为静态示意，卡片带 stagger 入场动效；海报以渐变示意，实际使用 imageUrl 缩略图）。</p>
+  <div class="frame">
+    <div class="bar"><span class="c c1"></span><span class="c c2"></span><span class="c c3"></span><span class="url">emby.example.com/web/#/home</span></div>
+    <div class="home-mock">
+      <div class="side">
+        <div class="logo"><div class="m"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div><b>Emby-in-One</b></div>
+        <div class="nav-i on"><svg viewBox="0 0 24 24"><path d="M3 10.5L12 3l9 7.5"/><path d="M5 10v10h14V10"/></svg>首页</div>
+        <div class="nav-i"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg>继续观看</div>
+        <div class="nav-i"><svg viewBox="0 0 24 24"><path d="M12 20s-7-4.6-9-9c-1.3-3 1-7 5-7 2.5 0 4 2 4 2s1.5-2 4-2 6.3 4 5 7c-2 4.4-9 9-9 9z"/></svg>收藏</div>
+        <div class="nav-i"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>搜索</div>
+        <div class="user"><div class="avatar">演</div><div><div class="n">演示用户</div><div class="s">已登录</div></div></div>
+      </div>
+      <div class="home-main">
+        <div class="hero">
+          <div class="bg"></div><div class="veil"></div>
+          <div class="content">
+            <div class="gchips">
+              <span class="gchip k4k"><span class="d"></span>4K</span>
+              <span class="gchip dv"><span class="d"></span>Dolby Vision</span>
+              <span class="gchip plain"><span class="d"></span>Atmos</span>
+            </div>
+            <h3>沙丘：第二部</h3>
+            <div class="meta"><span>2024</span>·<span>科幻 / 冒险</span>·<span>166 分钟</span>·<span class="star">★ 8.3</span></div>
+            <p>保罗·艾特里奥执导的史诗科幻续章。厄崔迪家族联合弗雷曼人，在沙丘星球展开复仇与圣战，命运的风暴席卷整个宇宙。</p>
+            <div style="display:flex;gap:12px;">
+              <button class="btn-p"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>播放</button>
+              <button class="btn-g">详情</button>
+            </div>
+          </div>
+          <div class="dots"><i class="on"></i><i></i><i></i><i></i><i></i></div>
+        </div>
+        <div class="row">
+          <div class="rh"><h6>继续观看</h6><a href="#">全部 ›</a></div>
+          <div class="hscroll">
+            <div class="np-card rise" style="animation-delay:.05s;"><div class="np-poster g2"><button class="np-play"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button><div class="scrim"><div class="np-title">奥本海默</div><div class="np-meta"><span>剩 96 分钟</span></div></div><div class="np-prog"><i style="width:42%;"></i></div></div></div>
+            <div class="np-card rise" style="animation-delay:.12s;"><div class="np-poster g7"><button class="np-play"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button><div class="scrim"><div class="np-title">三体 · S1E3</div><div class="np-meta"><span>剩 15 分钟</span></div></div><div class="np-prog"><i style="width:65%;"></i></div></div></div>
+            <div class="np-card rise" style="animation-delay:.19s;"><div class="np-poster g5"><button class="np-play"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button><div class="scrim"><div class="np-title">流浪地球2</div><div class="np-meta"><span>剩 153 分钟</span></div></div><div class="np-prog"><i style="width:8%;"></i></div></div></div>
+            <div class="np-card rise" style="animation-delay:.26s;"><div class="np-poster g4"><button class="np-play"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button><div class="scrim"><div class="np-title">银翼杀手2049</div><div class="np-meta"><span>剩 61 分钟</span></div></div><div class="np-prog"><i style="width:47%;"></i></div></div></div>
+          </div>
+        </div>
+        <div class="row">
+          <div class="rh"><h6>电影 · 最新</h6><a href="#">进入媒体库 ›</a></div>
+          <div class="hscroll">
+            <div class="np-card rise" style="animation-delay:.1s;"><div class="np-poster g1"><span class="np-badge">4K · HDR</span><button class="np-play"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button><div class="scrim"><div class="np-title">沙丘：第二部</div><div class="np-meta"><span class="star">★ 8.3</span><span>2024</span></div></div></div></div>
+            <div class="np-card rise" style="animation-delay:.16s;"><div class="np-poster g2"><button class="np-play"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button><div class="scrim"><div class="np-title">奥本海默</div><div class="np-meta"><span class="star">★ 8.4</span><span>2023</span></div></div></div></div>
+            <div class="np-card rise" style="animation-delay:.22s;"><div class="np-poster g3"><button class="np-play"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button><div class="scrim"><div class="np-title">星际穿越</div><div class="np-meta"><span class="star">★ 9.1</span><span>2014</span></div></div></div></div>
+            <div class="np-card rise" style="animation-delay:.28s;"><div class="np-poster g6"><button class="np-play"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button><div class="scrim"><div class="np-title">让子弹飞</div><div class="np-meta"><span class="star">★ 9.0</span><span>2010</span></div></div></div></div>
+            <div class="np-card rise" style="animation-delay:.34s;"><div class="np-poster g8"><button class="np-play"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button><div class="scrim"><div class="np-title">你的名字。</div><div class="np-meta"><span class="star">★ 8.5</span><span>2016</span></div></div></div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 05 播放器预览 ================= -->
+<section id="s5">
+  <div class="sec-head"><span class="sec-no">05</span><h2>播放器整页预览</h2></div>
+  <p class="sec-sub">黑色画布 + 顶部渐隐信息条 + 底部玻璃控制条。字幕沿用现有 <code style="font-family:ui-monospace,Consolas,monospace;font-size:12px;background:var(--bg-2);border:1px solid var(--line);border-radius:6px;padding:2px 7px;color:#c7d2fe;">.player-subtitle-text</code> 样式（悬停进度条看时间气泡）。</p>
+  <div class="frame">
+    <div class="bar"><span class="c c1"></span><span class="c c2"></span><span class="c c3"></span><span class="url">emby.example.com/web/#/play/s1e13</span></div>
+    <div class="player-mock">
+      <div class="vlabel"><div class="b1">三体 · 第一季 第 3 集</div><div class="b2">MOCK PLAYBACK · 1080P · NATIVE</div></div>
+      <div class="topbar">
+        <div class="back"><svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg></div>
+        <div class="tt">三体<small>S1 · E3 裂痕</small></div>
+        <span class="spacer"></span>
+        <span class="gchip plain"><span class="d"></span>1080p</span>
+      </div>
+      <div class="sub">这是一条演示字幕 · libmedia / JASSUB 渲染样式</div>
+      <div class="ctrls"><div class="inner">
+        <div class="pbar"><span class="buf"></span><span class="cur"></span><span class="thumb"></span><span class="bubble">18:42</span></div>
+        <div class="ctrlbar" style="margin-top:12px;">
+          <button class="ibtn"><svg viewBox="0 0 24 24"><path d="M6 6h2.4v12H6zM20 6l-9.5 6L20 18z"/></svg></button>
+          <button class="ibtn big"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button>
+          <button class="ibtn"><svg viewBox="0 0 24 24"><path d="M15.6 6H18v12h-2.4zM4 6l9.5 6L4 18z"/></svg></button>
+          <div class="vol">
+            <button class="ibtn"><svg viewBox="0 0 24 24"><path d="M3 10v4h4l5 4V6L7 10H3z"/><path d="M16 8.5a5 5 0 010 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
+            <input type="range" value="80">
+          </div>
+          <span class="ptime"><b>18:42</b> / 46:00</span>
+          <span class="spacer"></span>
+          <button class="gpill"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h10"/><path d="M4 18h7"/></svg>字幕 <span class="v">中文</span></button>
+          <button class="gpill"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg>音轨 <span class="v">5.1</span></button>
+          <button class="gpill"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h10M4 18h7"/></svg>4K</button>
+          <button class="ibtn"><svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg></button>
+        </div>
+      </div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 06 落地清单 ================= -->
+<section id="s6">
+  <div class="sec-head"><span class="sec-no">06</span><h2>落地清单</h2></div>
+  <p class="sec-sub">按依赖顺序实施；除 Hero 轮播外全部是 CSS / 模板层改动，<b style="color:var(--t1);">不触碰 app.js 数据流与 player-libmedia.js 播放内核</b>。</p>
+  <div class="panel" style="padding:8px 12px;overflow-x:auto;">
+    <table class="map">
+      <tr><th>改动点</th><th>位置（web.html）</th><th>做法</th><th>工作量</th></tr>
+      <tr><td>① 设计令牌</td><td><code>&lt;style&gt;</code> 顶部</td><td>新增 <code>:root{--bg-0…}</code> 变量集；把模板里的 <code>bg-slate-900/800/700</code> 批量替换为 <code>var(--bg-0/1/2)</code> 对应类</td><td><span class="eff s">小</span></td></tr>
+      <tr><td>② 海报卡片</td><td><code>.poster-card</code> + HOME/LIBRARY 模板</td><td>重写为 <code>.np-card</code>：遮罩、播放钮、评分/年份、进度条结构（数据字段 <code>CommunityRating/ProductionYear/UserData</code> 均已存在）</td><td><span class="eff m">中</span></td></tr>
+      <tr><td>③ Hero 焦点区</td><td>HOME 模板顶部 + app.js</td><td>新增 section；app.js 取 <code>latestSections</code> 第一区前 5 项做 8s 轮播（约 30 行，唯一 JS 改动）</td><td><span class="eff m">中</span></td></tr>
+      <tr><td>④ 媒体库卡</td><td>HOME「媒体库」区块</td><td>图标方块改为封面背景卡（背景可直接用 <code>imageUrl(lib 首项)</code> 或纯渐变兜底）</td><td><span class="eff s">小</span></td></tr>
+      <tr><td>⑤ 播放器工具栏</td><td><code>.play-toolbar</code> + PLAYER 模板</td><td>文字按钮换 lucide 图标（<code>skip-back/play/skip-forward/volume-2/maximize</code>），select 换玻璃胶囊；进度条加 <code>.buf</code> 缓冲层与悬停时间气泡</td><td><span class="eff m">中</span></td></tr>
+      <tr><td>⑥ 登录分栏</td><td>LOGIN 区块</td><td>改为品牌/表单两栏 grid，窄屏单栏；按钮套用 <code>.btn-p</code></td><td><span class="eff s">小</span></td></tr>
+      <tr><td>⑦ 规格徽章</td><td><code>.chip*</code></td><td>实心色块 → 玻璃胶囊 + 指示点（保留 4K/DV/Atmos 色语义）</td><td><span class="eff s">小</span></td></tr>
+      <tr><td>⑧ 骨架屏</td><td>各 loading 区块</td><td>spinner 替换为 <code>.skel</code> 骨架（海报形状 + 文本行），布局不塌陷</td><td><span class="eff s">小</span></td></tr>
+      <tr><td>⑨ 动效体系</td><td><code>&lt;style&gt;</code></td><td>统一 <code>--ease/--dur</code>；卡片 hover 由 scale 改 <code>translateY(-6px)</code>；列表入场 stagger（纯 CSS <code>animation-delay</code>）</td><td><span class="eff s">小</span></td></tr>
+      <tr><td>⑩ 侧栏激活态</td><td>aside nav</td><td>实心蓝块 → 渐变胶囊 + 左侧光条；底部加用户芯片（数据已有 <code>currentUser</code>）</td><td><span class="eff s">小</span></td></tr>
+    </table>
+  </div>
+  <div class="panel" style="padding:20px 24px;margin-top:18px;display:flex;gap:14px;align-items:flex-start;">
+    <div style="width:8px;height:8px;border-radius:50%;background:var(--gold);margin-top:8px;flex:none;box-shadow:0 0 10px var(--gold);"></div>
+    <div style="font-size:13.5px;color:var(--t2);">
+      <b style="color:var(--t1);">两个注意点：</b>
+      ① 现有 <code style="font-family:ui-monospace,Consolas,monospace;font-size:12px;background:var(--bg-2);border:1px solid var(--line);border-radius:6px;padding:2px 7px;color:#c7d2fe;">v-cloak</code> 与 lucide <code style="font-family:ui-monospace,Consolas,monospace;font-size:12px;background:var(--bg-2);border:1px solid var(--line);border-radius:6px;padding:2px 7px;color:#c7d2fe;">refreshIcons()</code> 机制不受影响——新组件仍用 <code style="font-family:ui-monospace,Consolas,monospace;font-size:12px;background:var(--bg-2);border:1px solid var(--line);border-radius:6px;padding:2px 7px;color:#c7d2fe;">data-lucide</code> 图标即可；
+      ② 播放器控制条改图标后，移动端 <code>@media(max-width:640px)</code> 需同步收窄间距（图标化后反而比文字按钮更省横向空间）。
+    </div>
+  </div>
+</section>
+
+<footer>
+  <span>Emby-in-One · /web UI 优化方案 · 纯视觉层改造，无新增依赖</span>
+  <span>本页所有组件均以内联 CSS/SVG 渲染，可直接作为实现参照</span>
+</footer>
+
+</div>
+</body>
+</html>

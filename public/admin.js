@@ -42,13 +42,13 @@ createApp({
     }
   },
   watch: {
-    currentPage(v) { if(this._refreshTimer) clearTimeout(this._refreshTimer); this._refreshTimer = setTimeout(()=>{this.refresh(); this.$nextTick(() => lucide.createIcons());}, 50); }
+    currentPage(v) { if(this._refreshTimer) clearTimeout(this._refreshTimer); this.abortRefresh(); this._refreshTimer = setTimeout(()=>{this.refresh(); this.$nextTick(() => lucide.createIcons());}, 50); }
   },
-  mounted() { const t = localStorage.getItem('eio_token'); if(t) this.checkAuth(t); this.$nextTick(() => lucide.createIcons()); },
+  mounted() { const t = localStorage.getItem('eio_admin_token'); if(t) this.checkAuth(t); this.$nextTick(() => lucide.createIcons()); },
   methods: {
     navigateTo(id) { this.currentPage = id; this.showSidebar = false; },
     async api(path, opts = {}) {
-      const t = localStorage.getItem('eio_token');
+      const t = localStorage.getItem('eio_admin_token');
       const h = { 'Content-Type': 'application/json' };
       if(t) h['X-Emby-Token'] = t;
       const r = await fetch(path, { ...opts, headers: h });
@@ -58,32 +58,40 @@ createApp({
       if(!r.ok) throw new Error(data.error || data.message || ('HTTP ' + r.status));
       return data;
     },
-    async checkAuth() { try { const s = await this.api('/admin/api/status'); if(!s || s.error) { this.logout(); return; } this.isLoggedIn = true; this.refresh(); this.refreshClientInfo(); } catch(e) { this.logout(); } },
+    async checkAuth() { try { const s = await this.api('/admin/api/status'); if(!s || s.error) { this.logout(); return; } this.isLoggedIn = true; this.refresh(); this.refreshClientInfo(); } catch(e) { /* api() already logs out on 401; a transient failure (server restart, network blip) keeps the stored token so a refresh can retry */ } },
     async doLogin() { try {
       const r = await fetch('/Users/AuthenticateByName', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({Username:this.loginForm.user, Pw:this.loginForm.pass}) });
       if(!r.ok) throw new Error(); const data = await r.json();
-      localStorage.setItem('eio_token', data.AccessToken);
-      try { await this.api('/admin/api/status'); } catch(e) { localStorage.removeItem('eio_token'); this.loginError = '需要管理员权限'; return; }
+      localStorage.setItem('eio_admin_token', data.AccessToken);
+      try { await this.api('/admin/api/status'); } catch(e) { localStorage.removeItem('eio_admin_token'); this.loginError = '需要管理员权限'; return; }
       this.isLoggedIn = true; this.refresh(); this.refreshClientInfo();
     } catch(e) { this.loginError = '用户名或密码错误'; } },
-    logout() { this.isLoggedIn = false; localStorage.removeItem('eio_token'); },
+    logout() { this.isLoggedIn = false; localStorage.removeItem('eio_admin_token'); },
     async copyClientUA() {
       if (!this.clientInfo || !this.clientInfo.userAgent) return;
       try { await navigator.clipboard.writeText(this.clientInfo.userAgent); alert('UA 已复制到剪贴板'); } catch(e) {}
     },
+    // Page switches abort the previous page's in-flight refreshes: without
+    // this, a late response overwrote whatever the new page had already
+    // loaded (or emptied its lists through the error path).
+    abortRefresh() { if (this._refreshAbort) { this._refreshAbort.abort(); this._refreshAbort = null; } },
+    refreshSignal() { if (!this._refreshAbort) this._refreshAbort = new AbortController(); return this._refreshAbort.signal; },
+    isAbort(e) { return e && e.name === 'AbortError'; },
     refresh() {
-      if(this.currentPage === 'dashboard') this.refreshDashboard();
-      if(this.currentPage === 'servers') this.refreshServers();
-      if(this.currentPage === 'users') this.refreshUsers();
-      if(this.currentPage === 'proxies') this.refreshProxies();
-      if(this.currentPage === 'settings') this.refreshSettings();
-      if(this.currentPage === 'logs') this.refreshLogs();
+      this.abortRefresh();
+      const signal = this.refreshSignal();
+      if(this.currentPage === 'dashboard') this.refreshDashboard(signal);
+      if(this.currentPage === 'servers') this.refreshServers(signal);
+      if(this.currentPage === 'users') this.refreshUsers(signal);
+      if(this.currentPage === 'proxies') this.refreshProxies(signal);
+      if(this.currentPage === 'settings') this.refreshSettings(signal);
+      if(this.currentPage === 'logs') this.refreshLogs(signal);
     },
-    async refreshDashboard() { try { this.stats = await this.api('/admin/api/status'); } catch(e) {} this.refreshClientInfo(); this.$nextTick(()=>lucide.createIcons()); },
-    async refreshClientInfo() { try { this.clientInfo = await this.api('/admin/api/client-info'); } catch(e) {} this.$nextTick(()=>lucide.createIcons()); },
-    async refreshServers() { try { this.upstreamList = await this.api('/admin/api/upstream'); } catch(e) { this.upstreamList = []; } try { await this.refreshProxies(); } catch(e) {} this.$nextTick(()=>lucide.createIcons()); },
-    async refreshProxies() { try { this.proxyList = await this.api('/admin/api/proxies'); } catch(e) { this.proxyList = []; } this.$nextTick(()=>lucide.createIcons()); },
-    async refreshSettings() { try { const s = await this.api('/admin/api/settings'); this.settings = { ...this.settings, ...s, adminPassword: '', currentPassword: '', timeouts: s.timeouts || this.settings.timeouts }; this.adminUsernameOriginal = s.adminUsername || ''; } catch(e) {} },
+    async refreshDashboard(signal) { try { this.stats = await this.api('/admin/api/status', { signal }); } catch(e) { if (this.isAbort(e)) return; } this.refreshClientInfo(signal); this.$nextTick(()=>lucide.createIcons()); },
+    async refreshClientInfo(signal) { try { this.clientInfo = await this.api('/admin/api/client-info', { signal }); } catch(e) { if (this.isAbort(e)) return; } this.$nextTick(()=>lucide.createIcons()); },
+    async refreshServers(signal) { try { this.upstreamList = await this.api('/admin/api/upstream', { signal }); } catch(e) { if (!this.isAbort(e)) this.upstreamList = []; } try { await this.refreshProxies(signal); } catch(e) {} this.$nextTick(()=>lucide.createIcons()); },
+    async refreshProxies(signal) { try { this.proxyList = await this.api('/admin/api/proxies', { signal }); } catch(e) { if (!this.isAbort(e)) this.proxyList = []; } this.$nextTick(()=>lucide.createIcons()); },
+    async refreshSettings(signal) { try { const s = await this.api('/admin/api/settings', { signal }); this.settings = { ...this.settings, ...s, adminPassword: '', currentPassword: '', timeouts: s.timeouts || this.settings.timeouts }; this.adminUsernameOriginal = s.adminUsername || ''; } catch(e) { if (this.isAbort(e)) return; } },
     async saveSettings() {
       const nextUsername = (this.settings.adminUsername || '').trim();
       const usernameChanged = !!nextUsername && nextUsername !== this.adminUsernameOriginal;
@@ -98,9 +106,9 @@ createApp({
         setTimeout(()=>this.saveSuccess=false,3000);
       } catch(e) { alert('保存失败：' + (e.message || '未知错误')); }
     },
-    async refreshLogs() { this.isLoadingLogs = true; try { this.logs = await this.api('/admin/api/logs?limit=500'); this.$nextTick(() => { const b=this.$refs.logBox; if(b) b.scrollTop=b.scrollHeight; lucide.createIcons(); }); } catch(e) { this.logs = []; } finally { this.isLoadingLogs=false; } },
+    async refreshLogs(signal) { this.isLoadingLogs = true; try { this.logs = await this.api('/admin/api/logs?limit=500', { signal }); this.$nextTick(() => { const b=this.$refs.logBox; if(b) b.scrollTop=b.scrollHeight; lucide.createIcons(); }); } catch(e) { if (!this.isAbort(e)) this.logs = []; } finally { this.isLoadingLogs=false; } },
     async downloadLogs() {
-      const t = localStorage.getItem('eio_token');
+      const t = localStorage.getItem('eio_admin_token');
       const res = await fetch('/admin/api/logs/download', { headers: t ? { 'X-Emby-Token': t } : {} });
       if (!res.ok) { alert('下载失败'); return; }
       const blob = await res.blob();
@@ -112,7 +120,7 @@ createApp({
     },
     async clearLogs() { if(!confirm('确认清空所有日志？')) return; try { await this.api('/admin/api/logs', { method:'DELETE' }); this.logs = []; } catch(e) { alert('清空失败：' + (e.message || '未知错误')); } },
     getProxyName(id) { const p = this.proxyList.find(x => x.id === id); return p ? p.name : '不使用'; },
-    openAddServer() { this.editID = null; this.editIndex = null; this.serverForm = { name:'', url:'', streamingUrlsText:'', authType:'password', spoofClient:'none', followRedirects:true, proxyId:null, priorityMetadata:false, directRedirect:false, pagedScan:false, maxConcurrent:0, customUserAgent:'', customClient:'', customClientVersion:'', customDeviceName:'', customDeviceId:'' }; this.showModal = true; },
+    openAddServer() { this.editID = null; this.editIndex = null; this.serverForm = { name:'', url:'', streamingUrlsText:'', authType:'password', spoofClient:'passthrough', followRedirects:true, proxyId:null, priorityMetadata:false, directRedirect:false, pagedScan:false, maxConcurrent:0, customUserAgent:'', customClient:'', customClientVersion:'', customDeviceName:'', customDeviceId:'' }; this.showModal = true; },
     editServer(s) { this.editID = s.id || s.index; this.editIndex = s.index; this.serverForm = { ...s, password:'', apiKey:'', maxConcurrent: s.maxConcurrent || 0, streamingUrlsText: (s.streamingUrls && s.streamingUrls.length ? s.streamingUrls : (s.streamingUrl ? [s.streamingUrl] : [])).join('\n'), customUserAgent: s.customUserAgent || '', customClient: s.customClient || '', customClientVersion: s.customClientVersion || '', customDeviceName: s.customDeviceName || '', customDeviceId: s.customDeviceId || '' }; this.showModal = true; },
     async saveServer() {
       const target = this.editID !== null && this.editID !== undefined ? this.editID : this.editIndex;
@@ -171,24 +179,18 @@ createApp({
     },
     async saveProxy() { try { await this.api('/admin/api/proxies', { method:'POST', body:JSON.stringify(this.proxyForm) }); this.showProxyModal = false; await this.refreshProxies(); } catch(e) { alert('添加失败：' + (e.message || '未知错误')); } },
     async deleteProxy(id) { if(!confirm('删除代理？')) return; try { await this.api('/admin/api/proxies/'+id, { method:'DELETE' }); await this.refreshProxies(); } catch(e) { alert('删除失败：' + (e.message || '未知错误')); } },
-    async refreshUsers() { try { this.userList = await this.api('/admin/api/users'); } catch(e) { this.userList = []; } try { this.upstreamList = await this.api('/admin/api/upstream'); } catch(e) {} this.$nextTick(()=>lucide.createIcons()); },
+    async refreshUsers(signal) { try { this.userList = await this.api('/admin/api/users', { signal }); } catch(e) { if (!this.isAbort(e)) this.userList = []; } try { this.upstreamList = await this.api('/admin/api/upstream', { signal }); } catch(e) { if (this.isAbort(e)) return; } this.$nextTick(()=>lucide.createIcons()); },
     openAddUser() { this.editUserId = null; this.userForm = { username:'', password:'', enabled:true, allowedServers:[] }; this.userLibraryGroups = []; this.showUserModal = true; this.$nextTick(()=>lucide.createIcons()); },
-    async editUser(u) {
+    editUser(u) {
       this.editUserId = u.id;
       this.userForm = { username:u.username, password:'', enabled:u.enabled, allowedServers: u.allowedServers ? [...u.allowedServers] : [] };
       this.showUserModal = true;
-      this.userLibraryGroups = [];
-      this.libraryGroupsLoading = true;
-      try {
-        // 只列出该用户有权访问的服务器；未限制（全部）时列出全部。
-        const scope = this.userForm.allowedServers.length > 0
-          ? this.upstreamList.filter(s => this.userForm.allowedServers.includes(s.id))
-          : this.upstreamList;
-        this.userLibraryGroups = await this.loadLibraryGroups(scope, u.hiddenLibraries);
-      } finally {
-        this.libraryGroupsLoading = false;
-        this.$nextTick(()=>lucide.createIcons());
-      }
+      // 折叠列表：只渲染服务器骨架，点击条目时才按需拉取库列表，避免服务器多时打开卡顿。
+      const scope = this.userForm.allowedServers.length > 0
+        ? this.upstreamList.filter(s => this.userForm.allowedServers.includes(s.id))
+        : this.upstreamList;
+      this.userLibraryGroups = this.buildLibraryGroupSkeletons(scope, u.hiddenLibraries);
+      this.$nextTick(()=>lucide.createIcons());
     },
     async saveUser() {
       try {
@@ -211,26 +213,53 @@ createApp({
         this.showUserModal = false; await this.refreshUsers();
       } catch(e) { alert('保存失败：' + (e.message || '未知错误')); }
     },
-    async loadLibraryGroups(servers, hidden) {
+    // 折叠列表骨架：只含服务器元信息与已存隐藏项，库列表等展开时再按需拉取。
+    buildLibraryGroupSkeletons(servers, hidden) {
       hidden = hidden || {};
-      return Promise.all(servers.map(async (s) => {
-        const stored = (hidden[s.id] || []).slice();
-        try {
-          const libraries = await this.api('/admin/api/upstream/' + (s.id || s.index) + '/libraries');
-          // 在线服务器只保留仍存在的库 ID：上游已删除的库在保存时自然清除。
-          return { serverId: s.id, name: s.name, online: true, libraries: libraries, hiddenIds: stored.filter(id => libraries.some(l => l.id === id)) };
-        } catch (e) {
-          // 离线服务器保留已存 ID 供显示计数；保存时不提交该组 key。
-          return { serverId: s.id, name: s.name, online: false, libraries: [], hiddenIds: stored };
-        }
-      }));
+      return this.decorateLibraryGroups((servers || []).map(s => ({
+        serverId: s.id,
+        name: s.name,
+        online: !!s.online,
+        libraries: [],
+        hiddenIds: (hidden[s.id] || []).slice(),
+        loaded: false, // 本次面板是否成功拉取过；未成功拉取则不提交 key，后端保留其已存配置
+      })));
     },
+    decorateLibraryGroups(groups) {
+      for (const g of (groups || [])) { g.expanded = false; g.loading = false; g.error = ''; }
+      return groups;
+    },
+    // 展开/折叠某个服务器；首次展开时按需拉取库列表，之后复用内存结果。
+    async toggleLibraryGroup(g) {
+      if (g.expanded) { g.expanded = false; return; }
+      g.expanded = true;
+      if (!g.loaded && g.libraries.length === 0 && !g.loading) await this.fetchLibraryGroup(g);
+      this.$nextTick(()=>lucide.createIcons());
+    },
+    async fetchLibraryGroup(g, refresh) {
+      if (g.loading) return;
+      g.loading = true; g.error = '';
+      try {
+        const libraries = await this.api('/admin/api/upstream/' + g.serverId + '/libraries' + (refresh ? '?refresh=1' : ''));
+        g.libraries = libraries || [];
+        g.online = true;
+        g.loaded = true;
+        g.hiddenIds = g.hiddenIds.filter(id => g.libraries.some(l => l.id === id));
+      } catch (e) {
+        g.online = false;
+        g.error = (e && e.message) ? e.message : '加载失败';
+      } finally {
+        g.loading = false;
+        this.$nextTick(()=>lucide.createIcons());
+      }
+    },
+    async refreshLibraryGroup(g) { await this.fetchLibraryGroup(g, true); },
     toggleGroupAll(g, val) { g.hiddenIds = val ? g.libraries.map(l => l.id) : []; },
     isGroupAllHidden(g) { return g.libraries.length > 0 && g.libraries.every(l => g.hiddenIds.includes(l.id)); },
     groupHiddenPayload(groups) {
       const payload = {};
       for (const g of groups) {
-        if (!g.online) continue; // 离线组不提交 key，后端不触碰其已存配置
+        if (!g.loaded || g.error) continue; // 未成功加载的服务器不提交 key，后端不触碰其已存配置
         payload[g.serverId] = g.hiddenIds.slice();
       }
       return payload;
@@ -241,7 +270,7 @@ createApp({
       this.libraryGroupsLoading = true;
       try {
         const hidden = (await this.api('/admin/api/home-libraries')).hidden || {};
-        this.adminLibraryGroups = await this.loadLibraryGroups(this.upstreamList, hidden);
+        this.adminLibraryGroups = this.buildLibraryGroupSkeletons(this.upstreamList, hidden);
       } finally {
         this.libraryGroupsLoading = false;
         this.$nextTick(()=>lucide.createIcons());

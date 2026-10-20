@@ -1,10 +1,143 @@
 # Emby-In-One 更新日志
 
+## V1.4.4-rc2
+
+发布日期：2026-09-30
+
+> V1.4.4-rc2 是 V1.4.4-rc1 之后的累积预发布（未单独发布，内容持续合入至 2026-10-13）。除**内置 Web 客户端与播放器**（libmedia 1.3.1 流式播放、内嵌/外挂/PGS 全套字幕、桌面化界面重设计，见「Web 客户端与播放器」「Web 界面重设计」）外，本版还包含多轮代码审查的修复产出：**7 项高危、17 项中危、2 项低危**（见「安全修复」「安全与稳定性修复」等章节），并**彻底移除三套内置客户端身份方案（无UA / 诚实UA / Infuse UA 伪装）**——`spoofClient` 只剩 `passthrough` 与 `custom` 两种模式。**对外接口保持兼容（存量配置自动迁移）。** 主要变更集中在：管理员改密后令牌吊销、经代理转发的上游 SSRF 校验、SQLite 共享连接写锁的调用点补齐、HLS 清单的错误状态码与压缩处理、上游验证错误中的凭据脱敏、双写一致性、内置身份机制的全面拆除，以及全新的 `/web` 客户端。**升级前请读「升级须知」。**
+
+### Web 客户端与播放器
+
+- 正式 Web 播放器接入 libmedia 1.3.1：原生 MP4、流式 MKV/HEVC、按需本地 WASM，以及直链失败后的上游 HLS 兜底。优先使用浏览器 MSE/WebCodecs；兼容 HLS 请求限制最大 1080p，高分辨率 canvas 路径拒绝持续软解。
+- 加入内嵌文本/ASS、外部 JASSUB/libass ASS、SRT/VTT 与 SUP/PGS 字幕；补齐本地中文字体，修正 PGS 分片、彩色 RLE、缓存复用和清屏。刷新 JASSUB 1.7.17 资源，替换有尾部空字节、无法解析的旧 worker。
+- 修复首页最新添加、媒体库、剧集分季、Series 播放解析、搜索类型与播放器退出清理；修复画布尺寸为零的问题。
+- 管理员禁止登录 `/web/`；上游用户名必填、密码可留空；修复大小写流路径及 HLS EXT-X-MAP 初始化片段的 URL 改写。
+- 退役 FFmpeg 全文件转码资源，旧播放器归档保留。
+
+### Web 客户端修复
+
+- 修复媒体库导航函数重名导致的 ParentId 丢失；浏览指定服务器的库时仅查询该库，按电影/剧集类型筛选，分类筛选生效，加载更多追加而非覆盖。
+- 剧集分季及单集列表完整分页；按来源的 ProviderIds 查找同一作品的其他副本，合并各服务器可用季/集后再分页。显示每季实际可用集数；上游分页失败显示重试，不把部分结果当作完整列表。调整单集卡片，避免标题被挤成竖排。
+- 详情页的视频版本标注“视频名 (来源服务器名)”，音轨与字幕可以点击选择，选择随播放请求传递。聚合详情等待各来源结果，失败来源提示列表可能不完整。
+- 选中的视频版本决定 PlaybackInfo、播放会话和字幕请求的目标服务器；播放信息中的会话 ID 按实际来源映射，观看进度上报包含版本 ID，修复默认来源与选中来源混用。
+- 播放器统一提供上一集/下一集、版本、音轨、字幕、播放/暂停、音量与全屏控件；版本切换保留进度及暂停状态。直接流音轨由 libmedia 选择，HLS 音轨通过上游兼容流切换。
+- 播放进度条允许小数秒，拖动预览、松开跳转，移除整数步进引起的浏览器“请输入有效值”提示。修正 libmedia MSE 跳转时音视频共用缓冲循环、较短音频包未缓冲到目标位置的问题；暂停跳转及版本切换保持目标时间，界面即时同步。
+- 左侧首页下新增“继续观看”和“收藏”独立页面，按用户加载完整列表；侧栏固定在视口，退出登录按钮始终可见，退出时停止播放并清理本地登录态。
+
+### Web 界面重设计
+
+`/web` 客户端的界面与交互整体重做：导航拆为桌面侧栏（首页 / 收藏 / 搜索）+ 首页“继续观看 · 全部”，统一色板、按钮、卡片、加载/空态/焦点态；首页新增 Hero、续看行与分块局部重试；媒体库增加网格/列表与有界自动分页；详情分季、单季重试、版本卡与真实进度；搜索分组与最近搜索；播放器控制层增加自动隐藏、菜单、快捷键与可重试错误卡。
+
+- 首页各板块独立加载，失败可局部重试，不把加载失败当作空库。
+- 快速切换页面时旧请求自动取消，过期结果不会覆盖当前页面。
+- 媒体库滚动到底自动加载更多，加载失败可手动重试。
+- 详情页先显示主数据，季与单集独立加载；单季失败只重试该季；简介可展开/收起。
+- 播放失败统一显示可重试的错误卡（服务器并发已满时明确提示）；切换版本/音轨期间显示忙态；字幕加载失败自动恢复原字幕轨或明确关闭。
+
+> 预发布测试状态：跨季连播、切换版本后的恢复速度、复杂 ASS/PGS 字幕、各浏览器全屏兼容等场景仍需真实片源与设备进一步验证，遇到问题欢迎反馈。
+
+### ⚠️ 升级须知
+
+- **管理员修改普通用户密码后，该用户已登录的令牌会立即失效**。这是安全修复：令牌此前永不过期，改密无法切断泄露令牌的访问。被改密的用户需要重新登录，这是预期行为。
+- **经 HTTP 代理转发的上游地址现在会做目标地址校验**。指向 **link-local / 云元数据地址（`169.254.0.0/16`、`fe80::/10`）** 的上游或推流地址会被拒绝。**本机回环与局域网地址（`127.0.0.1`、`192.168.x.x` 等）仍然允许**，自建 Emby 不受影响；如果你确实把上游指向了元数据地址，请改回真实地址。
+- **`/System/Info/Public` 与 `/System/Info` 的 `LocalAddress` 只在 `server.trustProxy: true` 时才采信 `X-Forwarded-*` 头**。反代部署请确认已开启 `trustProxy`（`config.yaml` 的 `server.trustProxy`），否则该字段会回退为请求自身的 Host。
+- **会话上报（`/Sessions/Playing*`）的本地记录语义修正**：当上游**明确拒绝（非 2xx）**时，代理不再写入本地观看进度（此前会写，造成本地状态与上游不一致）；客户端仍收到 `204`（Emby 客户端的 fire-and-forget 契约不变）。网络层失败（无应答）仍保留本地记录，因为请求可能已送达。
+- **HLS 清单请求现在会显式声明 `Accept-Encoding: identity`**，且上游返回非 2xx 时不再被改写成 200。若上游强制对清单压缩，代理会原样透传（保留 `Content-Encoding`），不再把压缩字节当作明文重写。
+- **内置客户端身份方案已全部移除**：`spoofClient` 不再支持 `none`（Emby Aggregator 五元组）与 `infuse`（Infuse 伪造身份），合法值只剩 `passthrough | custom`。**存量 `none` / `infuse` 配置在加载时自动迁移为 `passthrough`**；未配置 `spoofClient` 的上游默认值也从 `none` 变为 `passthrough`。
+- **passthrough 上游的延迟登录扩展到 API Key 模式**：没有已捕获的真实客户端身份时（无论密码还是 API Key），启动登录与健康检查一律跳过，上游保持 offline 等待捕获——不再用伪造身份顶替。**升级后如果上游显示 offline，用任意真实 Emby 客户端（Infuse、Emby iOS 等）以 admin 身份登录一次本代理即可全量恢复**（这是既定的身份种子流程）；全新部署暂时无法做种子登录时，可改用 `custom` 模式显式定义客户端身份（`customUserAgent` 现为必填）。
+- **历史持久化污染会在加载时清洗**：旧版本 Infuse 合并基底写入 `captured-headers.json` 的 `infuse-spoof-id` 固定设备 ID 条目会在加载时被丢弃，不再外发。
+
+### 安全修复（高危）
+
+- **管理员改密后吊销该用户令牌**（`handlers_admin.go`）：`handleAdminUsersUpdate` 此前只在禁用用户时调 `RevokeTokensByUserID`，改密码不吊销；而管理员改自己的密码会全量吊销。现改密与禁用统一吊销该用户令牌，与管理员自身行为对齐。
+- **经代理转发的上游补上目标地址 SSRF 校验**（`upstream.go` / `ssrf.go` / `admin_validation.go`）：HTTP 代理模式下 dialer 只解析代理地址，URL 中的目标主机从不经过校验，导致可经代理访问云元数据与任意内网服务。现在 `validateUpstreamDraft` 对上游 URL 与每条推流地址复用上游 SSRF 策略做目标校验，拒绝 link-local / 未指定地址；本机回环与私有网段仍放行以兼容自建部署。
+- **补齐三处绕过 SQLite 共享连接写锁的写操作**（`user_store.go` / `library_visibility.go`）：`RemoveServerGrants`、`HiddenLibraryStore.RemoveServer`、`HiddenLibraryStore.RemoveUser` 此前直接 autocommit 写入共享连接，可能落入其它 store 正开启的事务并在回滚时被一并丢弃，造成「内存已清理、数据库仍在、重启后复活」。现统一改走 `writeParams` / `withWriteTx`。
+
+### 安全修复（中危）
+
+- **上游验证错误中的凭据脱敏**（`admin_validation.go`）：`LastError` 会带上完整请求 URL（含 `api_key=<上游 AccessToken>`）并原样回显到管理 API 的 502 响应。现经 `redactURLInError` 脱敏后再返回。
+- **消除拨号期 DNS 重绑定窗口**（`ssrf.go`）：`validatingDialer` 此前「校验一次解析结果、再拨原始主机名」会二次解析。现统一为单次解析、校验后只拨已验证 IP，并保留多地址轮询失败转移；`pinnedDialer` 与 `blockedTargetReason` 一并收敛到同一实现。
+
+### 代理与流转发修复（中危）
+
+- **HLS 清单分支不再丢失上游状态码**（`media_stream.go`）：playlist 分支此前只设 `Content-Type` 就写正文，上游 404/500 被以 200 返回。现仅在上游 2xx 时改写清单，其它状态原样透传真实状态码。
+- **压缩的清单不再被当作明文重写**（`media_stream.go`）：转发 `Accept-Encoding` 且 transport 禁用自动解压时，gzip 的 `.m3u8` 会被 `io.ReadAll` 后重写成乱码。现清单请求强制 `Accept-Encoding: identity`；若上游仍压缩，则保留 `Content-Encoding` 原样透传，不做改写。
+- **会话上报不再在上游拒绝时写本地**（`session_userdata.go`）：见「升级须知」。以类型化 `upstreamHTTPError` 区分「上游明确拒绝」与「网络失败」。
+
+### 数据一致性修复（中危）
+
+- **watch store 读错误不再被当作「无记录」**（`watch_store.go` / `session_userdata.go` / `media_nextup.go`）：`GetProgress`、`GetNextUpForSeries` 改为返回 `error`。此前读失败返回 nil 会被上层解释为「无本地记录」并清空上游 UserData，导致 SQLite 瞬时故障时普通用户的进度/已看/收藏被「抹零」且无日志。现读失败跳过覆盖并记录告警。
+- **id 映射先写库成功再登记内存**（`idstore.go`）：`GetOrCreateVirtualID`、`AssociateAdditionalInstance` 此前先写内存再尝试写库、失败仅告警，进程内一致但重启后映射丢失（客户端持有的虚拟 ID 变 404）。现改为持久化优先，失败时记录告警并保留进程内一致。
+- **双写本地失败补日志**（`session_userdata.go`）：`MarkPlayed` / `SetFavorite` 的本地写入失败此前被 `_ =` 静默丢弃，现记录告警。
+- **删除上游时级联清理骨架行**（`watch_store.go` / `handlers_admin.go`）：`MarkPlayed`/`SetFavorite` 为无历史记录的条目插入的 `server_id=''` 骨架行，此前不会被 `DeleteServerData` 清掉。现经 `id_mappings` 级联删除，并把删除处理器的清理顺序调整为「先 watch 数据、后 id 映射」以满足级联依赖。
+
+### 健壮性与可观测性
+
+- **拒绝令牌不再记录任何前缀**（`auth_manager.go`）：此前 Debug 日志会打印被拒令牌前 8 字符，给暴力猜测提供日志确认。现只记录已知令牌数量。
+- **转发头只在 `trustProxy` 下采信**（`middleware.go` / `handlers_system.go`）：`requestOrigin` 此前无条件信任 `X-Forwarded-Proto`/`Host`，任何人可伪造公开端点回显的服务器地址。现仅在 `server.trustProxy: true` 时采信。
+- **缓冲型上游响应加上限**（`fallback_proxy.go` / `upstream.go`）：回退代理的 JSON/ID 重写与 HTML 检测路径、以及错误信息读取此前会无上限 `io.ReadAll`，现分别限制为 32 MiB 与 64 KiB（流式转发路径不受影响）。
+- **401/403 恢复不再每次响应都 spawn goroutine**（`upstream.go`）：新增 `requestAuthRecovery`，在锁内做廉价去抖预检，仅去抖窗口内的首个响应创建 goroutine；去抖逻辑仍在 goroutine 内复核，避免竞态放大。
+- **流式响应头白名单移除 `Transfer-Encoding`**（`media_stream.go`）：代理对每个响应重新分帧，透传上游的 `Transfer-Encoding` 会声明与正文不符的分帧。
+- **PlaybackInfo 畸形请求体显式报 400**（`media_playback.go`）：此前解析失败被忽略，空 body 被转发上游造成困惑结果。
+- **流探针响应 drain 后再关闭**（`stream_probe.go`）：便于连接复用。
+- **迁移探测与清理错误不再吞掉**（`db_migration.go`）：列探测失败与临时表清理失败现记录告警，避免静默选择到不存在的列。
+- **日志轮转失败会告警**（`logfile.go` / `logger.go`）：轮转 rename 失败此前被吞，大小上限静默失效、日志可能无界增长；现收集并在 stdout 告警一次（避免写回同一文件造成循环）。
+- **id store 关闭错误不再忽略**（`server.go`）：`Close` 失败记录告警。
+- **仓库 `gofmt`**：`handlers_admin.go`、`library_visibility.go`、`session_userdata.go` 三个文件格式化归位。
+
+### 管理面板改进
+
+- **「首页库显示/隐藏」改为折叠列表**（`public/admin.js` / `public/admin.html`）：用户编辑弹窗的「首页隐藏库」与「管理员首页库显示」弹窗此前在打开时对所有上游并发拉取库列表、并默认把每台服务器的库全部展开——上游一多既卡又难操作。现打开时只渲染服务器骨架（名称、在线状态、已隐藏计数），点击某台服务器才按需展开并拉取其库列表（可折叠回、失败可重试）；未成功加载的服务器保存时不提交对应 key，后端原样保留其已存配置（patch 语义不变）。
+
+### 移除内置客户端身份（无UA / 诚实UA / Infuse UA 三方案）
+
+代理此前内置三套出站客户端身份：`none` 模式实际发送 `Emby Aggregator` 五元组（「无UA」只是标签，Go 实现里并不无 UA）、显式 `infuse` 模式发送伪造的 `Infuse/7.7.1` 身份、passthrough 解析链全空时兜底伪造 Infuse 身份，且所有 passthrough 身份都叠加 Infuse 基底（含固定 `infuse-spoof-id` 聚类指纹，会落盘污染 `captured-headers.json`）。本次全部拆除：
+
+- **`spoofClient` 值域收紧为 `passthrough | custom`**（`config.go` / `admin_validation.go`）：默认值改为 `passthrough`；存量 `none` / `infuse` 自动迁移为 `passthrough`；未知值同样归一为 `passthrough`。`custom` 模式新增 `customUserAgent` 必填校验，防止自定义身份退化成无 UA 出站请求。YAML 渲染的省略条件与身份持久化键（`StableUpstreamKey`）同步对齐。
+- **passthrough 无身份时不再伪造、不再裸发**（`identity.go` / `upstream.go` / `healthcheck.go`）：四级解析链（实时请求头 → 当前 Token 捕获头 → 服务器上次成功登录头 → 最近捕获头）全空时返回 `no-identity` 空头集；LoginAll、健康检查、管理验证的延迟挡板扩展到 API Key 模式。Go `http.Client` 在无 UA 时会自动补 `Go-http-client/1.1`，「裸发」本身就不干净，唯一自洽答案是「不发」。
+- **Infuse 合并基底删除**（`identity.go`）：passthrough 身份只呈现客户端真实发出的头字段，缺失字段保持为空；复合 Authorization 头的字段回填改为「四字段任一为空即回填」，对所有客户端一视同仁（此前只优待 Infuse）。
+- **API Key 捕获重试贯通**（`upstream.go`）：捕获触发的离线重试此前在 API Key 分支丢弃捕获头（`validateAPIKey` 不接收 override），且验证成功后不落盘身份——API Key 上游会裸发 `/Users/Me` 且永远无法让后续请求共用捕获身份。现在 override 贯通到 API Key 验证，成功后同样 `recordSuccessfulIdentity` 落盘，web/API 用户经 last-success / captured-latest 共用捕获身份的机制对 API Key 上游同样生效。
+- **历史污染加载清洗**（`identity.go`）：`captured-headers.json` 中带 `infuse-spoof-id` 的 last-success / latestCaptured 条目在加载时丢弃（真实 Infuse 客户端的设备 ID 是随机的，不会撞上该固定哨兵）。已知残留：真实 Device-Id + 基底补齐的 `iPhone`/`7.7.1` 字段按值与真实捕获不可区分，不做启发式清洗（会误杀真实 Infuse 捕获）；危害远小于固定指纹。
+- **对内字符串改名**（`auth_manager.go` / `handlers_system.go`）：会话信息与 Ping 响应中的 `Emby Aggregator` 改为 `Emby-In-One`（对内响应，从不下发上游）。连通性探测 UA `Emby-In-One-Liveness` 保留（探测非客户端身份）。
+- **管理面板**（`public/admin.html` / `public/admin.js`）：下拉只剩「透传真实客户端 / 自定义」两项并说明捕获与延迟登录语义；新增服务器默认 `passthrough`；自定义身份的 User-Agent 标记必填，示例值全部换为中性值。
+- **legacy/ 目录保留为历史存档**（不参与构建与分发），其中 Node 旧实现的三方案代码一并封存。
+
+### 安全与稳定性修复
+
+> 对外接口、端点与配置格式均无变化，每项修复均附带回归测试。Web 客户端为本版新增，其开发期间的问题修复已并入上方 Web 相关章节，不单独列出。
+
+**高危（4）**
+
+- HLS 清单截断或超大时拒绝转发并返回 502，不再当作成功响应下发。
+- Sessions / UserData 上游响应体有界读取，防止恶意上游耗尽内存。
+- AuthManager 令牌持久化与内存变更串行化，消除并发写坏 `tokens.json` 的窗口。
+- 上游在线状态一律经锁保护的访问器读取，消除数据竞争。
+
+**中危（8）**
+
+- 禁用 / 删除普通用户后其令牌立即失效：撤销记录之外逐请求复查用户状态。
+- SQLite 读操作不再与打开的写事务共用连接路径，读走共享读锁。
+- ID 重写器不再为非路由响应字段铸造虚拟 ID，抑制 ID 空间膨胀。
+- 配置 Save 全程持锁，消除并发保存的丢失更新。
+- 无效代理的日志行脱敏 URL 中的 `user:pass@` 凭据。
+- userdata 转发被上游拒绝时透传原状态码，不再一律 500。
+- 本地 NextUp 按有界波次并行获取各剧下一集。
+- 管理面板切页 / 新刷新中止在途请求，防止旧响应清空新列表。
+
+**低危（2）**
+
+- 日志文件与轮转备份按 `0600` 权限写入，旧版本遗留文件自动收紧。
+- SSRF 预检 DNS 解析带请求上下文与 5 秒上限，解析器卡住不再挂起管理请求。
+
+**质量验证**
+
+- 后端与前端全部自动化测试通过（含并发竞态复核）；Web 客户端与管理面板经浏览器冒烟验证。
+
 ## V1.4.4
 
 发布日期：2026-09-18（V1.4.4-rc1 预发布；正式版日期待定）
 
-> V1.4.4 为 V1.4.3 的累积更新，汇总一次全项目审查的修复产出（15 项）与后续跟进项：**上游服务解耦数组下标全面采用持久化唯一 `server_id`**、内容访问控制与 SSRF 加固、普通用户本地观看状态筛选落地、无 `ParentId` 聚合列表的分页缺陷修复、虚拟用户 ID 透传缺陷修复、仓库行尾统一，以及管理面板前端依赖自托管与 CSP 收紧；rc1 预发布期间继续并入：**多推流线路（主线路 + 备用线路）**、**每用户首页库隐藏**，以及安装脚本与 SSH 菜单在非 root 服务下的两处致命问题修复。**管理面板的资源加载方式、安全策略与普通用户的响应身份有变化，升级前请先读「升级须知」。**
+> V1.4.4 为 V1.4.3 的累积更新，汇总一次全项目审查的修复产出（15 项）与后续跟进项：**上游服务解耦数组下标全面采用持久化唯一 `server_id`**、内容访问控制与 SSRF 加固、普通用户本地观看状态筛选落地、无 `ParentId` 聚合列表的分页缺陷修复、虚拟用户 ID 透传缺陷修复、仓库行尾统一，以及管理面板前端依赖自托管与 CSP 收紧；rc1 预发布期间继续并入：**多推流线路（主线路 + 备用线路）**、**每用户首页库隐藏**、安装脚本与 SSH 菜单在非 root 服务下的两处致命问题修复，以及透传（passthrough）功能专项审查的代码修复。**管理面板的资源加载方式、安全策略与普通用户的响应身份有变化，升级前请先读「升级须知」。**
 
 ### ⚠️ 升级须知
 
@@ -222,23 +355,52 @@ object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'
 | `internal/backend/library_filter_test.go`（新增） | 5 个端点过滤命中/未命中、ParentId 路径不过滤、无 DB 降级 |
 | `internal/backend/admin_home_libraries_test.go`（新增） | 库列表端点与 TTL/离线回退、Patch 语义（缺席/null/空数组）、用户更新回显、删除联动、权限 403 |
 
-### 修复：安装脚本与 SSH 菜单在三处场景下的致命问题
+### 修复：安装脚本与 SSH 菜单的多处致命与隐患问题
 
 - **全新安装失败（`无法创建专用运行用户 eio` 后回滚）**：安装脚本先用 `groupadd` 建了同名组，随后 `useradd` 未带 `-g`，其默认行为是再建一个同名用户组，撞上已存在的组即失败（真实报错 `group eio exists - if you want to add this user to that group, use -g.` 被 `2>/dev/null` 吞掉，只显示笼统的"无法创建"）。现组已存在时显式传 `-g`，组不存在时仍由 `useradd` 自建
 - **无版本参数一键安装卡在旧稳定版的校验环节**：V1.4.4 正式版发布前，不指定版本的安装会经 `releases/latest` 解析到 V1.4.3，而 `.sha256` 校验和产物自 V1.4.4-rc1 起才随 Release 发布——旧版 Release 无校验和可校验。现对 V1.4.3 及以下版本默认跳过完整性校验（输出一条明确警告），保证一键安装可用；V1.4.4-rc1 及以上版本仍强制校验
 - **SSH 菜单改密码/改账号后服务崩溃循环（`open config/config.yaml: permission denied`）**：菜单以 root 运行，而服务以专用用户 `eio`（binary 部署）或 uid 1000（Docker 部署）运行。选项 8（改密码）经内置 `--reset-password` 重写 `config.yaml` 与 `tokens.json`、选项 9（改账号）经 `awk+mv` 重写 `config.yaml`，root 重写后文件属主变为 root，服务重启即因读权限被拒而崩溃循环。两层修复：
   - **二进制层（治本）**：`WriteFileAtomic` 以 root 运行时在 rename 前把原文件的 uid/gid 转移到临时文件，原子写不再改变属主——覆盖 `--reset-password` 与运行期全部落盘路径
   - **菜单脚本层（兼容已部署的旧版二进制）**：新增 `restore_ownership`，选项 8/9 与在线更新写入后按 systemd unit 的 `User=`（无 systemd 时退回目录属主）还原属主；Docker 模式还原为 `1000:1000`
+- **SSH 菜单「在线更新（最新版）」会把预发布版本降级**：更新目标取自 GitHub `releases/latest`（不含预发布），V1.4.4 正式版发布前那是 V1.4.3——在 rc1 上执行更新会把二进制换回 V1.4.3。现更新前做版本比较（新增 `version_lt`，忽略 `V`/`v` 前缀与 `-rc` 后缀按点分段数值比较）：目标低于当前即拒绝（不降级），相同则提示已是最新；且安装脚本改为优先从**目标版本**的 Release 获取（与要装的版本配套、含该版本修复），磁盘旧副本仅作离线兜底，版本号显式传参不再二次解析
+- **install.sh 对 standalone docker-compose 的兼容缺口**：脚本自己的 Compose 兜底安装路径装的是 standalone `docker-compose` 二进制，后续却无条件使用插件语法 `docker compose`，仅有 standalone 的机器上必然失败回滚。现与 SSH 菜单一致：`compose_cmd` 插件优先、standalone 兜底（构建/启动/回滚三处全部接入）
+- **release-install.sh 在 Docker 部署上并行安装**：安装目录为 Docker 布局（有 docker-compose.yml、无二进制）且容器正在运行时，并行装二进制服务会抢 8096 端口——现检测到运行中的容器直接中止并给出指引；容器未运行则提示后继续（支持从 Docker 切换到二进制部署）
+- **SSH 菜单改管理员账号的竞态**：选项 9 此前在服务运行中直接重写 `config.yaml`（运行中的服务可能用内存里的旧配置回写覆盖改动），且无论之前服务是否在跑都会被重启。现与选项 8 一致：先停服务再改，之前在跑才重启
+- **杂项加固**：安装脚本回滚时清理**本次创建**的 `eio` 用户/组（安装前已存在的不动）；SSH 菜单卸载 binary 部署时删除专用运行用户与用户组；`get_admin_token` 的 awk 匹配收紧到 4 空格缩进的 `role` 字段，避免未来 tokens.json 出现嵌套对象时误取非管理员 token
 
 **涉及文件（安装与菜单修复）**
 
 | 文件 | 修改内容 |
 |------|----------|
-| `release-install.sh` | 组已存在时 `useradd` 显式 `-g`，修复全新安装必失败；新增 `version_lte` 版本比较，V1.4.3 及以下默认跳过 sha256 校验（旧 Release 无校验和产物） |
+| `release-install.sh` | 组已存在时 `useradd` 显式 `-g`，修复全新安装必失败；新增 `version_lte` 版本比较，V1.4.3 及以下默认跳过 sha256 校验（旧 Release 无校验和产物）；Docker 部署检测（容器运行中中止）；回滚清理本次创建的用户/组 |
 | `internal/backend/atomicfile.go` | `WriteFileAtomic` rename 前调用 `preserveOwner` |
 | `internal/backend/atomicfile_owner_unix.go`（新增）/ `atomicfile_owner_windows.go`（新增） | 属主保留的平台实现（Windows 为空操作） |
 | `internal/backend/atomicfile_owner_unix_test.go`（新增） | root 下跨用户属主保留的回归测试（非 root 自动跳过） |
-| `emby-in-one-cli.sh` | 新增 `restore_ownership` 并接入选项 8/9 与二进制在线更新 |
+| `emby-in-one-cli.sh` | 新增 `restore_ownership` 并接入选项 8/9 与二进制在线更新；新增 `version_lt` 降级拦截，选项 4 改为从目标版本取脚本并显式传参；选项 9 先停服务再改；卸载清理 `eio` 用户/组；`get_admin_token` awk 收紧 |
+| `install.sh` | 新增 `compose_cmd`（插件优先/standalone 兜底），构建/启动/回滚三处接入 |
+
+### 修复：透传（passthrough）功能专项审查
+
+对透传客户端身份功能做了一次全链路审查（捕获、清洗、复合头解析、出站策略、持久化、串流/兜底/图片路径），核心链路确认无恙；以下为本次修复项：
+
+- **出站头准备的死代码**：`prepareOutboundHeaders` 中"调用方已装好凭据头则只重清洗、不重建"的分支，是在删除 `Authorization` / `X-Emby-Authorization` / `X-Emby-Token` / `X-MediaBrowser-Token` **之后**才检查这四个头，恒为假、从未执行，注释描述的行为与实际不符。该分支连同只为它服务的 `explicitAuthHeader` / `sanitizeCompoundAuthorization` 一并删除。实际执行的重建路径行为不变（设备参数在删除前读取、凭据与 UserId 来自同一 `authSnapshot`），纯死代码清理
+- **损坏的 `captured-headers.json` 会永久阻断身份持久化**：文件 JSON 解析失败后，此后的每次保存（读-改-写）都在同一处失败，直到人工删除文件才能恢复；现解析失败时记录告警并按空快照继续，下一次保存即把文件重写为合法内容（该文件只含设备字段、无凭据，丢弃安全）
+- **持久化告警接线**：`NewClientIdentityServiceFromDetectedConfig` 此前固定传 nil logger，生产路径下身份持久化的 WARN 恒为静默；现接收 `NewApp` 已创建的 logger
+- **防御分支的身份退化**：`doRequestOnce` 的 `headers == nil` 兜底分支此前传 nil 身份服务，passthrough 上游会在此分支退化为 Infuse 伪装身份；现改用进程级 `activeIdentityService()`（当前无调用方传 nil，纯防御加固）
+- **一致性小项**：`RevokeToken` / `RevokeAllTokens` 调用 `DeleteCaptured` 补 nil 守卫（与 `RevokeTokensByUserID` 对齐）；`Clear()` 注明为测试专用（会永久脱离持久化）
+- **确认两项行为为既定设计、本次未改动**：普通用户登录不捕获客户端身份（仅管理员登录采集，避免上游记录过多设备、固定身份防风控）；`HasCapturedHeaders` 只认"已验证"身份（token 级捕获不算，健康检查不会拿未验证身份反复撞上游登录）
+
+**涉及文件（透传审查修复）**
+
+| 文件 | 修改内容 |
+|------|----------|
+| `internal/backend/outbound_identity.go` | 删除恒假的 explicitAuthHeader 分支及 `explicitAuthHeader` / `sanitizeCompoundAuthorization` 两个死函数 |
+| `internal/backend/identity_persistence.go` | 损坏捕获文件自愈（告警 + 空快照继续）；`newIdentityPersistenceFromDetectedConfig` 接收 logger |
+| `internal/backend/identity.go` | `NewClientIdentityServiceFromDetectedConfig` 接收 logger；`Clear()` 标注测试专用 |
+| `internal/backend/server.go` | 装配处向身份服务传入 logger |
+| `internal/backend/upstream.go` | `headers == nil` 防御分支改用 `activeIdentityService()` |
+| `internal/backend/auth_manager.go` | `RevokeToken` / `RevokeAllTokens` 的 `DeleteCaptured` 补 nil 守卫 |
+| `internal/backend/identity_persistence_test.go` | 两个 corrupt-file 测试改写为自愈断言（保存成功 + 文件被修复为合法 JSON 且含新条目） |
 
 ---
 

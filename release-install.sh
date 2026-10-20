@@ -185,6 +185,17 @@ if [[ -d "${PROJECT_DIR}" ]]; then
   warn "检测到已有安装目录 ${PROJECT_DIR}，将执行覆盖安装升级"
 fi
 
+# ── Docker 部署检测 ──
+# 目录里有 docker-compose.yml 而没有二进制的是 Docker 布局。
+# 容器正在运行时并行安装二进制部署会抢 8096 端口，直接中止；
+# 容器未运行则提示后继续（用户可能就是想从 Docker 切换到二进制部署）。
+if [[ "$IS_UPGRADE" == true && ! -f "${PROJECT_DIR}/emby-in-one" && -f "${PROJECT_DIR}/docker-compose.yml" ]]; then
+  if command -v docker &>/dev/null && docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'emby-in-one'; then
+    error "检测到 Docker 部署的容器 emby-in-one 正在运行，并行安装二进制部署会端口冲突。\n  请先停止容器 (docker stop emby-in-one) 或继续使用 Docker 方式更新。"
+  fi
+  warn "检测到 ${PROJECT_DIR} 为 Docker 部署布局（容器未在运行），将安装二进制部署"
+fi
+
 # ── 回滚机制 ──
 _ROLLBACK_NEEDED=false
 _BINARY_INSTALLED=false
@@ -192,6 +203,9 @@ _UNIT_BACKED_UP=false
 _UNIT_INSTALLED=false
 _SERVICE_WAS_RUNNING=false
 _MIGRATED_FROM_ROOT=false
+# 本次运行是否真的创建了专用用户/组（安装前已存在的绝不能在回滚时删掉）
+_USER_CREATED=false
+_GROUP_CREATED=false
 
 cleanup() {
   local exit_code=$?
@@ -239,6 +253,13 @@ cleanup() {
       fi
     fi
     warn "原有 config/ data/ log/ 目录已保留"
+  fi
+  # 清理本次运行创建的专用用户/组（安装前已存在的不动）
+  if [[ "$_USER_CREATED" == true ]]; then
+    userdel "${SERVICE_USER}" 2>/dev/null || true
+  fi
+  if [[ "$_GROUP_CREATED" == true ]]; then
+    groupdel "${SERVICE_USER}" 2>/dev/null || true
   fi
   echo -e "${RED}[错误]${NC} 安装已回滚。请查看上方错误信息后重试。"
 }
@@ -365,7 +386,9 @@ fi
 # ── 创建专用运行用户（服务不以 root 运行） ──
 SERVICE_USER="eio"
 if ! getent group "${SERVICE_USER}" &>/dev/null && command -v groupadd &>/dev/null; then
-  groupadd -r "${SERVICE_USER}" 2>/dev/null || true
+  if groupadd -r "${SERVICE_USER}" 2>/dev/null; then
+    _GROUP_CREATED=true
+  fi
 fi
 if ! id -u "${SERVICE_USER}" &>/dev/null; then
   if command -v useradd &>/dev/null; then
@@ -375,10 +398,13 @@ if ! id -u "${SERVICE_USER}" &>/dev/null; then
     if getent group "${SERVICE_USER}" &>/dev/null; then
       USERADD_GROUP_ARGS=(-g "${SERVICE_USER}")
     fi
-    useradd -r "${USERADD_GROUP_ARGS[@]}" -s /usr/sbin/nologin "${SERVICE_USER}" 2>/dev/null \
-      || useradd -r "${USERADD_GROUP_ARGS[@]}" -s /sbin/nologin "${SERVICE_USER}" 2>/dev/null \
-      || error "无法创建专用运行用户 ${SERVICE_USER}"
-    info "已创建专用运行用户: ${SERVICE_USER}"
+    if useradd -r "${USERADD_GROUP_ARGS[@]}" -s /usr/sbin/nologin "${SERVICE_USER}" 2>/dev/null \
+      || useradd -r "${USERADD_GROUP_ARGS[@]}" -s /sbin/nologin "${SERVICE_USER}" 2>/dev/null; then
+      _USER_CREATED=true
+      info "已创建专用运行用户: ${SERVICE_USER}"
+    else
+      error "无法创建专用运行用户 ${SERVICE_USER}"
+    fi
   else
     error "缺少 useradd，无法创建专用运行用户 ${SERVICE_USER}"
   fi

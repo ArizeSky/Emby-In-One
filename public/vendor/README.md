@@ -17,12 +17,25 @@ without any of them being present on disk at run time.
 
 ## Regenerating
 
+The Web player also uses local assets under `web/`: libmedia 1.3.1 (LGPL-3.0;
+see `web/libmedia/README.md`), JASSUB 1.7.17 (MIT wrapper; dependency notices in
+`web/JASSUB-COPYRIGHT.txt`) and Noto Sans SC Regular (SIL OFL 1.1;
+`web/NotoSansCJK-LICENSE.txt`). The JASSUB UMD and worker/WASM files come from
+`https://unpkg.com/jassub@1.7.17/dist/`. The old worker's trailing NUL padding
+caused a JavaScript syntax error; the refreshed pinned distribution parses.
+
+The subtitle fallback font comes from
+`https://github.com/notofonts/noto-cjk/blob/main/Sans/SubsetOTF/SC/NotoSansSC-Regular.otf`,
+SHA-256 `faa6c9df652116dde789d351359f3d7e5d2285a2b2a1f04a2d7244df706d5ea9`.
+It is fetched locally only when external ASS is selected. Fonts and workers do
+not make requests to third-party origins. Unused FFmpeg resources are retired.
+
 ```bash
-npm run build:panel     # assets/panel.css + public/admin.html + public/admin.js -> vendor/tailwind.css
+npm run build:panel     # assets/panel.css + admin and public/web sources -> vendor/tailwind.css
 ```
 
 `tailwind.css` is **committed**, so running the panel never needs a build step —
-only changing a class in `admin.html`/`admin.js` does. `assets/panel.css` is the
+changing a class in the admin or Web client does. `assets/panel.css` is the
 input: it holds the `@tailwind` directives plus the panel's own rules, which used to
 live in an inline `<style>` block in `admin.html` (they had to move out for
 `style-src 'self'` to be legal).

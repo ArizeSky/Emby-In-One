@@ -210,7 +210,7 @@ func normalizeUpstream(upstream *UpstreamConfig, index int, cfg *Config) {
 		upstream.PlaybackMode = cfg.Playback.Mode
 	}
 	if upstream.SpoofClient == "" {
-		upstream.SpoofClient = "none"
+		upstream.SpoofClient = "passthrough"
 	}
 	// Migrate legacy "official" spoofClient to "custom" with the original official profile values.
 	if upstream.SpoofClient == "official" {
@@ -230,6 +230,15 @@ func normalizeUpstream(upstream *UpstreamConfig, index int, cfg *Config) {
 		if upstream.CustomDeviceId == "" {
 			upstream.CustomDeviceId = "official-spoof-id"
 		}
+	}
+	// The built-in "none" and "infuse" profiles no longer exist. Both migrate
+	// to passthrough, which waits for a real client identity instead of
+	// sending a fabricated one; any other unknown value coerces the same way
+	// so no request can ever leave this proxy with an invented client profile.
+	switch upstream.SpoofClient {
+	case "passthrough", "custom":
+	default:
+		upstream.SpoofClient = "passthrough"
 	}
 }
 
@@ -290,16 +299,21 @@ func (s *ConfigStore) Replace(cfg Config) {
 	s.config = &clone
 }
 
-func (s *ConfigStore) Save() error {
-	s.mu.RLock()
-	content := renderConfigYAML(s.config)
-	path := s.config.Path
-	s.mu.RUnlock()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	return WriteFileAtomic(path, []byte(content), 0o600)
-}
+ // Save renders the current config and writes it atomically. The lock is held
+ // across both steps: rendering under RLock and writing it afterwards let two
+ // concurrent saves interleave their writes, so an older render could
+ // overwrite a newer one and silently drop the mutations the newer render
+ // already contained.
+ func (s *ConfigStore) Save() error {
+ 	s.mu.Lock()
+ 	defer s.mu.Unlock()
+ 	content := renderConfigYAML(s.config)
+ 	path := s.config.Path
+ 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+ 		return err
+ 	}
+ 	return WriteFileAtomic(path, []byte(content), 0o600)
+ }
 
 func parseConfigYAML(raw string) (*Config, error) {
 	cfg := &Config{Proxies: []ProxyConfig{}, Upstream: []UpstreamConfig{}}
@@ -643,7 +657,7 @@ func renderConfigYAML(cfg *Config) string {
 			if upstream.PlaybackMode != cfg.Playback.Mode && upstream.PlaybackMode != "" {
 				fmt.Fprintf(&b, "    playbackMode: %s\n", yamlStr(upstream.PlaybackMode))
 			}
-			if upstream.SpoofClient != "" && upstream.SpoofClient != "none" {
+			if upstream.SpoofClient != "" && upstream.SpoofClient != "passthrough" {
 				fmt.Fprintf(&b, "    spoofClient: %s\n", yamlStr(upstream.SpoofClient))
 			}
 			if len(upstream.StreamingURLs) > 1 {

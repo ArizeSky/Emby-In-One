@@ -37,25 +37,6 @@ var sharedTransport = &http.Transport{
 	DisableCompression: true,
 }
 
-var embyClientHeaders = map[string]string{
-	"User-Agent":            "Emby Aggregator/1.0",
-	"X-Emby-Client":         "Emby Aggregator",
-	"X-Emby-Client-Version": "1.0.0",
-	"X-Emby-Device-Name":    "EmbyInOne",
-	"X-Emby-Device-Id":      "emby-in-one-proxy",
-	"Accept":                "application/json",
-}
-
-var spoofProfiles = map[string]map[string]string{
-	"infuse": {
-		"User-Agent":            "Infuse/7.7.1 (iPhone; iOS 17.4.1; Scale/3.00)",
-		"X-Emby-Client":         "Infuse",
-		"X-Emby-Client-Version": "7.7.1",
-		"X-Emby-Device-Name":    "iPhone",
-		"X-Emby-Device-Id":      "infuse-spoof-id",
-	},
-}
-
 const recoveryDebounce = 30 * time.Second
 
 func isUpstreamLoginPath(path string) bool {
@@ -118,7 +99,7 @@ func (p *UpstreamPool) LoginAll() {
 	p.mu.RUnlock()
 	identity := p.identityService()
 	for _, client := range clients {
-		if client.Config.SpoofClient == "passthrough" && client.Config.APIKey == "" {
+		if client.Config.SpoofClient == "passthrough" {
 			if identity == nil || !identity.HasCapturedHeaders(client.serverKey) {
 				if p.logger != nil {
 					p.logger.Infof("[%s] Passthrough upstream skipped initial login — waiting for real client", client.Name)
@@ -193,6 +174,24 @@ func (p *UpstreamPool) Reload(cfg Config) {
 	p.restartHealthChecks(cfg.Timeouts)
 }
 
+// requestAuthRecovery schedules the debounced recovery re-login. The cheap
+// debounce check under the lock runs inline, so a burst of 401/403 answers does
+// not spawn a goroutine per response; only the first answer in each debounce
+// window pays for the spawn. The goroutine re-checks the debounce itself, so a
+// racing spawn from another request still collapses there.
+func (c *UpstreamClient) requestAuthRecovery() {
+	if c.onAuthError == nil {
+		return
+	}
+	c.recoveryMu.Lock()
+	within := time.Since(c.lastRecovery) < recoveryDebounce
+	c.recoveryMu.Unlock()
+	if within {
+		return
+	}
+	go c.onAuthError(c)
+}
+
 func (p *UpstreamPool) handleUpstreamAuthError(c *UpstreamClient) {
 	c.recoveryMu.Lock()
 	if time.Since(c.lastRecovery) < recoveryDebounce {
@@ -231,22 +230,40 @@ func findProxy(proxies []ProxyConfig, id string) *ProxyConfig {
 	return nil
 }
 
-// buildProxyTransport creates an http.Transport that routes requests through the given proxy URL.
-// Returns (transport, true) on success, or (sharedTransport, false) on failure.
-func buildProxyTransport(proxyURL string, logger *Logger, serverName string) (http.RoundTripper, bool) {
-	parsed, err := url.Parse(proxyURL)
-	if err != nil {
-		if logger != nil {
-			logger.Errorf("[%s] Invalid proxy URL %q: %s, falling back to direct", serverName, proxyURL, err)
-		}
-		return sharedTransport, false
-	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		if logger != nil {
-			logger.Errorf("[%s] Proxy URL must be http or https, got %q, falling back to direct", serverName, parsed.Scheme)
-		}
-		return sharedTransport, false
-	}
+ // redactProxyURLForLog keeps a proxy URL's scheme, host, path and query but
+ // never its userinfo, so a credential-bearing URL cannot reach the log intact
+ // even when it is too malformed to parse (the userinfo is stripped by hand in
+ // that case).
+ func redactProxyURLForLog(raw string) string {
+ 	trimmed := strings.TrimSpace(raw)
+ 	if parsed, err := url.Parse(trimmed); err == nil && parsed.Host != "" {
+ 		parsed.User = nil
+ 		return parsed.String()
+ 	}
+ 	if at := strings.LastIndex(trimmed, "@"); at >= 0 {
+ 		return "<redacted-userinfo>@" + trimmed[at+1:]
+ 	}
+ 	return "<unparsable-url>"
+ }
+ 
+ // buildProxyTransport creates an http.Transport that routes requests through the given proxy URL.
+ // Returns (transport, true) on success, or (sharedTransport, false) on failure.
+ func buildProxyTransport(proxyURL string, logger *Logger, serverName string) (http.RoundTripper, bool) {
+ 	parsed, err := url.Parse(proxyURL)
+ 	if err != nil {
+ 		if logger != nil {
+ 			// Both the URL and the parse error can carry the credentials (the
+ 			// error embeds the raw URL); only redacted forms are logged.
+ 			logger.Errorf("[%s] Invalid proxy URL %q: %s, falling back to direct", serverName, redactProxyURLForLog(proxyURL), redactURLInError(err))
+ 		}
+ 		return sharedTransport, false
+ 	}
+ 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+ 		if logger != nil {
+ 			logger.Errorf("[%s] Proxy URL must be http or https, got %q, falling back to direct", serverName, parsed.Scheme)
+ 		}
+ 		return sharedTransport, false
+ 	}
 	return &http.Transport{
 		Proxy:                 http.ProxyURL(parsed),
 		MaxIdleConns:          64,
@@ -430,7 +447,7 @@ func (p *UpstreamPool) Clients() []*UpstreamClient {
 }
 
 func (p *UpstreamPool) canAttemptPassthroughLogin(client *UpstreamClient) bool {
-	if client == nil || client.Config.SpoofClient != "passthrough" || strings.TrimSpace(client.Config.APIKey) != "" {
+	if client == nil || client.Config.SpoofClient != "passthrough" {
 		return true
 	}
 	identity := p.identityService()
@@ -539,7 +556,7 @@ func (c *UpstreamClient) loginWithHeaders(ctx context.Context, reqCtx *RequestCo
 		c.mu.Lock()
 		c.AccessToken = strings.TrimSpace(c.Config.APIKey)
 		c.mu.Unlock()
-		c.validateAPIKey(ctx, reqCtx, identity)
+		c.validateAPIKey(ctx, reqCtx, identity, override)
 		return
 	}
 
@@ -613,8 +630,16 @@ func (c *UpstreamClient) loginWithHeaders(ctx context.Context, reqCtx *RequestCo
 // validateAPIKey confirms an API key by reading the upstream user object. Only
 // the HTTP status is surfaced to callers: LastError is returned to the admin API,
 // and the body of an admin-supplied host is not something to reflect there.
-func (c *UpstreamClient) validateAPIKey(ctx context.Context, reqCtx *RequestContext, identity *ClientIdentityService) {
-	resp, err := c.doRequestForMode(ctx, reqCtx, http.MethodGet, "/Users/Me", nil, nil, c.requestHeaders(reqCtx, identity), false, authModeAPIKeyValidation)
+// The override carries the captured client identity that triggered a deferred
+// retry; without it the request would resolve no identity at all and leave as a
+// bare request, which is exactly what the deferred-login design forbids.
+func (c *UpstreamClient) validateAPIKey(ctx context.Context, reqCtx *RequestContext, identity *ClientIdentityService, override http.Header) {
+	source, resolved := c.resolveIdentityHeaders(reqCtx, identity, override)
+	if c.logger != nil {
+		c.logger.Infof("[%s] API key validation identity source=%s Client=%q DeviceId=%q",
+			c.Name, source, resolved.Get("X-Emby-Client"), resolved.Get("X-Emby-Device-Id"))
+	}
+	resp, err := c.doRequestForMode(ctx, reqCtx, http.MethodGet, "/Users/Me", nil, nil, c.requestHeadersWithOverride(reqCtx, identity, override), false, authModeAPIKeyValidation)
 	if err != nil {
 		if c.logger != nil {
 			c.logger.Errorf("[%s] API key validation failed: %s", c.Name, err.Error())
@@ -650,6 +675,11 @@ func (c *UpstreamClient) validateAPIKey(ctx context.Context, reqCtx *RequestCont
 		c.logger.Infof("[%s] API key auth success, userId=%s", c.Name, userID)
 	}
 	c.setOnline(strings.TrimSpace(c.Config.APIKey), userID)
+	// A successful API-key validation is a passthrough login success too:
+	// persist the resolved identity so every later request (web clients
+	// included) resolves it from last-success / captured-latest instead of
+	// leaving with no client identity at all.
+	c.recordSuccessfulIdentity(identity, source, resolved)
 }
 
 func (c *UpstreamClient) setOnline(token, userID string) {
@@ -675,7 +705,8 @@ func (c *UpstreamClient) RequestJSON(ctx context.Context, reqCtx *RequestContext
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		payload, _ := io.ReadAll(resp.Body)
+		// The body is only echoed into the error message, so a bounded read is enough.
+		payload, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		return nil, fmt.Errorf("upstream %s %s failed: %s %s", method, path, resp.Status, strings.TrimSpace(string(payload)))
 	}
 	var decoded any
@@ -988,7 +1019,9 @@ func (c *UpstreamClient) doRequestOnce(ctx context.Context, reqCtx *RequestConte
 	if headers != nil {
 		requestHeaders = prepareOutboundHeaders(headers, reqCtx, auth, mode)
 	} else {
-		requestHeaders = c.requestHeaders(reqCtx, nil)
+		// Defensive branch: no caller passes nil today. The process-wide service
+		// keeps a passthrough upstream from degrading to the spoof profile here.
+		requestHeaders = c.requestHeaders(reqCtx, activeIdentityService())
 	}
 	if bodyContentType != "" && requestHeaders.Get("Content-Type") == "" {
 		requestHeaders.Set("Content-Type", bodyContentType)
@@ -1043,8 +1076,8 @@ func (c *UpstreamClient) doRequestOnce(ctx context.Context, reqCtx *RequestConte
 		c.logger.Debugf("[%s] <- %s %s %d", c.Name, method, formatOutboundURLForLog(preparedURL.url.String()), resp.StatusCode)
 	}
 	if (resp.StatusCode == 401 || resp.StatusCode == 403) &&
-		!isUpstreamLoginPath(path) && c.onAuthError != nil {
-		go c.onAuthError(c)
+		!isUpstreamLoginPath(path) {
+		c.requestAuthRecovery()
 	}
 	return resp, nil
 }
@@ -1059,10 +1092,7 @@ func (c *UpstreamClient) scheduleRecoveryForPreparationError(err error) {
 	if !ok || prep.Kind != "missing-upstream-auth-state" {
 		return
 	}
-	if c.onAuthError == nil {
-		return
-	}
-	go c.onAuthError(c)
+	c.requestAuthRecovery()
 }
 
 func (c *UpstreamClient) identityHeaders(reqCtx *RequestContext, identity *ClientIdentityService) http.Header {
@@ -1071,7 +1101,6 @@ func (c *UpstreamClient) identityHeaders(reqCtx *RequestContext, identity *Clien
 }
 
 func (c *UpstreamClient) resolveIdentityHeaders(reqCtx *RequestContext, identity *ClientIdentityService, override http.Header) (string, http.Header) {
-	headers := http.Header{}
 	if c.Config.SpoofClient == "passthrough" {
 		if hasPassthroughIdentity(override) {
 			return "override", mergePassthroughHeaders(override)
@@ -1086,33 +1115,42 @@ func (c *UpstreamClient) resolveIdentityHeaders(reqCtx *RequestContext, identity
 			resolved := identity.ResolvePassthroughHeadersForServer(live, token, c.serverKey)
 			return resolved.Source, resolved.Headers
 		}
-		return "infuse-fallback", mergePassthroughHeaders(http.Header{})
+		return "no-identity", http.Header{}
 	}
-	profile := embyClientHeaders
-	if spoofed, ok := spoofProfiles[c.Config.SpoofClient]; ok {
-		profile = spoofed
-	} else if c.Config.SpoofClient == "custom" {
-		profile = map[string]string{
+	if c.Config.SpoofClient == "custom" {
+		headers := http.Header{}
+		profile := map[string]string{
 			"User-Agent":            c.Config.CustomUserAgent,
 			"X-Emby-Client":         c.Config.CustomClient,
 			"X-Emby-Client-Version": c.Config.CustomClientVersion,
 			"X-Emby-Device-Name":    c.Config.CustomDeviceName,
 			"X-Emby-Device-Id":      c.Config.CustomDeviceId,
 		}
-	}
-	for key, value := range profile {
-		if value != "" {
-			headers.Set(key, value)
+		for key, value := range profile {
+			if value != "" {
+				headers.Set(key, value)
+			}
 		}
+		return "custom", headers
 	}
-	return c.Config.SpoofClient, headers
+	// No built-in client identity exists any more: an unknown mode (or a
+	// passthrough upstream without an identity service) resolves to no
+	// identity at all instead of a fabricated client profile.
+	return "no-identity", http.Header{}
 }
 
 // requestHeaders builds the caller-side header set for one request from the same
 // auth snapshot it will be sent with.
 func (c *UpstreamClient) requestHeaders(reqCtx *RequestContext, identity *ClientIdentityService) http.Header {
+	return c.requestHeadersWithOverride(reqCtx, identity, nil)
+}
+
+// requestHeadersWithOverride is requestHeaders for a login retry whose identity
+// is pinned by the caller (the captured headers that triggered the retry)
+// rather than resolved from the request context.
+func (c *UpstreamClient) requestHeadersWithOverride(reqCtx *RequestContext, identity *ClientIdentityService, override http.Header) http.Header {
 	if c.Config.SpoofClient == "passthrough" {
-		return c.passthroughRequestHeaders(reqCtx, identity)
+		return c.passthroughRequestHeadersWithOverride(reqCtx, identity, override)
 	}
 	headers := c.identityHeaders(reqCtx, identity)
 	if snapshot := c.authSnapshot(); snapshot.AccessToken != "" {
@@ -1126,7 +1164,11 @@ func (c *UpstreamClient) requestHeaders(reqCtx *RequestContext, identity *Client
 // the compound header so the upstream still receives the client's real device
 // identity; its UserId and Token are replaced by the snapshot's own.
 func (c *UpstreamClient) passthroughRequestHeaders(reqCtx *RequestContext, identity *ClientIdentityService) http.Header {
-	_, headers := c.resolveIdentityHeaders(reqCtx, identity, nil)
+	return c.passthroughRequestHeadersWithOverride(reqCtx, identity, nil)
+}
+
+func (c *UpstreamClient) passthroughRequestHeadersWithOverride(reqCtx *RequestContext, identity *ClientIdentityService, override http.Header) http.Header {
+	_, headers := c.resolveIdentityHeaders(reqCtx, identity, override)
 	snapshot := c.authSnapshot()
 	if snapshot.AccessToken != "" {
 		headers.Set("X-Emby-Token", snapshot.AccessToken)
@@ -1151,9 +1193,6 @@ func (c *UpstreamClient) passthroughRequestHeaders(reqCtx *RequestContext, ident
 
 func (c *UpstreamClient) recordSuccessfulIdentity(identity *ClientIdentityService, source string, headers http.Header) {
 	if identity == nil || c.Config.SpoofClient != "passthrough" || !hasPassthroughIdentity(headers) {
-		return
-	}
-	if source == "infuse-fallback" {
 		return
 	}
 	identity.SaveLastSuccess(c.serverKey, headers)

@@ -38,6 +38,19 @@ func (a *App) handleAuthenticateByName(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if ok {
+		// The admin account must not be playable from the web client: the token
+		// it would receive carries admin rights, and /admin is the only supported
+		// admin entry point. The web player identifies itself with this marker
+		// because it deliberately sends no Emby client identity headers (see
+		// public/web/app.js); the admin panel and real Emby clients never set it
+		// and keep logging in as before.
+		if isWebClientLogin(r) {
+			if a.Logger != nil {
+				a.Logger.Warnf("Web client admin login rejected: user=%q ip=%s", body.Username, r.RemoteAddr)
+			}
+			writeJSON(w, http.StatusForbidden, map[string]any{"message": "管理员账号不能通过 Web 客户端登录，请使用 /admin 管理面板"})
+			return
+		}
 		a.loginLimiter.recordSuccess(ip)
 		if token, _ := result["AccessToken"].(string); token != "" {
 			if hasPassthroughIdentity(r.Header) {
@@ -77,6 +90,14 @@ func (a *App) handleAuthenticateByName(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusUnauthorized, map[string]any{"message": "Invalid username or password"})
 }
 
+// isWebClientLogin reports whether the request comes from the built-in web
+// player. The web client deliberately sends no Emby client identity headers
+// (they would claim the passthrough live identity), so it marks its login with
+// this header instead; the admin panel and real Emby clients never set it.
+func isWebClientLogin(r *http.Request) bool {
+	return r.Header.Get("X-EIO-Web-Client") == "1"
+}
+
 func (a *App) handleUsersPublic(w http.ResponseWriter, r *http.Request) {
 	cfg := a.ConfigStore.Snapshot()
 	users := []map[string]any{{
@@ -104,21 +125,29 @@ func (a *App) handleUsersPublic(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, users)
 }
 
-func (a *App) handleUserObject(w http.ResponseWriter, r *http.Request) {
-	reqCtx := requestContextFrom(r.Context())
-	if reqCtx != nil && reqCtx.ProxyUser != nil && reqCtx.ProxyUser.Role == "user" && a.UserStore != nil {
-		user := a.UserStore.Get(reqCtx.ProxyUser.UserID)
-		if user != nil && user.Enabled {
-			writeJSON(w, http.StatusOK, a.Auth.BuildUserObjectForUser(user))
-			return
-		}
-		if user == nil {
-			writeJSON(w, http.StatusUnauthorized, map[string]any{"message": "User no longer exists"})
-			return
-		}
-	}
-	writeJSON(w, http.StatusOK, a.Auth.BuildUserObject())
-}
+ func (a *App) handleUserObject(w http.ResponseWriter, r *http.Request) {
+ 	reqCtx := requestContextFrom(r.Context())
+ 	if reqCtx != nil && reqCtx.ProxyUser != nil && reqCtx.ProxyUser.Role == "user" {
+ 		if a.UserStore == nil {
+ 			// A user-role token with no user store behind it has no backing
+ 			// account; answering with the admin object would hand over the
+ 			// administrator's profile.
+ 			writeJSON(w, http.StatusUnauthorized, map[string]any{"message": "User store unavailable"})
+ 			return
+ 		}
+ 		user := a.UserStore.Get(reqCtx.ProxyUser.UserID)
+ 		if user != nil && user.Enabled {
+ 			writeJSON(w, http.StatusOK, a.Auth.BuildUserObjectForUser(user))
+ 			return
+ 		}
+ 		// A missing or disabled account must never fall through to the admin
+ 		// object below: that would hand a disabled user the administrator's
+ 		// profile — including its IsAdministrator flag — as its own.
+ 		writeJSON(w, http.StatusUnauthorized, map[string]any{"message": "User no longer exists or is disabled"})
+ 		return
+ 	}
+ 	writeJSON(w, http.StatusOK, a.Auth.BuildUserObject())
+ }
 
 func (a *App) handleUserViews(w http.ResponseWriter, r *http.Request) {
 	reqCtx := requestContextFrom(r.Context())

@@ -1,6 +1,7 @@
 package backend
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"testing"
@@ -88,4 +89,74 @@ func TestAdminSettingsAcceptsZeroGracePeriod(t *testing.T) {
 			t.Fatalf("zero (disabled) grace periods were not applied: %+v", got)
 		}
 	})
+}
+
+// TestValidateUpstreamDraftRejectsLinkLocalTargets is the regression for the
+// proxied-upstream SSRF gap: when an upstream is reached through a forward proxy,
+// the transport dialer only ever resolves the proxy address, so a link-local
+// (cloud metadata) target would never be screened. validateUpstreamDraft now
+// rejects such targets directly.
+func TestValidateUpstreamDraftRejectsLinkLocalTargets(t *testing.T) {
+	base := UpstreamConfig{
+		Name:         "A",
+		PlaybackMode: "proxy",
+		SpoofClient:  "passthrough",
+		Username:     "u",
+		Password:     "p",
+	}
+	linkLocal := base
+	linkLocal.URL = "http://169.254.169.254/latest/meta-data"
+	if err := validateUpstreamDraft(context.Background(), linkLocal); err == nil {
+		t.Fatal("expected a link-local upstream URL to be rejected")
+	}
+
+	linkLocalStream := base
+	linkLocalStream.URL = "http://emby.example.com"
+	linkLocalStream.StreamingURLs = []string{"http://[fe80::1]/streams"}
+	if err := validateUpstreamDraft(context.Background(), linkLocalStream); err == nil {
+		t.Fatal("expected a link-local streaming URL to be rejected")
+	}
+
+	// Loopback and private addresses stay allowed: self-hosted Emby commonly runs
+	// on the same host or LAN, and the upstream dialer policy matches.
+	loopback := base
+	loopback.URL = "http://127.0.0.1:8096"
+	if err := validateUpstreamDraft(context.Background(), loopback); err != nil {
+		t.Fatalf("loopback upstream should be allowed, got %v", err)
+	}
+	private := base
+	private.URL = "http://192.168.1.10:8096"
+	if err := validateUpstreamDraft(context.Background(), private); err != nil {
+		t.Fatalf("private upstream should be allowed, got %v", err)
+	}
+}
+
+// TestValidateUpstreamDraftAllowsBlankPassword locks in the credential
+// semantics the panel form documents: the upstream account is required, the
+// password is optional (Emby permits blank-password accounts), and exactly one
+// of username / apiKey must be present.
+func TestValidateUpstreamDraftAllowsBlankPassword(t *testing.T) {
+	base := UpstreamConfig{
+		Name:         "A",
+		URL:          "http://127.0.0.1:8096",
+		PlaybackMode: "proxy",
+		SpoofClient:  "passthrough",
+	}
+	blankPassword := base
+	blankPassword.Username = "u"
+	if err := validateUpstreamDraft(context.Background(), blankPassword); err != nil {
+		t.Fatalf("username with blank password should validate, got %v", err)
+	}
+
+	noCredential := base
+	if err := validateUpstreamDraft(context.Background(), noCredential); err == nil {
+		t.Fatal("expected a draft with neither username nor apiKey to be rejected")
+	}
+
+	both := base
+	both.Username = "u"
+	both.APIKey = "key"
+	if err := validateUpstreamDraft(context.Background(), both); err == nil {
+		t.Fatal("expected a draft carrying both username and apiKey to be rejected")
+	}
 }

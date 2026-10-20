@@ -70,3 +70,41 @@ func TestRemoveByServerIDCascadeClean(t *testing.T) {
 		t.Errorf("virtC affected unexpectedly: %+v", rC)
 	}
 }
+
+// TestDeleteServerDataCascadesSkeletonRows is the regression for the orphaned
+// skeleton rows: MarkPlayed/SetFavorite insert a row with server_id = ” when the
+// item has no prior record, and a plain server_id delete left those rows behind.
+// DeleteServerData now also cascades them through id_mappings, so it must be
+// called before RemoveByServerID.
+func TestDeleteServerDataCascadesSkeletonRows(t *testing.T) {
+	tempDir := t.TempDir()
+	store, err := NewIDStore(tempDir, nil)
+	if err != nil {
+		t.Fatalf("NewIDStore: %v", err)
+	}
+	defer store.Close()
+
+	ws, err := NewWatchStore(store.DB(), nil)
+	if err != nil {
+		t.Fatalf("NewWatchStore: %v", err)
+	}
+
+	// A real record for the item, and a skeleton row (server_id = '') as produced
+	// by MarkPlayed on an item with no prior record.
+	virtA := store.GetOrCreateVirtualID("movie-1", "srv-A")
+	if err := ws.MarkPlayed("user-1", virtA, true); err != nil {
+		t.Fatalf("MarkPlayed: %v", err)
+	}
+
+	// The cascade needs the mapping to still exist, so watch data goes first.
+	if err := ws.DeleteServerData("srv-A"); err != nil {
+		t.Fatalf("DeleteServerData: %v", err)
+	}
+	if err := store.RemoveByServerID("srv-A"); err != nil {
+		t.Fatalf("RemoveByServerID: %v", err)
+	}
+
+	if progress, _ := ws.GetProgress("user-1", virtA); progress != nil {
+		t.Fatalf("skeleton row survived server deletion: %#v", progress)
+	}
+}

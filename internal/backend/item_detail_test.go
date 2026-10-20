@@ -145,7 +145,7 @@ func TestUserItemDetailMergesMediaSourcesAcrossInstances(t *testing.T) {
 			names = append(names, ms["Name"].(string))
 		}
 		joined := strings.Join(names, " | ")
-		if !strings.Contains(joined, "[A]") || !strings.Contains(joined, "[B]") {
+		if !strings.Contains(joined, "(A)") || !strings.Contains(joined, "(B)") {
 			t.Fatalf("expected source-tagged media source names, got %q", joined)
 		}
 	})

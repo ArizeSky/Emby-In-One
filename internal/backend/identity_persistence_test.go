@@ -148,8 +148,8 @@ func TestResolvePassthroughHeadersSupportsFiveLevelChain(t *testing.T) {
 
 		empty := NewClientIdentityService()
 		source, headers = callResolvePassthroughHeadersForServer(t, empty, http.Header{}, "", "missing-server")
-		if source != "infuse-fallback" || headers.Get("X-Emby-Client") != "Infuse" {
-			t.Fatalf("infuse-fallback resolution = (%q, %q), want infuse-fallback / Infuse", source, headers.Get("X-Emby-Client"))
+		if source != "no-identity" || headers.Get("X-Emby-Client") != "" {
+			t.Fatalf("no-identity resolution = (%q, %q), want no-identity / empty", source, headers.Get("X-Emby-Client"))
 		}
 	})
 }
@@ -314,7 +314,7 @@ func TestPersistedLastSuccessRestoresAfterRestart(t *testing.T) {
 	}
 }
 
-func TestSaveLatestCaptured_ReturnsErrorOnCorruptFile(t *testing.T) {
+func TestSaveLatestCaptured_RepairsCorruptFile(t *testing.T) {
 	dir := t.TempDir()
 	p := NewIdentityPersistence(dir, nil)
 
@@ -323,13 +323,23 @@ func TestSaveLatestCaptured_ReturnsErrorOnCorruptFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := p.SaveLatestCaptured(http.Header{"X-Test": {"val"}}, "")
-	if err == nil {
-		t.Fatal("expected error when persistence file is corrupt, got nil")
+	if err := p.SaveLatestCaptured(http.Header{"X-Emby-Client": {"Infuse"}}, ""); err != nil {
+		t.Fatalf("save should repair a corrupt file, got %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot identityPersistenceSnapshot
+	if err := json.Unmarshal(raw, &snapshot); err != nil {
+		t.Fatalf("repaired file is not valid JSON: %v", err)
+	}
+	if snapshot.LatestCaptured == nil || snapshot.LatestCaptured.Headers.Get("X-Emby-Client") != "Infuse" {
+		t.Fatalf("repaired file lost the saved entry: %s", raw)
 	}
 }
 
-func TestSaveLastSuccess_ReturnsErrorOnCorruptFile(t *testing.T) {
+func TestSaveLastSuccess_RepairsCorruptFile(t *testing.T) {
 	dir := t.TempDir()
 	p := NewIdentityPersistence(dir, nil)
 
@@ -338,9 +348,19 @@ func TestSaveLastSuccess_ReturnsErrorOnCorruptFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := p.SaveLastSuccess("server-key", http.Header{"X-Test": {"val"}}, "")
-	if err == nil {
-		t.Fatal("expected error when persistence file is corrupt, got nil")
+	if err := p.SaveLastSuccess("server-key", http.Header{"X-Emby-Client": {"Infuse"}}, ""); err != nil {
+		t.Fatalf("save should repair a corrupt file, got %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot identityPersistenceSnapshot
+	if err := json.Unmarshal(raw, &snapshot); err != nil {
+		t.Fatalf("repaired file is not valid JSON: %v", err)
+	}
+	if persisted, ok := snapshot.LastSuccessByServer["server-key"]; !ok || persisted.Headers.Get("X-Emby-Client") != "Infuse" {
+		t.Fatalf("repaired file lost the saved entry: %s", raw)
 	}
 }
 
@@ -392,4 +412,119 @@ func TestLoadTightensLegacyCapturedHeadersFile(t *testing.T) {
 	if got := info.Mode().Perm(); got != 0o600 {
 		t.Fatalf("mode after load = %#o, want 0600", got)
 	}
+}
+
+// spoofedInfuseFixtureHeaders reproduces what the removed Infuse merge base
+// used to stamp onto every passthrough identity it persisted.
+func spoofedInfuseFixtureHeaders() map[string]any {
+	return map[string]any{
+		"User-Agent":            []string{"Infuse/7.7.1 (iPhone; iOS 17.4.1; Scale/3.00)"},
+		"X-Emby-Client":         []string{"Infuse"},
+		"X-Emby-Client-Version": []string{"7.7.1"},
+		"X-Emby-Device-Name":    []string{"iPhone"},
+		"X-Emby-Device-Id":      []string{"infuse-spoof-id"},
+	}
+}
+
+// TestLoadDropsSpoofedInfuseEntries covers the one-shot cleanup of historical
+// pollution: entries the removed Infuse merge base wrote with its fixed
+// "infuse-spoof-id" device ID are dropped when captured-headers.json is
+// loaded, so they can neither re-login nor count as a captured identity.
+func TestLoadDropsSpoofedInfuseEntries(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"AccessToken": "token-a", "User": map[string]any{"Id": "user-a"}})
+	}))
+	defer upstream.Close()
+
+	config := parityConfigWithUpstreams(fmt.Sprintf("  - name: \"A\"\n    url: %q\n    username: \"u1\"\n    password: \"p1\"\n    spoofClient: \"passthrough\"\n", upstream.URL))
+	serverKey := stablePassthroughKey(upstream.URL, "A")
+
+	withTempAppPrepared(t, config, func(dir string) {
+		writeCapturedHeadersFixture(t, dir, map[string]any{
+			"version":        1,
+			"latestCaptured": map[string]any{"headers": spoofedInfuseFixtureHeaders(), "capturedAt": "2026-03-23T00:00:00Z"},
+			"lastSuccessByServer": map[string]any{
+				serverKey: map[string]any{"headers": spoofedInfuseFixtureHeaders(), "capturedAt": "2026-03-23T00:00:01Z"},
+			},
+		})
+	}, func(app *App, handler http.Handler, dir string) {
+		if got := app.Identity.GetLatestCaptured().Get("X-Emby-Device-Id"); got == "infuse-spoof-id" {
+			t.Fatalf("spoofed latestCaptured survived the load cleanup (device id %q)", got)
+		}
+		if got := app.Identity.GetLastSuccess(serverKey).Get("X-Emby-Device-Id"); got == "infuse-spoof-id" {
+			t.Fatalf("spoofed last-success survived the load cleanup (device id %q)", got)
+		}
+		if app.Identity.HasCapturedHeaders(serverKey) {
+			t.Fatalf("a spoofed persisted identity must not count as a captured identity")
+		}
+		client := app.Upstream.GetClient(0)
+		if client == nil {
+			t.Fatalf("missing upstream client")
+		}
+		if client.IsOnline() {
+			t.Fatalf("upstream must not log in from a spoofed persisted identity")
+		}
+	})
+}
+
+// TestAPIKeyPassthroughDefersLoginUntilCapturedIdentity locks in decision 1A
+// for the API-key path: without a captured client identity the upstream stays
+// offline and no request leaves (LoginAll and the health check both skip), and
+// once the admin seeds a real client identity the retry validates /Users/Me
+// with exactly that identity and records it for every later request.
+func TestAPIKeyPassthroughDefersLoginUntilCapturedIdentity(t *testing.T) {
+	var attempts atomic.Int32
+	var seenClient atomic.Value
+	var seenDeviceID atomic.Value
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/Users/Me" {
+			http.NotFound(w, r)
+			return
+		}
+		attempts.Add(1)
+		seenClient.Store(r.Header.Get("X-Emby-Client"))
+		seenDeviceID.Store(r.Header.Get("X-Emby-Device-Id"))
+		if r.Header.Get("X-Emby-Client") == "" {
+			http.Error(w, "no client identity", http.StatusUnauthorized)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"Id": "user-key", "Name": "Key User"})
+	}))
+	defer upstream.Close()
+
+	config := parityConfigWithUpstreams(fmt.Sprintf("  - name: \"A\"\n    url: %q\n    apiKey: \"key-1\"\n    spoofClient: \"passthrough\"\n", upstream.URL))
+
+	withTempAppPrepared(t, config, nil, func(app *App, handler http.Handler, dir string) {
+		client := app.Upstream.GetClient(0)
+		if client == nil {
+			t.Fatalf("missing upstream client")
+		}
+		// The health loop runs every 100ms in this config: give it a few
+		// cycles to prove it keeps skipping instead of logging in bare.
+		time.Sleep(300 * time.Millisecond)
+		if attempts.Load() != 0 {
+			t.Fatalf("/Users/Me was called %d times before any capture, want 0", attempts.Load())
+		}
+		if client.IsOnline() {
+			t.Fatalf("API-key passthrough upstream must stay offline before a captured identity exists")
+		}
+
+		loginTokenWithHeaders(t, handler, "secret", http.Header{
+			"User-Agent":            []string{"Recovered Client UA"},
+			"X-Emby-Client":         []string{"Recovered Client"},
+			"X-Emby-Client-Version": []string{"8.0.0"},
+			"X-Emby-Device-Name":    []string{"Recovered Device"},
+			"X-Emby-Device-Id":      []string{"recovered-device"},
+		})
+
+		waitForCondition(t, 2*time.Second, func() bool {
+			return client.IsOnline()
+		}, "API-key passthrough upstream to validate with the captured identity")
+		if got, _ := seenClient.Load().(string); got != "Recovered Client" {
+			t.Fatalf("/Users/Me used client %q, want the captured Recovered Client", got)
+		}
+		if got, _ := seenDeviceID.Load().(string); got != "recovered-device" {
+			t.Fatalf("/Users/Me used device id %q, want the captured recovered-device", got)
+		}
+	})
 }

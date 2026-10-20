@@ -171,15 +171,30 @@ func migrateDatabaseToServerID(db *sqliteDB, upstreamIDs []string, logger *Logge
 		}
 		if hasIndex {
 			userCol := "proxy_user_id"
-			if hasUser, _ := tableHasColumn(db, "user_watch_progress", "proxy_user_id"); !hasUser {
+			// A probe error is not the same as "column missing": record it and fall
+			// back to the legacy column, which makes the migration statement fail
+			// loudly instead of silently selecting from a column that may not exist.
+			hasUser, userErr := tableHasColumn(db, "user_watch_progress", "proxy_user_id")
+			if userErr != nil && logger != nil {
+				logger.Warnf("db migration: probe user_watch_progress.proxy_user_id: %v", userErr)
+			}
+			if !hasUser {
 				userCol = "user_id"
 			}
 			nameCol := "name"
-			if hasName, _ := tableHasColumn(db, "user_watch_progress", "name"); !hasName {
+			hasName, nameErr := tableHasColumn(db, "user_watch_progress", "name")
+			if nameErr != nil && logger != nil {
+				logger.Warnf("db migration: probe user_watch_progress.name: %v", nameErr)
+			}
+			if !hasName {
 				nameCol = "COALESCE(item_name, '')"
 			}
 			lastPlayedCol := "last_played"
-			if hasLP, _ := tableHasColumn(db, "user_watch_progress", "last_played"); !hasLP {
+			hasLP, lpErr := tableHasColumn(db, "user_watch_progress", "last_played")
+			if lpErr != nil && logger != nil {
+				logger.Warnf("db migration: probe user_watch_progress.last_played: %v", lpErr)
+			}
+			if !hasLP {
 				lastPlayedCol = "0"
 			}
 
@@ -240,8 +255,9 @@ func migrateDatabaseToServerID(db *sqliteDB, upstreamIDs []string, logger *Logge
 				return fmt.Errorf("migrate user_watch_progress: %w", err)
 			}
 		}
-
-		_ = db.exec("DROP TABLE IF EXISTS temp_server_index_map;")
+		if err := db.exec("DROP TABLE IF EXISTS temp_server_index_map;"); err != nil && logger != nil {
+			logger.Warnf("db migration: drop temp_server_index_map: %v", err)
+		}
 		if logger != nil {
 			logger.Infof("SQLite database schema successfully migrated to server_id")
 		}

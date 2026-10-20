@@ -63,6 +63,13 @@ func (a *App) proxyStream(w http.ResponseWriter, r *http.Request, route streamRo
 	}
 	// Resolve a virtual MediaSourceId embedded in subtitle/attachment paths:
 	// /Videos/{itemId}/{mediaSourceId}/Subtitles/...  or  .../Attachments/...
+	if slash := strings.IndexByte(rest, '/'); slash > 0 && query.Get("MediaSourceId") == "" {
+		if tail := rest[slash:]; strings.HasPrefix(tail, "/Subtitles/") || strings.HasPrefix(tail, "/Attachments/") {
+			if a.IDStore.ResolveVirtualID(rest[:slash]) != nil {
+				query.Set("MediaSourceId", rest[:slash])
+			}
+		}
+	}
 	rest = resolveMediaSourceInPath(rest, a.IDStore)
 
 	client, originalID, ok := a.resolveStreamTarget(w, r, resolved, virtualItemID, query)
@@ -103,12 +110,22 @@ func (a *App) proxyStream(w http.ResponseWriter, r *http.Request, route streamRo
 // rewriting HLS manifests so their URLs keep pointing at this proxy.
 func (a *App) forwardStream(w http.ResponseWriter, r *http.Request, client *UpstreamClient, upstreamPath string, query url.Values, rest, virtualItemID string) {
 	reqCtx := requestContextFrom(r.Context())
+	timelineSession := ""
+	if session := query.Get("PlaySessionId"); session != "" {
+		timelineSession = client.ID + "\x00" + virtualItemID + "\x00" + session
+	}
 	if a.Logger != nil {
 		a.Logger.Debugf("Stream request headers: Range=%q, Accept=%q, AE=%q",
 			r.Header.Get("Range"), r.Header.Get("Accept"), r.Header.Get("Accept-Encoding"))
 	}
 
-	resp, err := client.Stream(r.Context(), reqCtx, a.Identity, upstreamPath, query, streamRequestHeaders(r))
+	reqHeaders := streamRequestHeaders(r)
+	// A manifest is always read and rewritten, so never ask the upstream to compress
+	// it: a gzip-compressed body would be rewritten as opaque garbage.
+	if strings.HasSuffix(strings.ToLower(rest), ".m3u8") {
+		reqHeaders.Set("Accept-Encoding", "identity")
+	}
+	resp, err := client.Stream(r.Context(), reqCtx, a.Identity, upstreamPath, query, reqHeaders)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return // client disconnected or timed out — not a server error
@@ -177,8 +194,31 @@ func (a *App) forwardStream(w http.ResponseWriter, r *http.Request, client *Upst
 	}
 
 	contentType := resp.Header.Get("Content-Type")
-	if isPlaylistResponse(contentType, rest) {
-		body, _ := io.ReadAll(resp.Body)
+	// A playlist is only rewritten when the upstream actually served one. A non-2xx
+	// answer (or an error page that happens to look like a manifest) is passed through
+	// verbatim with its real status, so a 404/500 is not masked as a 200.
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 && isPlaylistResponse(contentType, rest) &&
+		resp.Header.Get("Content-Encoding") == "" {
+		// A manifest read that fails mid-body must not be served as a truncated
+		// 200 playlist: the player would seek into missing segments. Same rule
+		// as the segment path below.
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxHLSManifestSize+1))
+		if readErr != nil {
+			if a.Logger != nil {
+				a.Logger.Errorf("Stream manifest read failed: itemId=%s upstream=%s: %s",
+					virtualItemID, upstreamPath, redactURLInError(readErr))
+			}
+			writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Failed to read HLS manifest"})
+			return
+		}
+		if len(body) > maxHLSManifestSize {
+			if a.Logger != nil {
+				a.Logger.Errorf("Stream manifest too large: itemId=%s upstream=%s: %d bytes",
+					virtualItemID, upstreamPath, len(body))
+			}
+			writeJSON(w, http.StatusBadGateway, map[string]any{"message": "HLS manifest exceeds size limit"})
+			return
+		}
 		proxyToken := ""
 		if reqCtx != nil {
 			proxyToken = reqCtx.ProxyToken
@@ -200,7 +240,12 @@ func (a *App) forwardStream(w http.ResponseWriter, r *http.Request, client *Upst
 			baseURL = prepared
 		}
 		manifest := RewriteM3U8ForItem(string(body), baseURL, virtualItemID, proxyToken)
+		// Remember where each media segment starts so proxied segments can have
+		// their fMP4 timeline restored to the playlist position (see
+		// rewriteHLSSegmentBody).
+		storeHLSSegmentPositions(timelineSession, rest, manifest)
 		w.Header().Set("Content-Type", "application/x-mpegURL")
+		w.WriteHeader(resp.StatusCode)
 		_, _ = io.WriteString(w, manifest)
 		return
 	}
@@ -210,7 +255,17 @@ func (a *App) forwardStream(w http.ResponseWriter, r *http.Request, client *Upst
 			resp.StatusCode, contentType, resp.Header.Get("Content-Length"),
 			resp.Header.Get("Content-Encoding"), resp.Header.Get("Content-Range"))
 	}
+	body, rewritten, readErr := rewriteHLSSegmentBody(r, resp, timelineSession, rest)
+	if readErr != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Failed to read HLS segment"})
+		return
+	}
 	copyStreamResponseHeaders(w, resp)
+	if rewritten {
+		w.WriteHeader(resp.StatusCode)
+		_, _ = w.Write(body)
+		return
+	}
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, resp.Body)
 }
@@ -329,10 +384,13 @@ func isPlaylistResponse(contentType, rest string) bool {
 }
 
 // streamResponseHeaders are the upstream headers worth passing through. Chunked
-// transfer encoding is skipped so the proxy sets its own framing.
+// transfer encoding is deliberately absent: the proxy re-frames every response
+// with its own framing (io.Copy to an http.ResponseWriter), and copying the
+// upstream's Transfer-Encoding verbatim would declare framing the body does not
+// follow.
 var streamResponseHeaders = []string{
 	"Content-Type", "Content-Length", "Content-Range", "Accept-Ranges",
-	"Cache-Control", "ETag", "Last-Modified", "Transfer-Encoding",
+	"Cache-Control", "ETag", "Last-Modified",
 	"Content-Disposition", "Content-Encoding", "Date", "Server",
 }
 
@@ -340,9 +398,6 @@ func copyStreamResponseHeaders(w http.ResponseWriter, resp *http.Response) {
 	for _, name := range streamResponseHeaders {
 		value := resp.Header.Get(name)
 		if value == "" {
-			continue
-		}
-		if strings.EqualFold(name, "Transfer-Encoding") && strings.Contains(strings.ToLower(value), "chunked") {
 			continue
 		}
 		w.Header().Set(name, value)

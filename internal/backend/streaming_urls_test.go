@@ -1,6 +1,8 @@
 package backend
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -297,4 +299,87 @@ func TestStreamingURLsConfigRoundTrip(t *testing.T) {
 	if fmt.Sprint(reloaded.Upstream[0].StreamingURLs) != fmt.Sprint(want) {
 		t.Fatalf("round-trip list = %v, want %v", reloaded.Upstream[0].StreamingURLs, want)
 	}
+}
+
+// TestPlaylistUpstreamErrorKeepsStatus is the M1 regression: when the upstream
+// answers an .m3u8 request with an error, the proxy must pass the real status
+// through instead of rewriting the error body and returning 200.
+func TestPlaylistUpstreamErrorKeepsStatus(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/Users/AuthenticateByName" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"AccessToken": "tok", "User": map[string]any{"Id": "user-a"}})
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, ".m3u8") {
+			w.Header().Set("Content-Type", "application/x-mpegURL")
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte("upstream boom"))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer upstream.Close()
+
+	withTempAppConfig(t, singleUpstreamConfig(upstream.URL), func(app *App, handler http.Handler) {
+		token := loginToken(t, handler, "secret")
+		client := app.Upstream.GetClient(0)
+		virtual := app.IDStore.GetOrCreateVirtualID("episode-1", client.ID)
+
+		req := httptest.NewRequest(http.MethodGet, "/Videos/"+virtual+"/master.m3u8?api_key="+token, nil)
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusInternalServerError {
+			t.Fatalf("playlist upstream 500 masked as %d; body=%s", rr.Code, rr.Body.String())
+		}
+	})
+}
+
+// TestPlaylistGzipUpstreamIsRewritten is the M2 regression: an upstream that
+// compresses the manifest despite Accept-Encoding: identity must still produce a
+// readable rewritten playlist, not garbage. The request must also advertise
+// identity so a well-behaved upstream never compresses in the first place.
+func TestPlaylistGzipUpstreamIsRewritten(t *testing.T) {
+	var sawAcceptEncoding string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/Users/AuthenticateByName" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"AccessToken": "tok", "User": map[string]any{"Id": "user-a"}})
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, ".m3u8") {
+			sawAcceptEncoding = r.Header.Get("Accept-Encoding")
+			var buf bytes.Buffer
+			zw := gzip.NewWriter(&buf)
+			_, _ = zw.Write([]byte("#EXTM3U\nsegment1.ts\n"))
+			_ = zw.Close()
+			w.Header().Set("Content-Type", "application/x-mpegURL")
+			w.Header().Set("Content-Encoding", "gzip")
+			_, _ = w.Write(buf.Bytes())
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer upstream.Close()
+
+	withTempAppConfig(t, singleUpstreamConfig(upstream.URL), func(app *App, handler http.Handler) {
+		token := loginToken(t, handler, "secret")
+		client := app.Upstream.GetClient(0)
+		virtual := app.IDStore.GetOrCreateVirtualID("episode-1", client.ID)
+
+		req := httptest.NewRequest(http.MethodGet, "/Videos/"+virtual+"/master.m3u8?api_key="+token, nil)
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+
+		if sawAcceptEncoding != "identity" {
+			t.Fatalf("manifest request sent Accept-Encoding=%q, want identity", sawAcceptEncoding)
+		}
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200, body=%s", rr.Code, rr.Body.String())
+		}
+		// A gzipped manifest is passed through untouched (Content-Encoding preserved)
+		// rather than rewritten into garbage.
+		if rr.Header().Get("Content-Encoding") != "gzip" {
+			t.Fatalf("gzipped manifest lost its Content-Encoding: %v", rr.Header())
+		}
+	})
 }

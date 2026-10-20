@@ -152,7 +152,7 @@ func TestSessionForwardsUpstreamUserID(t *testing.T) {
 
 		// The local progress record belongs to the local user, not the upstream one.
 		if app.WatchStore != nil {
-			progress := app.WatchStore.GetProgress(aliceID, virtualItem)
+			progress, _ := app.WatchStore.GetProgress(aliceID, virtualItem)
 			if progress == nil {
 				t.Fatalf("no local progress was recorded for the local user")
 			}

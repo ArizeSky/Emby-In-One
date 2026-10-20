@@ -227,105 +227,23 @@ func (a *App) handleUserItemByID(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadGateway, map[string]any{"message": err.Error()})
 			return
 		}
+		if item, ok := payload.(map[string]any); ok {
+			a.discoverItemCopies(r, r.PathValue("itemId"), item)
+			instances = a.collectAllowedInstances(reqCtx, a.resolveRouteID(r.PathValue("itemId")))
+			if len(instances) > 1 {
+				a.handleMergedItemDetail(w, r, instances)
+				return
+			}
+		}
 		cfg := a.ConfigStore.Snapshot()
+		annotateItemSources(payload, resolved.Client)
 		rewriteResponseIDs(payload, resolved.ServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 		a.overlayLocalUserData(r, r.PathValue("itemId"), payload)
 		writeJSON(w, http.StatusOK, payload)
 		return
 	}
 
-	var base map[string]any
-	var baseServerID string
-	allMediaSources := []map[string]any{}
-
-	cfg := a.ConfigStore.Snapshot()
-	globalTimeout := time.Duration(cfg.Timeouts.Global) * time.Millisecond
-	if globalTimeout <= 0 {
-		globalTimeout = 15 * time.Second
-	}
-	bgCtx, bgCancel := context.WithTimeout(context.Background(), globalTimeout)
-
-	type instanceResult struct {
-		serverID     string
-		data         map[string]any
-		mediaSources []map[string]any
-	}
-	resultCh := make(chan *instanceResult, len(instances))
-
-	for _, inst := range instances {
-		go func(si seriesInstance) {
-			query := cloneValues(r.URL.Query())
-			query.Set("UserId", si.Client.clientUserID())
-			payload, err := si.Client.RequestJSON(bgCtx, requestContextFrom(r.Context()), a.Identity, http.MethodGet, "/Users/"+si.Client.clientUserID()+"/Items/"+si.OriginalID, query, nil)
-			if err != nil {
-				resultCh <- nil
-				return
-			}
-			data, ok := payload.(map[string]any)
-			if !ok {
-				resultCh <- nil
-				return
-			}
-			var mediaSources []map[string]any
-			for _, raw := range asItems(map[string]any{"Items": data["MediaSources"]}) {
-				ms := deepCloneMap(raw)
-				if originalID, _ := ms["Id"].(string); originalID != "" {
-					ms["Id"] = a.IDStore.GetOrCreateVirtualID(originalID, si.ServerID)
-				}
-				if client := a.Upstream.ClientByID(si.ServerID); client != nil {
-					name, _ := ms["Name"].(string)
-					if name == "" {
-						name = "Version"
-					}
-					ms["Name"] = name + " [" + client.Name + "]"
-				}
-				mediaSources = append(mediaSources, ms)
-			}
-			resultCh <- &instanceResult{serverID: si.ServerID, data: data, mediaSources: mediaSources}
-		}(inst)
-	}
-
-	gracePeriod := time.Duration(cfg.Timeouts.MetadataGracePeriod) * time.Millisecond
-	var graceTimer <-chan time.Time
-	received := 0
-
-	for received < len(instances) {
-		select {
-		case res := <-resultCh:
-			received++
-			if res != nil {
-				if base == nil {
-					base = deepCloneMap(res.data)
-					baseServerID = res.serverID
-				}
-				allMediaSources = append(allMediaSources, res.mediaSources...)
-				if graceTimer == nil && gracePeriod > 0 {
-					graceTimer = time.After(gracePeriod)
-				}
-			}
-		case <-graceTimer:
-			goto metadataDone
-		case <-r.Context().Done():
-			goto metadataDone
-		}
-	}
-metadataDone:
-	bgCancel()
-	if base == nil {
-		writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Upstream request failed"})
-		return
-	}
-	mediaSources := make([]any, 0, len(allMediaSources))
-	for _, mediaSource := range allMediaSources {
-		mediaSources = append(mediaSources, mediaSource)
-	}
-	// delete-and-restore: prevent rewriteResponseIDs from double-wrapping
-	// already-virtualised MediaSource IDs and creating orphan mappings
-	delete(base, "MediaSources")
-	rewriteResponseIDs(base, baseServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
-	base["MediaSources"] = mediaSources
-	a.overlayLocalUserData(r, r.PathValue("itemId"), base)
-	writeJSON(w, http.StatusOK, base)
+	a.handleMergedItemDetail(w, r, instances)
 }
 
 func (a *App) handleItemByID(w http.ResponseWriter, r *http.Request) {

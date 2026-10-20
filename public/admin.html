@@ -253,7 +253,7 @@
           <div class="sm:col-span-2"><label class="text-sm font-medium">推流地址（每行一个，可留空）</label><textarea v-model="serverForm.streamingUrlsText" rows="2" placeholder="https://stream.example.com&#10;https://backup.example.com（备用线路）" class="w-full px-4 py-2 border rounded-lg outline-none font-mono text-sm"></textarea><p class="mt-1 text-xs text-slate-400">第 1 个为主线路，其余为备用线路；留空 = 与地址相同。所有线路必须指向同一台 Emby 服务器。代理模式会在主线路连接失败时自动切换备用线路；直连模式按线路健康状态选择。</p></div>
           <div><label class="text-sm font-medium">认证方式</label><select v-model="serverForm.authType" class="w-full px-4 py-2 border rounded-lg outline-none"><option value="password">用户名/密码</option><option value="apiKey">API Key</option></select></div>
           <div><label class="text-sm font-medium">播放模式</label><select v-model="serverForm.playbackMode" class="w-full px-4 py-2 border rounded-lg outline-none"><option value="proxy">代理模式</option><option value="redirect">直连模式</option></select><p v-if="serverForm.playbackMode === 'redirect'" class="mt-1 text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded p-2">⚠ <b>直连播放模式的安全风险：</b>直连播放模式会把上游账号凭据写入 302 跳转链接，<b>任何能播放的用户都可从中提取凭据</b>并绕过本代理直连上游（相当于上游管理员权限）。请为该上游使用<b>专用的受限账号</b>（仅授予必要的媒体库播放权限、不授予管理权限，不要复用上游管理员账号），或改用代理模式。</p></div>
-          <div><label class="text-sm font-medium">UA 伪装</label><select v-model="serverForm.spoofClient" class="w-full px-4 py-2 border rounded-lg outline-none"><option value="none">无</option><option value="passthrough">透传客户端</option><option value="infuse">Infuse</option><option value="custom">自定义</option></select></div>
+          <div><label class="text-sm font-medium">客户端身份</label><select v-model="serverForm.spoofClient" class="w-full px-4 py-2 border rounded-lg outline-none"><option value="passthrough">透传真实客户端</option><option value="custom">自定义</option></select><p class="mt-1 text-xs text-slate-400">透传模式使用管理员用真实客户端登录本代理时捕获的身份；尚未捕获时会延迟登录，直到真实客户端登录一次。</p></div>
           <div><label class="text-sm font-medium">跟随上游重定向</label><select v-model="serverForm.followRedirects" class="w-full px-4 py-2 border rounded-lg outline-none"><option :value="true">跟随（默认）</option><option :value="false">不跟随</option></select><p class="mt-1 text-xs text-slate-400">上游返回 301/302/303/307/308 时是否自动跟到新地址。选择「不跟随」后按上游错误处理，不会把上游的重定向地址交给客户端。</p></div>
           <div><label class="text-sm font-medium">播放 302 直通</label><select v-model="serverForm.directRedirect" class="w-full px-4 py-2 border rounded-lg outline-none"><option :value="false">关闭（默认）</option><option :value="true">开启</option></select><p class="mt-1 text-xs text-slate-400">代理模式下，上游对播放流返回 302 跳转（STRM 网盘直链）时把跳转地址交给播放器直连，媒体流量不经本代理。开启后「跟随上游重定向」对流请求不再生效。</p></div>
           <div><label class="text-sm font-medium">合并查询分页扫描</label><select v-model="serverForm.pagedScan" class="w-full px-4 py-2 border rounded-lg outline-none"><option :value="false">单次拉取（默认）</option><option :value="true">200 分页</option></select><p class="mt-1 text-xs text-slate-400">跨服合并条目查询的拉取方式。默认单次 Limit=5000；「200 分页」改为每次 Limit=200 翻页拉满 5000，适合拒绝大 Limit 请求的上游（如魔改 Emby）。</p></div>
@@ -263,15 +263,15 @@
         </div>
         <div v-if="serverForm.spoofClient === 'custom'" class="grid grid-cols-1 sm:grid-cols-2 gap-4 border border-blue-100 rounded-xl p-4 bg-blue-50/40">
           <div class="sm:col-span-2"><p class="text-xs font-semibold text-blue-600 mb-2">自定义客户端标识</p></div>
-          <div class="sm:col-span-2"><label class="text-sm font-medium">User-Agent</label><input type="text" v-model="serverForm.customUserAgent" placeholder="Infuse/7.7.1 (iPhone; iOS 17.4.1)" class="w-full px-4 py-2 border rounded-lg outline-none"></div>
-          <div><label class="text-sm font-medium">X-Emby-Client</label><input type="text" v-model="serverForm.customClient" placeholder="Infuse" class="w-full px-4 py-2 border rounded-lg outline-none"></div>
-          <div><label class="text-sm font-medium">X-Emby-Client-Version</label><input type="text" v-model="serverForm.customClientVersion" placeholder="7.7.1" class="w-full px-4 py-2 border rounded-lg outline-none"></div>
-          <div><label class="text-sm font-medium">X-Emby-Device-Name</label><input type="text" v-model="serverForm.customDeviceName" placeholder="iPhone" class="w-full px-4 py-2 border rounded-lg outline-none"></div>
+          <div class="sm:col-span-2"><label class="text-sm font-medium">User-Agent <span class="text-red-500">*</span></label><input type="text" v-model="serverForm.customUserAgent" placeholder="MyClient/1.0 (Windows; Win64; x64)" class="w-full px-4 py-2 border rounded-lg outline-none"><p class="mt-1 text-xs text-slate-400">必填：自定义模式必须提供自己的 User-Agent。</p></div>
+          <div><label class="text-sm font-medium">X-Emby-Client</label><input type="text" v-model="serverForm.customClient" placeholder="MyClient" class="w-full px-4 py-2 border rounded-lg outline-none"></div>
+          <div><label class="text-sm font-medium">X-Emby-Client-Version</label><input type="text" v-model="serverForm.customClientVersion" placeholder="1.0.0" class="w-full px-4 py-2 border rounded-lg outline-none"></div>
+          <div><label class="text-sm font-medium">X-Emby-Device-Name</label><input type="text" v-model="serverForm.customDeviceName" placeholder="My Device" class="w-full px-4 py-2 border rounded-lg outline-none"></div>
           <div><label class="text-sm font-medium">X-Emby-Device-Id</label><input type="text" v-model="serverForm.customDeviceId" placeholder="my-device-001" class="w-full px-4 py-2 border rounded-lg outline-none"></div>
         </div>
         <div v-if="serverForm.authType === 'password'" class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <div><label class="text-sm font-medium">用户名</label><input type="text" v-model="serverForm.username" class="w-full px-4 py-2 border rounded-lg outline-none"></div>
-          <div><label class="text-sm font-medium">密码</label><input type="password" v-model="serverForm.password" class="w-full px-4 py-2 border rounded-lg outline-none"></div>
+          <div><label class="text-sm font-medium">用户名 <span class="text-red-500">*</span></label><input type="text" v-model="serverForm.username" class="w-full px-4 py-2 border rounded-lg outline-none"><p class="mt-1 text-xs text-slate-400">必填：上游 Emby 账号。</p></div>
+          <div><label class="text-sm font-medium">密码</label><input type="password" v-model="serverForm.password" placeholder="可留空" class="w-full px-4 py-2 border rounded-lg outline-none"><p class="mt-1 text-xs text-slate-400">选填：上游账号未设置密码时留空。</p></div>
         </div>
         <div v-else><label class="text-sm font-medium">API Key</label><input type="text" v-model="serverForm.apiKey" class="w-full px-4 py-2 border rounded-lg outline-none"></div>
       </div>
@@ -300,22 +300,32 @@
         <div v-if="editUserId">
           <label class="text-sm font-medium block mb-2">首页隐藏库</label>
           <p class="text-xs text-slate-400 mb-2">勾选 = 从该用户首页隐藏。隐藏仅影响首页库入口；搜索、最新添加、继续观看不受影响。</p>
-          <div v-if="libraryGroupsLoading" class="text-sm text-slate-400 italic py-2">正在加载库列表...</div>
-          <div v-else-if="userLibraryGroups.length === 0" class="text-sm text-slate-400 italic py-2">暂无已配置的上游服务器</div>
-          <div v-else class="space-y-3 max-h-64 overflow-y-auto">
-            <div v-for="g in userLibraryGroups" :key="g.serverId" class="border border-slate-200 rounded-lg p-3">
-              <div class="flex justify-between items-center mb-2">
-                <span class="text-sm font-bold">{{ g.name }}</span>
-                <button v-if="g.online" @click="toggleGroupAll(g, !isGroupAllHidden(g))" class="text-xs text-blue-600 hover:underline">{{ isGroupAllHidden(g) ? '全不选' : '全选' }}</button>
+          <div v-if="userLibraryGroups.length === 0" class="text-sm text-slate-400 italic py-2">暂无已配置的上游服务器</div>
+          <div v-else class="space-y-2 max-h-[60vh] overflow-y-auto">
+            <div v-for="g in userLibraryGroups" :key="g.serverId" class="border border-slate-200 rounded-lg overflow-hidden">
+              <button type="button" @click="toggleLibraryGroup(g)" class="w-full flex items-center justify-between gap-2 px-3 py-2.5 text-left hover:bg-slate-50">
+                <span class="flex items-center gap-2 min-w-0">
+                  <i :data-lucide="g.expanded ? 'chevron-down' : 'chevron-right'" class="w-4 h-4 text-slate-400 shrink-0"></i>
+                  <span :class="g.online ? 'bg-green-500' : 'bg-red-400'" class="w-2 h-2 rounded-full shrink-0"></span>
+                  <span class="text-sm font-bold truncate">{{ g.name }}</span>
+                  <span v-if="g.hiddenIds.length > 0" class="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5 shrink-0">已隐藏 {{ g.hiddenIds.length }}</span>
+                </span>
+                <span v-if="!g.online" class="text-xs text-slate-400 shrink-0">离线</span>
+              </button>
+              <div v-if="g.expanded" class="px-3 pb-3 pt-2 border-t border-slate-100">
+                <div v-if="g.loading" class="text-sm text-slate-400 italic py-2">正在加载库列表...</div>
+                <div v-else-if="g.error" class="py-2 text-xs text-amber-600 flex items-center gap-2"><span class="min-w-0">{{ g.error }}</span><button type="button" @click.stop="refreshLibraryGroup(g)" class="text-blue-600 hover:underline shrink-0">重试</button></div>
+                <template v-else>
+                  <div class="flex justify-end mb-1"><button type="button" @click.stop="toggleGroupAll(g, !isGroupAllHidden(g))" class="text-xs text-blue-600 hover:underline">{{ isGroupAllHidden(g) ? '全不选' : '全选' }}</button></div>
+                  <div class="space-y-1">
+                    <label v-for="lib in g.libraries" :key="lib.id" class="flex items-center space-x-2 cursor-pointer hover:bg-slate-50 p-1 rounded">
+                      <input type="checkbox" :value="lib.id" v-model="g.hiddenIds" class="w-4 h-4 rounded border-slate-300 text-blue-600">
+                      <span class="text-sm">{{ lib.name }}</span>
+                      <span v-if="lib.collectionType" class="text-xs text-slate-400">({{ lib.collectionType }})</span>
+                    </label>
+                  </div>
+                </template>
               </div>
-              <div v-if="g.online" class="space-y-1">
-                <label v-for="lib in g.libraries" :key="lib.id" class="flex items-center space-x-2 cursor-pointer hover:bg-slate-50 p-1 rounded">
-                  <input type="checkbox" :value="lib.id" v-model="g.hiddenIds" class="w-4 h-4 rounded border-slate-300 text-blue-600">
-                  <span class="text-sm">{{ lib.name }}</span>
-                  <span v-if="lib.collectionType" class="text-xs text-slate-400">({{ lib.collectionType }})</span>
-                </label>
-              </div>
-              <p v-else class="text-xs text-amber-600">服务器离线，无法编辑（当前已隐藏 {{ g.hiddenIds.length }} 个库）</p>
             </div>
           </div>
         </div>
@@ -332,20 +342,31 @@
         <p class="text-xs text-slate-400">勾选 = 从自己的首页隐藏。隐藏仅影响首页库入口；搜索、最新添加、继续观看不受影响。</p>
         <div v-if="libraryGroupsLoading" class="text-sm text-slate-400 italic py-2">正在加载库列表...</div>
         <div v-else-if="adminLibraryGroups.length === 0" class="text-sm text-slate-400 italic py-2">暂无已配置的上游服务器</div>
-        <div v-else class="space-y-3 max-h-64 overflow-y-auto">
-          <div v-for="g in adminLibraryGroups" :key="g.serverId" class="border border-slate-200 rounded-lg p-3">
-            <div class="flex justify-between items-center mb-2">
-              <span class="text-sm font-bold">{{ g.name }}</span>
-              <button v-if="g.online" @click="toggleGroupAll(g, !isGroupAllHidden(g))" class="text-xs text-blue-600 hover:underline">{{ isGroupAllHidden(g) ? '全不选' : '全选' }}</button>
+        <div v-else class="space-y-2 max-h-[60vh] overflow-y-auto">
+          <div v-for="g in adminLibraryGroups" :key="g.serverId" class="border border-slate-200 rounded-lg overflow-hidden">
+            <button type="button" @click="toggleLibraryGroup(g)" class="w-full flex items-center justify-between gap-2 px-3 py-2.5 text-left hover:bg-slate-50">
+              <span class="flex items-center gap-2 min-w-0">
+                <i :data-lucide="g.expanded ? 'chevron-down' : 'chevron-right'" class="w-4 h-4 text-slate-400 shrink-0"></i>
+                <span :class="g.online ? 'bg-green-500' : 'bg-red-400'" class="w-2 h-2 rounded-full shrink-0"></span>
+                <span class="text-sm font-bold truncate">{{ g.name }}</span>
+                <span v-if="g.hiddenIds.length > 0" class="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5 shrink-0">已隐藏 {{ g.hiddenIds.length }}</span>
+              </span>
+              <span v-if="!g.online" class="text-xs text-slate-400 shrink-0">离线</span>
+            </button>
+            <div v-if="g.expanded" class="px-3 pb-3 pt-2 border-t border-slate-100">
+              <div v-if="g.loading" class="text-sm text-slate-400 italic py-2">正在加载库列表...</div>
+              <div v-else-if="g.error" class="py-2 text-xs text-amber-600 flex items-center gap-2"><span class="min-w-0">{{ g.error }}</span><button type="button" @click.stop="refreshLibraryGroup(g)" class="text-blue-600 hover:underline shrink-0">重试</button></div>
+              <template v-else>
+                <div class="flex justify-end mb-1"><button type="button" @click.stop="toggleGroupAll(g, !isGroupAllHidden(g))" class="text-xs text-blue-600 hover:underline">{{ isGroupAllHidden(g) ? '全不选' : '全选' }}</button></div>
+                <div class="space-y-1">
+                  <label v-for="lib in g.libraries" :key="lib.id" class="flex items-center space-x-2 cursor-pointer hover:bg-slate-50 p-1 rounded">
+                    <input type="checkbox" :value="lib.id" v-model="g.hiddenIds" class="w-4 h-4 rounded border-slate-300 text-blue-600">
+                    <span class="text-sm">{{ lib.name }}</span>
+                    <span v-if="lib.collectionType" class="text-xs text-slate-400">({{ lib.collectionType }})</span>
+                  </label>
+                </div>
+              </template>
             </div>
-            <div v-if="g.online" class="space-y-1">
-              <label v-for="lib in g.libraries" :key="lib.id" class="flex items-center space-x-2 cursor-pointer hover:bg-slate-50 p-1 rounded">
-                <input type="checkbox" :value="lib.id" v-model="g.hiddenIds" class="w-4 h-4 rounded border-slate-300 text-blue-600">
-                <span class="text-sm">{{ lib.name }}</span>
-                <span v-if="lib.collectionType" class="text-xs text-slate-400">({{ lib.collectionType }})</span>
-              </label>
-            </div>
-            <p v-else class="text-xs text-amber-600">服务器离线，无法编辑（当前已隐藏 {{ g.hiddenIds.length }} 个库）</p>
           </div>
         </div>
       </div>

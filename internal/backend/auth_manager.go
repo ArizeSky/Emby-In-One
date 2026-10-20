@@ -158,13 +158,16 @@ func (m *AuthManager) load() error {
 }
 
 func (m *AuthManager) save() error {
-	m.mu.RLock()
+	// Hold the write lock across the snapshot AND the file write. Releasing it
+	// between them lets a concurrent save interleave: an issuance snapshot
+	// written after a revocation resurrects revoked tokens in tokens.json,
+	// and they become valid again after a restart.
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	payload := map[string]any{"_proxyUserId": m.proxyUserID}
 	for token, info := range m.tokens {
 		payload[token] = info
 	}
-	m.mu.RUnlock()
-
 	encoded, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
 		return err
@@ -201,7 +204,7 @@ func (m *AuthManager) Authenticate(username, password string) (map[string]any, b
 			"Id":                    randomHex(16),
 			"DeviceId":              "proxy",
 			"DeviceName":            "Proxy Session",
-			"Client":                "Emby Aggregator",
+			"Client":                "Emby-In-One",
 			"ApplicationVersion":    "1.0.0",
 			"SupportsRemoteControl": false,
 			"PlayableMediaTypes":    []string{"Audio", "Video"},
@@ -248,12 +251,11 @@ func (m *AuthManager) ValidateToken(token string) *tokenInfo {
 	knownTokens := len(m.tokens)
 	m.mu.RUnlock()
 	if !ok {
+		// Never log any prefix of the presented token: a brute-forcer who guesses the
+		// first 32 bits would otherwise get log confirmation and a shortened search
+		// space. The count of known tokens is enough to spot a reload problem.
 		if m.logger != nil {
-			short := token
-			if len(short) > 8 {
-				short = short[:8] + "..."
-			}
-			m.logger.Debugf("Token rejected (not found): %s, known tokens=%d", short, knownTokens)
+			m.logger.Debugf("Token rejected (not found), known tokens=%d", knownTokens)
 		}
 		return nil
 	}
@@ -272,7 +274,9 @@ func (m *AuthManager) RevokeToken(token string) bool {
 	}
 	m.mu.Unlock()
 	if ok {
-		m.identity.DeleteCaptured(token)
+		if m.identity != nil {
+			m.identity.DeleteCaptured(token)
+		}
 		_ = m.save()
 	}
 	return ok
@@ -286,7 +290,9 @@ func (m *AuthManager) RevokeAllTokens() {
 	m.tokens = make(map[string]tokenInfo)
 	m.mu.Unlock()
 	for token := range old {
-		m.identity.DeleteCaptured(token)
+		if m.identity != nil {
+			m.identity.DeleteCaptured(token)
+		}
 	}
 	_ = m.save()
 }
@@ -318,7 +324,7 @@ func (m *AuthManager) AuthenticateUser(user *User) (map[string]any, string, erro
 			"Id":                    randomHex(16),
 			"DeviceId":              "proxy",
 			"DeviceName":            "Proxy Session",
-			"Client":                "Emby Aggregator",
+			"Client":                "Emby-In-One",
 			"ApplicationVersion":    "1.0.0",
 			"SupportsRemoteControl": false,
 			"PlayableMediaTypes":    []string{"Audio", "Video"},

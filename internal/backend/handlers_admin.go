@@ -135,7 +135,7 @@ func (a *App) handleAdminUpstreamCreate(w http.ResponseWriter, r *http.Request) 
 	draft := UpstreamConfig{FollowRedirects: true}
 	applyAdminUpstreamInput(&draft, body, true)
 	normalizeUpstream(&draft, len(cfg.Upstream), &cfg)
-	if err := validateUpstreamDraft(draft); err != nil {
+	if err := validateUpstreamDraft(r.Context(), draft); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
@@ -199,7 +199,7 @@ func (a *App) handleAdminUpstreamUpdate(w http.ResponseWriter, r *http.Request) 
 	applyAdminUpstreamInput(&draft, body, false)
 	draft.ID = existing.ID // Keep existing persistent ID
 	normalizeUpstream(&draft, index, &cfg)
-	if err := validateUpstreamDraft(draft); err != nil {
+	if err := validateUpstreamDraft(r.Context(), draft); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
@@ -278,25 +278,29 @@ func (a *App) handleAdminUpstreamDelete(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Clean up database records for this server
-	if a.IDStore != nil && serverID != "" {
-		if err := a.IDStore.RemoveByServerID(serverID); err != nil && a.Logger != nil {
-			a.Logger.Errorf("delete upstream %s: remove ID mappings: %v", serverID, err)
+	// Clean up database records for this server. Watch data is removed before the ID
+	// mappings because the skeleton-row cascade (server_id = '') looks up virtual
+	// item ids in id_mappings.
+	if serverID != "" {
+		if a.WatchStore != nil {
+			if err := a.WatchStore.DeleteServerData(serverID); err != nil && a.Logger != nil {
+				a.Logger.Errorf("delete upstream %s: delete watch progress: %v", serverID, err)
+			}
 		}
-	}
-	if a.UserStore != nil && serverID != "" {
-		if err := a.UserStore.RemoveServerGrants(serverID); err != nil && a.Logger != nil {
-			a.Logger.Errorf("delete upstream %s: remove user server grants: %v", serverID, err)
+		if a.IDStore != nil {
+			if err := a.IDStore.RemoveByServerID(serverID); err != nil && a.Logger != nil {
+				a.Logger.Errorf("delete upstream %s: remove ID mappings: %v", serverID, err)
+			}
 		}
-	}
-	if a.WatchStore != nil && serverID != "" {
-		if err := a.WatchStore.DeleteServerData(serverID); err != nil && a.Logger != nil {
-			a.Logger.Errorf("delete upstream %s: delete watch progress: %v", serverID, err)
+		if a.UserStore != nil {
+			if err := a.UserStore.RemoveServerGrants(serverID); err != nil && a.Logger != nil {
+				a.Logger.Errorf("delete upstream %s: remove user server grants: %v", serverID, err)
+			}
 		}
-	}
-	if a.HiddenLibraries != nil && serverID != "" {
-		if err := a.HiddenLibraries.RemoveServer(serverID); err != nil && a.Logger != nil {
-			a.Logger.Errorf("delete upstream %s: remove hidden libraries: %v", serverID, err)
+		if a.HiddenLibraries != nil {
+			if err := a.HiddenLibraries.RemoveServer(serverID); err != nil && a.Logger != nil {
+				a.Logger.Errorf("delete upstream %s: remove hidden libraries: %v", serverID, err)
+			}
 		}
 	}
 	a.invalidateUpstreamLibraryCache(serverID)
@@ -322,7 +326,7 @@ func (a *App) handleAdminUpstreamReconnect(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "Server not found"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"success": true, "online": client.Online})
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "online": client.IsOnline()})
 }
 
 func (a *App) handleAdminProxiesList(w http.ResponseWriter, r *http.Request) {
@@ -410,9 +414,13 @@ func (a *App) handleAdminProxyTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// SSRF protection: this endpoint probes egress, so it only accepts public targets.
+	// This pre-check produces a friendly message; it is advisory only. The dialer
+	// below is the enforcement point: it resolves once, rejects any blocked resolved
+	// IP, and connects only to validated addresses, so a DNS answer that changes
+	// between this check and the connect cannot smuggle a blocked target through.
 	parsedTarget, _ := url.Parse(body.TargetURL)
 	if parsedTarget != nil {
-		if reason, blocked := blockedTargetReason(parsedTarget.Hostname()); blocked {
+		if reason, blocked := blockedTargetReason(r.Context(), parsedTarget.Hostname()); blocked {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": probeTargetBlockedMessage(parsedTarget.Hostname(), reason)})
 			return
 		}
@@ -422,9 +430,9 @@ func (a *App) handleAdminProxyTest(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"success": false, "latency": int64(0), "error": "Failed to create proxy transport (invalid URL or scheme)"})
 		return
 	}
-	// Wrap transport with SSRF-safe dialer that re-checks resolved IPs at connect time,
-	// preventing DNS rebinding attacks where a hostname resolves to a public IP during
-	// validation but to a private IP during the actual connection.
+	// Wrap transport with the SSRF-safe dialer that re-checks resolved IPs at connect
+	// time against a single DNS answer, preventing DNS rebinding attacks where a
+	// hostname resolves to a public IP during validation but a private IP at connect.
 	safeTransport := wrapTransportWithSSRFCheck(transport)
 	client := &http.Client{Transport: safeTransport, Timeout: 10 * time.Second}
 	start := time.Now()
@@ -718,7 +726,11 @@ func (a *App) handleAdminUsersUpdate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "数据库不可用，首页库隐藏未启用"})
 		return
 	}
-	if input.Enabled != nil && !*input.Enabled {
+	// Disabling cuts the user's access; so does changing their password. A token
+	// never expires on its own, so a leaked token would otherwise keep working even
+	// after the credential it came from is gone. The administrator's own password
+	// change already revokes every token (see handleAdminSettingsUpdate).
+	if (input.Enabled != nil && !*input.Enabled) || (input.Password != nil && *input.Password != "") {
 		a.Auth.RevokeTokensByUserID(id)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"success": true})

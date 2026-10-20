@@ -51,7 +51,7 @@ func TestUserDataDualWriteHappensAfterForward(t *testing.T) {
 		}
 
 		// The upstream rejected the change, so nothing may have been recorded locally.
-		if progress := app.WatchStore.GetProgress(watchUserID(t, app, "child"), virtualItem); progress != nil {
+		if progress, _ := app.WatchStore.GetProgress(watchUserID(t, app, "child"), virtualItem); progress != nil {
 			t.Fatalf("local watch record written despite a failed forward: %#v", progress)
 		}
 		played, err := app.WatchStore.GetPlayedItems(watchUserID(t, app, "child"))
@@ -90,7 +90,7 @@ func TestUserDataDualWriteStillHappensOnSuccess(t *testing.T) {
 			t.Fatalf("UserData status = %d, want 200 (body=%s)", rr.Code, rr.Body.String())
 		}
 
-		progress := app.WatchStore.GetProgress(watchUserID(t, app, "child"), virtualItem)
+		progress, _ := app.WatchStore.GetProgress(watchUserID(t, app, "child"), virtualItem)
 		if progress == nil {
 			t.Fatal("no local watch record after a successful forward")
 		}
@@ -133,14 +133,14 @@ func TestUserDataFailedForwardDoesNotCreateSkeletonRecord(t *testing.T) {
 		for i := 0; i < 3; i++ {
 			rr := doAuthJSON(t, handler, http.MethodPost, "/Users/"+app.Auth.ProxyUserID()+"/Items/"+virtualItem+"/UserData",
 				map[string]any{"Played": true}, userToken)
-			if rr.Code != http.StatusInternalServerError {
-				t.Fatalf("attempt %d: status = %d, want 500", i, rr.Code)
-			}
+ 			if rr.Code != http.StatusBadGateway {
+ 				t.Fatalf("attempt %d: status = %d, want 502 (the upstream's own refusal)", i, rr.Code)
+ 			}
 		}
 		if got := atomic.LoadInt32(&attempts); got != 3 {
 			t.Fatalf("upstream saw %d forward(s), want 3", got)
 		}
-		if progress := app.WatchStore.GetProgress(watchUserID(t, app, "child"), virtualItem); progress != nil {
+		if progress, _ := app.WatchStore.GetProgress(watchUserID(t, app, "child"), virtualItem); progress != nil {
 			t.Fatalf("skeleton record created by failed forwards: %#v", progress)
 		}
 	})

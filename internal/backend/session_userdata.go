@@ -3,6 +3,7 @@ package backend
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -44,15 +45,9 @@ func decodeOptionalJSON(r *http.Request) (any, error) {
 }
 
 func (a *App) translateSessionBodyIDs(body map[string]any) (string, bool) {
-	// Resolve each ID independently to its OWN server's original value.
-	// This matches the Node.js reference implementation where each virtual ID
-	// is translated to its own server's original regardless of the target server.
-	//
-	// Target server priority: ItemId → MediaSourceId → PlaySessionId → ActiveStream.
-	// This ensures session events are routed to the server that owns the episode
-	// (ItemId), not the server that owns the media source. The upstream Emby
-	// associates resume/progress data with ItemId, so the ItemId must be valid
-	// on the target server.
+	// Selected media sources route a merged item's session to that server's
+	// copy. Keep the legacy primary route when no corresponding copy exists.
+	virtualItemID, _ := body["ItemId"].(string)
 
 	type resolvedID struct {
 		OriginalID string
@@ -77,7 +72,6 @@ func (a *App) translateSessionBodyIDs(body map[string]any) (string, bool) {
 			body[key] = resolved.OriginalID
 		}
 	}
-
 	// Determine target server: prefer ItemId's server (matches Node.js)
 	serverID := ""
 	for _, key := range []string{"ItemId", "MediaSourceId", "PlaySessionId"} {
@@ -86,11 +80,20 @@ func (a *App) translateSessionBodyIDs(body map[string]any) (string, bool) {
 			break
 		}
 	}
+	for _, key := range []string{"MediaSourceId", "PlaySessionId"} {
+		if target := resolutions[key]; target != nil && a.IDStore.ResolveVirtualID(virtualItemID) != nil {
+			if itemID, ok := translateVirtualIDForServer(virtualItemID, target.ServerID, a.IDStore); ok {
+				body["ItemId"] = itemID
+				serverID = target.ServerID
+				break
+			}
+		}
+	}
 
 	if serverID == "" {
 		// Last resort: check which server last served a PlaybackInfo for ItemId
-		if itemID, _ := body["ItemId"].(string); itemID != "" {
-			if idx, ok := a.IDStore.GetActiveStream(itemID); ok {
+		if virtualItemID != "" {
+			if idx, ok := a.IDStore.GetActiveStream(virtualItemID); ok {
 				serverID = idx
 			}
 		}
@@ -137,7 +140,12 @@ func (a *App) recordSessionToWatchStore(r *http.Request, virtualItemID string, b
 	}
 
 	// Enrich with item metadata if not already stored
-	existing := a.WatchStore.GetProgress(reqCtx.ProxyUser.UserID, virtualItemID)
+	// A read error is not "no record": skip the enrichment decision on failure
+	// rather than treating the item as unseen.
+	existing, progressErr := a.WatchStore.GetProgress(reqCtx.ProxyUser.UserID, virtualItemID)
+	if progressErr != nil && a.Logger != nil {
+		a.Logger.Warnf("WatchStore progress read error: %s", redactURLInError(progressErr))
+	}
 	if existing == nil || existing.ItemType == "" {
 		a.enrichWatchProgressMetadata(r, reqCtx, p, originalItemID, serverID)
 	}
@@ -221,15 +229,54 @@ func (a *App) performUpstream(ctx *http.Request, client *UpstreamClient, method,
 	return client.doRequest(ctx.Context(), reqCtx, method, path, query, body, client.requestHeaders(reqCtx, a.Identity), false)
 }
 
+// upstreamHTTPError reports that the upstream answered a session/userdata request
+// with a non-2xx status. It is deliberately distinct from a transport failure: a
+// transport failure means the event may still have happened upstream (the request
+// could have been delivered before the connection dropped), while a non-2xx answer
+// is an explicit refusal, so the event did not happen and must not be recorded
+// locally.
+type upstreamHTTPError struct {
+	StatusCode int
+	Status     string
+	Body       string
+}
+
+func (e *upstreamHTTPError) Error() string {
+	return fmt.Sprintf("upstream request failed: %s %s", e.Status, e.Body)
+}
+
+func asUpstreamHTTPError(err error) (*upstreamHTTPError, bool) {
+	var uhe *upstreamHTTPError
+	if errors.As(err, &uhe) {
+		return uhe, true
+	}
+	return nil, false
+}
+
+// Bounded like UpstreamClient.RequestJSON: a hostile or broken upstream must
+// not be able to OOM the proxy or inject unbounded content into client
+// responses through these per-playback endpoints.
+const (
+	maxUpstreamErrorBodySize   = 64 << 10 // 64 KiB, mirrors RequestJSON
+	maxUpstreamSessionBodySize = 1 << 20  // 1 MiB
+)
+
 func readUpstreamJSONOrNoContent(resp *http.Response) (int, any, error) {
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		payload, _ := io.ReadAll(resp.Body)
-		return resp.StatusCode, nil, fmt.Errorf("upstream request failed: %s %s", resp.Status, string(bytes.TrimSpace(payload)))
+		payload, _ := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamErrorBodySize))
+		return resp.StatusCode, nil, &upstreamHTTPError{
+			StatusCode: resp.StatusCode,
+			Status:     resp.Status,
+			Body:       string(bytes.TrimSpace(payload)),
+		}
 	}
-	raw, err := io.ReadAll(resp.Body)
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamSessionBodySize+1))
 	if err != nil {
 		return resp.StatusCode, nil, err
+	}
+	if len(raw) > maxUpstreamSessionBodySize {
+		return resp.StatusCode, nil, fmt.Errorf("upstream response body exceeds %d bytes", maxUpstreamSessionBodySize)
 	}
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 || resp.StatusCode == http.StatusNoContent {
@@ -258,6 +305,23 @@ func (a *App) forwardJSONOrNoContent(r *http.Request, client *UpstreamClient, me
 	}
 	return readUpstreamJSONOrNoContent(resp)
 }
+ 
+ // writeUserdataForwardError maps a forwarded userdata error to the status the
+ // client should see: an explicit upstream refusal keeps its own status code,
+ // a preparation failure keeps its status, and a transport failure is a bad
+ // gateway. Answering 500 for an upstream 401/404 made clients treat a
+ // refusal as a server bug and hid the real cause.
+ func (a *App) writeUserdataForwardError(w http.ResponseWriter, err error) {
+ 	if uhe, ok := asUpstreamHTTPError(err); ok {
+ 		writeJSON(w, uhe.StatusCode, map[string]any{"message": "Upstream rejected the request: " + uhe.Status})
+ 		return
+ 	}
+ 	if status, ok := preparationErrorStatus(err); ok {
+ 		writeJSON(w, status, preparationErrorBody(err))
+ 		return
+ 	}
+ 	writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Upstream request failed"})
+ }
 
 func asBodyMap(payload any) (map[string]any, bool) {
 	if payload == nil {
@@ -301,8 +365,17 @@ func (a *App) handleSessionPlaying(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, status, preparationErrorBody(err))
 			return
 		}
+		// An explicit non-2xx answer is a refusal: the play event did not happen, so
+		// it is not recorded locally. A transport failure is different — the request
+		// may have been delivered before the connection dropped — so it keeps the
+		// local record. Session events are fire-and-forget for Emby clients: both
+		// cases answer 204.
 		if a.Logger != nil {
 			a.Logger.Warnf("Sessions/Playing upstream error (server %s): %v", serverID, redactURLInError(err))
+		}
+		if _, refused := asUpstreamHTTPError(err); refused {
+			w.WriteHeader(http.StatusNoContent)
+			return
 		}
 	}
 	a.recordSessionToWatchStore(r, virtualItemID, body, serverID, false)
@@ -346,6 +419,16 @@ func (a *App) handleSessionPlayingProgress(w http.ResponseWriter, r *http.Reques
 		// failure visible instead of looking like a successful report.
 		if status, ok := preparationErrorStatus(err); ok {
 			writeJSON(w, status, preparationErrorBody(err))
+			return
+		}
+		// Same refusal rule as Sessions/Playing: an explicit non-2xx means the
+		// progress event did not happen upstream, so it is not recorded locally,
+		// while the client still gets the fire-and-forget 204.
+		if a.Logger != nil {
+			a.Logger.Warnf("Sessions/Playing/Progress upstream error (server %s): %v", serverID, redactURLInError(err))
+		}
+		if _, refused := asUpstreamHTTPError(err); refused {
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 	}
@@ -395,6 +478,22 @@ func (a *App) handleSessionPlayingStopped(w http.ResponseWriter, r *http.Request
 				}
 			}
 			writeJSON(w, status, preparationErrorBody(err))
+			return
+		}
+		if _, refused := asUpstreamHTTPError(err); refused {
+			// An explicit refusal means the stop was not registered upstream, so the
+			// local progress is not written either. The concurrency slot is still
+			// released: the client did stop playing, and holding the slot would leak
+			// it. The client keeps the fire-and-forget 204.
+			if a.Logger != nil {
+				a.Logger.Warnf("Sessions/Playing/Stopped upstream error (server %s): %v", serverID, redactURLInError(err))
+			}
+			if a.PlaybackLimiter != nil {
+				if reqCtx := requestContextFrom(r.Context()); reqCtx != nil && reqCtx.ProxyUser != nil && reqCtx.ProxyUser.Role != "admin" {
+					a.PlaybackLimiter.Stop(reqCtx.ProxyUser.UserID, serverID)
+				}
+			}
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 	}
@@ -488,10 +587,10 @@ func (a *App) handleUserItemUserData(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	status, payload, err := a.forwardJSONOrNoContent(r, resolved.Client, http.MethodPost, fmt.Sprintf("/Users/%s/Items/%s/UserData", resolved.Client.clientUserID(), resolved.OriginalID), nil, body)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"message": err.Error()})
-		return
-	}
+ 	if err != nil {
+ 		a.writeUserdataForwardError(w, err)
+ 		return
+ 	}
 	// Dual-write: record played status to WatchStore for non-admin users. This runs
 	// only after the upstream accepted the change, matching handleFavoriteItemAdd and
 	// handleFavoriteItemRemove. Writing first left the local state permanently ahead of
@@ -499,7 +598,9 @@ func (a *App) handleUserItemUserData(w http.ResponseWriter, r *http.Request) {
 	// (server_index = 0) even for an item that was never watched.
 	if a.WatchStore != nil {
 		if reqCtx := requestContextFrom(r.Context()); reqCtx != nil && reqCtx.ProxyUser != nil && reqCtx.ProxyUser.Role != "admin" && playedValue != nil {
-			_ = a.WatchStore.MarkPlayed(reqCtx.ProxyUser.UserID, virtualItemID, *playedValue)
+			if err := a.WatchStore.MarkPlayed(reqCtx.ProxyUser.UserID, virtualItemID, *playedValue); err != nil && a.Logger != nil {
+				a.Logger.Warnf("WatchStore MarkPlayed error: %s", redactURLInError(err))
+			}
 		}
 	}
 	if payload == nil {
@@ -532,14 +633,16 @@ func (a *App) handleFavoriteItemAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	status, payload, err := a.forwardJSONOrNoContent(r, resolved.Client, http.MethodPost, fmt.Sprintf("/Users/%s/FavoriteItems/%s", resolved.Client.clientUserID(), resolved.OriginalID), nil, body)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"message": err.Error()})
-		return
-	}
+ 	if err != nil {
+ 		a.writeUserdataForwardError(w, err)
+ 		return
+ 	}
 	// Dual-write favorite
 	if a.WatchStore != nil {
 		if reqCtx := requestContextFrom(r.Context()); reqCtx != nil && reqCtx.ProxyUser != nil && reqCtx.ProxyUser.Role != "admin" {
-			_ = a.WatchStore.SetFavorite(reqCtx.ProxyUser.UserID, virtualItemID, true)
+			if err := a.WatchStore.SetFavorite(reqCtx.ProxyUser.UserID, virtualItemID, true); err != nil && a.Logger != nil {
+				a.Logger.Warnf("WatchStore SetFavorite(true) error: %s", redactURLInError(err))
+			}
 		}
 	}
 	if payload == nil {
@@ -571,14 +674,16 @@ func (a *App) handleFavoriteItemRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	status, payload, err := a.forwardJSONOrNoContent(r, resolved.Client, http.MethodDelete, fmt.Sprintf("/Users/%s/FavoriteItems/%s", resolved.Client.clientUserID(), resolved.OriginalID), nil, body)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"message": err.Error()})
-		return
-	}
+ 	if err != nil {
+ 		a.writeUserdataForwardError(w, err)
+ 		return
+ 	}
 	// Dual-write favorite removal
 	if a.WatchStore != nil {
 		if reqCtx := requestContextFrom(r.Context()); reqCtx != nil && reqCtx.ProxyUser != nil && reqCtx.ProxyUser.Role != "admin" {
-			_ = a.WatchStore.SetFavorite(reqCtx.ProxyUser.UserID, virtualItemID, false)
+			if err := a.WatchStore.SetFavorite(reqCtx.ProxyUser.UserID, virtualItemID, false); err != nil && a.Logger != nil {
+				a.Logger.Warnf("WatchStore SetFavorite(false) error: %s", redactURLInError(err))
+			}
 		}
 	}
 	if payload == nil {
@@ -621,7 +726,16 @@ func (a *App) overlayLocalUserData(r *http.Request, virtualItemID string, payloa
 	if reqCtx == nil || reqCtx.ProxyUser == nil || reqCtx.ProxyUser.Role == "admin" {
 		return
 	}
-	progress := a.WatchStore.GetProgress(reqCtx.ProxyUser.UserID, virtualItemID)
+	progress, progressErr := a.WatchStore.GetProgress(reqCtx.ProxyUser.UserID, virtualItemID)
+	if progressErr != nil {
+		// A failed read must not be mistaken for "no local record": clearing the
+		// upstream userdata here would zero out the user's progress display on a
+		// transient database error. Leave the payload untouched and log it.
+		if a.Logger != nil {
+			a.Logger.Warnf("WatchStore read error, skipping local overlay: %s", redactURLInError(progressErr))
+		}
+		return
+	}
 	if progress == nil {
 		// No local record → clear upstream admin's UserData to avoid leaking
 		clearUpstreamUserData(payload)

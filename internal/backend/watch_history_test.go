@@ -113,7 +113,10 @@ func TestWatchHistoryIsolationForRegularUsers(t *testing.T) {
 			t.Fatalf("child user not found in UserStore")
 		}
 
-		progress := app.WatchStore.GetProgress(childUserID, virtualMovieID)
+		progress, err := app.WatchStore.GetProgress(childUserID, virtualMovieID)
+		if err != nil {
+			t.Fatalf("GetProgress: %v", err)
+		}
 		if progress == nil {
 			t.Fatalf("progress not recorded in WatchStore")
 		}
@@ -122,7 +125,7 @@ func TestWatchHistoryIsolationForRegularUsers(t *testing.T) {
 		}
 
 		// ---- Test 2: Admin does NOT have local progress ----
-		adminProgress := app.WatchStore.GetProgress("admin", virtualMovieID)
+		adminProgress, _ := app.WatchStore.GetProgress("admin", virtualMovieID)
 		if adminProgress != nil {
 			t.Fatalf("admin should not have local watch progress")
 		}
@@ -135,7 +138,7 @@ func TestWatchHistoryIsolationForRegularUsers(t *testing.T) {
 			t.Fatalf("userdata POST: status=%d body=%s", rr.Code, rr.Body.String())
 		}
 
-		progress = app.WatchStore.GetProgress(childUserID, virtualMovieID)
+		progress, _ = app.WatchStore.GetProgress(childUserID, virtualMovieID)
 		if progress == nil || !progress.Played {
 			t.Fatalf("Played should be true after UserData POST")
 		}
@@ -148,7 +151,7 @@ func TestWatchHistoryIsolationForRegularUsers(t *testing.T) {
 			t.Fatalf("favorite add: status=%d body=%s", rr.Code, rr.Body.String())
 		}
 
-		progress = app.WatchStore.GetProgress(childUserID, virtualMovieID)
+		progress, _ = app.WatchStore.GetProgress(childUserID, virtualMovieID)
 		if progress == nil || !progress.IsFavorite {
 			t.Fatalf("IsFavorite should be true after favorite add")
 		}
@@ -161,7 +164,7 @@ func TestWatchHistoryIsolationForRegularUsers(t *testing.T) {
 			t.Fatalf("favorite remove: status=%d body=%s", rr.Code, rr.Body.String())
 		}
 
-		progress = app.WatchStore.GetProgress(childUserID, virtualMovieID)
+		progress, _ = app.WatchStore.GetProgress(childUserID, virtualMovieID)
 		if progress == nil || progress.IsFavorite {
 			t.Fatalf("IsFavorite should be false after favorite remove")
 		}
@@ -180,7 +183,7 @@ func TestWatchHistoryIsolationForRegularUsers(t *testing.T) {
 			t.Fatalf("delete user: status=%d body=%s", rr.Code, rr.Body.String())
 		}
 
-		progress = app.WatchStore.GetProgress(deleteUserID, virtualMovieID)
+		progress, _ = app.WatchStore.GetProgress(deleteUserID, virtualMovieID)
 		if progress != nil {
 			t.Fatalf("watch data should be cleared after user deletion")
 		}
@@ -362,14 +365,14 @@ func TestUserDataPlayedIsNotRecordedLocallyWhenUpstreamFails(t *testing.T) {
 		rr = doAuthJSON(t, handler, http.MethodPost,
 			fmt.Sprintf("/Users/%s/Items/%s/UserData", app.Auth.ProxyUserID(), virtualMovieID),
 			map[string]any{"Played": true}, childToken)
-		if rr.Code != http.StatusInternalServerError {
-			t.Fatalf("userdata POST status=%d body=%s", rr.Code, rr.Body.String())
-		}
+ 		if rr.Code != http.StatusBadGateway {
+ 			t.Fatalf("userdata POST status=%d body=%s", rr.Code, rr.Body.String())
+ 		}
 
 		// The local record follows the upstream, not the other way round: writing it first
 		// left the local state "played" while the upstream still had it unwatched, and the
 		// two never met again.
-		if progress := app.WatchStore.GetProgress(childUserID, virtualMovieID); progress != nil && progress.Played {
+		if progress, _ := app.WatchStore.GetProgress(childUserID, virtualMovieID); progress != nil && progress.Played {
 			t.Fatalf("Played was recorded locally even though the upstream rejected the write: %#v", progress)
 		}
 	})

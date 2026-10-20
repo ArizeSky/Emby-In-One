@@ -120,7 +120,7 @@ func parsePathIndex(r *http.Request, name string) (int, bool) {
 	return parsed, true
 }
 
-func validateUpstreamDraft(draft UpstreamConfig) error {
+func validateUpstreamDraft(ctx context.Context, draft UpstreamConfig) error {
 	if err := validateRequiredLength("upstream.name", strings.TrimSpace(draft.Name), 1, 100); err != nil {
 		return err
 	}
@@ -130,18 +130,39 @@ func validateUpstreamDraft(draft UpstreamConfig) error {
 	if err := validateSpoofClient(draft.SpoofClient); err != nil {
 		return err
 	}
+	// custom mode must carry its own User-Agent: without one the request would
+	// leave with no UA at all, which is exactly the behaviour this mode must
+	// not degrade into now that every built-in profile is gone.
+	if strings.TrimSpace(draft.SpoofClient) == "custom" && strings.TrimSpace(draft.CustomUserAgent) == "" {
+		return &httpError{message: "custom 模式必须填写 customUserAgent"}
+	}
 	if err := validateHTTPURL(draft.URL); err != nil {
 		return err
+	}
+	// An upstream behind a forward proxy never has its target host resolved by the
+	// transport dialer — the dialer only sees the proxy address — so the target
+	// must be screened here. The upstream policy matches the dialer's: link-local
+	// (cloud metadata) and unspecified addresses are refused, while loopback and
+	// RFC1918 stay allowed because self-hosted Emby commonly runs on the same host
+	// or LAN.
+	if reason, blocked := upstreamURLBlocked(ctx, draft.URL); blocked {
+		return &httpError{message: upstreamTargetBlockedMessage(draft.URL, reason)}
 	}
 	for _, streamingURL := range draft.StreamingURLs {
 		if err := validateHTTPURL(streamingURL); err != nil {
 			return &httpError{message: "推流地址 " + streamingURL + " 无效：" + err.Error()}
 		}
+		if reason, blocked := upstreamURLBlocked(ctx, streamingURL); blocked {
+			return &httpError{message: upstreamTargetBlockedMessage(streamingURL, reason)}
+		}
 	}
 	hasAPIKey := strings.TrimSpace(draft.APIKey) != ""
-	hasUserPassword := strings.TrimSpace(draft.Username) != "" && draft.Password != ""
+	// The upstream account identifies the login and is required; the password is
+	// optional because Emby permits blank-password accounts. A blank password is
+	// sent upstream as a blank password, exactly like a real client would.
+	hasUserPassword := strings.TrimSpace(draft.Username) != ""
 	if hasAPIKey == hasUserPassword {
-		return &httpError{message: "上游认证方式必须为 apiKey 或 用户名+密码 二选一"}
+		return &httpError{message: "上游认证方式必须为 apiKey 或 用户名 二选一（密码可留空）"}
 	}
 	return nil
 }
@@ -175,9 +196,8 @@ func withRedirectWarning(draft UpstreamConfig, result upstreamValidationResult) 
 
 func (a *App) validateUpstreamConnectivity(cfg Config, draft UpstreamConfig, index int, reqCtx *RequestContext) (upstreamValidationResult, error) {
 	client := newUpstreamClient(cfg, draft, index, a.Logger)
-	if draft.SpoofClient == "passthrough" && strings.TrimSpace(draft.APIKey) == "" {
-		source, _ := client.resolveIdentityHeaders(reqCtx, a.Identity, nil)
-		if source == "infuse-fallback" {
+	if draft.SpoofClient == "passthrough" {
+		if a.Identity == nil || !a.Identity.HasCapturedHeaders(client.serverKey) {
 			if a.Logger != nil {
 				a.Logger.Infof("[%s] Passthrough admin validation deferred — no captured client identity yet", draft.Name)
 			}
@@ -195,7 +215,10 @@ func (a *App) validateUpstreamConnectivity(cfg Config, draft UpstreamConfig, ind
 		}
 	}
 	if snapshot.LastError != "" {
-		return upstreamValidationResult{}, errors.New(snapshot.LastError)
+		// LastError can embed the request URL (net/http builds transport errors from
+		// it), and a streaming URL carries the upstream token in its query string.
+		// Redact before the message reaches the admin API response.
+		return upstreamValidationResult{}, errors.New(redactURLInError(errors.New(snapshot.LastError)))
 	}
 	return upstreamValidationResult{}, errors.New("上游服务器验证失败")
 }
@@ -226,6 +249,33 @@ func sanitizeUpstreamURL(raw string) string {
 	parsed.RawQuery = ""
 	parsed.Fragment = ""
 	return parsed.String()
+}
+
+// upstreamURLBlocked reports whether the host of an upstream base URL resolves to
+// an address the upstream SSRF policy refuses (link-local / unspecified). It is
+// the screening that covers targets routed through a forward proxy, where the
+// transport dialer only ever resolves the proxy address. The DNS lookup is
+// bounded by the caller's ctx plus the internal resolve cap.
+func upstreamURLBlocked(ctx context.Context, rawURL string) (string, bool) {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || parsed.Host == "" {
+		return "", false
+	}
+	return upstreamSSRFPolicy.blockedTargetReason(ctx, parsed.Hostname())
+}
+
+// upstreamTargetBlockedMessage explains why an upstream URL was refused.
+func upstreamTargetBlockedMessage(rawURL, reason string) string {
+	host := rawURL
+	if parsed, err := url.Parse(strings.TrimSpace(rawURL)); err == nil && parsed.Host != "" {
+		host = parsed.Hostname()
+	}
+	switch reason {
+	case "link-local":
+		return "上游地址 " + host + " 属于链路本地地址（169.254.0.0/16、fe80::/10），通常是云服务器元数据服务，不能作为上游服务器或推流地址。"
+	default:
+		return "上游地址 " + host + " 属于不可路由的保留地址，不能作为上游服务器或推流地址。"
+	}
 }
 
 func sanitizeProxyURL(raw string) string {
@@ -351,10 +401,10 @@ func validatePlaybackMode(mode string) error {
 
 func validateSpoofClient(mode string) error {
 	switch strings.TrimSpace(mode) {
-	case "none", "passthrough", "infuse", "custom":
+	case "passthrough", "custom":
 		return nil
 	default:
-		return &httpError{message: "spoofClient 必须为 none、passthrough、infuse 或 custom"}
+		return &httpError{message: "spoofClient 必须为 passthrough 或 custom"}
 	}
 }
 

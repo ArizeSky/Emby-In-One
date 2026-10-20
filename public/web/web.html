@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Emby-in-One Web Player</title>
+<link rel="stylesheet" href="/web/vendor/inter.css">
+<link rel="stylesheet" href="/web/vendor/tailwind.css?v=20261001b">
+<link rel="stylesheet" href="/web/web/ui.css?v=v1.4.4-rc2">
+</head>
+<body class="eio-web font-sans">
+<div id="app" v-cloak>
+  <!-- ===== LOGIN ===== -->
+  <div v-if="page==='login'" class="eio-login">
+    <div class="eio-login-brand">
+      <div class="eio-login-mark"><i data-lucide="play-circle" class="w-7 h-7"></i></div>
+      <h1>Emby-in-One</h1>
+      <p>聚合多台 Emby 服务器的网页播放器：浏览媒体库与最新内容、继续观看、收藏，并直接在浏览器中播放。</p>
+    </div>
+    <div class="eio-login-form-col">
+      <form class="eio-login-form" :class="{ 'eio-shake': loginShake }" novalidate @submit.prevent="doLogin">
+        <h2>登录</h2>
+        <div v-if="loginError" class="eio-inline-error"><i data-lucide="alert-circle" class="w-4 h-4"></i><span id="login-error">{{ loginError }}</span></div>
+        <label class="eio-field">
+          <span class="eio-label">用户名</span>
+          <input class="eio-input" :class="{ invalid: !!loginError }" type="text" autocomplete="username"
+                 v-model="loginForm.user" :aria-invalid="loginError ? 'true' : 'false'"
+                 :aria-describedby="loginError ? 'login-error' : null" @keyup.enter="focusPass">
+        </label>
+        <label class="eio-field" ref="passWrap">
+          <span class="eio-label">密码</span>
+          <div class="eio-input-wrap">
+            <input class="eio-input" :class="{ invalid: !!loginError }" :type="passwordVisible ? 'text' : 'password'"
+                   autocomplete="current-password" v-model="loginForm.pass"
+                   :aria-invalid="loginError ? 'true' : 'false'" :aria-describedby="loginError ? 'login-error' : null" @keyup.enter="doLogin">
+            <button class="eio-reveal" type="button" :aria-pressed="passwordVisible ? 'true' : 'false'"
+                    :aria-label="passwordVisible ? '隐藏密码' : '显示密码'" @click="togglePassword">
+              <svg v-if="passwordVisible" viewBox="0 0 24 24" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" x2="22" y1="2" y2="22"/></svg>
+              <svg v-else viewBox="0 0 24 24" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
+          </div>
+        </label>
+        <button class="eio-btn eio-btn-primary" type="submit" :disabled="loginLoading">{{ loginLoading ? '登录中…' : '登录' }}</button>
+        <p class="eio-hint">管理员请使用 <a href="/admin">/admin</a> 管理面板</p>
+      </form>
+    </div>
+  </div>
+
+  <!-- ===== MAIN APP ===== -->
+  <div v-if="page!=='login'" class="eio-shell">
+    <aside class="eio-sidebar">
+      <div class="eio-brand">
+        <span class="eio-brand-mark"><i data-lucide="play-circle" class="w-5 h-5"></i></span>
+        <span>Emby-in-One</span>
+      </div>
+      <div class="eio-user">已登录：<strong>{{ currentUser?.Name }}</strong></div>
+      <nav class="eio-nav">
+        <a v-for="p in sidebarPages" :key="p.id" href="#" class="eio-nav-link" :class="{ active: navPage===p.id }"
+           @click.prevent="navigateTo(p.id)">
+          <i :data-lucide="p.icon" class="w-4 h-4"></i><span>{{ p.label }}</span>
+        </a>
+      </nav>
+      <div class="eio-nav-foot">
+        <button class="eio-logout" @click="doLogout"><i data-lucide="log-out" class="w-4 h-4"></i><span>退出登录</span></button>
+      </div>
+    </aside>
+
+    <div class="eio-mobile-head">
+      <button class="eio-play-btn" aria-label="菜单" @click="mobileMenu=!mobileMenu"><i data-lucide="menu" class="w-6 h-6"></i></button>
+      <span class="eio-brand-mark"><i data-lucide="play-circle" class="w-4 h-4"></i></span>
+      <strong>Emby-in-One</strong>
+    </div>
+
+    <div v-if="mobileMenu" class="eio-mobile-menu" @click="mobileMenu=false">
+      <div class="eio-mobile-menu-inner" @click.stop>
+        <nav class="eio-nav" style="flex:none">
+          <a v-for="p in pages" :key="p.id" href="#" class="eio-nav-link" :class="{ active: navPage===p.id }"
+             @click.prevent="navigateTo(p.id); mobileMenu=false">
+            <i :data-lucide="p.icon" class="w-4 h-4"></i><span>{{ p.label }}</span>
+          </a>
+          <button class="eio-logout" @click="doLogout"><i data-lucide="log-out" class="w-4 h-4"></i><span>退出登录</span></button>
+        </nav>
+      </div>
+    </div>
+
+    <main class="eio-main">
+      <!-- ===== HOME ===== -->
+      <div v-if="navPage==='home'" class="eio-page">
+        <div v-if="hero.item" class="eio-hero" @mouseenter="hero.hold" @mouseleave="hero.release" @focusin="hero.hold" @focusout="hero.release">
+          <div class="eio-hero-media">
+            <img v-if="heroImageUrl(hero.item)" :src="heroImageUrl(hero.item)" :alt="hero.item.Name">
+            <div v-else class="eio-hero-fallback"></div>
+          </div>
+          <div class="eio-hero-shade"></div>
+          <div class="eio-hero-body">
+            <h1 class="eio-hero-title">{{ hero.item.Name }}</h1>
+            <div v-if="hero.item.OriginalTitle && hero.item.OriginalTitle!==hero.item.Name" class="eio-hero-sub">{{ hero.item.OriginalTitle }}</div>
+            <div class="eio-hero-meta">
+              <span v-if="hero.item.ProductionYear">{{ hero.item.ProductionYear }}</span>
+              <span v-if="runtimeMin_(hero.item)">{{ runtimeMin_(hero.item) }} 分钟</span>
+              <span v-if="hero.item.CommunityRating">★ {{ Number(hero.item.CommunityRating).toFixed(1) }}</span>
+              <span v-if="hero.item.OfficialRating" class="eio-chip eio-chip-rating">{{ hero.item.OfficialRating }}</span>
+              <span v-for="g in (hero.item.Genres || []).slice(0, 3)" :key="g">{{ g }}</span>
+            </div>
+            <p v-if="hero.item.Overview" class="eio-hero-overview">{{ hero.item.Overview }}</p>
+            <div class="eio-hero-actions">
+              <button class="eio-btn eio-btn-primary" @click="playItem(hero.item)"><i data-lucide="play" class="w-4 h-4"></i>播放</button>
+              <a class="eio-btn eio-btn-ghost" :href="'#/item/' + hero.item.Id">详情</a>
+            </div>
+          </div>
+          <div class="eio-hero-dots">
+            <button v-for="(c, i) in hero.candidates" :key="c.Id" class="eio-hero-dot" :class="{ active: hero.index===i }"
+                    :aria-label="'推荐 ' + (i + 1)" @click="hero.select(i)"></button>
+            <button class="eio-play-btn" :aria-label="hero.paused ? '继续自动轮播' : '暂停自动轮播'" @click="hero.setAuto(hero.paused)">
+              <svg v-if="hero.paused" viewBox="0 0 24 24" class="w-4 h-4" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+              <svg v-else viewBox="0 0 24 24" class="w-4 h-4" fill="currentColor" aria-hidden="true"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <section class="eio-section">
+          <div class="eio-row-head"><h2 class="eio-row-title">继续观看</h2><a class="eio-row-more" href="#/resume">全部</a></div>
+          <div v-if="home.resumeLoading" class="eio-grid">
+            <div v-for="n in 4" :key="n" class="eio-skeleton" style="aspect-ratio:2/3"></div>
+          </div>
+          <div v-else-if="home.resumeError" class="eio-inline-error"><span>{{ home.resumeError }}</span><button class="eio-btn eio-btn-sm" @click="home.retryResume()">重试</button></div>
+          <div v-else-if="!home.resumeItems.length" class="eio-state"><div class="eio-state-msg">还没有观看记录。</div></div>
+          <div v-else class="eio-grid">
+            <eio-poster-card v-for="it in home.resumeItems" :key="it.Id" :item="it" :image-src="imageUrl(it,300)"
+                             :detail-href="'#/item/' + it.Id" :show-progress="true" :sub="it.SeriesName || ''" @play="playItem(it)"></eio-poster-card>
+          </div>
+          <div v-if="home.resumeSlow && home.resumeLoading" class="eio-hint" style="margin-top:10px">加载较慢，请稍候…</div>
+        </section>
+
+        <section class="eio-section">
+          <div class="eio-row-head"><h2 class="eio-row-title">媒体库</h2></div>
+          <div v-if="home.viewsLoading" class="eio-hint">正在加载媒体库…</div>
+          <div v-else-if="home.viewsError" class="eio-inline-error"><span>{{ home.viewsError }}</span><button class="eio-btn eio-btn-sm" @click="loadHome()">重试</button></div>
+          <div v-else-if="!libraries.length" class="eio-state"><div class="eio-state-msg">没有可用的媒体库</div></div>
+          <div v-else class="eio-grid" style="grid-template-columns:repeat(auto-fill,minmax(170px,1fr))">
+            <button v-for="lib in libraries" :key="lib.Id" class="eio-btn eio-btn-ghost" style="justify-content:flex-start" @click="openLibrary(lib.Id)">
+              <i :data-lucide="libraryIcon(lib)" class="w-5 h-5"></i>
+              <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ lib.Name }}</span>
+            </button>
+          </div>
+        </section>
+
+        <section v-for="sec in latestSections" :key="sec.key" class="eio-section">
+          <div class="eio-row-head"><h2 class="eio-row-title">{{ sec.title }} · 最新</h2></div>
+          <div class="eio-grid">
+            <eio-poster-card v-for="it in sec.items" :key="it.Id" :item="it" :image-src="imageUrl(it,300)"
+                             :detail-href="'#/item/' + it.Id" @play="playItem(it)"></eio-poster-card>
+          </div>
+        </section>
+
+        <section v-for="entry in latestErrors" :key="'err-' + entry.lib.Id" class="eio-section">
+          <div class="eio-row-head"><h2 class="eio-row-title">{{ entry.lib.Name }} · 最新</h2></div>
+          <div class="eio-inline-error"><span>{{ entry.message }}</span><button class="eio-btn eio-btn-sm" @click="home.retryLatest(entry.lib)">重试</button></div>
+        </section>
+      </div>
+
+      <!-- ===== COLLECTION ===== -->
+      <div v-if="navPage==='resume' || navPage==='favorites'" class="eio-page">
+        <h2 class="eio-page-title">{{ navPage==='resume' ? '继续观看' : '收藏' }}</h2>
+        <eio-state-block v-if="collectionLoading" state="loading" message="正在加载…"></eio-state-block>
+        <eio-state-block v-else-if="collectionError" state="error" :message="collectionError" @retry="loadCollection(navPage)"></eio-state-block>
+        <eio-state-block v-else-if="!collectionItems.length" state="empty"
+                         :message="navPage==='resume' ? '暂无观看记录' : '暂无收藏，可在详情页点击收藏添加。'"></eio-state-block>
+        <template v-else>
+          <p class="eio-hint" style="margin-bottom:14px">{{ collectionItems.length }} 项</p>
+          <div class="eio-grid">
+            <eio-poster-card v-for="it in collectionItems" :key="it.Id" :item="it" :image-src="imageUrl(it,300)"
+                             :detail-href="'#/item/' + it.Id" :show-progress="navPage==='resume'" :sub="it.SeriesName || ''" @play="playItem(it)"></eio-poster-card>
+          </div>
+        </template>
+      </div>
+
+      <!-- ===== LIBRARY ===== -->
+      <div v-if="navPage==='library'" class="eio-page">
+        <div class="eio-toolbar" :class="{ scrolled: libraryScrolled }">
+          <span class="eio-toolbar-title">{{ libraryName || '媒体库' }}</span>
+          <span v-if="!libraryLoading" class="eio-toolbar-count">{{ libraryCountText }}</span>
+          <span class="eio-toolbar-spacer"></span>
+          <div class="eio-view-toggle">
+            <button type="button" :class="{ active: libraryView.mode==='grid' }" aria-label="网格视图" @click="libraryView.setMode('grid')"><i data-lucide="grid" class="w-4 h-4"></i></button>
+            <button type="button" :class="{ active: libraryView.mode==='list' }" aria-label="列表视图" @click="libraryView.setMode('list')"><i data-lucide="list" class="w-4 h-4"></i></button>
+          </div>
+          <select class="eio-select" aria-label="排序" :value="libSort" @change="setLibrarySort($event.target.value)">
+            <option value="DateCreated,Descending">最新添加</option>
+            <option value="SortName,Ascending">名称</option>
+            <option value="CommunityRating,Descending">评分</option>
+            <option value="ProductionYear,Descending">年份</option>
+          </select>
+        </div>
+
+        <div v-if="libGenres.length" class="eio-genres">
+          <button class="eio-genre-pill" :class="{ active: libFilter==='' }" @click="clearLibraryFilter()">全部</button>
+          <button v-for="g in libGenres" :key="g" class="eio-genre-pill" :class="{ active: libFilter===g }" @click="setLibraryFilter(g)">{{ g }}</button>
+        </div>
+
+        <eio-state-block v-if="libraryLoading" state="loading" message="正在加载媒体库…"></eio-state-block>
+        <eio-state-block v-else-if="libraryError" state="error" :message="libraryError" @retry="retryLibrary()"></eio-state-block>
+        <eio-state-block v-else-if="!libraryItems.length" state="empty" message="该媒体库暂无内容"></eio-state-block>
+        <template v-else>
+          <div class="eio-grid" :class="{ list: libraryView.mode==='list' }">
+            <eio-poster-card v-for="it in libraryItems" :key="it.Id" :item="it" :image-src="imageUrl(it,300)"
+                             :detail-href="'#/item/' + it.Id" @play="playItem(it)"></eio-poster-card>
+          </div>
+          <div v-if="libraryPageError" class="eio-inline-error" style="margin-top:16px"><span>{{ libraryPageError }}</span><button class="eio-btn eio-btn-sm" @click="retryLibraryPage()">重试</button></div>
+          <div v-if="libraryPageLoading" class="eio-hint" style="margin-top:16px">正在加载更多…</div>
+          <div :ref="libraryView.setSentinel" style="height:1px"></div>
+          <div v-if="libraryHasMore && !libraryPageLoading" class="eio-state"><button class="eio-btn eio-btn-sm" @click="loadLibraryMore()">加载更多</button></div>
+          <div v-else-if="!libraryHasMore && !libraryPageError" class="eio-hint" style="margin-top:16px;text-align:center">已加载全部</div>
+        </template>
+      </div>
+
+      <!-- ===== ITEM DETAIL ===== -->
+      <div v-if="navPage==='item'">
+        <eio-state-block v-if="itemDetailLoading" state="loading" message="正在加载详情…"></eio-state-block>
+        <eio-state-block v-else-if="itemError" state="error" :message="itemError" @retry="retryItem()"></eio-state-block>
+        <template v-else-if="itemDetail">
+          <div class="eio-detail-hero">
+            <div class="eio-detail-backdrop">
+              <img v-if="itemDetail.BackdropImageTags && itemDetail.BackdropImageTags.length" :src="backdropUrl(itemDetail)" alt="">
+              <div v-else class="eio-hero-fallback"></div>
+            </div>
+            <div class="eio-detail-shade"></div>
+            <div class="eio-detail-inner">
+              <div class="eio-detail-poster">
+                <img v-if="imageUrl(itemDetail,400)" :src="imageUrl(itemDetail,400)" :alt="itemDetail.Name">
+                <div v-else class="eio-card-placeholder">{{ (itemDetail.Name || '?').charAt(0) }}</div>
+              </div>
+              <div class="eio-detail-head">
+                <div class="eio-detail-meta">
+                  <span v-if="itemDetailIs4K" class="eio-chip eio-chip-4k">4K</span>
+                  <span v-if="itemDetailIsHDR" class="eio-chip eio-chip-hdr">HDR</span>
+                  <span v-if="itemDetailIsDV" class="eio-chip eio-chip-dv">Dolby Vision</span>
+                  <span v-if="itemDetailOfficialRating" class="eio-chip eio-chip-rating">{{ itemDetailOfficialRating }}</span>
+                  <span v-if="itemDetail.ProductionYear">{{ itemDetail.ProductionYear }}</span>
+                  <span v-if="runtimeMin">{{ runtimeMin }} 分钟</span>
+                  <span v-if="itemDetail.CommunityRating">★ {{ Number(itemDetail.CommunityRating).toFixed(1) }}</span>
+                </div>
+                <button v-if="itemDetail.SeriesId" class="eio-link-more" @click="openItem(itemDetail.SeriesId)">
+                  {{ itemDetail.SeriesName }} · S{{ itemDetail.ParentIndexNumber }} E{{ itemDetail.IndexNumber }}
+                </button>
+                <h1 class="eio-detail-title">{{ itemDetail.Name }}</h1>
+                <div v-if="itemDetail.OriginalTitle && itemDetail.OriginalTitle!==itemDetail.Name" class="eio-detail-genres">{{ itemDetail.OriginalTitle }}</div>
+                <div v-if="genreList.length" class="eio-detail-genres">{{ genreList.join(' · ') }}</div>
+                <p v-if="itemDetail.Overview" class="eio-detail-overview" :class="{ clamped: !detailView.overviewExpanded }">{{ itemDetail.Overview }}</p>
+                <button v-if="itemDetail.Overview && itemDetail.Overview.length > 120" class="eio-link-more" @click="detailView.toggleOverview()">
+                  {{ detailView.overviewExpanded ? '收起' : '展开' }}
+                </button>
+                <div class="eio-detail-actions">
+                  <button class="eio-btn eio-btn-primary" @click="playDetail()"><i data-lucide="play" class="w-4 h-4"></i>{{ playButtonLabel }}</button>
+                  <button v-if="!isFavorite" class="eio-btn eio-btn-ghost" :disabled="favoriteBusyId===itemDetail.Id" @click="toggleFavorite(itemDetail, false)">
+                    <i data-lucide="heart" class="w-4 h-4"></i>收藏
+                  </button>
+                  <button v-else class="eio-btn eio-btn-ghost" :disabled="favoriteBusyId===itemDetail.Id" @click="toggleFavorite(itemDetail, true)">
+                    <i data-lucide="heart" class="w-4 h-4"></i>已收藏
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- versions -->
+          <div v-if="itemDetail.MediaSources && itemDetail.MediaSources.length" class="eio-detail-section">
+            <h3>视频版本</h3>
+            <div v-if="itemDetail.EioIncompleteSources" class="eio-incomplete">
+              <span>部分来源未能加载，版本列表可能不完整。</span>
+              <button class="eio-btn eio-btn-sm" @click="retryItem()">重试</button>
+            </div>
+            <fieldset class="eio-versions">
+              <legend class="eio-sr-only">视频版本</legend>
+              <label v-for="src in itemDetail.MediaSources" :key="src.Id" class="eio-version" :class="{ active: currentMediaSourceId===src.Id }">
+                <input type="radio" name="detail-version" :value="src.Id" :checked="currentMediaSourceId===src.Id" @change="chooseDetailSource(src.Id)">
+                <span>
+                  <span class="eio-version-name">{{ src.Name || '默认版本' }}</span>
+                  <span class="eio-version-tags"><span v-for="t in mediaSourceTags(src)" :key="t" class="eio-chip">{{ t }}</span></span>
+                  <span v-if="sourceRate(src)" class="eio-version-rate">{{ sourceRate(src) }}</span>
+                </span>
+              </label>
+            </fieldset>
+            <label class="eio-version-mobile eio-field">
+              <span class="eio-label">视频版本</span>
+              <select class="eio-select" :value="currentMediaSourceId" @change="chooseDetailSource($event.target.value)">
+                <option v-for="src in itemDetail.MediaSources" :key="src.Id" :value="src.Id">{{ src.Name || '默认版本' }}</option>
+              </select>
+            </label>
+          </div>
+
+          <!-- series seasons -->
+          <div v-if="itemDetail.Type==='Series' || seriesSeasons.length" class="eio-detail-section">
+            <h3>剧集</h3>
+            <div v-if="seriesLoading && !seriesSeasons.length" class="eio-hint">正在加载季列表…</div>
+            <div v-if="seriesError" class="eio-inline-error" style="margin-bottom:12px"><span>{{ seriesError }}</span><button class="eio-btn eio-btn-sm" @click="retrySeries()">重试</button></div>
+            <div v-if="seriesSeasons.length" class="eio-season-tabs">
+              <button v-for="s in seriesSeasons" :key="s.Id" class="eio-season-tab" :class="{ active: detailView.selectedSeasonId===s.Id }" @click="detailView.setSeason(s.Id)">
+                <span v-if="seasonErrors[s.Id]" class="eio-season-flag" aria-hidden="true"></span>
+                {{ s.Name || ('第 ' + s.IndexNumber + ' 季') }}
+                <span class="eio-muted">{{ (seasonEpisodes[s.Id] || []).length }} 集</span>
+              </button>
+            </div>
+            <template v-if="detailView.selectedSeasonId">
+              <div v-if="seasonErrors[detailView.selectedSeasonId]" class="eio-inline-error" style="margin-bottom:12px">
+                <span>{{ seasonErrors[detailView.selectedSeasonId] }}</span>
+                <button class="eio-btn eio-btn-sm" :disabled="seasonLoadBusy" @click="retrySeason(detailView.selectedSeasonId)">重试本季</button>
+              </div>
+              <div v-if="seasonLoading[detailView.selectedSeasonId] && !seasonEpisodes[detailView.selectedSeasonId]" class="eio-ep-grid">
+                <div v-for="n in 4" :key="n" class="eio-skeleton" style="height:96px"></div>
+              </div>
+              <div v-else-if="seasonEpisodes[detailView.selectedSeasonId] && !seasonEpisodes[detailView.selectedSeasonId].length" class="eio-hint">本季为空</div>
+              <div v-else class="eio-ep-grid">
+                <article v-for="ep in (seasonEpisodes[detailView.selectedSeasonId] || [])" :key="ep.Id" class="eio-ep" :class="{ played: ep.UserData && ep.UserData.Played }">
+                  <a class="eio-ep-link" :href="'#/item/' + ep.Id" :aria-label="ep.Name"></a>
+                  <div class="eio-ep-thumb">
+                    <img v-if="imageUrl(ep,260)" :src="imageUrl(ep,260)" :alt="ep.Name" loading="lazy">
+                    <div v-else class="eio-card-placeholder">{{ (ep.Name || '?').charAt(0) }}</div>
+                  </div>
+                  <div class="eio-ep-body">
+                    <div class="eio-ep-num">E{{ String(ep.IndexNumber || 0).padStart(2, '0') }} <span v-if="ep.UserData && ep.UserData.Played">✓</span></div>
+                    <div class="eio-ep-name" :title="ep.Name">{{ ep.Name }}</div>
+                    <div class="eio-ep-sub">{{ runtimeMin_(ep) ? runtimeMin_(ep) + ' 分钟' : '' }}</div>
+                    <div v-if="epProgress(ep)" class="eio-ep-progress"><i :style="{ width: (epProgress(ep) * 100) + '%' }"></i></div>
+                  </div>
+                  <div class="eio-ep-play">
+                    <button type="button" :aria-label="'播放 ' + ep.Name" @click="playItem(ep)">
+                      <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+                    </button>
+                  </div>
+                </article>
+              </div>
+            </template>
+          </div>
+
+          <!-- media info -->
+          <div v-if="currentMediaStreams.length" class="eio-detail-section">
+            <h3>媒体信息</h3>
+            <div class="eio-info-list">
+              <div v-for="s in videoStreams" :key="'v' + s.Index" class="eio-info-row">
+                <span>{{ s.Codec }} · {{ s.Width }}×{{ s.Height }}</span>
+                <span v-if="s.BitRate" class="eio-muted">{{ Math.round(s.BitRate / 1000) }} kbps</span>
+                <span v-if="s.VideoRange==='HDR10'" class="eio-chip eio-chip-hdr">HDR10</span>
+                <span v-if="s.VideoRange==='DOVI'" class="eio-chip eio-chip-dv">Dolby Vision</span>
+              </div>
+            </div>
+            <h3 style="margin-top:22px">音频</h3>
+            <div class="eio-track-list">
+              <button v-for="s in audioStreams" :key="'a' + s.Index" class="eio-track" :class="{ selected: detailAudioIndex===s.Index }" :aria-pressed="detailAudioIndex===s.Index" @click="detailAudioIndex=s.Index">
+                <span>{{ audioTrackLabel(s) }}</span>
+                <span v-if="isAtmos(s)" class="eio-chip eio-chip-atmos">Atmos</span>
+              </button>
+            </div>
+            <h3 style="margin-top:22px">字幕</h3>
+            <div v-if="subtitleStreams.length" class="eio-track-list">
+              <button class="eio-track" :class="{ selected: detailSubtitleIndex===-1 }" :aria-pressed="detailSubtitleIndex===-1" @click="detailSubtitleIndex=-1">关闭字幕</button>
+              <button v-for="s in subtitleStreams" :key="'s' + s.Index" class="eio-track" :class="{ selected: detailSubtitleIndex===s.Index }" :aria-pressed="detailSubtitleIndex===s.Index" @click="detailSubtitleIndex=s.Index">
+                <span>{{ s.DisplayTitle || s.Language || '未知' }}</span><span class="eio-muted">{{ s.Codec }}</span>
+              </button>
+            </div>
+            <div v-else class="eio-hint">无字幕</div>
+          </div>
+        </template>
+      </div>
+
+      <!-- ===== SEARCH ===== -->
+      <div v-if="navPage==='search'" class="eio-page">
+        <div class="eio-search-wrap">
+          <h2 class="eio-page-title">搜索</h2>
+          <div class="eio-search-box">
+            <i data-lucide="search" class="eio-search-icon w-5 h-5"></i>
+            <input class="eio-input" type="search" placeholder="搜索电影、剧集" v-model="searchQuery"
+                   @input="onSearchInput" @keyup.enter="submitSearch" @focus="recentSearches.read()">
+          </div>
+          <div v-if="!searchQuery.trim() && recentSearches.terms.length" class="eio-recent">
+            <span class="eio-hint">最近搜索</span>
+            <span v-for="t in recentSearches.terms" :key="t" class="eio-recent-chip">
+              <button type="button" class="eio-recent-term" @click="useRecent(t)">{{ t }}</button>
+              <button type="button" aria-label="删除记录" @click="removeRecent(t)">✕</button>
+            </span>
+          </div>
+
+          <eio-state-block v-if="search.waiting" state="loading" message="正在准备搜索…"></eio-state-block>
+          <eio-state-block v-else-if="searchLoading" state="loading" message="正在搜索…"></eio-state-block>
+          <eio-state-block v-else-if="search.error" state="error" :message="search.error" @retry="search.retry()"></eio-state-block>
+          <template v-else-if="searchQuery.trim()">
+            <div v-if="search.movieResults.length" class="eio-search-group">
+              <h3>电影 · {{ search.movieResults.length }}</h3>
+              <div class="eio-grid" style="grid-template-columns:1fr">
+                <div v-for="it in search.movieResults" :key="it.Id" class="eio-result">
+                  <a class="eio-card-link" :href="'#/item/' + it.Id" :aria-label="it.Name" @click="recordRecent()"></a>
+                  <img v-if="imageUrl(it,120)" :src="imageUrl(it,120)" :alt="it.Name" loading="lazy">
+                  <span v-else class="eio-result-ph">{{ (it.Name || '?').charAt(0) }}</span>
+                  <div>
+                    <div class="eio-result-name">{{ it.Name }}</div>
+                    <div class="eio-result-meta">{{ it.ProductionYear || '' }}</div>
+                    <div v-if="it.Overview" class="eio-result-overview">{{ it.Overview }}</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div v-if="search.seriesResults.length" class="eio-search-group">
+              <h3>剧集 · {{ search.seriesResults.length }}</h3>
+              <div class="eio-grid" style="grid-template-columns:1fr">
+                <div v-for="it in search.seriesResults" :key="it.Id" class="eio-result">
+                  <a class="eio-card-link" :href="'#/item/' + it.Id" :aria-label="it.Name" @click="recordRecent()"></a>
+                  <img v-if="imageUrl(it,120)" :src="imageUrl(it,120)" :alt="it.Name" loading="lazy">
+                  <span v-else class="eio-result-ph">{{ (it.Name || '?').charAt(0) }}</span>
+                  <div>
+                    <div class="eio-result-name">{{ it.Name }}</div>
+                    <div class="eio-result-meta">{{ it.ProductionYear || '' }}</div>
+                    <div v-if="it.Overview" class="eio-result-overview">{{ it.Overview }}</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <eio-state-block v-if="!search.movieResults.length && !search.seriesResults.length" state="empty"
+                             :message="'未找到与 “' + searchQuery + '” 相关的内容'"></eio-state-block>
+          </template>
+          <eio-state-block v-else state="empty" message="输入关键词开始搜索"></eio-state-block>
+        </div>
+      </div>
+    </main>
+
+    <eio-toast-stack v-if="navPage!=='player'" :items="toasts.items" @dismiss="toasts.dismiss" @hold="toasts.hold" @release="toasts.release"></eio-toast-stack>
+  </div>
+
+  <!-- ===== PLAYER ===== -->
+  <div v-if="navPage==='player'" style="position:fixed;inset:0;background:#000;z-index:900">
+    <div class="player-container" ref="playerContainer">
+      <!-- The player engine creates and owns its video/subtitle/HDR canvases
+           inside this container; the template only adds the control layer. -->
+      <div class="eio-play-layer" :class="{ hidden: !playerUI.controlsVisible }">
+        <div class="eio-play-top">
+          <button class="eio-play-btn" aria-label="关闭播放器" @click="exitPlayer()"><i data-lucide="x" class="w-5 h-5"></i></button>
+          <div class="eio-play-title">
+            <span v-if="playingItem?.SeriesName" class="eio-muted">{{ playingItem.SeriesName }}</span>
+            <span>{{ playingItem?.Name }}</span>
+          </div>
+          <span class="eio-play-spacer"></span>
+        </div>
+
+        <div v-if="playerUI.status==='loading'" class="eio-play-overlay">
+          <div class="eio-spinner"></div>
+          <div>{{ playerLoadingText }}</div>
+        </div>
+
+        <div v-else-if="playerUI.status==='error'" class="eio-play-overlay eio-play-error">
+          <h2>{{ playerUI.error && playerUI.error.kind==='busy' ? '服务器并发已满' : '无法加载播放内容' }}</h2>
+          <p>{{ playerUI.error && playerUI.error.message }}</p>
+          <div v-if="playVersions.length" class="eio-track-list" style="max-width:340px;width:100%">
+            <label class="eio-field">
+              <span class="eio-label">选择版本后重试</span>
+              <select class="eio-select" :value="(playerUI.error && playerUI.error.retryContext && playerUI.error.retryContext.mediaSourceId) || ''" @change="selectErrorSource($event.target.value)">
+                <option value="">默认</option>
+                <option v-for="s in playVersions" :key="s.Id" :value="s.Id">{{ s.Name || '默认版本' }}</option>
+              </select>
+            </label>
+          </div>
+          <div class="eio-error-actions">
+            <button class="eio-btn eio-btn-primary" @click="retryPlayback()">重试</button>
+            <button class="eio-btn eio-btn-ghost" @click="exitPlayer()">返回详情</button>
+          </div>
+        </div>
+
+        <div v-else class="eio-play-bottom">
+          <div class="eio-seek">
+            <div v-if="seekPreview!=null" class="eio-seek-bubble" :style="{ left: seekPercent + '%' }">{{ seekTitle }}</div>
+            <input type="range" min="0" step="any" :max="Math.max(wasmDuration, 0)" :value="seekPreview ?? wasmTime"
+                   :disabled="!playerAlive || !wasmDuration" aria-label="播放进度" :aria-valuetext="wasmTimeHuman + ' / ' + wasmDurationHuman"
+                   @input="previewSeek($event.target.value)" @change="onWasmSeek($event.target.value)" @pointerup="endScrub" @pointercancel="cancelScrub">
+          </div>
+          <div class="eio-play-row">
+            <button class="eio-play-btn" :aria-label="wasmPlaying ? '暂停' : '播放'" @click="wasmTogglePause()">
+              <svg v-if="wasmPlaying" viewBox="0 0 24 24" class="w-5 h-5" fill="currentColor" aria-hidden="true"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
+              <svg v-else viewBox="0 0 24 24" class="w-5 h-5" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+            </button>
+            <button class="eio-play-btn" aria-label="上一集" :disabled="!previousEpisode || trackBusy" @click="playItem(previousEpisode)"><i data-lucide="skip-back" class="w-5 h-5"></i></button>
+            <button class="eio-play-btn" aria-label="下一集" :disabled="!nextEpisode || trackBusy" @click="playItem(nextEpisode)"><i data-lucide="skip-forward" class="w-5 h-5"></i></button>
+            <span class="eio-time">{{ wasmTimeHuman }} / {{ wasmDurationHuman }}</span>
+
+            <eio-track-menu v-if="playVersions.length > 1" label="版本" menu-id="eio-menu-version" :options="versionOptions"
+                            :value="playMediaSourceId" :open="playerUI.openMenu==='version'" :disabled="trackBusy || playerUI.busy"
+                            @toggle="playerUI.toggleMenu('version')" @select="switchVersion" @close="playerUI.closeMenu()"></eio-track-menu>
+            <eio-track-menu v-if="audioTracks.length" label="音频" menu-id="eio-menu-audio" :options="audioOptions"
+                            :value="playAudioIndex" :open="playerUI.openMenu==='audio'" :disabled="trackBusy || playerUI.busy"
+                            @toggle="playerUI.toggleMenu('audio')" @select="selectAudio" @close="playerUI.closeMenu()"></eio-track-menu>
+            <eio-track-menu v-if="subtitleTracks.length" label="字幕" menu-id="eio-menu-subtitle" :options="subtitleOptions"
+                            :value="wasmSubTrack" :open="playerUI.openMenu==='subtitle'" :disabled="trackBusy || subtitleBusy"
+                            @toggle="playerUI.toggleMenu('subtitle')" @select="selectSubtitle" @close="playerUI.closeMenu()"></eio-track-menu>
+
+            <span class="eio-play-spacer"></span>
+            <div class="eio-volume">
+              <button class="eio-play-btn" :aria-label="playerVolume > 0 ? '静音' : '取消静音'" @click="toggleMute()">
+                <svg v-if="playerVolume > 0" viewBox="0 0 24 24" class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
+                <svg v-else viewBox="0 0 24 24" class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="22" y1="9" x2="16" y2="15"/><line x1="16" y1="9" x2="22" y2="15"/></svg>
+              </button>
+              <input type="range" min="0" max="1" step="0.05" :value="playerVolume" aria-label="音量" @input="changeVolume($event.target.value)" @change="changeVolume($event.target.value)">
+            </div>
+            <button class="eio-play-btn" aria-label="全屏" @click="toggleFullscreen()"><i data-lucide="maximize" class="w-5 h-5"></i></button>
+          </div>
+          <div v-if="queueError" class="eio-inline-error" style="margin-top:10px"><span>{{ queueError }}</span><button class="eio-btn eio-btn-sm" @click="retryEpisodeQueue()">重试</button></div>
+        </div>
+
+        <div class="eio-play-toasts">
+          <eio-toast-stack :items="toasts.items" @dismiss="toasts.dismiss" @hold="toasts.hold" @release="toasts.release"></eio-toast-stack>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="/web/vendor/vue.global.prod.js"></script>
+<script src="/web/vendor/lucide.min.js"></script>
+<script src="/web/vendor/web/libmedia/avplayer.js?v=20261009-seek3"></script>
+<script src="/web/vendor/web/jassub.umd.js"></script>
+<script src="/web/web/subtitles.js?v=20261001b"></script>
+<script src="/web/web/subtitle-controller.js?v=20261001b"></script>
+<script src="/web/web/player-libmedia.js?v=20261001b"></script>
+<script src="/web/web/data.js?v=20261001b"></script>
+<script src="/web/web/ui.js?v=v1.4.4-rc2"></script>
+<script src="/web/web/page-state.js?v=v1.4.4-rc2"></script>
+<script src="/web/web/player-ui.js?v=v1.4.4-rc2"></script>
+<script src="/web/web/library-state.js?v=v1.4.4-rc2"></script>
+<script src="/web/web/ui-components.js?v=v1.4.4-rc2"></script>
+<script src="/web/web/app.js?v=v1.4.4-rc2.5"></script>
+</body>
+</html>

@@ -248,16 +248,24 @@ func applyAdminSecurityHeaders(w http.ResponseWriter) {
 	w.Header().Set("Content-Security-Policy", adminPanelCSP)
 }
 
-func requestOrigin(r *http.Request) string {
+// requestOrigin reports the scheme and host the request arrived on. Forwarded
+// headers are only trusted when trustProxy is set: the value is returned to any
+// visitor of /System/Info/Public as the server's advertised address, so taking
+// them unconditionally would let anyone spoof that address.
+func (a *App) requestOrigin(r *http.Request) string {
 	scheme := "http"
-	if forwarded := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Proto"), ",")[0]); forwarded != "" {
-		scheme = forwarded
+	host := r.Host
+	if a.ConfigStore.Snapshot().Server.TrustProxy {
+		if forwarded := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Proto"), ",")[0]); forwarded != "" {
+			scheme = forwarded
+		} else if r.TLS != nil {
+			scheme = "https"
+		}
+		if forwardedHost := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Host"), ",")[0]); forwardedHost != "" {
+			host = forwardedHost
+		}
 	} else if r.TLS != nil {
 		scheme = "https"
-	}
-	host := r.Host
-	if forwardedHost := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Host"), ",")[0]); forwardedHost != "" {
-		host = forwardedHost
 	}
 	return scheme + "://" + host
 }

@@ -489,3 +489,54 @@ upstream:
 		}
 	})
 }
+
+// TestAdminPasswordChangeRevokesUserTokens is the regression for the session-management
+// gap: disabling a user revoked their tokens, but changing their password did not. A
+// token never expires on its own, so a leaked token stayed valid after the password it
+// was issued against was replaced. The administrator's own password change already
+// revokes every token; this brings a regular user's password change in line.
+func TestAdminPasswordChangeRevokesUserTokens(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/Users/AuthenticateByName" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"AccessToken": "tok-a", "User": map[string]any{"Id": "user-a"}})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	withTempAppConfig(t, singleUpstreamConfig(srv.URL), func(app *App, handler http.Handler) {
+		adminToken := loginTokenAs(t, handler, "admin", "secret")
+		rr := doAuthJSON(t, handler, http.MethodPost, "/admin/api/users",
+			map[string]any{"username": "bob", "password": "bob12345"}, adminToken)
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("create user: status=%d body=%s", rr.Code, rr.Body.String())
+		}
+		var created map[string]any
+		_ = json.Unmarshal(rr.Body.Bytes(), &created)
+		userID, _ := created["id"].(string)
+
+		userToken := loginTokenAs(t, handler, "bob", "bob12345")
+		if userToken == "" {
+			t.Fatal("regular user login failed")
+		}
+		if app.Auth.ValidateToken(userToken) == nil {
+			t.Fatal("token should be valid before the password change")
+		}
+
+		// A password change must invalidate the tokens issued under the old password.
+		rr = doAuthJSON(t, handler, http.MethodPut, "/admin/api/users/"+userID,
+			map[string]any{"password": "bob54321"}, adminToken)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("update password: status=%d body=%s", rr.Code, rr.Body.String())
+		}
+		if app.Auth.ValidateToken(userToken) != nil {
+			t.Fatal("token still valid after the user's password was changed")
+		}
+
+		// The new password must still work.
+		if newToken := loginTokenAs(t, handler, "bob", "bob54321"); newToken == "" {
+			t.Fatal("login with the new password failed")
+		}
+	})
+}

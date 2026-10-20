@@ -9,10 +9,14 @@ import (
 // path: the first "/Videos/" or "/Audio/" boundary. Everything before it is the
 // upstream's own deployment prefix (a reverse-proxy path such as "/emby") and
 // must not survive into the client-facing path, because this proxy's routes are
-// rooted at "/".
+// rooted at "/". The match is case-insensitive because Emby serves its
+// transcoding manifests from a lowercase /videos/ root while direct-stream
+// URLs use /Videos/; the returned slice keeps the original casing so only the
+// item id segment is replaced downstream.
 func streamBusinessPath(p string) (string, bool) {
-	for _, root := range []string{"/Videos/", "/Audio/"} {
-		if idx := strings.Index(p, root); idx >= 0 {
+	lower := strings.ToLower(p)
+	for _, root := range []string{"/videos/", "/audio/"} {
+		if idx := strings.Index(lower, root); idx >= 0 {
 			return p[idx:], true
 		}
 	}
@@ -36,31 +40,28 @@ func streamBusinessPath(p string) (string, bool) {
 // than rewritten into a URL that could not work.
 func RewriteM3U8ForItem(content, upstreamBase, proxyItemID, proxyToken string) string {
 	baseURL, baseErr := url.Parse(upstreamBase)
-	lines := strings.Split(content, "\n")
-	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-			continue
-		}
-		resolved, err := url.Parse(trimmed)
+	rewrite := func(raw string) (string, bool) {
+		resolved, err := url.Parse(raw)
 		if err != nil {
-			continue
+			return "", false
 		}
 		if !resolved.IsAbs() && baseErr == nil {
 			resolved = baseURL.ResolveReference(resolved)
 		}
 		businessPath, ok := streamBusinessPath(resolved.Path)
 		if !ok {
-			lines[i] = stripUpstreamCredentials(resolved)
-			continue
+			return stripUpstreamCredentials(resolved), true
 		}
 		segments := strings.Split(strings.TrimPrefix(businessPath, "/"), "/")
 		// [Videos|Audio, itemId, rest...] — a path without the rest cannot name a
 		// stream of this item, so it is left alone like any unroutable line.
 		if len(segments) < 3 {
-			lines[i] = stripUpstreamCredentials(resolved)
-			continue
+			return stripUpstreamCredentials(resolved), true
 		}
+		// The stream root is normalised to the capitalised form this proxy's
+		// routes are registered under: an upstream that spells it /videos/
+		// would otherwise hand the client a path only the fallback proxy sees.
+		segments[0] = canonicalStreamRoot(segments[0])
 		segments[1] = proxyItemID
 		params, _ := url.ParseQuery(resolved.RawQuery)
 		delete(params, "api_key")
@@ -72,9 +73,63 @@ func RewriteM3U8ForItem(content, upstreamBase, proxyItemID, proxyToken string) s
 		if len(params) > 0 {
 			rewritten += "?" + params.Encode()
 		}
-		lines[i] = rewritten
+		return rewritten, true
+	}
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		// #EXT-X-MAP:URI="0.mp4" names the fMP4 init segment. It is a comment
+		// line, but its URI must be rewritten exactly like a segment line —
+		// otherwise the player fetches it without the proxy token and the
+		// upstream answers 401 before the first frame can ever decode.
+		if strings.HasPrefix(trimmed, "#EXT-X-MAP:") {
+			if uri, start, end, ok := extractQuotedURI(line); ok {
+				if rewritten, rewritable := rewrite(uri); rewritable {
+					lines[i] = line[:start] + rewritten + line[end:]
+				}
+			}
+			continue
+		}
+		if strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if rewritten, ok := rewrite(trimmed); ok {
+			lines[i] = rewritten
+		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+// extractQuotedURI finds the URI="..." attribute of an #EXT-X-MAP line and
+// returns the quoted value plus its byte offsets in the original line, so the
+// attribute can be replaced in place without touching the rest of the tag.
+func extractQuotedURI(line string) (string, int, int, bool) {
+	idx := strings.Index(line, `URI="`)
+	if idx < 0 {
+		return "", 0, 0, false
+	}
+	start := idx + len(`URI="`)
+	end := strings.IndexByte(line[start:], '"')
+	if end < 0 {
+		return "", 0, 0, false
+	}
+	return line[start : start+end], start, start + end + 1, true
+}
+
+// canonicalStreamRoot capitalises a manifest's stream root segment ("videos"
+// becomes "Videos") so the rewritten line matches this proxy's own routes.
+func canonicalStreamRoot(root string) string {
+	if root == "" {
+		return root
+	}
+	lower := strings.ToLower(root)
+	if lower == "videos" || lower == "audio" {
+		return strings.ToUpper(root[:1]) + root[1:]
+	}
+	return root
 }
 
 // stripUpstreamCredentials removes api_key parameters from a manifest line this

@@ -8,7 +8,7 @@ type seriesInstance struct {
 
 func buildSeriesInstances(resolved *routeResolution, upstream *UpstreamPool) []seriesInstance {
 	instances := []seriesInstance{}
-	if resolved == nil || resolved.Client == nil || !resolved.Client.Online {
+	if resolved == nil || resolved.Client == nil || !resolved.Client.IsOnline() {
 		return instances
 	}
 	instances = append(instances, seriesInstance{
@@ -18,7 +18,7 @@ func buildSeriesInstances(resolved *routeResolution, upstream *UpstreamPool) []s
 	})
 	for _, other := range resolved.OtherInstances {
 		client := upstream.ClientByID(other.ServerID)
-		if client == nil || !client.Online {
+		if client == nil || !client.IsOnline() {
 			continue
 		}
 		duplicate := false

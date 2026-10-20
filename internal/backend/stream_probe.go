@@ -2,6 +2,7 @@ package backend
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -97,6 +98,8 @@ func probeOneStreamBase(ctx context.Context, client *http.Client, probeURL strin
 	if err != nil {
 		return false
 	}
+	// Drain before close so the connection can be reused for the next probe.
+	_, _ = io.Copy(io.Discard, resp.Body)
 	_ = resp.Body.Close()
 	return true
 }

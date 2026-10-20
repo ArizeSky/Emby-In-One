@@ -132,7 +132,10 @@ func TestMigrateDatabaseToServerID(t *testing.T) {
 		t.Fatalf("NewWatchStore: %v", err)
 	}
 
-	progress := watchStore.GetProgress("u1", "virt-1")
+	progress, err := watchStore.GetProgress("u1", "virt-1")
+	if err != nil {
+		t.Fatalf("GetProgress: %v", err)
+	}
 	if progress == nil {
 		t.Fatalf("progress for u1 virt-1 not found")
 	}

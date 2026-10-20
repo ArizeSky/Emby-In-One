@@ -24,6 +24,21 @@ info()  { echo -e "${GREEN}[信息]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[警告]${NC} $*"; }
 error() { echo -e "${RED}[错误]${NC} $*"; exit 1; }
 
+# ── compose 命令分发 ──
+# 插件语法（docker compose）优先，只有 standalone docker-compose 二进制时兜底。
+# 本脚本自己的 Compose 兜底安装路径装的就是 standalone 二进制，
+# 后续若无条件用插件语法，在那类机器上必然失败回滚。
+compose_cmd() {
+  if docker compose version &>/dev/null; then
+    docker compose "$@"
+  elif command -v docker-compose &>/dev/null; then
+    docker-compose "$@"
+  else
+    echo -e "${RED}[错误] 未找到 Docker Compose${NC}"
+    return 1
+  fi
+}
+
 is_hashed_password() {
   [[ "$1" =~ ^[0-9a-fA-F]{32}:[0-9a-fA-F]{128}$ ]]
 }
@@ -53,7 +68,7 @@ cleanup() {
   warn "安装失败，正在回滚..."
   cd / 2>/dev/null || true
   if [[ "$_CONTAINERS_STARTED" == true && -f "${PROJECT_DIR}/docker-compose.yml" ]]; then
-    docker compose -f "${PROJECT_DIR}/docker-compose.yml" down --remove-orphans 2>/dev/null || true
+    compose_cmd -f "${PROJECT_DIR}/docker-compose.yml" down --remove-orphans 2>/dev/null || true
   fi
   if [[ "$_DIR_PREEXISTED" == false ]]; then
     rm -rf "${PROJECT_DIR}"
@@ -219,7 +234,7 @@ services:
     build:
       context: .
       args:
-        VERSION: v1.4.4-rc1
+        VERSION: v1.4.4-rc2
     container_name: emby-in-one
     # 容器以 uid 1000 运行，挂载目录需先 chown 1000:1000（install.sh 已处理）
     user: "1000:1000"
@@ -339,8 +354,8 @@ chown -R 1000:1000 "${PROJECT_DIR}/config" "${PROJECT_DIR}/data" 2>/dev/null || 
 # ── 9. 启动容器 ──
 info "构建并启动容器..."
 cd "${PROJECT_DIR}"
-docker compose build --quiet
-docker compose up -d
+compose_cmd build --quiet
+compose_cmd up -d
 _CONTAINERS_STARTED=true
 
 # 以非 root 运行时权限不对会让容器立刻退出，这里明确提示而不是假报成功

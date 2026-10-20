@@ -21,6 +21,21 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 	if !a.requireServerAccess(w, r, resolved) {
 		return
 	}
+	query := cloneValues(r.URL.Query())
+	body := map[string]any{}
+	if r.Method == http.MethodPost && r.Body != nil {
+		// A malformed body must not be silently dropped: forwarding an empty body
+		// upstream would produce a confusing result. Report it as a bad request.
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"message": "Invalid request body"})
+			return
+		}
+	}
+	var selected bool
+	resolved, selected = a.selectedPlaybackSource(w, r, resolved, body, query)
+	if !selected {
+		return
+	}
 	// Concurrent playback limit check for regular users
 	if limiterUserID, ok := a.playbackLimiterKey(reqCtx, r, resolved.ServerID); ok {
 		var maxConcurrent int
@@ -40,27 +55,13 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 		a.Logger.Debugf("PlaybackInfo: itemId=%s → server=[%s] originalId=%s, instances=%d",
 			r.PathValue("itemId"), resolved.Client.Name, resolved.OriginalID, len(instances))
 	}
-	query := cloneValues(r.URL.Query())
-	body := map[string]any{}
-	if r.Method == http.MethodPost && r.Body != nil {
-		_ = json.NewDecoder(r.Body).Decode(&body)
-	}
-	if mediaSourceID, ok := body["MediaSourceId"].(string); ok {
-		if msResolved := a.IDStore.ResolveVirtualID(mediaSourceID); msResolved != nil {
-			body["MediaSourceId"] = msResolved.OriginalID
-		}
-	}
-	if mediaSourceID := query.Get("MediaSourceId"); mediaSourceID != "" {
-		if msResolved := a.IDStore.ResolveVirtualID(mediaSourceID); msResolved != nil {
-			query.Set("MediaSourceId", msResolved.OriginalID)
-		}
-	}
 
 	// Remove proxy token from query before forwarding to upstream
 	query.Del("api_key")
 	query.Del("ApiKey")
 
 	var base map[string]any
+	baseServerID := resolved.ServerID
 	allMediaSources := []map[string]any{}
 	for _, inst := range instances {
 		// The client only ever holds EIO's virtual user ID, and Emby prefers a UserId in the
@@ -84,9 +85,11 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 		}
 		if base == nil {
 			base = deepCloneMap(data)
+			baseServerID = inst.ServerID
 		}
 		for _, raw := range asItems(map[string]any{"Items": data["MediaSources"]}) {
 			mediaSource := deepCloneMap(raw)
+			annotateMediaSource(mediaSource, inst.Client)
 			originalMSID, _ := mediaSource["Id"].(string)
 			virtualMSID := originalMSID
 			if originalMSID != "" {
@@ -124,8 +127,13 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 						parsed, _ = url.Parse(inst.Client.StreamBaseURL + transcodingURL)
 					}
 					proxyPath := parsed.Path
-					proxyPath = strings.Replace(proxyPath, "/Videos/"+inst.OriginalID+"/", "/Videos/"+r.PathValue("itemId")+"/", 1)
-					proxyPath = strings.Replace(proxyPath, "/Audio/"+inst.OriginalID+"/", "/Audio/"+r.PathValue("itemId")+"/", 1)
+					// Emby serves transcoding manifests from a lowercase
+					// /videos/ root while direct-stream URLs use /Videos/;
+					// the item id swap must catch both spellings so the
+					// client-facing URL always carries the virtual id this
+					// proxy can route.
+					proxyPath = replacePathItemID(proxyPath, "videos", inst.OriginalID, r.PathValue("itemId"))
+					proxyPath = replacePathItemID(proxyPath, "audio", inst.OriginalID, r.PathValue("itemId"))
 					queryValues := parsed.Query()
 					queryValues.Del("api_key")
 					queryValues.Del("ApiKey")
@@ -177,7 +185,7 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 	// Record which server served this virtual item so Sessions/Playing routes back correctly
 	if len(allMediaSources) > 0 {
 		if virtualItemID := r.PathValue("itemId"); virtualItemID != "" {
-			a.IDStore.SetActiveStream(virtualItemID, resolved.ServerID)
+			a.IDStore.SetActiveStream(virtualItemID, baseServerID)
 		}
 	}
 	if base == nil {
@@ -200,12 +208,40 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 	cfg := a.ConfigStore.Snapshot()
 	// Rewrite top-level fields (excluding MediaSources which were already virtualised per-server above)
 	delete(base, "MediaSources")
-	rewriteResponseIDs(base, resolved.ServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
+	rewriteResponseIDs(base, baseServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 	base["MediaSources"] = make([]any, 0, len(allMediaSources))
 	for _, mediaSource := range allMediaSources {
 		base["MediaSources"] = append(base["MediaSources"].([]any), mediaSource)
 	}
 	writeJSON(w, http.StatusOK, base)
+}
+
+// replacePathItemID swaps the item id segment of a /Videos/{id}/ or /Audio/{id}/
+// path, matching the stream root case-insensitively (Emby mixes /Videos/ and
+// /videos/ between its direct-stream and transcoding URLs). The rewritten path
+// always carries the canonical capitalised root, because this proxy's own
+// stream routes are registered as /Videos/ and /Audio/ — a lowercase root would
+// fall through to the fallback proxy and fail to resolve.
+func replacePathItemID(path, root, fromID, toID string) string {
+	if fromID == "" || toID == "" || fromID == toID {
+		return path
+	}
+	root = strings.ToLower(root)
+	canonical := strings.ToUpper(root[:1]) + root[1:]
+	lower := strings.ToLower(path)
+	idx := strings.Index(lower, "/"+root+"/")
+	if idx < 0 {
+		return path
+	}
+	idStart := idx + len(root) + 2
+	idEnd := strings.IndexByte(path[idStart:], '/')
+	if idEnd < 0 {
+		return path
+	}
+	if path[idStart:idStart+idEnd] != fromID {
+		return path
+	}
+	return path[:idx+1] + canonical + "/" + toID + path[idStart+idEnd:]
 }
 
 func deepCloneMap(source map[string]any) map[string]any {

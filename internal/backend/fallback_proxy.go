@@ -3,6 +3,7 @@ package backend
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"mime"
 	"net/http"
@@ -12,6 +13,24 @@ import (
 )
 
 var fallbackVirtualIDPattern = regexp.MustCompile(`(?i)[a-f0-9]{32}`)
+
+// maxBufferedUpstreamBytes bounds how much of an upstream response the proxy will
+// hold in memory when it has to buffer the body (JSON/ID rewriting, HTML error
+// detection, error messages). Streaming paths are unaffected. The limit is well
+// above any real Emby JSON response but far below what could exhaust the process.
+const maxBufferedUpstreamBytes = 32 << 20 // 32 MiB
+
+// readAllLimited reads r fully but refuses to buffer more than limit bytes.
+func readAllLimited(r io.Reader, limit int64) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > limit {
+		return nil, fmt.Errorf("upstream response exceeds the %d-byte buffer limit", limit)
+	}
+	return body, nil
+}
 
 func (a *App) handleFallbackProxy(w http.ResponseWriter, r *http.Request) {
 	reqCtx := requestContextFrom(r.Context())
@@ -83,7 +102,7 @@ func (a *App) handleFallbackProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	bodyBytes, err := io.ReadAll(resp.Body)
+	bodyBytes, err := readAllLimited(resp.Body, maxBufferedUpstreamBytes)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Failed to read upstream response"})
 		return

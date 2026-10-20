@@ -1,37 +1,38 @@
-package backend
-
-import "strings"
-
-var simpleIDFields = map[string]struct{}{
-	"Id":                    {},
-	"ItemId":                {},
-	"ParentId":              {},
-	"SeriesId":              {},
-	"SeasonId":              {},
-	"MediaSourceId":         {},
-	"PlaylistItemId":        {},
-	"DisplayPreferencesId":  {},
-	"ParentLogoItemId":      {},
-	"ParentBackdropItemId":  {},
-	"ParentThumbItemId":     {},
-	"ChannelId":             {},
-	"AlbumId":               {},
-	"ArtistId":              {},
-	"PlaylistId":            {},
-	"CollectionId":          {},
-	"BoxSetId":              {},
-	"ThemeSongId":           {},
-	"ThemeVideoId":          {},
-	"InternalId":            {},
-	"TopParentId":           {},
-	"BaseItemId":            {},
-	"CollectionItemId":      {},
-	"LiveStreamId":          {},
-	"LibraryItemId":         {},
-	"PresentationUniqueKey": {},
-	"RemoteId":              {},
-	"StreamId":              {},
-}
+ package backend
+ 
+ import "strings"
+ 
+ // simpleIDFields lists the response fields this proxy rewrites to virtual IDs.
+ // Every entry must be a field clients actually echo back in a route path or
+ // query string: each rewritten value mints a persistent id_mappings row, so a
+ // field no route ever consumes grows the store without bound (one row per
+ // item for PresentationUniqueKey/RemoteId-style metadata keys alone).
+ // Internal-only and provider-side identifiers (InternalId, BaseItemId,
+ // CollectionItemId, LibraryItemId, StreamId, RemoteId, PresentationUniqueKey)
+ // are deliberately absent: no route in this proxy or client resolves them.
+ var simpleIDFields = map[string]struct{}{
+ 	"Id":                   {},
+ 	"ItemId":               {},
+ 	"ParentId":             {},
+ 	"SeriesId":             {},
+ 	"SeasonId":             {},
+ 	"MediaSourceId":        {},
+ 	"PlaylistItemId":       {},
+ 	"DisplayPreferencesId": {},
+ 	"ParentLogoItemId":     {},
+ 	"ParentBackdropItemId": {},
+ 	"ParentThumbItemId":    {},
+ 	"ChannelId":            {},
+ 	"AlbumId":              {},
+ 	"ArtistId":             {},
+ 	"PlaylistId":           {},
+ 	"CollectionId":         {},
+ 	"BoxSetId":             {},
+ 	"ThemeSongId":          {},
+ 	"ThemeVideoId":         {},
+ 	"TopParentId":          {},
+ 	"LiveStreamId":         {},
+ }
 
 func rewriteResponseIDs(value any, serverID string, idStore *IDStore, proxyServerID, proxyUserID string) any {
 	switch typed := value.(type) {

@@ -200,19 +200,27 @@ func (s *IDStore) GetOrCreateVirtualID(originalID, serverID string) string {
 		return existing
 	}
 	virtualID := randomHex(16)
-	s.virtualToOriginal[virtualID] = &idEntry{OriginalID: originalID, ServerID: serverID, OtherInstances: []AdditionalInstance{}}
-	s.originalToVirtual[key] = virtualID
-	s.originalIDToVirtual[originalID] = append(s.originalIDToVirtual[originalID], virtualID)
+	// Persist first: a mapping that only ever lives in memory turns every client-held
+	// virtual ID for this item into a 404 after a restart. The row is written before
+	// the in-memory maps are touched, so the durable store is updated first and a
+	// failure is handled deliberately instead of leaving memory permanently ahead of
+	// the database.
 	if s.db != nil {
 		if err := s.db.writeParams(
 			`INSERT OR IGNORE INTO id_mappings (virtual_id, original_id, server_id) VALUES (?, ?, ?)`,
 			virtualID, originalID, serverID,
-		); err != nil && s.logger != nil {
-			// The in-memory mapping stays authoritative for this process; without the row
-			// every client-held virtual ID for this item turns into a 404 after a restart.
-			s.logger.Warnf("idstore: persist mapping %s -> %s@%s: %v", virtualID, originalID, serverID, err)
+		); err != nil {
+			if s.logger != nil {
+				// Degraded but still consistent within this process: the mapping is
+				// registered below so the item keeps resolving until the process ends.
+				// What is lost is durability — the ID will not survive a restart.
+				s.logger.Warnf("idstore: persist mapping %s -> %s@%s: %v", virtualID, originalID, serverID, err)
+			}
 		}
 	}
+	s.virtualToOriginal[virtualID] = &idEntry{OriginalID: originalID, ServerID: serverID, OtherInstances: []AdditionalInstance{}}
+	s.originalToVirtual[key] = virtualID
+	s.originalIDToVirtual[originalID] = append(s.originalIDToVirtual[originalID], virtualID)
 	return virtualID
 }
 
@@ -229,11 +237,8 @@ func (s *IDStore) AssociateAdditionalInstance(virtualID, originalID, serverID st
 	if entry.OriginalID == originalID && entry.ServerID == serverID {
 		return
 	}
-	entry.OtherInstances = appendIfMissing(entry.OtherInstances, AdditionalInstance{OriginalID: originalID, ServerID: serverID})
-	s.originalToVirtual[compositeKey(originalID, serverID)] = virtualID
-	if !containsString(s.originalIDToVirtual[originalID], virtualID) {
-		s.originalIDToVirtual[originalID] = append(s.originalIDToVirtual[originalID], virtualID)
-	}
+	// Persist first, for the same reason as GetOrCreateVirtualID: the durable store is
+	// updated before any in-memory map, so a failure cannot leave memory ahead of it.
 	if s.db != nil {
 		if err := s.db.writeParams(
 			`INSERT OR IGNORE INTO id_additional_instances (virtual_id, original_id, server_id) VALUES (?, ?, ?)`,
@@ -241,6 +246,11 @@ func (s *IDStore) AssociateAdditionalInstance(virtualID, originalID, serverID st
 		); err != nil && s.logger != nil {
 			s.logger.Warnf("idstore: persist additional instance %s -> %s@%s: %v", virtualID, originalID, serverID, err)
 		}
+	}
+	entry.OtherInstances = appendIfMissing(entry.OtherInstances, AdditionalInstance{OriginalID: originalID, ServerID: serverID})
+	s.originalToVirtual[compositeKey(originalID, serverID)] = virtualID
+	if !containsString(s.originalIDToVirtual[originalID], virtualID) {
+		s.originalIDToVirtual[originalID] = append(s.originalIDToVirtual[originalID], virtualID)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -14,7 +15,7 @@ import (
 func prepareTempWorkspace(t *testing.T, config string, prepare func(dir string)) string {
 	t.Helper()
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(config), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(testConfigWithDefaultSpoofCustom(config)), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	if err := os.MkdirAll(filepath.Join(dir, "public"), 0o755); err != nil {
@@ -27,6 +28,52 @@ func prepareTempWorkspace(t *testing.T, config string, prepare func(dir string))
 		prepare(dir)
 	}
 	return dir
+}
+
+// testConfigWithDefaultSpoofCustom appends spoofClient: "custom" to every
+// upstream entry that does not pick a client-identity mode itself. The
+// built-in profiles are gone and the config default is now passthrough, which
+// defers login until a real client identity is captured; the dumb HTTP
+// fixtures behind these test configs never send one, so entries without an
+// explicit mode must stay on custom to keep logging in directly. Only the
+// top-level upstream: section is touched; entries that already set
+// spoofClient (the passthrough behaviour tests) are left alone.
+func testConfigWithDefaultSpoofCustom(config string) string {
+	lines := strings.Split(strings.TrimRight(config, "\n"), "\n")
+	out := make([]string, 0, len(lines)+2)
+	inUpstream := false
+	pending := false
+	flush := func() {
+		if pending {
+			out = append(out, `    spoofClient: "custom"`, `    customUserAgent: "TestClient/1.0"`)
+			pending = false
+		}
+	}
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			out = append(out, line)
+			continue
+		}
+		// A column-0 key starts a new top-level section.
+		if !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") {
+			flush()
+			inUpstream = strings.HasPrefix(trimmed, "upstream:")
+			out = append(out, line)
+			continue
+		}
+		if inUpstream {
+			if strings.HasPrefix(trimmed, "- ") {
+				flush()
+				pending = true
+			} else if strings.HasPrefix(trimmed, "spoofClient:") {
+				pending = false
+			}
+		}
+		out = append(out, line)
+	}
+	flush()
+	return strings.Join(out, "\n") + "\n"
 }
 
 func chdirForTest(t *testing.T, dir string) {
