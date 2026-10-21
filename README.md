@@ -19,6 +19,7 @@
 - [功能概览](#功能概览)
 - [内置 Web 客户端](#内置-web-客户端)
 - [快速安装](#快速安装)
+- [反向代理 (Nginx)](#反向代理-nginx)
 - [系统要求](#系统要求)
 - [配置文件说明](#配置文件说明)
 - [多用户管理](#多用户管理)
@@ -170,6 +171,115 @@ go run ./cmd/emby-in-one
 **默认访问地址**：
 - Emby 客户端连接地址：`http://服务器IP:8096`
 - 管理面板：`http://服务器IP:8096/admin`
+
+---
+
+## 反向代理 (Nginx)
+
+本项目自身监听 `8096`（HTTP）。生产环境建议放在 Nginx 之后，由 Nginx 终止 TLS 并转发。下面是一份可直接使用的完整配置。
+
+### 1. 先在后端开启 `trustProxy`
+
+经 Nginx 转发后，客户端真实 IP 只能从 `X-Real-IP` / `X-Forwarded-For` 取得；`/System/Info/Public` 返回的服务器地址则依赖 `X-Forwarded-Proto` / `X-Forwarded-Host`。**只有 `trustProxy: true` 时后端才采信这些头**，否则登录限速会按 Nginx 的 IP 计算（同一 IP 的所有访客共享额度），对外地址也会回退成内网 Host。
+
+`config/config.yaml`：
+
+```yaml
+server:
+  port: 8096
+  trustProxy: true
+```
+
+> 安全前提：`trustProxy` 只在“后端仅能被你自己的 Nginx 访问”时开启。若 `8096` 直接暴露公网，任何人都能伪造 `X-Real-IP` 绕过登录限速。
+
+### 2. Nginx 配置
+
+`/etc/nginx/conf.d/emby-in-one.conf`（位于 `http {}` 上下文，`conf.d` 默认即是）：
+
+```nginx
+upstream emby_in_one {
+    server 127.0.0.1:8096;
+    keepalive 32;
+}
+
+# HTTP -> HTTPS
+server {
+    listen 80;
+    listen [::]:80;
+    server_name media.example.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;                    # nginx < 1.25.1 请改为：listen 443 ssl http2;
+    server_name media.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/media.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/media.example.com/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+    ssl_session_cache   shared:SSL:10m;
+
+    # 请求体：后端对 API 请求自身限制 2 MiB，这里给余量避免 Nginx 先返回 413
+    client_max_body_size 16m;
+    # Emby 的 token / UA 等头部较长
+    large_client_header_buffers 4 16k;
+
+    # ---- 转发到 Emby-In-One ----
+    proxy_http_version 1.1;
+    proxy_set_header Host              $host;
+    proxy_set_header X-Real-IP         $remote_addr;
+    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Host  $host;
+    # 空 Connection 让 upstream keepalive 生效（后端未实现 WebSocket，无需 Upgrade）
+    proxy_set_header Connection        "";
+
+    # 长时播放：放宽超时
+    proxy_connect_timeout 60s;
+    proxy_send_timeout    3600s;
+    proxy_read_timeout    3600s;
+    send_timeout          3600s;
+
+    # 媒体流不缓冲、不落盘：边收边发，保证拖动(seek)与长时间播放
+    proxy_buffering         off;
+    proxy_request_buffering off;
+    proxy_max_temp_file_size 0;
+
+    # Range / If-Range 透传（Nginx 默认已转发客户端头，此处显式写出便于理解）
+    proxy_set_header Range    $http_range;
+    proxy_set_header If-Range $http_if_range;
+
+    # ⚠ 切勿隐藏后端为 /web/ 设置的以下响应头，否则 WASM 播放器的
+    #   SharedArrayBuffer（多线程解码）会失效：
+    #     Cross-Origin-Opener-Policy: same-origin
+    #     Cross-Origin-Embedder-Policy: require-corp
+    #   不要配置 proxy_hide_header Cross-Origin-*。
+
+    location / {
+        proxy_pass http://emby_in_one;
+    }
+}
+```
+
+替换 `media.example.com` 与证书路径后重载：
+
+```bash
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+随后访问 `https://media.example.com/web`（Web 客户端）与 `https://media.example.com/admin`（管理面板）。
+
+### 3. 关键点说明
+
+- **必须用 HTTPS**：`/web` 播放器依赖 `SharedArrayBuffer`，而它只在安全上下文（HTTPS 或 localhost）下可用；纯 HTTP 部署会让 WASM 多线程解码退化。
+- **不要剥离 COOP/COEP**：这两个头由后端针对 `/web/` 设置，是 `SharedArrayBuffer` 的前提；Nginx 默认原样透传，只要不写 `proxy_hide_header` 即可。
+- **流式必须关缓冲**：`proxy_buffering off` + 大 `proxy_read_timeout` 保证 HLS/直连大文件边收边发，拖动与长时间播放不中断。
+- **`trustProxy` 与限速**：开启后登录限速按真实客户端 IP 计算；未开启则所有经 Nginx 的请求共享同一个 IP 额度。
+- **WebSocket**：后端目前不实现 WebSocket，Emby 客户端经本代理时实时推送 / 遥控类特性会退化；Nginx 侧无需额外 Upgrade 配置。
+- **仅 HTTP（无 TLS）**：若确实不做 TLS，可删掉 80→443 跳转，把 `listen 443 ssl...` 的 server 块改成 `listen 80;` 并去掉 `ssl_*` 指令；但会失去 WASM 多线程（见上）。
 
 ---
 
