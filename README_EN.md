@@ -233,7 +233,7 @@ upstream:
     url: "https://emby-b.example.com"
     apiKey: "your-api-key"
     playbackMode: "redirect"                   # Overrides global playback mode
-    spoofClient: "passthrough"                  # passthrough | custom
+    spoofClient: "passthrough"                  # passthrough | custom | resident
     streamingUrls:                               # Streaming lines (optional, ordered; a single one can also be written as streamingUrl: "...")
       - "https://cdn.example.com"                # 1st entry is the primary line
       - "https://backup.example.com"             # the rest are fallbacks
@@ -421,6 +421,7 @@ An upstream can configure **multiple streaming lines** (`streamingUrls`, an orde
  |-------|------------|---------------|----------------|
  | `passthrough` (default) | Real client UA captured at admin login | Real client value | Servers with client whitelists; all users share the captured identity |
  | `custom` | Custom value (required) | Custom value | Servers needing complete control over client markings |
+| `resident` | Fixed resident identity | Resident identity value | Servers that need multiple servers to share one stable, controllable identity |
  
  > **Note**: The `official` mode from V1.2 has been automatically migrated to `custom` in V1.3, using the original Emby Web official client's default values. As of V1.4.4 the built-in `none` (Emby Aggregator) and `infuse` (fabricated Infuse) modes are removed, and existing configurations migrate to `passthrough` automatically.
  >
@@ -438,6 +439,25 @@ An upstream can configure **multiple streaming lines** (`streamingUrls`, an orde
  Emby header fields the client did not send stay empty — the proxy presents exactly what the client actually sent, with no built-in base identity layered on top.
  
  When a client logs in, all offline passthrough servers automatically use the newly captured headers to attempt re-login (API-key upstreams included: the `/Users/Me` validation carries the captured identity and records it on success). The successfully logged-in headers are persistently stored per-server; both health checks and reconnections post-reboot will use that server's last successful headers. Upon token revocation or expiration, its respective captured headers are cleaned as well.
+
+#### Resident Mode (`spoofClient: resident`)
+
+`resident` mode lets one or more upstream servers share a single **resident client identity** saved by the administrator. The identity comes from the "UA Management" page: after the administrator logs in to this proxy with a real client, the proxy records the 10 most recent full client identities (`User-Agent`, `X-Emby-Client`, `X-Emby-Client-Version`, `X-Emby-Device-Name`, `X-Emby-Device-Id`, `Accept`, `Accept-Language`), and the first capture automatically saves one resident identity; afterwards the administrator can save, rename, update, or delete resident identities in the panel and bind one to a server via "Assign" (config key `uaProfileId`).
+
+- The resident identity is fixed on outbound: login, API, images, health checks, and stream proxying all use the same identity, unaffected by live requests, token cache, or the latest capture.
+- A resident identity captured more than 30 days ago still works normally; it only hints that you may capture a newer UA, and is never auto-disabled or deleted.
+- A resident identity referenced by a server cannot be deleted directly; unbind it or rebind to another resident identity first.
+- Example config:
+
+```yaml
+upstream:
+  - name: "Server A"
+    url: "https://emby-a.example.com"
+    username: "user"
+    password: "pass"
+    spoofClient: "resident"
+    uaProfileId: "the resident UA ID (see UA Management)"
+```
 
 ### Metadata Priority (`priorityMetadata`)
 
@@ -584,6 +604,12 @@ All APIs require authentication (`X-Emby-Token` header or `api_key` query parame
 | PUT | `/admin/api/upstream/:index` | Modify upstream server |
 | DELETE | `/admin/api/upstream/:index` | Delete upstream server (auto-cleans ID mappings) |
 | POST | `/admin/api/upstream/:index/reconnect` | Reconnect upstream server |
+| GET | `/admin/api/ua` | List recent captures, resident UAs, and server bindings |
+| POST | `/admin/api/ua/resident` | Save a recent capture as a resident UA |
+| PATCH | `/admin/api/ua/resident/:id` | Rename a resident UA |
+| POST | `/admin/api/ua/resident/:id/replace` | Update the resident identity from a recent capture |
+| DELETE | `/admin/api/ua/resident/:id` | Delete a resident UA (returns 409 if referenced by a server) |
+| POST | `/admin/api/ua/resident/:id/assignments` | Batch assign/unbind server bindings |
 | POST | `/admin/api/upstream/reorder` | Adjust server ordering |
 | GET | `/admin/api/proxies` | List proxies |
 | POST | `/admin/api/proxies` | Add proxy |
