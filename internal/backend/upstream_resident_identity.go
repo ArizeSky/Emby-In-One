@@ -76,12 +76,20 @@ func newResidentIdentityMissingError() *outboundPreparationError {
 	}
 }
 
-// residentIdentityChanged reports whether moving from old to next changes a
-// resident identity, in which case the new client must not inherit the old
-// session's credentials.
+// residentIdentityChanged reports whether moving from old to next changes the
+// identity this client presents upstream. Any transition that involves
+// resident mode on either side counts: a new profile, a new identity version,
+// binding resident for the first time, or leaving resident for passthrough or
+// custom. In all of those the new client must not inherit the old session's
+// token/user — the token was issued to a different client identity.
 func residentIdentityChanged(old, next *UpstreamClient) bool {
-	if next == nil || next.Config.SpoofClient != "resident" {
+	if next == nil {
 		return false
+	}
+	if next.Config.SpoofClient != "resident" {
+		// Leaving resident mode: the old token belongs to the resident
+		// identity, not to whichever passthrough/custom client follows.
+		return old != nil && old.Config.SpoofClient == "resident"
 	}
 	if old == nil || old.residentIdentity == nil || next.residentIdentity == nil {
 		return true

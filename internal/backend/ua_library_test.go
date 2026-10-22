@@ -288,6 +288,46 @@ func TestResidentIdentityResolution(t *testing.T) {
 	}
 }
 
+func TestReloadDropsSessionWhenLeavingResident(t *testing.T) {
+	store := newTestUALibrary(t)
+	if err := store.CaptureAuthenticatedUA(uaTestHeaders("Emby/1.0", "Emby", "1.0", "Dev", "dev-1")); err != nil {
+		t.Fatal(err)
+	}
+	profile := store.Snapshot().Resident[0]
+
+	cfg := Config{Timeouts: TimeoutsConfig{API: 30000, Login: 30000, HealthCheck: 30000}}
+	cfg.Upstream = []UpstreamConfig{{
+		ID: "u1", Name: "A", URL: "http://127.0.0.1:1", Username: "u", Password: "p",
+		PlaybackMode: "proxy", SpoofClient: "resident", UAProfileID: profile.ID,
+	}}
+	pool := NewUpstreamPool(cfg, nil)
+	client := pool.ClientByID("u1")
+	if client == nil {
+		t.Fatalf("pool did not build the resident client")
+	}
+	client.mu.Lock()
+	client.AccessToken = "resident-token"
+	client.UserID = "resident-user"
+	client.Online = true
+	client.mu.Unlock()
+
+	// Switch the same server back to passthrough and reload.
+	next := cfg
+	next.Upstream = append([]UpstreamConfig(nil), cfg.Upstream...)
+	next.Upstream[0].SpoofClient = "passthrough"
+	next.Upstream[0].UAProfileID = ""
+	pool.Reload(next)
+
+	replaced := pool.ClientByID("u1")
+	if replaced == client {
+		t.Fatalf("reload must replace the client instance on an identity change")
+	}
+	if replaced.AccessToken != "" || replaced.UserID != "" || replaced.Online {
+		t.Fatalf("leaving resident mode inherited the old session (token=%q user=%q online=%v)",
+			replaced.AccessToken, replaced.UserID, replaced.Online)
+	}
+}
+
 func TestUALibraryReplaceChangesIdentity(t *testing.T) {
 	store := newTestUALibrary(t)
 	h1 := uaTestHeaders("Emby/1.0", "Emby", "1.0", "Dev", "dev-1")
