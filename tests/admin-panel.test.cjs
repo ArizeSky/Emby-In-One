@@ -199,3 +199,87 @@ test('aggregation success aborts stale refreshes', async () => {
   await pending.catch(() => {});
   if (vm._refreshTimer) clearTimeout(vm._refreshTimer);
 });
+
+// --- UA management --------------------------------------------------------
+
+test('ua save blocks duplicate submits while pending', async () => {
+  const h = adminHarness({ reply: url => url.includes('/admin/api/ua/resident') ? { __delay: true } : {} });
+  const vm = h.vm;
+  vm.uaSaveDialog = { rename: false, recentId: 'r1', name: 'N' };
+  const first = vm.saveRecentUA(); // stays in flight
+  await vm.saveRecentUA(); // blocked by pending guard
+  const posts = h.seen.filter(c => c.method === 'POST' && c.url.includes('/admin/api/ua/resident'));
+  assert.strictEqual(posts.length, 1, 'duplicate submit issued no request');
+  assert.strictEqual(vm.uaPending.save, true);
+  void first;
+});
+
+test('ua save failure keeps the dialog and selection', async () => {
+  const h = adminHarness({ reply: url => url.includes('/admin/api/ua/resident') ? { __status: 500, __body: { error: 'nope' } } : {} });
+  const vm = h.vm;
+  vm.uaSaveDialog = { rename: false, recentId: 'r1', name: 'My UA' };
+  await vm.saveRecentUA();
+  assert.ok(vm.uaSaveDialog, 'the dialog survived the failure');
+  assert.strictEqual(vm.uaSaveDialog.name, 'My UA', 'the user selection survived');
+  assert.strictEqual(vm.uaPending.save, false, 'pending cleared after failure');
+});
+
+test('ua assignments build explicit increments with premises', async () => {
+  const h = adminHarness({ reply: () => ({ success: true }) });
+  const vm = h.vm;
+  vm.uaServers = [
+    { id: 's1', name: 'A', spoofClient: 'passthrough', uaProfileId: '' },
+    { id: 's2', name: 'B', spoofClient: 'resident', uaProfileId: 'p1' },
+  ];
+  vm.uaAssignmentDialog = { id: 'p1', name: 'P', revision: 3, rows: [
+    { id: 's1', name: 'A', currentSpoof: 'passthrough', currentProfile: '', bound: false, checked: true },
+    { id: 's2', name: 'B', currentSpoof: 'resident', currentProfile: 'p1', bound: true, checked: false },
+  ] };
+  await vm.saveUAAssignments();
+  const post = h.seen.find(c => c.method === 'POST' && c.url.includes('/assignments'));
+  assert.ok(post, 'the assignment POST was issued');
+  const body = JSON.parse(post.body);
+  assert.deepStrictEqual(body.assignServerIds, ['s1']);
+  assert.deepStrictEqual(body.releaseServerIds, ['s2']);
+  assert.strictEqual(body.expectedProfileRevision, 3);
+  assert.deepStrictEqual(body.expectedBindings, [
+    { serverId: 's1', spoofClient: 'passthrough', uaProfileId: '' },
+    { serverId: 's2', spoofClient: 'resident', uaProfileId: 'p1' },
+  ]);
+  vm.stopUAReconnectPoll();
+});
+
+test('ua delete guard blocks a second click while pending', async () => {
+  const h = adminHarness({ reply: url => url.includes('/admin/api/ua/resident/') && !url.includes('/replace') && !url.includes('/assignments') ? { __delay: true } : {} });
+  const vm = h.vm;
+  const first = vm.deleteResidentUA({ id: 'p1', name: 'P', revision: 2 });
+  await vm.deleteResidentUA({ id: 'p1', name: 'P', revision: 2 });
+  const deletes = h.seen.filter(c => c.method === 'DELETE');
+  assert.strictEqual(deletes.length, 1, 'the duplicate delete issued no request');
+  void first;
+});
+
+test('ua reconnect poll starts and stops', async () => {
+  const h = adminHarness({ reply: () => ({}) });
+  const vm = h.vm;
+  vm.isLoggedIn = true;
+  vm.startUAReconnectPoll();
+  assert.ok(vm._uaPollTimer, 'the poll timer was created');
+  vm.stopUAReconnectPoll();
+  assert.strictEqual(vm._uaPollTimer, null);
+});
+
+test('aggregation success refreshes the servers page', async () => {
+  const h = adminHarness({ reply: url => url.includes('/aggregation')
+    ? { success: true, aggregationEnabled: false }
+    : (url.includes('/admin/api/upstream') ? [{ id: 's1', name: 'A', aggregationEnabled: false }] : {}) });
+  const vm = h.vm;
+  vm.currentPage = 'servers';
+  vm.stats = { upstream: [{ id: 's1', name: 'A', aggregationEnabled: true }] };
+  vm.upstreamList = [{ id: 's1', name: 'A', aggregationEnabled: true }];
+  await vm.setServerAggregation(vm.upstreamList[0]);
+  assert.strictEqual(vm.upstreamList[0].aggregationEnabled, false);
+  assert.ok(h.seen.some(c => c.url.includes('/admin/api/upstream') && !c.url.includes('/aggregation')),
+    'the servers page re-fetched the upstream list');
+  if (vm._refreshTimer) clearTimeout(vm._refreshTimer);
+});

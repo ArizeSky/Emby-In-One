@@ -47,7 +47,7 @@ createApp({
     }
   },
   watch: {
-    currentPage(v) { if(this._refreshTimer) clearTimeout(this._refreshTimer); this.abortRefresh(); this._refreshTimer = setTimeout(()=>{this.refresh(); this.$nextTick(() => lucide.createIcons());}, 50); }
+    currentPage(v) { this.stopUAReconnectPoll(); if(this._refreshTimer) clearTimeout(this._refreshTimer); this.abortRefresh(); this._refreshTimer = setTimeout(()=>{this.refresh(); this.$nextTick(() => lucide.createIcons());}, 50); }
   },
   mounted() { const t = localStorage.getItem('eio_admin_token'); if(t) this.checkAuth(t); this.$nextTick(() => lucide.createIcons()); },
   methods: {
@@ -72,7 +72,7 @@ createApp({
       try { await this.api('/admin/api/status'); } catch(e) { localStorage.removeItem('eio_admin_token'); this.loginError = '需要管理员权限'; return; }
       this.isLoggedIn = true; this.refresh(); this.refreshClientInfo();
     } catch(e) { this.loginError = '用户名或密码错误'; } },
-    logout() { this.isLoggedIn = false; localStorage.removeItem('eio_admin_token'); },
+    logout() { this.stopUAReconnectPoll(); this.isLoggedIn = false; localStorage.removeItem('eio_admin_token'); },
     async copyClientUA() {
       if (!this.clientInfo || !this.clientInfo.userAgent) return;
       try { await navigator.clipboard.writeText(this.clientInfo.userAgent); alert('UA 已复制到剪贴板'); } catch(e) {}
@@ -168,7 +168,7 @@ createApp({
         this.abortRefresh();
         this.upstreamList = this.upstreamList.map(row => row.id === id
           ? { ...row, aggregationEnabled: result.aggregationEnabled } : row);
-        this.stats.upstream = this.stats.upstream.map(row => row.id === id
+        this.stats.upstream = (this.stats.upstream || []).map(row => row.id === id
           ? { ...row, aggregationEnabled: result.aggregationEnabled } : row);
         if (this.currentPage === 'servers') await this.refreshServers(this.refreshSignal());
         if (this.currentPage === 'dashboard') await this.refreshDashboard(this.refreshSignal());
@@ -341,17 +341,24 @@ createApp({
     boundServerNames(servers) { return (servers || []).map(s => s.name).join('、'); },
     residentOptionLabel(r) { return r.name + ' · ' + this.uaClientLabel(r) + (r.isOld ? '（采集较早）' : ''); },
     selectedResidentIsOld() { if(this.serverForm.spoofClient !== 'resident') return false; const r = (this.uaResident || []).find(x => x.id === this.serverForm.uaProfileId); return !!(r && r.isOld); },
+    selectedResidentMissing() {
+      if (this.serverForm.spoofClient !== 'resident') return false;
+      if (!this.serverForm.uaProfileId) return false;
+      return !(this.uaResident || []).some(x => x.id === this.serverForm.uaProfileId);
+    },
     openUADetail(item) { this.uaDetail = item; this.$nextTick(()=>lucide.createIcons()); },
     async copyText(text) { if(!text) return; try { await navigator.clipboard.writeText(text); } catch(e) {} },
     openSaveResident(recent) { this.uaSaveDialog = { rename: false, recentId: recent.id, name: this.uaClientLabel(recent) }; },
     openRenameResident(r) { this.uaSaveDialog = { rename: true, id: r.id, name: r.name, expectedRevision: r.revision }; },
     async saveRecentUA() {
+      if (this.uaPending.save) return;
       if(!this.uaSaveDialog) return; const d = this.uaSaveDialog; this.uaPending.save = true;
       try { const res = await this.api('/admin/api/ua/resident', { method:'POST', body: JSON.stringify({ recentId: d.recentId, name: d.name }) }); this.uaSaveDialog = null; await this.refreshUAs(); if (res.alreadySaved) alert('该身份已存在常驻 UA'); }
       catch(e) { alert('保存失败：' + e.message); }
       finally { this.uaPending.save = false; }
     },
     async renameResidentUA() {
+      if (this.uaPending.save) return;
       const d = this.uaSaveDialog; if(!d || !d.rename) return; this.uaPending.save = true;
       try { await this.api('/admin/api/ua/resident/' + d.id, { method:'PATCH', body: JSON.stringify({ name: d.name, expectedRevision: d.expectedRevision }) }); this.uaSaveDialog = null; await this.refreshUAs(); }
       catch(e) { alert('重命名失败：' + e.message); }
@@ -359,15 +366,19 @@ createApp({
     },
     openReplaceResident(r) { this.uaReplaceDialog = { id: r.id, name: r.name, revision: r.revision, recentId: '' }; },
     async replaceResidentUA() {
+      if (this.uaPending.replace) return;
       const d = this.uaReplaceDialog; if(!d) return; if(!d.recentId) { alert('请选择一条最近采集'); return; } this.uaPending.replace = true;
-      try { await this.api('/admin/api/ua/resident/' + d.id + '/replace', { method:'POST', body: JSON.stringify({ recentId: d.recentId, expectedRevision: d.revision }) }); this.uaReplaceDialog = null; await this.refreshUAs(); await this.refreshServers(); }
+      try { await this.api('/admin/api/ua/resident/' + d.id + '/replace', { method:'POST', body: JSON.stringify({ recentId: d.recentId, expectedRevision: d.revision }) }); this.uaReplaceDialog = null; await this.refreshUAs(); await this.refreshServers(); this.startUAReconnectPoll(); }
       catch(e) { alert('更新失败：' + e.message); }
       finally { this.uaPending.replace = false; }
     },
     async deleteResidentUA(r) {
-      if(!confirm('删除常驻 UA「' + r.name + '」？')) return;
-      try { await this.api('/admin/api/ua/resident/' + r.id, { method:'DELETE', body: JSON.stringify({ expectedRevision: r.revision }) }); await this.refreshUAs(); }
-      catch(e) { if (e.status === 409 && e.data && e.data.boundServers) { alert('该常驻 UA 正在被以下服务器引用，无法删除：' + e.data.boundServers.map(s => s.name).join('、')); } else { alert('删除失败：' + e.message); } }
+      if (this.uaPending.delete) return;
+      if (!confirm('删除常驻 UA「' + r.name + '」？')) return;
+      this.uaPending.delete = true;
+      try { await this.api('/admin/api/ua/resident/' + r.id, { method: 'DELETE', body: JSON.stringify({ expectedRevision: r.revision }) }); await this.refreshUAs(); }
+      catch (e) { if (e.status === 409 && e.data && e.data.boundServers) { alert('该常驻 UA 正在被以下服务器引用，无法删除：' + e.data.boundServers.map(s => s.name).join('、')); } else { alert('删除失败：' + e.message); } }
+      finally { this.uaPending.delete = false; }
     },
     openUAAssignments(r) {
       const bound = {}; (r.boundServers || []).forEach(s => { bound[s.id] = true; });
@@ -375,6 +386,7 @@ createApp({
         rows: (this.uaServers || []).map(s => ({ id: s.id, name: s.name, currentSpoof: s.spoofClient, currentProfile: s.uaProfileId || '', bound: !!bound[s.id], checked: !!bound[s.id] })) };
     },
     async saveUAAssignments() {
+      if (this.uaPending.assign) return;
       const d = this.uaAssignmentDialog; if(!d) return;
       const assignServerIds = []; const releaseServerIds = []; const expectedBindings = [];
       for (const row of d.rows) {
@@ -384,9 +396,21 @@ createApp({
       }
       if (assignServerIds.length === 0 && releaseServerIds.length === 0) { alert('没有变更'); return; }
       this.uaPending.assign = true;
-      try { await this.api('/admin/api/ua/resident/' + d.id + '/assignments', { method:'POST', body: JSON.stringify({ assignServerIds, releaseServerIds, expectedProfileRevision: d.revision, expectedBindings }) }); this.uaAssignmentDialog = null; await this.refreshUAs(); await this.refreshServers(); }
+      try { await this.api('/admin/api/ua/resident/' + d.id + '/assignments', { method:'POST', body: JSON.stringify({ assignServerIds, releaseServerIds, expectedProfileRevision: d.revision, expectedBindings }) }); this.uaAssignmentDialog = null; await this.refreshUAs(); await this.refreshServers(); this.startUAReconnectPoll(); }
       catch(e) { alert('保存失败：' + e.message); }
       finally { this.uaPending.assign = false; }
-    }
+    },
+    // 方案 §8.1：绑定或更新成功后存在重连任务时，每 2 秒短时刷新服务器
+    // 状态，最多 30 秒；离页或登出取消。轮询停止不等于任务失败，仍在
+    // 重连的状态保留，用户可手动刷新。
+    startUAReconnectPoll() {
+      this.stopUAReconnectPoll();
+      const deadline = Date.now() + 30000;
+      this._uaPollTimer = setInterval(async () => {
+        if (!this.isLoggedIn || Date.now() >= deadline) { this.stopUAReconnectPoll(); return; }
+        try { this.upstreamList = await this.api('/admin/api/upstream'); this.$nextTick(() => lucide.createIcons()); } catch (e) { /* 轮询失败不弹窗，下一轮重试 */ }
+      }, 2000);
+    },
+    stopUAReconnectPoll() { if (this._uaPollTimer) { clearInterval(this._uaPollTimer); this._uaPollTimer = null; } },
   }
 }).mount('#app');

@@ -317,7 +317,8 @@
               <option value="">请选择</option>
               <option v-for="r in uaResident" :key="r.id" :value="r.id">{{ residentOptionLabel(r) }}</option>
             </select>
-            <p v-if="!uaResident.length" class="mt-1 text-xs text-red-500">还没有常驻 UA。请先到「UA 管理」保存一条。</p>
+            <p v-if="!uaResident.length" class="mt-1 text-xs text-red-500">还没有常驻 UA。请先到「<a href="#" class="underline" @click.prevent="navigateTo('ua'); showModal = false">UA 管理</a>」保存一条。</p>
+            <p v-else-if="selectedResidentMissing()" class="mt-1 text-xs text-red-500">当前绑定的常驻 UA 已不存在，请重新选择。</p>
             <p v-else-if="selectedResidentIsOld()" class="mt-1 text-xs text-amber-600">该常驻 UA 采集已超过 30 天，版本可能较旧，建议采集最新客户端 UA。</p>
             <p v-if="serverForm.playbackMode === 'redirect'" class="mt-1 text-xs text-amber-600">直连模式会把播放地址交给客户端，最终媒体请求由客户端自身发起，代理无法替它强制使用常驻 UA；常驻身份仅作用于代理侧的登录与 API 请求。</p>
           </div>
@@ -340,7 +341,7 @@
         </div>
         <div v-else><label class="text-sm font-medium">API Key</label><input type="text" v-model="serverForm.apiKey" class="w-full px-4 py-2 border rounded-lg outline-none"></div>
       </div>
-      <div class="flex justify-end space-x-3 pt-4"><button @click="showModal = false" class="px-6 py-2.5 rounded-xl text-slate-600 hover:bg-slate-100">取消</button><button @click="saveServer" class="btn-primary px-8 py-2.5 rounded-xl font-bold shadow-lg shadow-blue-500/20">保存设置</button></div>
+      <div class="flex justify-end space-x-3 pt-4"><button @click="showModal = false" class="px-6 py-2.5 rounded-xl text-slate-600 hover:bg-slate-100">取消</button><button @click="saveServer" :disabled="serverForm.spoofClient === 'resident' && !(uaResident || []).length" class="btn-primary px-8 py-2.5 rounded-xl font-bold shadow-lg shadow-blue-500/20 disabled:opacity-50 disabled:cursor-not-allowed">保存设置</button></div>
     </div>
   </div>
 
