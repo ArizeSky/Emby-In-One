@@ -191,12 +191,22 @@ func (a *App) handleAdminUpstreamCreate(w http.ResponseWriter, r *http.Request) 
 		if a.uaLibraryUnavailable(w) {
 			return
 		}
+		// A resident binding must pin the profile revision the panel saw:
+		// without the premise a stale panel silently binds a profile that was
+		// replaced or renamed elsewhere (execution plan §5.1).
+		if body.UAExpectedProfileRevision == nil {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error":    "缺少 uaExpectedProfileRevision，请刷新后重试",
+				"conflict": true,
+			})
+			return
+		}
 		profile, ok := a.UALibrary.ResidentByID(draft.UAProfileID)
 		if !ok {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "常驻 UA 不存在或已被删除"})
 			return
 		}
-		if body.UAExpectedProfileRevision != nil && *body.UAExpectedProfileRevision != profile.Revision {
+		if *body.UAExpectedProfileRevision != profile.Revision {
 			writeJSON(w, http.StatusConflict, map[string]any{"error": "常驻 UA 已被修改，请刷新后重试", "conflict": true})
 			return
 		}
@@ -282,8 +292,26 @@ func (a *App) handleAdminUpstreamUpdate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if existing.SpoofClient == "resident" || draft.SpoofClient == "resident" {
+		// A resident-involved edit must echo the binding the panel saw and,
+		// when resident is the target, the profile revision. Missing premises
+		// return 409 rather than silently overwriting a binding changed
+		// elsewhere (execution plan §5.1).
+		if body.ExpectedIdentityBinding == nil {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error":    "缺少 expectedIdentityBinding，请刷新后重试",
+				"conflict": true,
+			})
+			return
+		}
 		if draft.SpoofClient == "resident" {
 			if a.uaLibraryUnavailable(w) {
+				return
+			}
+			if body.UAExpectedProfileRevision == nil {
+				writeJSON(w, http.StatusConflict, map[string]any{
+					"error":    "缺少 uaExpectedProfileRevision，请刷新后重试",
+					"conflict": true,
+				})
 				return
 			}
 			profile, ok := a.UALibrary.ResidentByID(draft.UAProfileID)
@@ -291,16 +319,14 @@ func (a *App) handleAdminUpstreamUpdate(w http.ResponseWriter, r *http.Request) 
 				writeJSON(w, http.StatusBadRequest, map[string]any{"error": "常驻 UA 不存在或已被删除"})
 				return
 			}
-			if body.UAExpectedProfileRevision != nil && *body.UAExpectedProfileRevision != profile.Revision {
+			if *body.UAExpectedProfileRevision != profile.Revision {
 				writeJSON(w, http.StatusConflict, map[string]any{"error": "常驻 UA 已被修改，请刷新后重试", "conflict": true})
 				return
 			}
 		}
-		if body.ExpectedIdentityBinding != nil {
-			if existing.SpoofClient != body.ExpectedIdentityBinding.SpoofClient || existing.UAProfileID != body.ExpectedIdentityBinding.UAProfileID {
-				writeJSON(w, http.StatusConflict, map[string]any{"error": "服务器绑定已在别处修改，请刷新后重试", "conflict": true})
-				return
-			}
+		if existing.SpoofClient != body.ExpectedIdentityBinding.SpoofClient || existing.UAProfileID != body.ExpectedIdentityBinding.UAProfileID {
+			writeJSON(w, http.StatusConflict, map[string]any{"error": "服务器绑定已在别处修改，请刷新后重试", "conflict": true})
+			return
 		}
 		nextCfg := cfg
 		nextCfg.Upstream = append([]UpstreamConfig(nil), cfg.Upstream...)

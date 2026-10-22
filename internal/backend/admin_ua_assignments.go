@@ -142,7 +142,10 @@ func (a *App) applyUAAssignments(profileID string, input uaAssignmentsInput) (ua
 	if !ok {
 		return result, errUANotFound
 	}
-	if input.ExpectedProfileRevision != nil && *input.ExpectedProfileRevision != profile.Revision {
+	if input.ExpectedProfileRevision == nil {
+		return result, &httpError{message: "缺少 expectedProfileRevision 前提，请刷新后重试"}
+	}
+	if *input.ExpectedProfileRevision != profile.Revision {
 		return result, errUAConflict
 	}
 
@@ -179,6 +182,25 @@ func (a *App) applyUAAssignments(profileID string, input uaAssignmentsInput) (ua
 	for id := range assignSet {
 		if releaseSet[id] {
 			return result, &httpError{message: "同一服务器不能同时分配和解除"}
+		}
+	}
+	// Every touched server must carry the binding the panel saw, so a stale
+	// dialog cannot silently overwrite a binding changed elsewhere.
+	expectedByServer := make(map[string]uaExpectedBinding, len(input.ExpectedBindings))
+	for _, binding := range input.ExpectedBindings {
+		if _, dup := expectedByServer[binding.ServerID]; dup {
+			return result, &httpError{message: "expectedBindings 含重复的服务器"}
+		}
+		expectedByServer[binding.ServerID] = binding
+	}
+	for id := range assignSet {
+		if _, ok := expectedByServer[id]; !ok {
+			return result, &httpError{message: "服务器 " + id + " 缺少 expectedBindings 前提，请刷新后重试"}
+		}
+	}
+	for id := range releaseSet {
+		if _, ok := expectedByServer[id]; !ok {
+			return result, &httpError{message: "服务器 " + id + " 缺少 expectedBindings 前提，请刷新后重试"}
 		}
 	}
 	for _, binding := range input.ExpectedBindings {

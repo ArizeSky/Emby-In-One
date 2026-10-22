@@ -413,6 +413,7 @@ func TestAdminUAResidentLifecycle(t *testing.T) {
 		rr = doJSONRequest(t, handler, http.MethodPost, "/admin/api/ua/resident/"+profileID+"/assignments", map[string]any{
 			"releaseServerIds":        []string{serverID},
 			"expectedProfileRevision": revision,
+			"expectedBindings":        []map[string]any{{"serverId": serverID, "spoofClient": "resident", "uaProfileId": profileID}},
 		}, token)
 		if rr.Code != http.StatusOK {
 			t.Fatalf("assignment release status = %d body=%s", rr.Code, rr.Body.String())
