@@ -260,7 +260,7 @@ func TestResumePaginationScansPastPausedCandidates(t *testing.T) {
 			if err := app.WatchStore.RecordProgress(&WatchProgress{
 				ProxyUserID: daveID, VirtualItemID: vid, ServerID: idA,
 				OriginalItemID: fmt.Sprintf("paused-%d", i),
-				PositionTicks: 100, RuntimeTicks: 1000, ItemType: "Movie",
+				PositionTicks:  100, RuntimeTicks: 1000, ItemType: "Movie",
 			}); err != nil {
 				t.Fatalf("record paused %d: %v", i, err)
 			}
