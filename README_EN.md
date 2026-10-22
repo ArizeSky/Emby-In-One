@@ -77,7 +77,7 @@ Playback first requests the original media. H.264/AAC MP4 uses native video; MKV
 
 libmedia renders embedded text/ASS. External ASS with native video or HLS uses JASSUB/libass and a local Chinese font loaded only when selected. SRT/VTT use a text overlay; PGS uses upstream-exported SUP subtitles with fragment assembly, clearing, seeking and aspect fitting. Subtitle export and HLS availability depend on upstream capabilities and permissions. Complex ASS layouts and actual 4K hardware playback still require validation on the target device and source.
 
-Development checks: `node --test tests/web-data.test.cjs tests/web-ui.test.cjs tests/web-player.test.cjs tests/web-player-ui.test.cjs tests/web-subtitles.test.cjs tests/web-mse-seek.test.cjs tests/web-mse-duration.test.cjs tests/web-seek-queue.test.cjs tests/web-session.test.cjs tests/admin-panel.test.cjs` (10 files, 55 tests). `tests/make-web-fixtures.py` creates tiny, eight-second 320×180 samples using a local ffmpeg executable. Keep generated media in a temporary directory, outside release assets.
+Development checks: `node --test tests/web-data.test.cjs tests/web-ui.test.cjs tests/web-player.test.cjs tests/web-player-ui.test.cjs tests/web-subtitles.test.cjs tests/web-mse-seek.test.cjs tests/web-mse-duration.test.cjs tests/web-seek-queue.test.cjs tests/web-session.test.cjs tests/admin-panel.test.cjs` (10 files, 67 tests). `tests/make-web-fixtures.py` creates tiny, eight-second 320×180 samples using a local ffmpeg executable. Keep generated media in a temporary directory, outside release assets.
 
 ---
 
@@ -879,12 +879,18 @@ Emby-In-One/
 │   ├── auth_manager.go             # Upstream auth management (login/session/API Key)
 │   ├── identity.go                 # Client identity capture & Passthrough 4-level resolution
 │   ├── identity_persistence.go     # Per-upstream client identity persistence
+│   ├── ua_library.go               # UA library core (recent capture / resident UA, fingerprint & validation)
+│   ├── ua_library_persistence.go   # UA library persistence (atomic JSON read/write)
 │   ├── user_store.go               # Multi-user storage (CRUD, password hashing, memory index + SQLite)
 │   ├── handlers_admin.go           # Admin API handlers (upstream server CRUD)
 │   ├── handlers_admin_home_libraries.go  # Per-user home-library hiding admin endpoint & library cache
+│   ├── handlers_admin_ua.go        # UA library admin API (recent capture / resident UA / assignments)
+│   ├── handlers_admin_aggregation.go  # Aggregation switch admin API (PATCH /admin/api/upstream/:id/aggregation)
+│   ├── admin_ua_assignments.go     # Resident UA to server binding & targeted upstream client rebuilds
 │   ├── handlers_system.go          # System info endpoints (/System/Info)
 │   ├── handlers_user.go            # User login rate limiting & user-related handlers
 │   ├── handlers_web.go             # /web/ static assets (disk-first, embedded fallback, COOP/COEP)
+│   ├── root_page.go                # Root landing page (/ dual-entry card: web client + admin panel)
 │   ├── admin_validation.go         # Admin input validation & helper utilities
 │   ├── idstore.go                  # SQLite bidirectional ID mapping (virtual ↔ original)
 │   ├── id_rewriter.go              # Recursive ID virtualization/devirtualization rewriting
@@ -892,6 +898,7 @@ Emby-In-One/
 │   ├── identifier_lookup.go        # Multi-source identifier lookup (each store under its lock)
 │   ├── media.go                    # Media aggregation, dedup, metadata priority selection
 │   ├── aggregation.go              # Common aggregation framework (grace period + background backfill)
+│   ├── aggregation_policy.go       # Upstream aggregation switch policy (config-only, immediate effect)
 │   ├── media_items.go              # Media item queries (multi-upstream fan-out merge)
 │   ├── media_resume.go             # Resume Items proxy & multi-upstream merge
 │   ├── media_nextup.go             # Next Up proxy & multi-upstream merge
@@ -907,6 +914,7 @@ Emby-In-One/
 │   ├── user_filter.go              # Local user-state filters (IsFavorite/IsPlayed/IsResumable)
 │   ├── series_userdata.go          # Series-level watch history isolation (Resume/NextUp)
 │   ├── session_userdata.go         # Sessions/Playing progress reporting
+│   ├── session_cleanup.go          # PlayingItems session-slot release (bypasses aggregation filter)
 │   ├── watch_store.go              # Per-user watch progress storage & persistence
 │   ├── playback_limiter.go         # Concurrent playback limiter (heartbeat timeout auto-release)
 │   ├── login_limiter.go            # Per-IP login failure limiter (evicts instead of blocking)
@@ -926,6 +934,9 @@ Emby-In-One/
 │   ├── scrypt_local.go             # Admin password scrypt hashing
 │   ├── sqlite_cgo.go               # CGO embedded SQLite compilation & low-level bindings
 │   ├── upstream.go                 # Upstream connection pool & concurrent request orchestration
+│   ├── upstream_outbound.go        # Outbound request-header building (identity injection, timeouts, redirect policy)
+│   ├── upstream_resident_identity.go  # Apply resident identity snapshot to outbound requests (spoofClient: resident)
+│   ├── upstream_ua_updates.go      # Targeted reconnect jobs for UA changes (prepare/publish/reconnect)
 │   ├── upstream_auth_state.go      # Consistent snapshot of an upstream's auth state
 │   ├── outbound_identity.go        # Outbound identity carrier rewriting & naming
 │   ├── outbound_identity_policy.go # Outbound auth modes & identity rules
@@ -952,7 +963,7 @@ Emby-In-One/
 │   │   └── ui.css                  #   Web client styles
 │   └── vendor/                     # Self-hosted frontend dependencies: Vue, lucide, Tailwind output, Inter font;
 │                                   # web/ holds the libmedia player, the JASSUB subtitle engine and Noto Sans SC
-├── tests/                          # Node front-end behavior tests (node --test, 10 files / 55 tests)
+├── tests/                          # Node front-end behavior tests (node --test, 10 files / 67 tests)
 │   ├── web-ui-harness.cjs          #   Shared VM harness (Vue stubs, scripts loaded in web.html order)
 │   ├── make-web-fixtures.py        #   ffmpeg synthetic sample generation (samples stay out of releases)
 │   └── *.test.cjs                  #   data / ui / player / player-ui / subtitles / mse-seek /

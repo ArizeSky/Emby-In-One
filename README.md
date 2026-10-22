@@ -77,7 +77,7 @@ V1.4.4-rc2 重做为桌面界面：分栏登录、216 px 桌面侧栏（首页 /
 
 内嵌文本/ASS 由 libmedia 渲染；原生播放或 HLS 的外部 ASS 使用 JASSUB/libass，并按需加载本地中文字体。SRT/VTT 支持文本覆盖层；PGS 通过上游导出的 SUP 字幕显示，包含分片、清屏、跳转和尺寸适配。字幕能否导出、HLS 能否生成，取决于上游能力和访问权限。复杂 ASS 排版及实际 4K 硬解仍需用目标设备和片源验收。
 
-开发验证：`node --test tests/web-data.test.cjs tests/web-ui.test.cjs tests/web-player.test.cjs tests/web-player-ui.test.cjs tests/web-subtitles.test.cjs tests/web-mse-seek.test.cjs tests/web-mse-duration.test.cjs tests/web-seek-queue.test.cjs tests/web-session.test.cjs tests/admin-panel.test.cjs`（10 个文件 55 项）；`tests/make-web-fixtures.py` 可用本地 ffmpeg 生成 8 秒、320×180 的合成样本。将样本放在临时目录，避免加入发行资源。
+开发验证：`node --test tests/web-data.test.cjs tests/web-ui.test.cjs tests/web-player.test.cjs tests/web-player-ui.test.cjs tests/web-subtitles.test.cjs tests/web-mse-seek.test.cjs tests/web-mse-duration.test.cjs tests/web-seek-queue.test.cjs tests/web-session.test.cjs tests/admin-panel.test.cjs`（10 个文件 67 项）；`tests/make-web-fixtures.py` 可用本地 ffmpeg 生成 8 秒、320×180 的合成样本。将样本放在临时目录，避免加入发行资源。
 
 ---
 
@@ -881,12 +881,18 @@ Emby-In-One/
 │   ├── auth_manager.go             # 上游认证管理（登录/Session/API Key）
 │   ├── identity.go                 # 客户端身份捕获与 Passthrough 四级解析
 │   ├── identity_persistence.go     # 客户端身份按服务器维度持久化
+│   ├── ua_library.go               # UA 库核心（最近采集 / 常驻 UA、身份指纹与校验）
+│   ├── ua_library_persistence.go   # UA 库持久化（JSON 原子读写）
 │   ├── user_store.go               # 多用户存储（CRUD、密码哈希、内存索引 + SQLite）
 │   ├── handlers_admin.go           # 管理后台 API 处理器（上游服务器增删改查）
 │   ├── handlers_admin_home_libraries.go  # 每用户首页库隐藏的管理端接口与库列表缓存
+│   ├── handlers_admin_ua.go        # UA 库管理 API（最近采集 / 常驻 UA / 分配）
+│   ├── handlers_admin_aggregation.go  # 聚合开关管理 API（PATCH /admin/api/upstream/:id/aggregation）
+│   ├── admin_ua_assignments.go     # 常驻 UA 与服务器绑定、定向重建上游客户端
 │   ├── handlers_system.go          # 系统信息接口（/System/Info）
 │   ├── handlers_user.go            # 用户登录限速与用户相关接口处理器
 │   ├── handlers_web.go             # /web/ 静态资源服务（磁盘优先、内嵌回退、COOP/COEP）
+│   ├── root_page.go                # 根页面（/ 双入口卡片：Web 客户端 + 管理面板）
 │   ├── admin_validation.go         # 管理后台输入校验与辅助工具
 │   ├── idstore.go                  # SQLite 双向 ID 映射（虚拟 ID ↔ 原始 ID）
 │   ├── id_rewriter.go              # 递归 ID 虚拟化/反虚拟化重写
@@ -894,6 +900,7 @@ Emby-In-One/
 │   ├── identifier_lookup.go        # 多来源标识符查询（各 store 锁内执行）
 │   ├── media.go                    # 媒体聚合、去重、元数据优先级选择
 │   ├── aggregation.go              # 通用聚合框架（宽恕期 + 后台静默补全）
+│   ├── aggregation_policy.go       # 上游聚合开关策略（只读配置、即时生效）
 │   ├── media_items.go              # 媒体条目查询（多上游扇出合并）
 │   ├── media_resume.go             # "继续观看"接口代理与多上游合并
 │   ├── media_nextup.go             # "接下来观看"接口代理与多上游合并
@@ -909,6 +916,7 @@ Emby-In-One/
 │   ├── user_filter.go              # 本地用户态筛选（IsFavorite/IsPlayed/IsResumable）
 │   ├── series_userdata.go          # 系列级观看历史隔离（Resume/NextUp）
 │   ├── session_userdata.go         # Sessions/Playing 进度上报
+│   ├── session_cleanup.go          # PlayingItems 会话槽释放（不经过聚合过滤）
 │   ├── watch_store.go              # 每用户观看进度存储与持久化
 │   ├── playback_limiter.go         # 并发播放数限制（心跳超时自动释放）
 │   ├── login_limiter.go            # 登录失败限流（按 IP；容量满时逐出最旧记录）
@@ -928,6 +936,9 @@ Emby-In-One/
 │   ├── scrypt_local.go             # 管理员密码 scrypt 加密
 │   ├── sqlite_cgo.go               # CGO 嵌入式 SQLite 编译与底层绑定
 │   ├── upstream.go                 # 上游连接池 & 并发请求编排
+│   ├── upstream_outbound.go        # 出站请求头构造（身份注入、超时、重定向策略）
+│   ├── upstream_resident_identity.go  # 常驻身份快照应用到出站请求（spoofClient: resident）
+│   ├── upstream_ua_updates.go      # UA 变更的定向重连作业（prepare/publish/reconnect）
 │   ├── upstream_auth_state.go      # 上游认证状态一致性快照
 │   ├── outbound_identity.go        # 出站身份载体改写与命名
 │   ├── outbound_identity_policy.go # 出站认证模式与身份规则
@@ -954,7 +965,7 @@ Emby-In-One/
 │   │   └── ui.css                  #   Web 客户端样式
 │   └── vendor/                     # 自托管前端依赖：Vue、lucide、Tailwind 产物、Inter 字体；
 │                                   # web/ 下为 libmedia 播放器、JASSUB 字幕引擎与 Noto Sans SC 字体
-├── tests/                          # Node 前端行为测试（node --test，10 个文件 55 项）
+├── tests/                          # Node 前端行为测试（node --test，10 个文件 67 项）
 │   ├── web-ui-harness.cjs          #   共享 VM harness（Vue 桩，按 web.html 顺序加载脚本）
 │   ├── make-web-fixtures.py        #   ffmpeg 合成样本生成（样本不入发行资源）
 │   └── *.test.cjs                  #   data / ui / player / player-ui / subtitles / mse-seek /
