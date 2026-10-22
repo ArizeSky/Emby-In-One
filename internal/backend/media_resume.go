@@ -98,7 +98,7 @@ func (a *App) handleLocalResume(w http.ResponseWriter, r *http.Request, reqCtx *
 		if len(candidates) >= limit {
 			break
 		}
-		if offset+batchSize >= localFilterScanLimit {
+		if offset+batchSize >= localFilterScanLimit && len(page) == batchSize {
 			truncated = true
 		}
 	}

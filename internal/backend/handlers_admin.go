@@ -106,6 +106,7 @@ func (a *App) handleAdminUpstreamList(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]map[string]any, 0, len(cfg.Upstream))
 	uaSnapshot := a.UALibrary.Snapshot()
+	uaLibraryUnavailable := a.UALibrary == nil || !a.UALibrary.Available()
 	residentByID := make(map[string]ResidentUA, len(uaSnapshot.Resident))
 	for _, resident := range uaSnapshot.Resident {
 		residentByID[resident.ID] = resident
@@ -133,7 +134,7 @@ func (a *App) handleAdminUpstreamList(w http.ResponseWriter, r *http.Request) {
 				uaAgeKnown = known
 				uaIsOld = old
 				uaIdentityCapturedAt = resident.IdentityCapturedAt.Format(time.RFC3339)
-			} else {
+			} else if !uaLibraryUnavailable {
 				uaBindingMissing = true
 			}
 		}
@@ -167,6 +168,7 @@ func (a *App) handleAdminUpstreamList(w http.ResponseWriter, r *http.Request) {
 			"uaAgeKnown":           uaAgeKnown,
 			"uaIdentityCapturedAt": uaIdentityCapturedAt,
 			"uaBindingMissing":     uaBindingMissing,
+			"uaLibraryUnavailable": uaLibraryUnavailable,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -396,7 +398,7 @@ func (a *App) handleAdminUpstreamReorder(w http.ResponseWriter, r *http.Request)
 	reordered = append(reordered, item)
 	reordered = append(reordered, nextCfg.Upstream[body.ToIndex:]...)
 	nextCfg.Upstream = reordered
-	if err := a.commitConfig(nextCfg); err != nil {
+	if err := a.commitConfigSettingsOnly(nextCfg); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
@@ -417,7 +419,7 @@ func (a *App) handleAdminUpstreamDelete(w http.ResponseWriter, r *http.Request) 
 	nextCfg.Upstream = append(nextCfg.Upstream, cfg.Upstream[:index]...)
 	nextCfg.Upstream = append(nextCfg.Upstream, cfg.Upstream[index+1:]...)
 
-	if err := a.commitConfig(nextCfg); err != nil {
+	if err := a.commitConfigSettingsOnly(nextCfg); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}

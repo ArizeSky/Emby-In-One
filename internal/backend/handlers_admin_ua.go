@@ -2,6 +2,7 @@ package backend
 
 import (
 	"errors"
+	"io"
 	"net/http"
 	"time"
 )
@@ -233,8 +234,14 @@ func (a *App) handleAdminUAResidentDelete(w http.ResponseWriter, r *http.Request
 		ExpectedRevision uint64 `json:"expectedRevision"`
 	}
 	if err := decodeJSONBody(r, &body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "Invalid request body"})
-		return
+		// An empty DELETE body is not a malformed request: treat it as "no
+		// revision supplied". Revision 0 never matches a stored record, so the
+		// request still fails as a conflict instead of a 400 before the
+		// record is even looked up.
+		if !errors.Is(err, io.EOF) {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "Invalid request body"})
+			return
+		}
 	}
 	cfg := a.ConfigStore.Snapshot()
 	bound := a.boundServersForUA(cfg, id)

@@ -85,10 +85,6 @@ func (a *App) resolveRouteID(id string) *routeResolution {
 }
 
 // collectAllowedInstances returns the online instances of an item that the
-// current user may access. ID mappings are global, so an item's OtherInstances
-// can reference upstream servers the user has no permission for; those are
-// dropped here so no handler forwards a request to them.
-// collectAllowedInstances returns the online instances of an item that the
 // current user may access and whose aggregation switch is on. ID mappings are
 // global, so an item's OtherInstances can reference upstream servers the user
 // has no permission for, or that an administrator paused; both are dropped here
