@@ -19,6 +19,7 @@ Based on Go language, it implements a multi-server Emby aggregation proxy — me
 - [Features Overview](#features-overview)
 - [Built-in Web Client](#built-in-web-client)
 - [Quick Installation](#quick-installation)
+- [Reverse Proxy (Nginx)](#reverse-proxy-nginx)
 - [System Requirements](#system-requirements)
 - [Configuration Reference](#configuration-reference)
 - [Multi-User Management](#multi-user-management)
@@ -65,6 +66,8 @@ Based on Go language, it implements a multi-server Emby aggregation proxy — me
 ## Built-in Web Client
 
 Open `/web/` and sign in with a regular user created by the administrator. Admin accounts belong to `/admin/` and cannot sign in to the Web client. Libraries, search, seasons, source selection and watch progress follow the signed-in user's permissions.
+
+The root path `/` is a landing page offering two entry buttons — **Web Client** (`/web/`) and **Admin Panel** (`/admin/`) — pick as needed; it is plain static HTML/CSS with no token, no auto-login, and no extra build assets.
 
 V1.4.4-rc2 rebuilds the desktop interface: a split sign-in screen, a 216 px desktop sidebar (Home / Favorites / Search), a home Hero with a "Continue watching · All" entry, library grid/list switching with paging, per-season detail plus version cards, and grouped search with recent searches. Home adds one bounded Resume request; everything else keeps the existing backend endpoints and authentication.
 
@@ -168,6 +171,115 @@ go run ./cmd/emby-in-one
 **Default Access URLs**:
 - Emby Client Connection Address: `http://Server_IP:8096`
 - Admin Panel: `http://Server_IP:8096/admin`
+
+---
+
+## Reverse Proxy (Nginx)
+
+This project itself listens on `8096` (HTTP). In production, place it behind Nginx and let Nginx terminate TLS and forward. Below is a complete, ready-to-use configuration.
+
+### 1. Enable `trustProxy` in the backend first
+
+Behind Nginx, the real client IP can only be obtained from `X-Real-IP` / `X-Forwarded-For`; the server address returned by `/System/Info/Public` depends on `X-Forwarded-Proto` / `X-Forwarded-Host`. **Only when `trustProxy: true` does the backend trust these headers**; otherwise login rate limiting is computed from Nginx's IP (all visitors behind the same IP share the quota), and the external address falls back to the internal Host.
+
+`config/config.yaml`:
+
+```yaml
+server:
+  port: 8096
+  trustProxy: true
+```
+
+> Security prerequisite: enable `trustProxy` only when "the backend can be reached solely by your own Nginx". If `8096` is exposed directly to the public internet, anyone can forge `X-Real-IP` to bypass login rate limiting.
+
+### 2. Nginx configuration
+
+`/etc/nginx/conf.d/emby-in-one.conf` (in the `http {}` context, which `conf.d` is by default):
+
+```nginx
+upstream emby_in_one {
+    server 127.0.0.1:8096;
+    keepalive 32;
+}
+
+# HTTP -> HTTPS
+server {
+    listen 80;
+    listen [::]:80;
+    server_name media.example.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;                    # nginx < 1.25.1: change to: listen 443 ssl http2;
+    server_name media.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/media.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/media.example.com/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+    ssl_session_cache   shared:SSL:10m;
+
+    # Request body: the backend itself limits API requests to 2 MiB; leave headroom so Nginx does not return 413 first
+    client_max_body_size 16m;
+    # Emby token / UA headers are long
+    large_client_header_buffers 4 16k;
+
+    # ---- Forward to Emby-In-One ----
+    proxy_http_version 1.1;
+    proxy_set_header Host              $host;
+    proxy_set_header X-Real-IP         $remote_addr;
+    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Host  $host;
+    # Empty Connection enables upstream keepalive (backend has no WebSocket, no Upgrade needed)
+    proxy_set_header Connection        "";
+
+    # Long playback: relax timeouts
+    proxy_connect_timeout 60s;
+    proxy_send_timeout    3600s;
+    proxy_read_timeout    3600s;
+    send_timeout          3600s;
+
+    # Do not buffer or spool media streams: send as received, ensuring seek and long playback
+    proxy_buffering         off;
+    proxy_request_buffering off;
+    proxy_max_temp_file_size 0;
+
+    # Pass through Range / If-Range (Nginx forwards client headers by default; written out explicitly for clarity)
+    proxy_set_header Range    $http_range;
+    proxy_set_header If-Range $http_if_range;
+
+    # ⚠ Never hide the following response headers the backend sets for /web/, or the WASM player's
+    #   SharedArrayBuffer (multi-threaded decoding) will break:
+    #     Cross-Origin-Opener-Policy: same-origin
+    #     Cross-Origin-Embedder-Policy: require-corp
+    #   Do not configure proxy_hide_header Cross-Origin-*.
+
+    location / {
+        proxy_pass http://emby_in_one;
+    }
+}
+```
+
+Replace `media.example.com` and the certificate paths, then reload:
+
+```bash
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+Then visit `https://media.example.com/web` (Web client) and `https://media.example.com/admin` (admin panel).
+
+### 3. Key points
+
+- **HTTPS is required**: the `/web` player relies on `SharedArrayBuffer`, which is only available in a secure context (HTTPS or localhost); a plain HTTP deployment degrades WASM multi-threaded decoding.
+- **Do not strip COOP/COEP**: these two headers are set by the backend for `/web/` and are a prerequisite for `SharedArrayBuffer`; Nginx passes them through by default — just do not add `proxy_hide_header`.
+- **Streaming must disable buffering**: `proxy_buffering off` + a large `proxy_read_timeout` keep HLS/large direct files flowing as received, so seeking and long playback are not interrupted.
+- **`trustProxy` and rate limiting**: when enabled, login rate limiting is computed from the real client IP; when disabled, all requests through Nginx share a single IP quota.
+- **WebSocket**: the backend currently does not implement WebSocket, so real-time push / remote-control features degrade for Emby clients through this proxy; no extra Upgrade configuration is needed on the Nginx side.
+- **HTTP only (no TLS)**: if you really want no TLS, remove the 80→443 redirect, change the `listen 443 ssl...` server block to `listen 80;` and drop the `ssl_*` directives; but you lose WASM multi-threading (see above).
 
 ---
 
@@ -584,13 +696,15 @@ Access `http://your-ip:8096/admin`, logging in with the admin credentials from t
 | Page | Functions |
 |------|-----------|
 | **System Overview** | Online server count, ID mapping count, storage engine (SQLite) |
-| **Upstream Nodes** | Add / edit / delete / reconnect servers, drag-and-drop ordering; Supports configuring maximum concurrent playback (`maxConcurrent`) |
+| **Upstream Nodes** | Add / edit / delete / reconnect servers, drag-and-drop ordering; Supports configuring maximum concurrent playback (`maxConcurrent`); each row has an aggregation toggle |
 | **User Mgmt** | Create, edit, enable/disable, delete regular users; Visually configure accessible servers |
 | **Network Proxies** | HTTP/HTTPS proxy pool management, supports one-click connectivity testing |
 | **Global Settings** | System name, default playback mode, admin account, timeout & grace period configuration |
 | **Runtime Logs** | Real-time log viewing, supports level filtering (ERROR/WARN/INFO/DEBUG), keyword search, downloading raw log files, and clearing logs |
 
 > The admin panel sidebar displays the current running version number. For adding/editing `spoofClient: passthrough` upstreams (password or API key), if there is no captured client identity available, the admin API will still save the configuration but return a warning, keeping the upstream as offline until the admin logs in once with a real client and triggers automatic retry; a brand-new deployment can also switch to `custom` mode and define the identity explicitly.
+
+**Upstream aggregation switch**: each row in the upstream node list has an aggregation toggle (keyboard accessible). When off, the server keeps its configuration, online checks, manual reconnect, UA binding and history, but no longer participates in content aggregation for `/web` and Emby clients (libraries, search, latest, resume, next-up, cross-server copies, playback version lists, etc.), and admin content access is equally restricted; already-started playback progress/stop, `PlayingItems` delete and transcoding cleanup still work under authorization only. The switch takes effect immediately — no restart, no re-login, no full upstream reconnect. The persisted field is `aggregationDisabled` (default / `false` means aggregation is on), bound to the persistent server ID, unaffected by reordering or renaming.
 
 ### Admin API
 
@@ -604,6 +718,7 @@ All APIs require authentication (`X-Emby-Token` header or `api_key` query parame
 | PUT | `/admin/api/upstream/:index` | Modify upstream server |
 | DELETE | `/admin/api/upstream/:index` | Delete upstream server (auto-cleans ID mappings) |
 | POST | `/admin/api/upstream/:index/reconnect` | Reconnect upstream server |
+| PATCH | `/admin/api/upstream/:id/aggregation` | Toggle upstream aggregation for that server |
 | GET | `/admin/api/ua` | List recent captures, resident UAs, and server bindings |
 | POST | `/admin/api/ua/resident` | Save a recent capture as a resident UA |
 | PATCH | `/admin/api/ua/resident/:id` | Rename a resident UA |
