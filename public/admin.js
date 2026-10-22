@@ -8,6 +8,7 @@ createApp({
       currentPage: 'dashboard', pages: [
         {id:'dashboard', name:'系统概览', icon:'layout-dashboard'},
         {id:'servers', name:'上游节点', icon:'server'},
+        {id:'ua', name:'UA 管理', icon:'fingerprint'},
         {id:'users', name:'用户管理', icon:'users'},
         {id:'proxies', name:'网络代理', icon:'shield'},
         {id:'settings', name:'全局设置', icon:'settings'},
@@ -23,7 +24,10 @@ createApp({
       showProxyModal: false, proxyForm: { name: '', url: '' },
       proxyTestState: { loading: false, result: null },
       userList: [], showUserModal: false, editUserId: null, userForm: { username: '', password: '', enabled: true, allowedServers: [] },
-      userLibraryGroups: [], adminHomeOpen: false, adminLibraryGroups: [], libraryGroupsLoading: false
+      userLibraryGroups: [], adminHomeOpen: false, adminLibraryGroups: [], libraryGroupsLoading: false,
+      uaTab: 'resident', uaRecent: [], uaResident: [], uaServers: [],
+      uaLoading: false, uaError: '', uaDetail: null,
+      uaSaveDialog: null, uaReplaceDialog: null, uaAssignmentDialog: null, uaPending: {},
     };
   },
   computed: { pageTitle() { return this.pages.find(p => p.id === this.currentPage)?.name || '管理面板'; },
@@ -54,8 +58,9 @@ createApp({
       const r = await fetch(path, { ...opts, headers: h });
       if(r.status === 401) { this.logout(); throw new Error('Unauthorized'); }
       if(r.status === 204 || r.headers.get('content-length') === '0') return { success: true };
-      const data = await r.json();
-      if(!r.ok) throw new Error(data.error || data.message || ('HTTP ' + r.status));
+      let data = {};
+      try { data = await r.json(); } catch(e) {}
+      if(!r.ok) { const err = new Error(data.error || data.message || ('HTTP ' + r.status)); err.status = r.status; err.data = data; throw err; }
       return data;
     },
     async checkAuth() { try { const s = await this.api('/admin/api/status'); if(!s || s.error) { this.logout(); return; } this.isLoggedIn = true; this.refresh(); this.refreshClientInfo(); } catch(e) { /* api() already logs out on 401; a transient failure (server restart, network blip) keeps the stored token so a refresh can retry */ } },
@@ -86,10 +91,11 @@ createApp({
       if(this.currentPage === 'proxies') this.refreshProxies(signal);
       if(this.currentPage === 'settings') this.refreshSettings(signal);
       if(this.currentPage === 'logs') this.refreshLogs(signal);
+      if(this.currentPage === 'ua') this.refreshUAs(signal);
     },
     async refreshDashboard(signal) { try { this.stats = await this.api('/admin/api/status', { signal }); } catch(e) { if (this.isAbort(e)) return; } this.refreshClientInfo(signal); this.$nextTick(()=>lucide.createIcons()); },
     async refreshClientInfo(signal) { try { this.clientInfo = await this.api('/admin/api/client-info', { signal }); } catch(e) { if (this.isAbort(e)) return; } this.$nextTick(()=>lucide.createIcons()); },
-    async refreshServers(signal) { try { this.upstreamList = await this.api('/admin/api/upstream', { signal }); } catch(e) { if (!this.isAbort(e)) this.upstreamList = []; } try { await this.refreshProxies(signal); } catch(e) {} this.$nextTick(()=>lucide.createIcons()); },
+    async refreshServers(signal) { try { this.upstreamList = await this.api('/admin/api/upstream', { signal }); } catch(e) { if (!this.isAbort(e)) this.upstreamList = []; } try { await this.refreshProxies(signal); } catch(e) {} try { const ua = await this.api('/admin/api/ua', { signal }); this.uaResident = ua.resident || []; this.uaServers = ua.servers || []; } catch(e) {} this.$nextTick(()=>lucide.createIcons()); },
     async refreshProxies(signal) { try { this.proxyList = await this.api('/admin/api/proxies', { signal }); } catch(e) { if (!this.isAbort(e)) this.proxyList = []; } this.$nextTick(()=>lucide.createIcons()); },
     async refreshSettings(signal) { try { const s = await this.api('/admin/api/settings', { signal }); this.settings = { ...this.settings, ...s, adminPassword: '', currentPassword: '', timeouts: s.timeouts || this.settings.timeouts }; this.adminUsernameOriginal = s.adminUsername || ''; } catch(e) { if (this.isAbort(e)) return; } },
     async saveSettings() {
@@ -120,13 +126,19 @@ createApp({
     },
     async clearLogs() { if(!confirm('确认清空所有日志？')) return; try { await this.api('/admin/api/logs', { method:'DELETE' }); this.logs = []; } catch(e) { alert('清空失败：' + (e.message || '未知错误')); } },
     getProxyName(id) { const p = this.proxyList.find(x => x.id === id); return p ? p.name : '不使用'; },
-    openAddServer() { this.editID = null; this.editIndex = null; this.serverForm = { name:'', url:'', streamingUrlsText:'', authType:'password', spoofClient:'passthrough', followRedirects:true, proxyId:null, priorityMetadata:false, maxConcurrent:0, customUserAgent:'', customClient:'', customClientVersion:'', customDeviceName:'', customDeviceId:'' }; this.showModal = true; },
-    editServer(s) { this.editID = s.id || s.index; this.editIndex = s.index; this.serverForm = { ...s, password:'', apiKey:'', maxConcurrent: s.maxConcurrent || 0, streamingUrlsText: (s.streamingUrls && s.streamingUrls.length ? s.streamingUrls : (s.streamingUrl ? [s.streamingUrl] : [])).join('\n'), customUserAgent: s.customUserAgent || '', customClient: s.customClient || '', customClientVersion: s.customClientVersion || '', customDeviceName: s.customDeviceName || '', customDeviceId: s.customDeviceId || '' }; this.showModal = true; },
+    openAddServer() { this.editID = null; this.editIndex = null; this.serverForm = { name:'', url:'', streamingUrlsText:'', authType:'password', spoofClient:'passthrough', uaProfileId:'', expectedIdentityBinding:null, followRedirects:true, proxyId:null, priorityMetadata:false, maxConcurrent:0, customUserAgent:'', customClient:'', customClientVersion:'', customDeviceName:'', customDeviceId:'' }; this.showModal = true; this.refreshServerUAOptions(); },
+    editServer(s) { this.editID = s.id || s.index; this.editIndex = s.index; this.serverForm = { ...s, password:'', apiKey:'', maxConcurrent: s.maxConcurrent || 0, uaProfileId: s.uaProfileId || '', expectedIdentityBinding: { spoofClient: s.spoofClient, uaProfileId: s.uaProfileId || '' }, streamingUrlsText: (s.streamingUrls && s.streamingUrls.length ? s.streamingUrls : (s.streamingUrl ? [s.streamingUrl] : [])).join('\n'), customUserAgent: s.customUserAgent || '', customClient: s.customClient || '', customClientVersion: s.customClientVersion || '', customDeviceName: s.customDeviceName || '', customDeviceId: s.customDeviceId || '' }; this.showModal = true; this.refreshServerUAOptions(); },
     async saveServer() {
       const target = this.editID !== null && this.editID !== undefined ? this.editID : this.editIndex;
       const m = target === null || target === undefined ? 'POST' : 'PUT';
       const payload = { ...this.serverForm, streamingUrls: (this.serverForm.streamingUrlsText || '').split(/[\n,]/).map(x => x.trim()).filter(x => x !== '') };
       delete payload.streamingUrlsText;
+      payload.uaProfileId = this.serverForm.uaProfileId || '';
+      if (payload.spoofClient === 'resident') {
+        const resident = (this.uaResident || []).find(r => r.id === payload.uaProfileId);
+        if (!resident) { alert('请选择一个常驻 UA'); return; }
+        payload.uaExpectedProfileRevision = resident.revision;
+      }
       try {
         const res = await this.api('/admin/api/upstream' + (target===null||target===undefined?'':'/'+target), { method:m, body:JSON.stringify(payload) });
         if (res.warning) { alert('提示：' + res.warning); }
@@ -134,7 +146,8 @@ createApp({
         await this.refreshServers();
         await this.refreshDashboard();
       } catch (e) {
-        alert('保存失败：' + (e.message || '未知错误'));
+        if (e.status === 409) { alert('保存冲突：' + (e.message || '数据已变化，请刷新后重试')); }
+        else { alert('保存失败：' + (e.message || '未知错误')); }
       }
     },
     async deleteServer(id) { if(!confirm('删除服务器？')) return; try { await this.api('/admin/api/upstream/'+id, { method:'DELETE' }); await this.refreshServers(); } catch(e) { alert('删除失败：' + (e.message || '未知错误')); } },
@@ -283,6 +296,71 @@ createApp({
       } catch(e) { alert('保存失败：' + (e.message || '未知错误')); }
     },
     async toggleUser(u) { try { const enabled = !u.enabled; await this.api('/admin/api/users/' + u.id, { method:'PUT', body:JSON.stringify({enabled}) }); await this.refreshUsers(); } catch(e) { alert('操作失败：' + (e.message || '未知错误')); } },
-    async deleteUser(id) { if(!confirm('删除用户？该操作不可撤销。')) return; try { await this.api('/admin/api/users/' + id, { method:'DELETE' }); await this.refreshUsers(); } catch(e) { alert('删除失败：' + (e.message || '未知错误')); } }
+    async deleteUser(id) { if(!confirm('删除用户？该操作不可撤销。')) return; try { await this.api('/admin/api/users/' + id, { method:'DELETE' }); await this.refreshUsers(); } catch(e) { alert('删除失败：' + (e.message || '未知错误')); } },
+    async refreshServerUAOptions() { try { const ua = await this.api('/admin/api/ua'); this.uaResident = ua.resident || []; this.uaServers = ua.servers || []; } catch(e) {} },
+    async refreshUAs(signal) {
+      this.uaLoading = true; this.uaError = '';
+      try {
+        const data = await this.api('/admin/api/ua', { signal });
+        this.uaRecent = data.recent || []; this.uaResident = data.resident || []; this.uaServers = data.servers || [];
+      } catch(e) {
+        if (this.isAbort(e)) return;
+        this.uaError = e.message || '加载失败'; this.uaRecent = []; this.uaResident = []; this.uaServers = [];
+      } finally { this.uaLoading = false; this.$nextTick(()=>lucide.createIcons()); }
+    },
+    formatUATime(v) { if(!v) return '—'; const d = new Date(v); return isNaN(d.getTime()) ? '—' : d.toLocaleString(); },
+    uaAgeText(item) { if(!item || !item.ageKnown) return '采集时间未知，建议重新采集'; return '采集于 ' + item.ageDays + ' 天前'; },
+    uaSummary(item) { const ua = (item && item.userAgent) || ''; return ua.length > 60 ? ua.slice(0, 60) + '…' : ua; },
+    uaClientLabel(item) { if(!item) return '未知客户端'; const parts = []; if(item.client) parts.push(item.client); if(item.clientVersion) parts.push(item.clientVersion); return parts.join(' ') || '未知客户端'; },
+    boundServerNames(servers) { return (servers || []).map(s => s.name).join('、'); },
+    residentOptionLabel(r) { return r.name + ' · ' + this.uaClientLabel(r) + (r.isOld ? '（采集较早）' : ''); },
+    selectedResidentIsOld() { if(this.serverForm.spoofClient !== 'resident') return false; const r = (this.uaResident || []).find(x => x.id === this.serverForm.uaProfileId); return !!(r && r.isOld); },
+    openUADetail(item) { this.uaDetail = item; this.$nextTick(()=>lucide.createIcons()); },
+    async copyText(text) { if(!text) return; try { await navigator.clipboard.writeText(text); } catch(e) {} },
+    openSaveResident(recent) { this.uaSaveDialog = { rename: false, recentId: recent.id, name: this.uaClientLabel(recent) }; },
+    openRenameResident(r) { this.uaSaveDialog = { rename: true, id: r.id, name: r.name, expectedRevision: r.revision }; },
+    async saveRecentUA() {
+      if(!this.uaSaveDialog) return; const d = this.uaSaveDialog; this.uaPending.save = true;
+      try { const res = await this.api('/admin/api/ua/resident', { method:'POST', body: JSON.stringify({ recentId: d.recentId, name: d.name }) }); this.uaSaveDialog = null; await this.refreshUAs(); if (res.alreadySaved) alert('该身份已存在常驻 UA'); }
+      catch(e) { alert('保存失败：' + e.message); }
+      finally { this.uaPending.save = false; }
+    },
+    async renameResidentUA() {
+      const d = this.uaSaveDialog; if(!d || !d.rename) return; this.uaPending.save = true;
+      try { await this.api('/admin/api/ua/resident/' + d.id, { method:'PATCH', body: JSON.stringify({ name: d.name, expectedRevision: d.expectedRevision }) }); this.uaSaveDialog = null; await this.refreshUAs(); }
+      catch(e) { alert('重命名失败：' + e.message); }
+      finally { this.uaPending.save = false; }
+    },
+    openReplaceResident(r) { this.uaReplaceDialog = { id: r.id, name: r.name, revision: r.revision, recentId: '' }; },
+    async replaceResidentUA() {
+      const d = this.uaReplaceDialog; if(!d) return; if(!d.recentId) { alert('请选择一条最近采集'); return; } this.uaPending.replace = true;
+      try { await this.api('/admin/api/ua/resident/' + d.id + '/replace', { method:'POST', body: JSON.stringify({ recentId: d.recentId, expectedRevision: d.revision }) }); this.uaReplaceDialog = null; await this.refreshUAs(); await this.refreshServers(); }
+      catch(e) { alert('更新失败：' + e.message); }
+      finally { this.uaPending.replace = false; }
+    },
+    async deleteResidentUA(r) {
+      if(!confirm('删除常驻 UA「' + r.name + '」？')) return;
+      try { await this.api('/admin/api/ua/resident/' + r.id, { method:'DELETE', body: JSON.stringify({ expectedRevision: r.revision }) }); await this.refreshUAs(); }
+      catch(e) { if (e.status === 409 && e.data && e.data.boundServers) { alert('该常驻 UA 正在被以下服务器引用，无法删除：' + e.data.boundServers.map(s => s.name).join('、')); } else { alert('删除失败：' + e.message); } }
+    },
+    openUAAssignments(r) {
+      const bound = {}; (r.boundServers || []).forEach(s => { bound[s.id] = true; });
+      this.uaAssignmentDialog = { id: r.id, name: r.name, revision: r.revision,
+        rows: (this.uaServers || []).map(s => ({ id: s.id, name: s.name, currentSpoof: s.spoofClient, currentProfile: s.uaProfileId || '', bound: !!bound[s.id], checked: !!bound[s.id] })) };
+    },
+    async saveUAAssignments() {
+      const d = this.uaAssignmentDialog; if(!d) return;
+      const assignServerIds = []; const releaseServerIds = []; const expectedBindings = [];
+      for (const row of d.rows) {
+        expectedBindings.push({ serverId: row.id, spoofClient: row.currentSpoof, uaProfileId: row.currentProfile || '' });
+        if (row.checked && !row.bound) assignServerIds.push(row.id);
+        if (!row.checked && row.bound) releaseServerIds.push(row.id);
+      }
+      if (assignServerIds.length === 0 && releaseServerIds.length === 0) { alert('没有变更'); return; }
+      this.uaPending.assign = true;
+      try { await this.api('/admin/api/ua/resident/' + d.id + '/assignments', { method:'POST', body: JSON.stringify({ assignServerIds, releaseServerIds, expectedProfileRevision: d.revision, expectedBindings }) }); this.uaAssignmentDialog = null; await this.refreshUAs(); await this.refreshServers(); }
+      catch(e) { alert('保存失败：' + e.message); }
+      finally { this.uaPending.assign = false; }
+    }
   }
 }).mount('#app');

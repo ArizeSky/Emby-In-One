@@ -4,7 +4,7 @@
 
 发布日期：2026-10-19
 
-> V1.4.4-rc3 是 V1.4.4-rc2 之后的预发布，聚焦**代码审查修复与工程门禁**：修复授权快照过期、令牌撤销持久化失败、跨主机重定向转发上游凭据三项安全/权限问题，修复 Series 播放乱序与静态资源陈旧缓存两项前端/资源问题，修正安装脚本完整性校验 fail-open，并补齐 `gofmt` 与前端测试的 CI 门禁。**对外接口与配置保持兼容，无升级迁移动作。**
+> V1.4.4-rc3 是 V1.4.4-rc2 之后的预发布，聚焦**代码审查修复与工程门禁**：修复授权快照过期、令牌撤销持久化失败、跨主机重定向转发上游凭据三项安全/权限问题，修复 Series 播放乱序与静态资源陈旧缓存两项前端/资源问题，修正安装脚本完整性校验 fail-open，并补齐 `gofmt` 与前端测试的 CI 门禁。本版还新增 **UA 管理与服务器绑定**（`spoofClient: resident`），支持最近采集、常驻身份与多服务器共用固定身份（详见下方新功能章节）。**对外接口与配置保持兼容，无升级迁移动作。**
 
 ### 安全与权限修复
 
@@ -30,6 +30,22 @@
 ### 验证
 
 - `go build -p 1 ./...`、`go vet -p 1 ./...` 通过；`go test -race -p 1 -parallel 2 -timeout 20m ./...` 通过（无数据竞争）；`node --test tests/*.test.cjs` 55/55；`bash -n` 三个脚本通过。
+
+### 新功能：UA 管理与服务器绑定（`spoofClient: resident`）
+
+新增「UA 管理」页面与 `resident` 客户端身份模式，让多台上游服务器共用一条由管理员维护的固定客户端身份：
+
+- **最近采集**：管理员用真实客户端以 admin 身份登录本代理时，记录最近 10 种完整客户端身份（`User-Agent`、`X-Emby-Client`、`X-Emby-Client-Version`、`X-Emby-Device-Name`、`X-Emby-Device-Id`、`Accept`、`Accept-Language`），按完整指纹去重、按最近采集时间倒序；不按设备 ID、客户端类型或 UA 前缀合并。
+- **常驻身份**：首次采集自动保存一条常驻身份（只执行一次，持久化标记，删除/重启不重置）；之后由管理员在「UA 管理」中保存、重命名、用最近采集更新、删除，并通过「分配」把常驻身份绑定到服务器。
+- **固定出站身份**：`resident` 上游在登录、API、图片、健康检查和流媒体代理中始终使用同一条身份，不受实时请求、Token 缓存、最新采集或重试覆盖；服务器仅保存 `uaProfileId` 引用，绑定关系实时反查。
+- **超过 30 天照常使用**：仅提示建议采集新版 UA，不自动停用、不自动轮换。
+- **删除保护与并发**：被服务器引用的常驻身份禁止删除（返回绑定服务器）；重命名/更新/删除/分配均带 revision 校验，陈旧编辑返回 409；配置写操作统一串行，批量分配先校验后一次性保存，仅重连受影响服务器。
+
+**管理接口**：`GET /admin/api/ua`、`POST /admin/api/ua/resident`、`PATCH /admin/api/ua/resident/{id}`、`POST /admin/api/ua/resident/{id}/replace`、`DELETE /admin/api/ua/resident/{id}`、`POST /admin/api/ua/resident/{id}/assignments`。
+
+**新增/修改文件**：新增 `ua_library.go`、`ua_library_persistence.go`、`ua_library_test.go`、`upstream_resident_identity.go`、`admin_ua_assignments.go`、`handlers_admin_ua.go`；修改 `config.go`、`admin_validation.go`、`handlers_admin.go`、`handlers_user.go`、`healthcheck.go`、`identity.go`、`routes.go`、`server.go`、`upstream.go`、`upstream_outbound.go`、`public/admin.html`、`public/admin.js`、`public/vendor/tailwind.css`、`README.md`。
+
+**验证**：`go build ./...`、`go vet ./...` 通过；`go test ./...` 全绿（含新增 UA 单元/端到端用例）；`npm test` 55/55；`npm run build:panel` 成功；`gofmt`、`git diff --check` 干净。
 ## V1.4.4-rc2
 
 发布日期：2026-09-30

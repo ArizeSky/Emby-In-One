@@ -169,21 +169,16 @@ func TestHasCapturedHeadersViaTokenEntry(t *testing.T) {
 		t.Fatal("should have no captured headers initially")
 	}
 
-	// SetCaptured for a token alone is NOT enough — need latestCaptured or lastSuccess
+	// A real token capture must also publish the global fallback immediately.
 	svc.SetCaptured("some-token", http.Header{
 		"X-Emby-Client":    {"Infuse"},
 		"X-Emby-Device-Id": {"device-2"},
 	})
-	if svc.HasCapturedHeaders(serverKey) {
-		t.Fatal("token-only entries should not satisfy HasCapturedHeaders")
-	}
-
-	// SaveLatestCapturedHeaders should make it return true
-	svc.SaveLatestCapturedHeaders(http.Header{
-		"X-Emby-Client":    {"Infuse"},
-		"X-Emby-Device-Id": {"device-2"},
-	})
 	if !svc.HasCapturedHeaders(serverKey) {
-		t.Fatal("should detect captured headers via latestCaptured")
+		t.Fatal("real client capture should satisfy HasCapturedHeaders")
+	}
+	resolved := svc.ResolvePassthroughHeadersForServer(nil, "", serverKey)
+	if resolved.Source != "captured-latest" || resolved.Headers.Get("X-Emby-Device-Id") != "device-2" {
+		t.Fatalf("background identity = %#v, want the captured client", resolved)
 	}
 }

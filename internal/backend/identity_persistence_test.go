@@ -142,8 +142,8 @@ func TestResolvePassthroughHeadersSupportsFiveLevelChain(t *testing.T) {
 		}
 
 		source, headers = callResolvePassthroughHeadersForServer(t, app.Identity, http.Header{}, "missing-token", stablePassthroughKey(upstreamB.URL, "B"))
-		if source != "captured-latest" || headers.Get("X-Emby-Client") != "Latest Client" {
-			t.Fatalf("captured-latest resolution = (%q, %q), want captured-latest / Latest Client", source, headers.Get("X-Emby-Client"))
+		if source != "captured-latest" || headers.Get("X-Emby-Client") != "Token Client" {
+			t.Fatalf("captured-latest resolution = (%q, %q), want captured-latest / Token Client", source, headers.Get("X-Emby-Client"))
 		}
 
 		empty := NewClientIdentityService()

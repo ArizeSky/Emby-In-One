@@ -152,6 +152,63 @@
       </table>
     </div>
 
+    <!-- UA Management -->
+    <div v-if="currentPage === 'ua'" class="space-y-4">
+      <div class="flex items-center space-x-1 bg-white border rounded-lg p-1 w-max">
+        <button @click="uaTab = 'resident'" :class="uaTab === 'resident' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-100'" class="px-4 py-1.5 rounded text-sm font-bold">常驻 UA</button>
+        <button @click="uaTab = 'recent'" :class="uaTab === 'recent' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-100'" class="px-4 py-1.5 rounded text-sm font-bold">最近采集</button>
+      </div>
+      <div v-if="uaLoading" class="card p-8 text-center text-slate-400 italic">加载中...</div>
+      <div v-else-if="uaError" class="card p-8 text-center text-red-500">{{ uaError }}</div>
+      <template v-else>
+        <div v-if="uaTab === 'resident'" class="space-y-4">
+          <div v-if="uaResident.length === 0" class="card p-12 text-center text-slate-400 italic">暂无常驻 UA。首次用真实客户端以管理员账号登录本代理后会自动生成一条，或在「最近采集」中手动保存。</div>
+          <div v-else class="card overflow-x-auto">
+            <table class="w-full min-w-[820px] text-left border-collapse">
+              <thead class="bg-slate-50 text-slate-500 text-xs font-semibold uppercase"><tr><th class="px-4 py-3">名称</th><th class="px-4 py-3">客户端/设备</th><th class="px-4 py-3">UA 摘要</th><th class="px-4 py-3">采集时间</th><th class="px-4 py-3">绑定服务器</th><th class="px-4 py-3">操作</th></tr></thead>
+              <tbody class="divide-y divide-slate-100">
+                <tr v-for="r in uaResident" :key="r.id" class="hover:bg-slate-50/50">
+                  <td class="px-4 py-3 font-medium">{{ r.name }} <span v-if="r.isOld" class="ml-1 text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded px-1">较旧</span></td>
+                  <td class="px-4 py-3 text-sm text-slate-600">{{ uaClientLabel(r) }}<div class="text-xs text-slate-400">{{ r.deviceName || '—' }}</div></td>
+                  <td class="px-4 py-3 text-xs font-mono text-slate-500 max-w-[220px] truncate" :title="r.userAgent">{{ uaSummary(r) }}</td>
+                  <td class="px-4 py-3 text-sm text-slate-500">{{ formatUATime(r.identityCapturedAt) }}<div class="text-xs text-slate-400">{{ uaAgeText(r) }}</div></td>
+                  <td class="px-4 py-3 text-sm"><span v-if="(r.boundServers || []).length">{{ boundServerNames(r.boundServers) }}</span><span v-else class="text-slate-400">未绑定</span></td>
+                  <td class="px-4 py-3"><div class="flex space-x-1">
+                    <button @click="openUADetail(r)" class="p-2 text-slate-400 hover:text-blue-600" title="详情"><i data-lucide="eye" class="w-4 h-4"></i></button>
+                    <button @click="openRenameResident(r)" class="p-2 text-slate-400 hover:text-blue-600" title="重命名"><i data-lucide="edit-3" class="w-4 h-4"></i></button>
+                    <button @click="openUAAssignments(r)" class="p-2 text-slate-400 hover:text-green-600" title="分配"><i data-lucide="share-2" class="w-4 h-4"></i></button>
+                    <button @click="openReplaceResident(r)" class="p-2 text-slate-400 hover:text-amber-600" title="更新身份"><i data-lucide="refresh-cw" class="w-4 h-4"></i></button>
+                    <button @click="deleteResidentUA(r)" class="p-2 text-slate-400 hover:text-red-600" title="删除"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
+                  </div></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div v-if="uaResident.some(r => r.isOld)" class="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3">部分常驻 UA 采集已超过 30 天，版本可能较旧。建议采集最新客户端 UA，减少旧版本特征。</div>
+        </div>
+        <div v-if="uaTab === 'recent'" class="space-y-4">
+          <div v-if="uaRecent.length === 0" class="card p-12 text-center text-slate-400 italic">暂未采集到客户端身份。请用真实 Emby 客户端以管理员账号登录本代理。</div>
+          <div v-else class="card overflow-x-auto">
+            <table class="w-full min-w-[720px] text-left border-collapse">
+              <thead class="bg-slate-50 text-slate-500 text-xs font-semibold uppercase"><tr><th class="px-4 py-3">客户端/设备</th><th class="px-4 py-3">UA 摘要</th><th class="px-4 py-3">最近采集</th><th class="px-4 py-3">是否常驻</th><th class="px-4 py-3">操作</th></tr></thead>
+              <tbody class="divide-y divide-slate-100">
+                <tr v-for="rec in uaRecent" :key="rec.id" class="hover:bg-slate-50/50">
+                  <td class="px-4 py-3 text-sm text-slate-600">{{ uaClientLabel(rec) }}<div class="text-xs text-slate-400">{{ rec.deviceName || '—' }}</div></td>
+                  <td class="px-4 py-3 text-xs font-mono text-slate-500 max-w-[220px] truncate" :title="rec.userAgent">{{ uaSummary(rec) }}</td>
+                  <td class="px-4 py-3 text-sm text-slate-500">{{ formatUATime(rec.lastCapturedAt) }}</td>
+                  <td class="px-4 py-3 text-sm"><span v-if="rec.alreadyResidentId" class="text-green-600 font-bold">已常驻</span><span v-else class="text-slate-400">未常驻</span></td>
+                  <td class="px-4 py-3"><div class="flex space-x-1">
+                    <button @click="openUADetail(rec)" class="p-2 text-slate-400 hover:text-blue-600" title="详情"><i data-lucide="eye" class="w-4 h-4"></i></button>
+                    <button @click="openSaveResident(rec)" class="p-2 text-slate-400 hover:text-green-600" title="保存为常驻"><i data-lucide="bookmark-plus" class="w-4 h-4"></i></button>
+                  </div></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </template>
+    </div>
+
     <!-- Proxies -->
     <div v-if="currentPage === 'proxies'" class="space-y-6">
       <div v-if="proxyList.length === 0" class="card p-12 text-center text-slate-400 italic">暂未添加网络代理</div>
@@ -253,7 +310,17 @@
           <div class="sm:col-span-2"><label class="text-sm font-medium">推流地址（每行一个，可留空）</label><textarea v-model="serverForm.streamingUrlsText" rows="2" placeholder="https://stream.example.com&#10;https://backup.example.com（备用线路）" class="w-full px-4 py-2 border rounded-lg outline-none font-mono text-sm"></textarea><p class="mt-1 text-xs text-slate-400">第 1 个为主线路，其余为备用线路；留空 = 与地址相同。所有线路必须指向同一台 Emby 服务器。代理模式会在主线路连接失败时自动切换备用线路；直连模式按线路健康状态选择。</p></div>
           <div><label class="text-sm font-medium">认证方式</label><select v-model="serverForm.authType" class="w-full px-4 py-2 border rounded-lg outline-none"><option value="password">用户名/密码</option><option value="apiKey">API Key</option></select></div>
           <div><label class="text-sm font-medium">播放模式</label><select v-model="serverForm.playbackMode" class="w-full px-4 py-2 border rounded-lg outline-none"><option value="proxy">代理模式</option><option value="redirect">直连模式</option></select><p v-if="serverForm.playbackMode === 'redirect'" class="mt-1 text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded p-2">⚠ <b>直连播放模式的安全风险：</b>直连播放模式会把上游账号凭据写入 302 跳转链接，<b>任何能播放的用户都可从中提取凭据</b>并绕过本代理直连上游（相当于上游管理员权限）。请为该上游使用<b>专用的受限账号</b>（仅授予必要的媒体库播放权限、不授予管理权限，不要复用上游管理员账号），或改用代理模式。</p></div>
-          <div><label class="text-sm font-medium">客户端身份</label><select v-model="serverForm.spoofClient" class="w-full px-4 py-2 border rounded-lg outline-none"><option value="passthrough">透传真实客户端</option><option value="custom">自定义</option></select><p class="mt-1 text-xs text-slate-400">透传模式使用管理员用真实客户端登录本代理时捕获的身份；尚未捕获时会延迟登录，直到真实客户端登录一次。</p></div>
+          <div><label class="text-sm font-medium">客户端身份</label><select v-model="serverForm.spoofClient" class="w-full px-4 py-2 border rounded-lg outline-none"><option value="passthrough">透传真实客户端</option><option value="custom">自定义</option><option value="resident">常驻 UA</option></select><p class="mt-1 text-xs text-slate-400">透传模式使用管理员用真实客户端登录本代理时捕获的身份；尚未捕获时会延迟登录，直到真实客户端登录一次。常驻 UA 使用 UA 管理页保存的固定身份。</p></div>
+          <div v-if="serverForm.spoofClient === 'resident'" class="sm:col-span-2 border border-blue-100 rounded-xl p-4 bg-blue-50/40">
+            <label class="text-sm font-medium">选择常驻 UA</label>
+            <select v-model="serverForm.uaProfileId" class="w-full px-4 py-2 border rounded-lg outline-none">
+              <option value="">请选择</option>
+              <option v-for="r in uaResident" :key="r.id" :value="r.id">{{ residentOptionLabel(r) }}</option>
+            </select>
+            <p v-if="!uaResident.length" class="mt-1 text-xs text-red-500">还没有常驻 UA。请先到「UA 管理」保存一条。</p>
+            <p v-else-if="selectedResidentIsOld()" class="mt-1 text-xs text-amber-600">该常驻 UA 采集已超过 30 天，版本可能较旧，建议采集最新客户端 UA。</p>
+            <p v-if="serverForm.playbackMode === 'redirect'" class="mt-1 text-xs text-amber-600">直连模式会把播放地址交给客户端，最终媒体请求由客户端自身发起，代理无法替它强制使用常驻 UA；常驻身份仅作用于代理侧的登录与 API 请求。</p>
+          </div>
           <div><label class="text-sm font-medium">跟随上游重定向</label><select v-model="serverForm.followRedirects" class="w-full px-4 py-2 border rounded-lg outline-none"><option :value="true">跟随（默认）</option><option :value="false">不跟随</option></select><p class="mt-1 text-xs text-slate-400">上游返回 301/302/303/307/308 时是否自动跟到新地址。选择「不跟随」后按上游错误处理，不会把上游的重定向地址交给客户端。</p></div>
           <div><label class="text-sm font-medium">使用网络代理</label><select v-model="serverForm.proxyId" class="w-full px-4 py-2 border rounded-lg outline-none"><option :value="null">不使用</option><option v-for="p in proxyList" :key="p.id" :value="p.id">{{ p.name }}</option></select></div>
           <div class="flex items-center space-x-2 sm:pt-6"><input type="checkbox" v-model="serverForm.priorityMetadata" class="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"><label class="text-sm font-bold text-purple-600">元数据优先</label></div>
@@ -386,6 +453,65 @@
         </div>
       </div>
       <div class="flex justify-end space-x-3 pt-4"><button @click="showProxyModal = false" class="px-6 py-2.5 rounded-xl text-slate-600 hover:bg-slate-100">取消</button><button @click="testProxyModal" :disabled="proxyTestState.loading" class="px-6 py-2.5 rounded-xl border border-blue-300 text-blue-600 hover:bg-blue-50">测试连接</button><button @click="saveProxy" class="btn-primary px-8 py-2.5 rounded-xl font-bold shadow-lg shadow-blue-500/20">添加代理</button></div>
+    </div>
+  </div>
+
+  <!-- UA Detail Modal -->
+  <div v-if="uaDetail" class="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-[500] p-4">
+    <div class="card w-full max-w-lg p-4 md:p-6 space-y-4 max-h-[90vh] overflow-y-auto">
+      <div class="flex justify-between items-center text-xl font-bold"><h3>客户端身份详情</h3><button @click="uaDetail = null" class="text-slate-400"><i data-lucide="x" class="w-6 h-6"></i></button></div>
+      <div class="space-y-2 text-sm">
+        <div><span class="text-slate-400">名称：</span>{{ uaDetail.name || '（最近采集）' }}</div>
+        <div><span class="text-slate-400">客户端：</span>{{ uaClientLabel(uaDetail) }}</div>
+        <div><span class="text-slate-400">设备名称：</span>{{ uaDetail.deviceName || '—' }}</div>
+        <div><span class="text-slate-400">设备 ID：</span><span class="font-mono break-all">{{ uaDetail.deviceId || '—' }}</span></div>
+        <div><span class="text-slate-400">采集时间：</span>{{ formatUATime(uaDetail.identityCapturedAt || uaDetail.lastCapturedAt) }}</div>
+        <div><span class="text-slate-400">User-Agent：</span>
+          <div class="mt-1 flex items-start space-x-2"><span class="font-mono text-xs break-all flex-1">{{ uaDetail.userAgent || '—' }}</span><button @click="copyText(uaDetail.userAgent)" class="text-slate-400 hover:text-blue-600 shrink-0" title="复制"><i data-lucide="copy" class="w-4 h-4"></i></button></div>
+        </div>
+        <div v-if="uaDetail.accept"><span class="text-slate-400">Accept：</span><span class="font-mono text-xs break-all">{{ uaDetail.accept }}</span></div>
+        <div v-if="uaDetail.acceptLanguage"><span class="text-slate-400">Accept-Language：</span><span class="font-mono text-xs break-all">{{ uaDetail.acceptLanguage }}</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- UA Save / Rename Dialog -->
+  <div v-if="uaSaveDialog" class="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-[500] p-4">
+    <div class="card w-full max-w-md p-4 md:p-6 space-y-4">
+      <h3 class="text-xl font-bold">{{ uaSaveDialog.rename ? '重命名常驻 UA' : '保存为常驻 UA' }}</h3>
+      <div><label class="text-sm font-medium">名称</label><input type="text" v-model="uaSaveDialog.name" maxlength="80" class="w-full px-4 py-2 border rounded-lg outline-none"></div>
+      <div class="flex justify-end space-x-3 pt-2"><button @click="uaSaveDialog = null" class="px-5 py-2 rounded-xl text-slate-600 hover:bg-slate-100">取消</button><button @click="uaSaveDialog.rename ? renameResidentUA() : saveRecentUA()" :disabled="uaPending.save" class="btn-primary px-6 py-2 rounded-xl font-bold">保存</button></div>
+    </div>
+  </div>
+
+  <!-- UA Replace Dialog -->
+  <div v-if="uaReplaceDialog" class="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-[500] p-4">
+    <div class="card w-full max-w-md p-4 md:p-6 space-y-4">
+      <h3 class="text-xl font-bold">更新常驻 UA 身份</h3>
+      <p class="text-sm text-slate-500">目标：{{ uaReplaceDialog.name }}。选择一条最近采集替换其身份；引用该常驻 UA 的服务器会使用新身份重连。</p>
+      <div><label class="text-sm font-medium">最近采集</label>
+        <select v-model="uaReplaceDialog.recentId" class="w-full px-4 py-2 border rounded-lg outline-none">
+          <option value="">请选择</option>
+          <option v-for="rec in uaRecent" :key="rec.id" :value="rec.id">{{ uaClientLabel(rec) }} · {{ uaSummary(rec) }}</option>
+        </select>
+      </div>
+      <div class="flex justify-end space-x-3 pt-2"><button @click="uaReplaceDialog = null" class="px-5 py-2 rounded-xl text-slate-600 hover:bg-slate-100">取消</button><button @click="replaceResidentUA()" :disabled="uaPending.replace" class="btn-primary px-6 py-2 rounded-xl font-bold">更新</button></div>
+    </div>
+  </div>
+
+  <!-- UA Assignment Dialog -->
+  <div v-if="uaAssignmentDialog" class="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-[500] p-4">
+    <div class="card w-full max-w-lg p-4 md:p-6 space-y-4 max-h-[90vh] overflow-y-auto">
+      <h3 class="text-xl font-bold">分配常驻 UA：{{ uaAssignmentDialog.name }}</h3>
+      <p class="text-xs text-slate-400">勾选 = 绑定到该常驻 UA；取消勾选原绑定服务器 = 解除并恢复透传真实客户端。</p>
+      <div class="space-y-2 max-h-72 overflow-y-auto">
+        <label v-for="row in uaAssignmentDialog.rows" :key="row.id" class="flex items-center space-x-2 p-2 rounded hover:bg-slate-50">
+          <input type="checkbox" v-model="row.checked" class="w-4 h-4 rounded border-slate-300 text-blue-600">
+          <span class="text-sm">{{ row.name }}</span>
+          <span class="text-xs text-slate-400">当前：{{ row.currentSpoof === 'resident' ? '常驻' : (row.currentSpoof === 'custom' ? '自定义' : '透传') }}</span>
+        </label>
+      </div>
+      <div class="flex justify-end space-x-3 pt-2"><button @click="uaAssignmentDialog = null" class="px-5 py-2 rounded-xl text-slate-600 hover:bg-slate-100">取消</button><button @click="saveUAAssignments()" :disabled="uaPending.assign" class="btn-primary px-6 py-2 rounded-xl font-bold">保存分配</button></div>
     </div>
   </div>
 </div>

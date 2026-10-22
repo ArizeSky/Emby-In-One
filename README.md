@@ -345,7 +345,7 @@ upstream:
     url: "https://emby-b.example.com"
     apiKey: "your-api-key"
     playbackMode: "redirect"                   # 覆盖全局播放模式
-    spoofClient: "passthrough"                  # passthrough | custom
+    spoofClient: "passthrough"                  # passthrough | custom | resident
     streamingUrls:                               # 推流线路（可选，有序；单条也可写 streamingUrl: "..."）
       - "https://cdn.example.com"                # 第 1 条为主线路
       - "https://backup.example.com"             # 其余为备用线路
@@ -533,6 +533,7 @@ V1.4 新增多用户支持，允许管理员创建多个普通用户，每个用
  |----|-----------|----------------|---------|
  | `passthrough`（默认） | 管理员登录时捕获的真实客户端 UA | 真实客户端值 | 有客户端白名单的服务器；所有用户共用该捕获身份 |
  | `custom` | 自定义值（必填） | 自定义值 | 需要完全控制客户端标识的服务器 |
+| `resident` | 固定的常驻身份 | 常驻身份值 | 需要多台服务器共用一条稳定、可控身份的服务器 |
  
  > **注**：V1.2 中的 `official` 模式已在 V1.3 中自动迁移为 `custom`，使用原 Emby Web 官方客户端的默认值。V1.4.4 起内置的 `none`（Emby Aggregator）与 `infuse`（Infuse 伪造）模式已移除，存量配置自动迁移为 `passthrough`。
  >
@@ -550,6 +551,25 @@ V1.4 新增多用户支持，允许管理员创建多个普通用户，每个用
  客户端没发送的 Emby 头字段会保持为空——代理只呈现客户端真实发出的内容，不再叠加任何内置基础身份。
  
  当客户端登录时，所有离线的 passthrough 服务器会自动使用新捕获的头重新尝试登录（API Key 上游同样适用：验证 `/Users/Me` 时携带捕获身份，成功后同样落盘）。成功登录的 headers 按服务器维度持久化存储，重启后健康检查和重连均使用该服务器上次成功的 headers。Token 撤销或过期时，其对应捕获头也会一并清理。
+
+#### Resident 模式 (`spoofClient: resident`)
+
+`resident` 模式让一台或多台上游服务器共用一条管理员保存的**常驻客户端身份**。身份来源是「UA 管理」页：管理员用真实客户端登录本代理后，代理会记录最近 10 种完整客户端身份（`User-Agent`、`X-Emby-Client`、`X-Emby-Client-Version`、`X-Emby-Device-Name`、`X-Emby-Device-Id`、`Accept`、`Accept-Language`），首次采集会自动保存一条常驻身份；之后由管理员在面板中保存、重命名、更新或删除常驻身份，并通过「分配」把常驻身份绑定到服务器（配置项 `uaProfileId`）。
+
+- 常驻身份在出站时固定不变：登录、API、图片、健康检查和流媒体代理都使用同一条身份，不受实时请求、Token 缓存或最新采集影响。
+- 常驻身份采集超过 30 天仍可正常使用，仅提示建议采集新版 UA；不会自动停用或删除。
+- 被服务器引用的常驻身份不能直接删除；先解除绑定或改绑其它常驻身份。
+- 配置示例：
+
+```yaml
+upstream:
+  - name: "服务器A"
+    url: "https://emby-a.example.com"
+    username: "user"
+    password: "pass"
+    spoofClient: "resident"
+    uaProfileId: "常驻 UA 的 ID（在「UA 管理」中查看）"
+```
 
 ### 元数据优先级 (`priorityMetadata`)
 
@@ -696,6 +716,12 @@ environment:
 | PUT | `/admin/api/upstream/:index` | 修改上游服务器 |
 | DELETE | `/admin/api/upstream/:index` | 删除上游服务器（自动清理 ID 映射） |
 | POST | `/admin/api/upstream/:index/reconnect` | 重连上游服务器 |
+| GET | `/admin/api/ua` | 列出最近采集、常驻 UA 及服务器绑定 |
+| POST | `/admin/api/ua/resident` | 将最近采集保存为常驻 UA |
+| PATCH | `/admin/api/ua/resident/:id` | 重命名常驻 UA |
+| POST | `/admin/api/ua/resident/:id/replace` | 用最近采集更新常驻身份 |
+| DELETE | `/admin/api/ua/resident/:id` | 删除常驻 UA（被服务器引用时返回 409） |
+| POST | `/admin/api/ua/resident/:id/assignments` | 批量分配/解除服务器绑定 |
 | POST | `/admin/api/upstream/reorder` | 调整服务器顺序 |
 | GET | `/admin/api/proxies` | 列出代理 |
 | POST | `/admin/api/proxies` | 添加代理 |

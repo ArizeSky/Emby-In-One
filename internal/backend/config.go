@@ -63,6 +63,7 @@ type UpstreamConfig struct {
 	APIKey              string
 	PlaybackMode        string
 	SpoofClient         string
+	UAProfileID         string
 	FollowRedirects     bool
 	ProxyID             string
 	PriorityMetadata    bool
@@ -224,10 +225,18 @@ func normalizeUpstream(upstream *UpstreamConfig, index int, cfg *Config) {
 	// to passthrough, which waits for a real client identity instead of
 	// sending a fabricated one; any other unknown value coerces the same way
 	// so no request can ever leave this proxy with an invented client profile.
+	// "resident" is a first-class mode: a server bound to a saved resident
+	// identity. passthrough and custom stay as they were. Any other unknown
+	// value coerces to passthrough so no request can leave with an invented
+	// client profile.
 	switch upstream.SpoofClient {
-	case "passthrough", "custom":
+	case "passthrough", "custom", "resident":
 	default:
 		upstream.SpoofClient = "passthrough"
+	}
+	// Only resident mode carries a resident profile reference.
+	if upstream.SpoofClient != "resident" {
+		upstream.UAProfileID = ""
 	}
 }
 
@@ -279,13 +288,45 @@ func (s *ConfigStore) Mutate(fn func(cfg *Config) error) error {
 func (s *ConfigStore) Replace(cfg Config) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	clone := cloneConfig(cfg)
+	s.config = &clone
+}
+
+// SaveAndReplace renders the candidate config and writes it atomically under the
+// store lock, then publishes it as the in-memory config only after the write
+// succeeds. A failed write leaves the previous config untouched.
+func (s *ConfigStore) SaveAndReplace(next Config) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	clone := cloneConfig(next)
+	path := clone.Path
+	if strings.TrimSpace(path) == "" {
+		path = s.config.Path
+	}
+	clone.Path = path
+	if strings.TrimSpace(path) != "" {
+		content := renderConfigYAML(&clone)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return err
+		}
+		if err := WriteFileAtomic(path, []byte(content), 0o600); err != nil {
+			return err
+		}
+	}
+	s.config = &clone
+	return nil
+}
+
+// cloneConfig deep-copies the slices a caller could otherwise share with the
+// store's live config.
+func cloneConfig(cfg Config) Config {
 	clone := cfg
 	clone.Proxies = append([]ProxyConfig(nil), cfg.Proxies...)
 	clone.Upstream = append([]UpstreamConfig(nil), cfg.Upstream...)
 	for i := range clone.Upstream {
 		clone.Upstream[i].StreamingURLs = append([]string(nil), cfg.Upstream[i].StreamingURLs...)
 	}
-	s.config = &clone
+	return clone
 }
 
 // Save renders the current config and writes it atomically. The lock is held
@@ -539,6 +580,8 @@ func assignListField(cfg *Config, listName string, index int, key, value string)
 			upstream.PlaybackMode = parseStringValue(value)
 		case "spoofClient":
 			upstream.SpoofClient = parseStringValue(value)
+		case "uaProfileId":
+			upstream.UAProfileID = parseStringValue(value)
 		case "followRedirects":
 			upstream.FollowRedirects = parseBoolValue(value)
 		case "proxyId":
@@ -644,6 +687,9 @@ func renderConfigYAML(cfg *Config) string {
 			}
 			if upstream.SpoofClient != "" && upstream.SpoofClient != "passthrough" {
 				fmt.Fprintf(&b, "    spoofClient: %s\n", yamlStr(upstream.SpoofClient))
+			}
+			if upstream.SpoofClient == "resident" && upstream.UAProfileID != "" {
+				fmt.Fprintf(&b, "    uaProfileId: %s\n", yamlStr(upstream.UAProfileID))
 			}
 			if len(upstream.StreamingURLs) > 1 {
 				fmt.Fprintf(&b, "    streamingUrls: [%s]\n", joinQuoted(upstream.StreamingURLs))

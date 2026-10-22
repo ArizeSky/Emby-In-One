@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -17,6 +18,7 @@ type App struct {
 	Logger          *Logger
 	IDStore         *IDStore
 	Identity        *ClientIdentityService
+	UALibrary       *UALibraryStore
 	Auth            *AuthManager
 	Upstream        *UpstreamPool
 	UserStore       *UserStore
@@ -26,6 +28,10 @@ type App struct {
 	PlaybackLimiter *PlaybackLimiter
 	loginLimiter    loginRateLimiter
 	noticeThrottle  noticeThrottle
+	// adminMutationMu serializes every handler that reads, validates and then
+	// persists the config or the UA library, so two admin writes cannot each
+	// base their change on a stale snapshot and overwrite one another.
+	adminMutationMu sync.Mutex
 }
 
 func NewApp() (*App, error) {
@@ -45,6 +51,11 @@ func NewApp() (*App, error) {
 		return nil, err
 	}
 	identity := NewClientIdentityServiceFromDetectedConfig(logger)
+	uaLibrary, uaLibErr := NewUALibraryStore(cfg.DataDir, logger)
+	if uaLibErr != nil {
+		logger.Warnf("UA library unavailable: %v (UA management disabled; resident mode will not send identity)", uaLibErr)
+	}
+	identity.SetUALibrary(uaLibrary)
 	auth, err := NewAuthManager(configStore, identity, logger)
 	if err != nil {
 		return nil, err
@@ -81,6 +92,7 @@ func NewApp() (*App, error) {
 		Logger:          logger,
 		IDStore:         idStore,
 		Identity:        identity,
+		UALibrary:       uaLibrary,
 		Auth:            auth,
 		Upstream:        upstream,
 		UserStore:       userStore,

@@ -49,26 +49,27 @@ type rawRequestBody struct {
 }
 
 type UpstreamClient struct {
-	mu             sync.RWMutex
-	ID             string
-	ServerIndex    int
-	Name           string
-	BaseURL        string
-	StreamBaseURL  string   // effective stream base: first live entry of StreamBaseURLs
-	StreamBaseURLs []string // ordered stream bases: [0] primary, [1:] fallbacks
-	Online         bool
-	UserID         string
-	AccessToken    string
-	LastError      string
-	Config         UpstreamConfig
-	serverKey      string
-	httpClient     *http.Client
-	transport      http.RoundTripper // per-client transport (shared or proxy-specific)
-	logger         *Logger
-	timeouts       TimeoutsConfig
-	recoveryMu     sync.Mutex
-	lastRecovery   time.Time
-	onAuthError    func(c *UpstreamClient)
+	mu               sync.RWMutex
+	ID               string
+	ServerIndex      int
+	Name             string
+	BaseURL          string
+	StreamBaseURL    string   // effective stream base: first live entry of StreamBaseURLs
+	StreamBaseURLs   []string // ordered stream bases: [0] primary, [1:] fallbacks
+	Online           bool
+	UserID           string
+	AccessToken      string
+	LastError        string
+	Config           UpstreamConfig
+	residentIdentity *residentIdentitySnapshot
+	serverKey        string
+	httpClient       *http.Client
+	transport        http.RoundTripper // per-client transport (shared or proxy-specific)
+	logger           *Logger
+	timeouts         TimeoutsConfig
+	recoveryMu       sync.Mutex
+	lastRecovery     time.Time
+	onAuthError      func(c *UpstreamClient)
 	// streamFailures tracks per-stream-base connect-level failure times for
 	// liveness marking; guarded by mu. A base marked dead is skipped by
 	// streamBaseCandidates until streamFailureCooldown passes.
@@ -137,12 +138,17 @@ func (p *UpstreamPool) Reload(cfg Config) {
 		newClient := newUpstreamClient(cfg, upstream, i, p.logger)
 		newClient.onAuthError = p.handleUpstreamAuthError
 		if old, ok := oldByKey[newClient.serverKey]; ok {
-			old.mu.RLock()
-			newClient.AccessToken = old.AccessToken
-			newClient.UserID = old.UserID
-			newClient.Online = old.Online
-			newClient.LastError = old.LastError
-			old.mu.RUnlock()
+			// A resident identity change (new profile or new identity version) must
+			// not inherit the old session's token/user, or a new identity would be
+			// paired with credentials issued to a different client identity.
+			if !residentIdentityChanged(old, newClient) {
+				old.mu.RLock()
+				newClient.AccessToken = old.AccessToken
+				newClient.UserID = old.UserID
+				newClient.Online = old.Online
+				newClient.LastError = old.LastError
+				old.mu.RUnlock()
+			}
 		}
 		clients = append(clients, newClient)
 	}
@@ -200,7 +206,7 @@ func (p *UpstreamPool) handleUpstreamAuthError(c *UpstreamClient) {
 	}
 	c.lastRecovery = time.Now()
 	c.recoveryMu.Unlock()
-	if !p.canAttemptPassthroughLogin(c) {
+	if !p.canAttemptIdentityLogin(c) {
 		if p.logger != nil {
 			p.logger.Warnf("[%s] Upstream auth error but passthrough recovery skipped — waiting for real client", c.Name)
 		}
@@ -311,7 +317,7 @@ func newUpstreamClient(cfg Config, upstream UpstreamConfig, index int, logger *L
 		}
 	}
 
-	return &UpstreamClient{
+	client := &UpstreamClient{
 		ID:             upstream.ID,
 		ServerIndex:    index,
 		Name:           upstream.Name,
@@ -330,6 +336,10 @@ func newUpstreamClient(cfg Config, upstream UpstreamConfig, index int, logger *L
 		timeouts:       timeouts,
 		streamFailures: make(map[string]time.Time),
 	}
+	if upstream.SpoofClient == "resident" {
+		client.residentIdentity = residentSnapshotFromLibrary(upstream.UAProfileID)
+	}
+	return client
 }
 
 // streamFailureCooldown is how long a stream base stays marked dead after a
@@ -409,7 +419,7 @@ func (p *UpstreamPool) ReconnectByID(id string) *UpstreamClient {
 		return nil
 	}
 	identity := p.identityService()
-	if !p.canAttemptPassthroughLogin(client) {
+	if !p.canAttemptIdentityLogin(client) {
 		if p.logger != nil {
 			p.logger.Infof("[%s] Manual reconnect skipped passthrough login — waiting for real client", client.Name)
 		}
@@ -425,7 +435,7 @@ func (p *UpstreamPool) Reconnect(index int) *UpstreamClient {
 		return nil
 	}
 	identity := p.identityService()
-	if !p.canAttemptPassthroughLogin(client) {
+	if !p.canAttemptIdentityLogin(client) {
 		if p.logger != nil {
 			p.logger.Infof("[%s] Manual reconnect skipped passthrough login — waiting for real client", client.Name)
 		}
@@ -446,12 +456,19 @@ func (p *UpstreamPool) Clients() []*UpstreamClient {
 	return out
 }
 
-func (p *UpstreamPool) canAttemptPassthroughLogin(client *UpstreamClient) bool {
-	if client == nil || client.Config.SpoofClient != "passthrough" {
+func (p *UpstreamPool) canAttemptIdentityLogin(client *UpstreamClient) bool {
+	if client == nil {
+		return false
+	}
+	switch client.Config.SpoofClient {
+	case "passthrough":
+		identity := p.identityService()
+		return identity != nil && identity.HasCapturedHeaders(client.serverKey)
+	case "resident":
+		return client.residentIdentity != nil
+	default:
 		return true
 	}
-	identity := p.identityService()
-	return identity != nil && identity.HasCapturedHeaders(client.serverKey)
 }
 
 func (p *UpstreamPool) OnlineClients() []*UpstreamClient {
@@ -509,22 +526,23 @@ func (c *UpstreamClient) snapshot() UpstreamClient {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return UpstreamClient{
-		ID:             c.ID,
-		ServerIndex:    c.ServerIndex,
-		Name:           c.Name,
-		BaseURL:        c.BaseURL,
-		StreamBaseURL:  c.StreamBaseURL,
-		StreamBaseURLs: append([]string(nil), c.StreamBaseURLs...),
-		Online:         c.Online,
-		UserID:         c.UserID,
-		AccessToken:    c.AccessToken,
-		LastError:      c.LastError,
-		Config:         c.Config,
-		serverKey:      c.serverKey,
-		httpClient:     c.httpClient,
-		transport:      c.transport,
-		logger:         c.logger,
-		timeouts:       c.timeouts,
+		ID:               c.ID,
+		ServerIndex:      c.ServerIndex,
+		Name:             c.Name,
+		BaseURL:          c.BaseURL,
+		StreamBaseURL:    c.StreamBaseURL,
+		StreamBaseURLs:   append([]string(nil), c.StreamBaseURLs...),
+		Online:           c.Online,
+		UserID:           c.UserID,
+		AccessToken:      c.AccessToken,
+		LastError:        c.LastError,
+		Config:           c.Config,
+		serverKey:        c.serverKey,
+		httpClient:       c.httpClient,
+		transport:        c.transport,
+		logger:           c.logger,
+		timeouts:         c.timeouts,
+		residentIdentity: c.residentIdentity,
 	}
 }
 
@@ -548,6 +566,10 @@ func (c *UpstreamClient) loginWithHeaders(ctx context.Context, reqCtx *RequestCo
 	loginCtx, cancelLogin := context.WithTimeout(ctx, c.loginTimeout())
 	defer cancelLogin()
 	ctx = loginCtx
+	if c.Config.SpoofClient == "resident" && c.residentIdentity == nil {
+		c.setOffline("常驻 UA 引用缺失或身份库不可用")
+		return
+	}
 
 	if strings.TrimSpace(c.Config.APIKey) != "" {
 		if c.logger != nil {
@@ -741,6 +763,9 @@ func (c *UpstreamClient) BuildURLForMode(path string, params url.Values, stream 
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
 	}
+	if c.Config.SpoofClient == "resident" && c.residentIdentity == nil {
+		return "", newResidentIdentityMissingError()
+	}
 	base := c.BaseURL
 	if stream {
 		// The redirect hands one URL to the client for the whole playback, so it
@@ -796,6 +821,9 @@ func (c *UpstreamClient) doRequestForMode(ctx context.Context, reqCtx *RequestCo
 	if mode == "" {
 		mode = authModeNormal
 	}
+	if c.Config.SpoofClient == "resident" && c.residentIdentity == nil {
+		return nil, newResidentIdentityMissingError()
+	}
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
 	}
@@ -832,6 +860,9 @@ func (c *UpstreamClient) doRequestForMode(ctx context.Context, reqCtx *RequestCo
 // body of the pre-fallback doRequestForMode; every identity rule it applies is
 // unchanged.
 func (c *UpstreamClient) doRequestOnce(ctx context.Context, reqCtx *RequestContext, method, path string, params url.Values, body any, headers http.Header, stream bool, mode outboundAuthMode, base string) (*http.Response, error) {
+	if c.Config.SpoofClient == "resident" && c.residentIdentity == nil {
+		return nil, newResidentIdentityMissingError()
+	}
 	auth := c.authSnapshot()
 	policy := resolveOutboundPolicy(path, method, stream, mode, base)
 
@@ -887,6 +918,7 @@ func (c *UpstreamClient) doRequestOnce(ctx context.Context, reqCtx *RequestConte
 	}
 	var requestHeaders http.Header
 	if headers != nil {
+		c.applyResidentIdentity(headers)
 		requestHeaders = prepareOutboundHeaders(headers, reqCtx, auth, mode)
 	} else {
 		// Defensive branch: no caller passes nil today. The process-wide service

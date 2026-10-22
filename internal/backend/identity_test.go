@@ -69,6 +69,11 @@ func TestResolvePassthroughHeadersPreferenceOrder(t *testing.T) {
 
 	svc.DeleteCaptured("token-a")
 	source, headers = callResolvePassthroughHeadersForServer(t, svc, http.Header{}, "token-a", "")
+	if source != "captured-latest" || headers.Get("X-Emby-Client") != "Client-A" {
+		t.Fatalf("deleted token should retain device-only global fallback: source=%q headers=%v", source, headers)
+	}
+	svc.Clear()
+	source, headers = callResolvePassthroughHeadersForServer(t, svc, http.Header{}, "token-a", "")
 	if source != "no-identity" {
 		t.Fatalf("source = %q, want no-identity", source)
 	}
@@ -93,10 +98,6 @@ func TestWebClientHeadersDoNotClaimPassthroughIdentity(t *testing.T) {
 		"X-Emby-Device-Id":      []string{"real-device-id"},
 	}
 	svc.SetCaptured("real-client-token", realClientHeaders)
-	// recordSuccessfulIdentity persists the same identity as the global
-	// latest capture once the deferred passthrough login succeeds; that is
-	// the level a web client's requests resolve through.
-	svc.SaveLatestCapturedHeaders(realClientHeaders)
 
 	// The exact header shape the web client sends after the fix: auth token in
 	// X-Emby-Token, the browser's own User-Agent, and nothing else.

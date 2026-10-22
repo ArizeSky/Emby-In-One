@@ -55,6 +55,11 @@ func (a *App) handleAuthenticateByName(w http.ResponseWriter, r *http.Request) {
 		if token, _ := result["AccessToken"].(string); token != "" {
 			if hasPassthroughIdentity(r.Header) {
 				a.Identity.SetCaptured(token, r.Header)
+				// Record the real administrator client identity in the UA library.
+				// A library write failure must never fail the login itself.
+				if err := a.UALibrary.CaptureAuthenticatedUA(r.Header); err != nil && a.Logger != nil {
+					a.Logger.Warnf("UA library capture failed: %v", err)
+				}
 			}
 		}
 		if a.Logger != nil {

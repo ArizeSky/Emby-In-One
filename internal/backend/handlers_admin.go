@@ -10,25 +10,35 @@ import (
 )
 
 type adminUpstreamInput struct {
-	Name                *string   `json:"name"`
-	URL                 *string   `json:"url"`
-	Username            *string   `json:"username"`
-	Password            *string   `json:"password"`
-	APIKey              *string   `json:"apiKey"`
-	AuthType            *string   `json:"authType"`
-	PlaybackMode        *string   `json:"playbackMode"`
-	SpoofClient         *string   `json:"spoofClient"`
-	FollowRedirects     *bool     `json:"followRedirects"`
-	ProxyID             *string   `json:"proxyId"`
-	PriorityMetadata    *bool     `json:"priorityMetadata"`
-	CustomUserAgent     *string   `json:"customUserAgent"`
-	CustomClient        *string   `json:"customClient"`
-	CustomClientVersion *string   `json:"customClientVersion"`
-	CustomDeviceName    *string   `json:"customDeviceName"`
-	CustomDeviceId      *string   `json:"customDeviceId"`
-	MaxConcurrent       *int      `json:"maxConcurrent"`
-	StreamingURL        *string   `json:"streamingUrl"`
-	StreamingURLs       *[]string `json:"streamingUrls"`
+	Name                      *string               `json:"name"`
+	URL                       *string               `json:"url"`
+	Username                  *string               `json:"username"`
+	Password                  *string               `json:"password"`
+	APIKey                    *string               `json:"apiKey"`
+	AuthType                  *string               `json:"authType"`
+	PlaybackMode              *string               `json:"playbackMode"`
+	SpoofClient               *string               `json:"spoofClient"`
+	FollowRedirects           *bool                 `json:"followRedirects"`
+	ProxyID                   *string               `json:"proxyId"`
+	PriorityMetadata          *bool                 `json:"priorityMetadata"`
+	CustomUserAgent           *string               `json:"customUserAgent"`
+	CustomClient              *string               `json:"customClient"`
+	CustomClientVersion       *string               `json:"customClientVersion"`
+	CustomDeviceName          *string               `json:"customDeviceName"`
+	CustomDeviceId            *string               `json:"customDeviceId"`
+	MaxConcurrent             *int                  `json:"maxConcurrent"`
+	StreamingURL              *string               `json:"streamingUrl"`
+	StreamingURLs             *[]string             `json:"streamingUrls"`
+	UAProfileID               *string               `json:"uaProfileId"`
+	UAExpectedProfileRevision *uint64               `json:"uaExpectedProfileRevision"`
+	ExpectedIdentityBinding   *adminIdentityBinding `json:"expectedIdentityBinding"`
+}
+
+// adminIdentityBinding is the binding a panel saw when it opened an edit form. A
+// resident-involved edit echoes it so the server can reject a stale save.
+type adminIdentityBinding struct {
+	SpoofClient string `json:"spoofClient"`
+	UAProfileID string `json:"uaProfileId"`
 }
 
 type adminSettingsInput struct {
@@ -88,33 +98,67 @@ func (a *App) handleAdminUpstreamList(w http.ResponseWriter, r *http.Request) {
 		onlineByIndex[client.ServerIndex] = client.Online
 	}
 	out := make([]map[string]any, 0, len(cfg.Upstream))
+	uaSnapshot := a.UALibrary.Snapshot()
+	residentByID := make(map[string]ResidentUA, len(uaSnapshot.Resident))
+	for _, resident := range uaSnapshot.Resident {
+		residentByID[resident.ID] = resident
+	}
+	now := time.Now().UTC()
 	for index, upstream := range cfg.Upstream {
 		authType := "password"
 		if upstream.APIKey != "" {
 			authType = "apiKey"
 		}
 		streamingURLs := append([]string(nil), upstream.StreamingURLs...)
+		uaProfileName := ""
+		uaProfileRevision := uint64(0)
+		uaIdentityVersion := uint64(0)
+		uaIsOld := false
+		uaAgeKnown := false
+		uaIdentityCapturedAt := ""
+		uaBindingMissing := false
+		if upstream.SpoofClient == "resident" {
+			if resident, ok := residentByID[upstream.UAProfileID]; ok {
+				uaProfileName = resident.Name
+				uaProfileRevision = resident.Revision
+				uaIdentityVersion = resident.IdentityVersion
+				known, old, _ := uaAge(resident.IdentityCapturedAt, now)
+				uaAgeKnown = known
+				uaIsOld = old
+				uaIdentityCapturedAt = resident.IdentityCapturedAt.Format(time.RFC3339)
+			} else {
+				uaBindingMissing = true
+			}
+		}
 		out = append(out, map[string]any{
-			"id":                  upstream.ID,
-			"index":               index,
-			"name":                upstream.Name,
-			"url":                 sanitizeUpstreamURL(upstream.URL),
-			"username":            upstream.Username,
-			"authType":            authType,
-			"online":              onlineByIndex[index],
-			"playbackMode":        upstream.PlaybackMode,
-			"spoofClient":         upstream.SpoofClient,
-			"followRedirects":     upstream.FollowRedirects,
-			"proxyId":             valueOrNil(upstream.ProxyID),
-			"priorityMetadata":    upstream.PriorityMetadata,
-			"customUserAgent":     upstream.CustomUserAgent,
-			"customClient":        upstream.CustomClient,
-			"customClientVersion": upstream.CustomClientVersion,
-			"customDeviceName":    upstream.CustomDeviceName,
-			"customDeviceId":      upstream.CustomDeviceId,
-			"maxConcurrent":       upstream.MaxConcurrent,
-			"streamingUrl":        upstream.StreamingURL,
-			"streamingUrls":       streamingURLs,
+			"id":                   upstream.ID,
+			"index":                index,
+			"name":                 upstream.Name,
+			"url":                  sanitizeUpstreamURL(upstream.URL),
+			"username":             upstream.Username,
+			"authType":             authType,
+			"online":               onlineByIndex[index],
+			"playbackMode":         upstream.PlaybackMode,
+			"spoofClient":          upstream.SpoofClient,
+			"followRedirects":      upstream.FollowRedirects,
+			"proxyId":              valueOrNil(upstream.ProxyID),
+			"priorityMetadata":     upstream.PriorityMetadata,
+			"customUserAgent":      upstream.CustomUserAgent,
+			"customClient":         upstream.CustomClient,
+			"customClientVersion":  upstream.CustomClientVersion,
+			"customDeviceName":     upstream.CustomDeviceName,
+			"customDeviceId":       upstream.CustomDeviceId,
+			"maxConcurrent":        upstream.MaxConcurrent,
+			"streamingUrl":         upstream.StreamingURL,
+			"streamingUrls":        streamingURLs,
+			"uaProfileId":          upstream.UAProfileID,
+			"uaProfileName":        uaProfileName,
+			"uaProfileRevision":    uaProfileRevision,
+			"uaIdentityVersion":    uaIdentityVersion,
+			"uaIsOld":              uaIsOld,
+			"uaAgeKnown":           uaAgeKnown,
+			"uaIdentityCapturedAt": uaIdentityCapturedAt,
+			"uaBindingMissing":     uaBindingMissing,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -133,6 +177,36 @@ func (a *App) handleAdminUpstreamCreate(w http.ResponseWriter, r *http.Request) 
 	normalizeUpstream(&draft, len(cfg.Upstream), &cfg)
 	if err := validateUpstreamDraft(r.Context(), draft); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	if draft.SpoofClient == "resident" {
+		if a.uaLibraryUnavailable(w) {
+			return
+		}
+		profile, ok := a.UALibrary.ResidentByID(draft.UAProfileID)
+		if !ok {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "常驻 UA 不存在或已被删除"})
+			return
+		}
+		if body.UAExpectedProfileRevision != nil && *body.UAExpectedProfileRevision != profile.Revision {
+			writeJSON(w, http.StatusConflict, map[string]any{"error": "常驻 UA 已被修改，请刷新后重试", "conflict": true})
+			return
+		}
+		nextCfg := cfg
+		nextCfg.Upstream = append(append([]UpstreamConfig(nil), cfg.Upstream...), draft)
+		reconnecting, err := a.commitConfigForUAChanges(nextCfg, []string{draft.ID})
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		online := false
+		if client := a.Upstream.ClientByID(draft.ID); client != nil {
+			online = client.IsOnline()
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"success": true, "index": len(cfg.Upstream), "name": draft.Name, "online": online,
+			"affectedServerIds": []string{draft.ID}, "reconnectingServerIds": reconnecting,
+		})
 		return
 	}
 	validation, err := a.validateUpstreamConnectivity(cfg, draft, len(cfg.Upstream), requestContextFrom(r.Context()))
@@ -197,6 +271,46 @@ func (a *App) handleAdminUpstreamUpdate(w http.ResponseWriter, r *http.Request) 
 	normalizeUpstream(&draft, index, &cfg)
 	if err := validateUpstreamDraft(r.Context(), draft); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	if existing.SpoofClient == "resident" || draft.SpoofClient == "resident" {
+		if draft.SpoofClient == "resident" {
+			if a.uaLibraryUnavailable(w) {
+				return
+			}
+			profile, ok := a.UALibrary.ResidentByID(draft.UAProfileID)
+			if !ok {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": "常驻 UA 不存在或已被删除"})
+				return
+			}
+			if body.UAExpectedProfileRevision != nil && *body.UAExpectedProfileRevision != profile.Revision {
+				writeJSON(w, http.StatusConflict, map[string]any{"error": "常驻 UA 已被修改，请刷新后重试", "conflict": true})
+				return
+			}
+		}
+		if body.ExpectedIdentityBinding != nil {
+			if existing.SpoofClient != body.ExpectedIdentityBinding.SpoofClient || existing.UAProfileID != body.ExpectedIdentityBinding.UAProfileID {
+				writeJSON(w, http.StatusConflict, map[string]any{"error": "服务器绑定已在别处修改，请刷新后重试", "conflict": true})
+				return
+			}
+		}
+		nextCfg := cfg
+		nextCfg.Upstream = append([]UpstreamConfig(nil), cfg.Upstream...)
+		nextCfg.Upstream[index] = draft
+		reconnecting, err := a.commitConfigForUAChanges(nextCfg, []string{draft.ID})
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		a.invalidateUpstreamLibraryCache(draft.ID)
+		online := false
+		if client := a.Upstream.ClientByID(draft.ID); client != nil {
+			online = client.IsOnline()
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"success": true, "id": draft.ID, "index": index, "name": draft.Name, "online": online,
+			"affectedServerIds": []string{draft.ID}, "reconnectingServerIds": reconnecting,
+		})
 		return
 	}
 	validation, err := a.validateUpstreamConnectivity(cfg, draft, index, requestContextFrom(r.Context()))
@@ -775,10 +889,7 @@ func (a *App) commitConfigSettingsOnly(nextCfg Config) error {
 // old values. reLogin additionally re-authenticates, which an upstream's own
 // connection details need; a settings save leaves the existing sessions alone.
 func (a *App) commitConfigFull(nextCfg Config, reLogin bool) error {
-	previous := a.ConfigStore.Snapshot()
-	a.ConfigStore.Replace(nextCfg)
-	if err := a.ConfigStore.Save(); err != nil {
-		a.ConfigStore.Replace(previous)
+	if err := a.ConfigStore.SaveAndReplace(nextCfg); err != nil {
 		return err
 	}
 	a.Upstream.Reload(nextCfg)
@@ -786,4 +897,15 @@ func (a *App) commitConfigFull(nextCfg Config, reLogin bool) error {
 		go a.Upstream.LoginAll()
 	}
 	return nil
+}
+
+// withAdminMutation serializes a config- or UA-mutating admin handler across the
+// whole read-validate-persist sequence. Two concurrent admin saves otherwise each
+// base their change on a stale snapshot and overwrite one another.
+func (a *App) withAdminMutation(handler http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		a.adminMutationMu.Lock()
+		defer a.adminMutationMu.Unlock()
+		handler(w, r)
+	}
 }

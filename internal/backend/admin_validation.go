@@ -130,6 +130,9 @@ func validateUpstreamDraft(ctx context.Context, draft UpstreamConfig) error {
 	if err := validateSpoofClient(draft.SpoofClient); err != nil {
 		return err
 	}
+	if strings.TrimSpace(draft.SpoofClient) == "resident" && strings.TrimSpace(draft.UAProfileID) == "" {
+		return &httpError{message: "resident 模式必须选择一个常驻 UA"}
+	}
 	// custom mode must carry its own User-Agent: without one the request would
 	// leave with no UA at all, which is exactly the behaviour this mode must
 	// not degrade into now that every built-in profile is gone.
@@ -197,7 +200,8 @@ func withRedirectWarning(draft UpstreamConfig, result upstreamValidationResult) 
 func (a *App) validateUpstreamConnectivity(cfg Config, draft UpstreamConfig, index int, reqCtx *RequestContext) (upstreamValidationResult, error) {
 	client := newUpstreamClient(cfg, draft, index, a.Logger)
 	if draft.SpoofClient == "passthrough" {
-		if a.Identity == nil || !a.Identity.HasCapturedHeaders(client.serverKey) {
+		_, headers := client.resolveIdentityHeaders(reqCtx, a.Identity, nil)
+		if !isRealClientIdentity(headers) {
 			if a.Logger != nil {
 				a.Logger.Infof("[%s] Passthrough admin validation deferred — no captured client identity yet", draft.Name)
 			}
@@ -209,10 +213,8 @@ func (a *App) validateUpstreamConnectivity(cfg Config, draft UpstreamConfig, ind
 	if snapshot.Online && snapshot.AccessToken != "" && snapshot.UserID != "" {
 		return withRedirectWarning(draft, upstreamValidationResult{Online: true}), nil
 	}
-	if draft.SpoofClient == "passthrough" {
-		if shouldDeferPassthroughValidation(snapshot.LastError) {
-			return withRedirectWarning(draft, upstreamValidationResult{Online: false, Warning: passthroughDeferredWarning}), nil
-		}
+	if draft.SpoofClient == "passthrough" && isUpstreamAuthenticationRejection(snapshot.LastError) {
+		return upstreamValidationResult{}, fmt.Errorf("已使用客户端身份，但上游拒绝认证或访问（%s），请检查上游凭据、账号权限及客户端限制", redactURLInError(errors.New(snapshot.LastError)))
 	}
 	if snapshot.LastError != "" {
 		// LastError can embed the request URL (net/http builds transport errors from
@@ -223,7 +225,7 @@ func (a *App) validateUpstreamConnectivity(cfg Config, draft UpstreamConfig, ind
 	return upstreamValidationResult{}, errors.New("上游服务器验证失败")
 }
 
-func shouldDeferPassthroughValidation(lastError string) bool {
+func isUpstreamAuthenticationRejection(lastError string) bool {
 	lastError = strings.TrimSpace(lastError)
 	return strings.HasPrefix(lastError, "401 ") || strings.HasPrefix(lastError, "403 ")
 }
@@ -401,10 +403,10 @@ func validatePlaybackMode(mode string) error {
 
 func validateSpoofClient(mode string) error {
 	switch strings.TrimSpace(mode) {
-	case "passthrough", "custom":
+	case "passthrough", "custom", "resident":
 		return nil
 	default:
-		return &httpError{message: "spoofClient 必须为 passthrough 或 custom"}
+		return &httpError{message: "spoofClient 必须为 passthrough、custom 或 resident"}
 	}
 }
 
@@ -471,6 +473,9 @@ func applyAdminUpstreamInput(dst *UpstreamConfig, body adminUpstreamInput, isCre
 		if body.SpoofClient != nil {
 			dst.SpoofClient = strings.TrimSpace(*body.SpoofClient)
 		}
+		if body.UAProfileID != nil {
+			dst.UAProfileID = strings.TrimSpace(*body.UAProfileID)
+		}
 		if body.FollowRedirects != nil {
 			dst.FollowRedirects = *body.FollowRedirects
 		}
@@ -525,6 +530,9 @@ func applyAdminUpstreamInput(dst *UpstreamConfig, body adminUpstreamInput, isCre
 	}
 	if body.SpoofClient != nil {
 		dst.SpoofClient = strings.TrimSpace(*body.SpoofClient)
+	}
+	if body.UAProfileID != nil {
+		dst.UAProfileID = strings.TrimSpace(*body.UAProfileID)
 	}
 	if body.FollowRedirects != nil {
 		dst.FollowRedirects = *body.FollowRedirects

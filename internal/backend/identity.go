@@ -35,6 +35,7 @@ type ClientIdentityService struct {
 	lastSuccessByServer map[string]capturedEntry
 	captureListeners    []func(string, http.Header)
 	persistence         *IdentityPersistence
+	uaLibrary           *UALibraryStore
 	sequence            atomic.Uint64
 }
 
@@ -61,29 +62,55 @@ func newClientIdentityService(persistence *IdentityPersistence) *ClientIdentityS
 	return svc
 }
 
+// SetUALibrary attaches the shared UA library. The pool reads it from the same
+// identity service so there is a single library instance for the process.
+func (s *ClientIdentityService) SetUALibrary(library *UALibraryStore) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.uaLibrary = library
+}
+
+// UALibrary returns the attached UA library, if any.
+func (s *ClientIdentityService) UALibrary() *UALibraryStore {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.uaLibrary
+}
 func (s *ClientIdentityService) SetCaptured(token string, headers http.Header) {
 	if token == "" {
 		return
 	}
 	entry := s.newCapturedEntry(headers)
+	if !isRealClientIdentity(entry.headers) {
+		return
+	}
 	listeners := s.storeCapturedEntry(token, entry)
 	s.notifyCaptureListeners(listeners, token, entry.headers)
 }
 
 func (s *ClientIdentityService) SaveLatestCapturedHeaders(headers http.Header) {
 	entry := s.newCapturedEntry(headers)
+	if !isRealClientIdentity(entry.headers) {
+		return
+	}
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.latestCaptured = cloneCapturedEntry(entry)
-	s.mu.Unlock()
+	// Serialize publication and persistence so concurrent captures cannot leave
+	// the on-disk fallback older than the in-memory one.
 	s.persistLatest(entry)
 }
 
 func (s *ClientIdentityService) storeCapturedEntry(token string, entry capturedEntry) []func(string, http.Header) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.entries[token] = entry
 	s.latestInfo = cloneCapturedEntry(entry)
+	// A real client is usable immediately, even if no upstream exists yet or
+	// the first upstream login fails. Commit before notifying retry listeners.
+	s.latestCaptured = cloneCapturedEntry(entry)
+	s.persistLatest(entry)
 	listeners := append([]func(string, http.Header){}, s.captureListeners...)
-	s.mu.Unlock()
 	return listeners
 }
 

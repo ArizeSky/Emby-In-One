@@ -332,7 +332,7 @@ func TestAdminUpstreamCreateAllowsPassthroughWithoutCapturedHeaders(t *testing.T
 	defer broken.Close()
 
 	withTempApp(t, func(app *App, handler http.Handler) {
-		token := loginToken(t, handler, "secret")
+		token := loginBrowserToken(t, handler)
 		rr := doJSONRequest(t, handler, http.MethodPost, "/admin/api/upstream", map[string]any{
 			"name":        "Passthrough",
 			"url":         broken.URL,
@@ -477,7 +477,7 @@ func TestAdminUpstreamUpdateAllowsPassthroughWithoutCapturedHeaders(t *testing.T
 
 	config := fmt.Sprintf("server:\n  port: 8096\n  name: \"Test Server\"\n  id: \"server-1\"\n\nadmin:\n  username: \"admin\"\n  password: \"secret\"\n\nplayback:\n  mode: \"proxy\"\n\ntimeouts:\n  api: 30000\n  global: 15000\n  login: 10000\n  healthCheck: 10000\n  healthInterval: 60000\n\nproxies: []\nupstream:\n  - name: \"A\"\n    url: %q\n    username: \"u1\"\n    password: \"p1\"\n", good.URL)
 	withTempAppConfig(t, config, func(app *App, handler http.Handler) {
-		token := loginToken(t, handler, "secret")
+		token := loginBrowserToken(t, handler)
 		rr := doJSONRequest(t, handler, http.MethodPut, "/admin/api/upstream/0", map[string]any{
 			"name":        "Recovered Later",
 			"url":         broken.URL,

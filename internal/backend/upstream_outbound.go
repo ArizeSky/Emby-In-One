@@ -68,6 +68,15 @@ func (c *UpstreamClient) identityHeaders(reqCtx *RequestContext, identity *Clien
 }
 
 func (c *UpstreamClient) resolveIdentityHeaders(reqCtx *RequestContext, identity *ClientIdentityService, override http.Header) (string, http.Header) {
+	if c.Config.SpoofClient == "resident" {
+		// A resident client presents its fixed identity for every request. It
+		// never consults live request headers, captured tokens, the latest global
+		// identity, per-server last-success, or a retry override.
+		if c.residentIdentity == nil {
+			return "resident-missing", http.Header{}
+		}
+		return c.residentIdentitySource(), cloneHeader(c.residentIdentity.Headers)
+	}
 	if c.Config.SpoofClient == "passthrough" {
 		if hasPassthroughIdentity(override) {
 			return "override", mergePassthroughHeaders(override)

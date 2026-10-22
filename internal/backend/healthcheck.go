@@ -101,14 +101,14 @@ func (p *UpstreamPool) runHealthCheckCycle(ctx context.Context) {
 			client.probeStreamBases(ctx)
 			continue
 		}
-		// Skip passthrough upstreams without any captured client identity
-		if client.Config.SpoofClient == "passthrough" {
-			if identity == nil || !identity.HasCapturedHeaders(client.serverKey) {
-				if logger != nil {
-					logger.Debugf("[%s] Health check: passthrough skip — no captured client identity yet", client.Name)
-				}
-				continue
+		// Skip any upstream that cannot currently attempt an identity login:
+		// passthrough without a captured identity, or resident with a missing
+		// profile reference. Age never enters this check.
+		if !p.canAttemptIdentityLogin(client) {
+			if logger != nil {
+				logger.Debugf("[%s] Health check: identity login not possible — waiting for a usable identity", client.Name)
 			}
+			continue
 		}
 		offline++
 		if logger != nil {
