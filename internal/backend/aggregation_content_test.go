@@ -2,8 +2,10 @@ package backend
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"testing"
+	"time"
 )
 
 func disableAggregation(t *testing.T, handler http.Handler, token, id string) {
@@ -212,6 +214,76 @@ func TestResumePaginationSkipsPausedCandidates(t *testing.T) {
 		}
 		if len(rows) != 2 {
 			t.Fatalf("GetResumeItems returned %d rows, want 2", len(rows))
+		}
+	})
+}
+
+// TestResumePaginationScansPastPausedCandidates proves the resume scan crosses
+// batch boundaries: a full first page of paused records must not bury a later
+// playable record behind it (execution plan §5.4).
+func TestResumePaginationScansPastPausedCandidates(t *testing.T) {
+	a := newAggUpstreamStub(t)
+	b := newAggUpstreamStub(t)
+	withTempAppConfig(t, dualUpstreamConfig(a.server.URL, b.server.URL), func(app *App, handler http.Handler) {
+		adminToken := loginTokenAs(t, handler, "admin", "secret")
+		idA := app.Upstream.Clients()[0].ID
+		idB := app.Upstream.Clients()[1].ID
+		if rr := doAuthJSON(t, handler, http.MethodPost, "/admin/api/users", map[string]any{"username": "dave", "password": "dave12345", "allowedServers": []string{idA, idB}}, adminToken); rr.Code != http.StatusCreated {
+			t.Fatalf("create user: status=%d body=%s", rr.Code, rr.Body.String())
+		}
+		var daveID string
+		for _, u := range app.UserStore.List() {
+			if u.Username == "dave" {
+				daveID = u.ID
+			}
+		}
+		if daveID == "" {
+			t.Fatalf("dave not found in user store")
+		}
+		disableAggregation(t, handler, adminToken, idA)
+
+		// The playable record first, so it sorts OLDEST (last_played is
+		// UnixMilli); a full first page of 100 paused records then buries it
+		// behind the scan's first batch.
+		vidB := app.IDStore.GetOrCreateVirtualID("movie-b", idB)
+		if err := app.WatchStore.RecordProgress(&WatchProgress{
+			ProxyUserID: daveID, VirtualItemID: vidB, ServerID: idB,
+			OriginalItemID: "movie-b", PositionTicks: 200, RuntimeTicks: 1000, ItemType: "Movie",
+		}); err != nil {
+			t.Fatalf("record B: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond) // guarantee strictly older last_played
+
+		const pausedCount = 100 // exactly one full batch
+		for i := 0; i < pausedCount; i++ {
+			vid := app.IDStore.GetOrCreateVirtualID(fmt.Sprintf("paused-%d", i), idA)
+			if err := app.WatchStore.RecordProgress(&WatchProgress{
+				ProxyUserID: daveID, VirtualItemID: vid, ServerID: idA,
+				OriginalItemID: fmt.Sprintf("paused-%d", i),
+				PositionTicks: 100, RuntimeTicks: 1000, ItemType: "Movie",
+			}); err != nil {
+				t.Fatalf("record paused %d: %v", i, err)
+			}
+		}
+
+		daveToken := loginTokenAs(t, handler, "dave", "dave12345")
+		a.reset()
+		b.reset()
+		rr := doAuthJSON(t, handler, http.MethodGet, "/Users/"+daveID+"/Items/Resume?Limit=5", nil, daveToken)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("resume: status=%d body=%s", rr.Code, rr.Body.String())
+		}
+		var payload struct {
+			Items []map[string]any `json:"Items"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("unmarshal resume: %v", err)
+		}
+		if a.contentHits.Load() != 0 {
+			t.Errorf("resume queried the paused server A")
+		}
+		if len(payload.Items) != 1 || payload.Items[0]["Id"] != vidB {
+			t.Fatalf("resume items = %#v, want the single enabled item behind a full paused page", payload.Items)
 		}
 	})
 }

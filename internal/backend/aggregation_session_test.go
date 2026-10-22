@@ -64,3 +64,43 @@ func TestPausedServerStillAcceptsSessionCleanup(t *testing.T) {
 		}
 	})
 }
+
+// TestPausedServerProgressSkipsMetadataEnrichment pins the design rule that a
+// progress report for an item on a paused server is still forwarded (the
+// cleanup exception) but never enriched with a metadata detail query.
+func TestPausedServerProgressSkipsMetadataEnrichment(t *testing.T) {
+	a := newAggUpstreamStub(t)
+	b := newAggUpstreamStub(t)
+	withTempAppConfig(t, dualUpstreamConfig(a.server.URL, b.server.URL), func(app *App, handler http.Handler) {
+		adminToken := loginTokenAs(t, handler, "admin", "secret")
+		idA := app.Upstream.Clients()[0].ID
+		idB := app.Upstream.Clients()[1].ID
+		if rr := doAuthJSON(t, handler, http.MethodPost, "/admin/api/users", map[string]any{"username": "carol", "password": "carol12345", "allowedServers": []string{idA, idB}}, adminToken); rr.Code != http.StatusCreated {
+			t.Fatalf("create user: status=%d body=%s", rr.Code, rr.Body.String())
+		}
+		vidA := app.IDStore.GetOrCreateVirtualID("movie-a", idA)
+		disableAggregation(t, handler, adminToken, idA)
+
+		carolToken := loginTokenAs(t, handler, "carol", "carol12345")
+		a.reset()
+		if rr := doAuthJSON(t, handler, http.MethodPost, "/Sessions/Playing/Progress", map[string]any{"ItemId": vidA, "PositionTicks": 100}, carolToken); rr.Code != http.StatusNoContent {
+			t.Fatalf("progress on paused server: status=%d body=%s", rr.Code, rr.Body.String())
+		}
+		if a.detailHits.Load() != 0 {
+			t.Errorf("progress on a paused server triggered %d metadata detail query(ies)", a.detailHits.Load())
+		}
+		if a.contentHits.Load() == 0 {
+			t.Errorf("progress was not forwarded to the paused server")
+		}
+
+		// Sanity: the same report on an enabled server does enrich.
+		vidB := app.IDStore.GetOrCreateVirtualID("movie-b", idB)
+		b.reset()
+		if rr := doAuthJSON(t, handler, http.MethodPost, "/Sessions/Playing/Progress", map[string]any{"ItemId": vidB, "PositionTicks": 100}, carolToken); rr.Code != http.StatusNoContent {
+			t.Fatalf("progress on enabled server: status=%d body=%s", rr.Code, rr.Body.String())
+		}
+		if b.detailHits.Load() == 0 {
+			t.Errorf("progress on an enabled server should enrich metadata")
+		}
+	})
+}

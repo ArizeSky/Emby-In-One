@@ -17,6 +17,7 @@ type aggUpstreamStub struct {
 	server      *httptest.Server
 	contentHits atomic.Int32
 	loginHits   atomic.Int32
+	detailHits  atomic.Int32
 }
 
 func newAggUpstreamStub(t *testing.T) *aggUpstreamStub {
@@ -30,6 +31,18 @@ func newAggUpstreamStub(t *testing.T) *aggUpstreamStub {
 		}
 		s.contentHits.Add(1)
 		p := r.URL.Path
+		// A metadata detail lookup (…/Users/{id}/Items/{itemId}) — the exact
+		// shape enrichWatchProgressMetadata issues. List endpoints (/Items,
+		// /Items/Resume, /Items/Latest) and sub-resources (/Items/{id}/X) are
+		// excluded so the counter isolates detail queries.
+		if r.Method == http.MethodGet {
+			if idx := strings.Index(p, "/Items/"); idx >= 0 {
+				tail := p[idx+len("/Items/"):]
+				if tail != "" && tail != "Resume" && tail != "Latest" && !strings.Contains(tail, "/") {
+					s.detailHits.Add(1)
+				}
+			}
+		}
 		switch {
 		case strings.HasSuffix(p, "/Views"):
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -67,4 +80,5 @@ func newAggUpstreamStub(t *testing.T) *aggUpstreamStub {
 func (s *aggUpstreamStub) reset() {
 	s.contentHits.Store(0)
 	s.loginHits.Store(0)
+	s.detailHits.Store(0)
 }
