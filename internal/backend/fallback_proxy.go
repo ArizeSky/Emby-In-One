@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -132,66 +133,149 @@ func (a *App) handleFallbackProxy(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(bodyBytes)
 }
 
+// fallbackQueryHit records one resolvable virtual ID found in the query string.
+// source marks MediaSourceId/PlaySessionId/SessionId, which name a specific
+// server's source or session and must stay pinned to that server.
+type fallbackQueryHit struct {
+	key      string
+	index    int
+	virtual  string
+	resolved *ResolvedID
+	source   bool
+}
+
+// resolveFallbackTarget picks the upstream for a generic passthrough request.
+// Unlike the old one-shot rewriteIDQueryValues target inference, every known
+// virtual ID in the path and query is validated against the chosen server, and
+// a paused or unauthorized server is never used to explain an ID that belongs
+// to it. Only a request with no known target at all keeps the old default
+// (single online node, or ambiguous when several are available).
 func (a *App) resolveFallbackTarget(r *http.Request, reqCtx *RequestContext) (*UpstreamClient, string, string, url.Values, bool) {
 	query := cloneValues(r.URL.Query())
 	rewrittenPath := r.URL.Path
-	serverID := ""
-	var targetClient *UpstreamClient
 
+	var pathIDs []string
 	for _, candidate := range fallbackVirtualIDPattern.FindAllString(r.URL.Path, -1) {
-		if resolved := a.IDStore.ResolveVirtualID(candidate); resolved != nil {
-			// Try primary
-			if a.isServerAllowed(reqCtx, resolved.ServerID) {
-				if client := a.Upstream.ClientByID(resolved.ServerID); client != nil && client.IsOnline() {
-					targetClient = client
-					serverID = resolved.ServerID
-					rewrittenPath = strings.ReplaceAll(rewrittenPath, candidate, resolved.OriginalID)
-					break
-				}
+		if a.IDStore.ResolveVirtualID(candidate) != nil {
+			pathIDs = append(pathIDs, candidate)
+		}
+	}
+
+	keys := make([]string, 0, len(query))
+	for key := range query {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	var queryHits []fallbackQueryHit
+	for _, key := range keys {
+		isSource := key == "PlaySessionId" || key == "SessionId" || strings.EqualFold(key, "MediaSourceId")
+		_, isResource := simpleIDFields[key]
+		if !isSource && !isResource {
+			continue
+		}
+		for i, raw := range query[key] {
+			resolved := a.IDStore.ResolveVirtualID(raw)
+			if resolved == nil {
+				continue
 			}
-			// Primary offline — try OtherInstances
-			for _, other := range resolved.OtherInstances {
-				if a.isServerAllowed(reqCtx, other.ServerID) {
-					if client := a.Upstream.ClientByID(other.ServerID); client != nil && client.IsOnline() {
-						targetClient = client
-						serverID = other.ServerID
-						rewrittenPath = strings.ReplaceAll(rewrittenPath, candidate, other.OriginalID)
-						break
-					}
-				}
+			queryHits = append(queryHits, fallbackQueryHit{key: key, index: i, virtual: raw, resolved: resolved, source: isSource})
+		}
+	}
+
+	if len(pathIDs) == 0 && len(queryHits) == 0 {
+		// No known target: preserve the original default selection.
+		online := a.allowedClients(reqCtx)
+		if len(online) == 0 {
+			return nil, rewrittenPath, "", query, false
+		}
+		if len(online) > 1 {
+			return nil, rewrittenPath, "", query, true
+		}
+		return online[0], rewrittenPath, online[0].ID, query, false
+	}
+
+	// A source/session ID pins the target to the server that owns it, and that
+	// server must itself be enabled and online; we never re-interpret such an ID
+	// on a different server.
+	forcedServer := ""
+	for _, hit := range queryHits {
+		if !hit.source {
+			continue
+		}
+		if !a.serverUsableForAggregation(reqCtx, hit.resolved.ServerID) {
+			return nil, rewrittenPath, "", query, false
+		}
+		if forcedServer != "" && forcedServer != hit.resolved.ServerID {
+			return nil, rewrittenPath, "", query, false
+		}
+		forcedServer = hit.resolved.ServerID
+	}
+
+	target := forcedServer
+	if target == "" {
+		// Choose the first enabled, online, permitted server (in config order)
+		// that can translate every known resource ID to itself.
+		cfg := a.ConfigStore.Snapshot()
+		for _, upstream := range cfg.Upstream {
+			if !a.serverUsableForAggregation(reqCtx, upstream.ID) {
+				continue
 			}
-			if targetClient != nil {
+			if a.serverCanTranslateFallbackIDs(upstream.ID, pathIDs, queryHits) {
+				target = upstream.ID
 				break
 			}
 		}
+		if target == "" {
+			return nil, rewrittenPath, "", query, false
+		}
 	}
 
-	if rewritten, sid, found := rewriteIDQueryValues(query, a.IDStore); found {
-		query = url.Values(rewritten)
-		if targetClient == nil {
-			if a.isServerAllowed(reqCtx, sid) {
-				if client := a.Upstream.ClientByID(sid); client != nil && client.IsOnline() {
-					targetClient = client
-					serverID = sid
-				}
-			}
-		}
-	} else {
-		query = url.Values(rewritten)
+	if !a.serverCanTranslateFallbackIDs(target, pathIDs, queryHits) {
+		return nil, rewrittenPath, "", query, false
 	}
 
-	if targetClient == nil {
-		online := a.allowedClients(reqCtx)
-		if len(online) == 0 {
-			return nil, rewrittenPath, serverID, query, false
+	for _, id := range pathIDs {
+		if original, ok := translateVirtualIDForServer(id, target, a.IDStore); ok {
+			rewrittenPath = strings.ReplaceAll(rewrittenPath, id, original)
 		}
-		if len(online) > 1 {
-			return nil, rewrittenPath, serverID, query, true
-		}
-		targetClient = online[0]
-		serverID = targetClient.ID
 	}
-	return targetClient, rewrittenPath, serverID, query, false
+	for _, hit := range queryHits {
+		if original, ok := translateVirtualIDForServer(hit.virtual, target, a.IDStore); ok {
+			query[hit.key][hit.index] = original
+		}
+	}
+
+	client := a.Upstream.ClientByID(target)
+	if client == nil || !client.IsOnline() {
+		return nil, rewrittenPath, "", query, false
+	}
+	return client, rewrittenPath, target, query, false
+}
+
+// serverUsableForAggregation reports whether a server may serve content for this
+// request: aggregation on, account grant present, and currently online.
+func (a *App) serverUsableForAggregation(reqCtx *RequestContext, serverID string) bool {
+	if !a.canUseAggregatedServer(reqCtx, serverID) {
+		return false
+	}
+	client := a.Upstream.ClientByID(serverID)
+	return client != nil && client.IsOnline()
+}
+
+// serverCanTranslateFallbackIDs reports whether every known path and query ID
+// can be translated to the given server.
+func (a *App) serverCanTranslateFallbackIDs(serverID string, pathIDs []string, queryHits []fallbackQueryHit) bool {
+	for _, id := range pathIDs {
+		if _, ok := translateVirtualIDForServer(id, serverID, a.IDStore); !ok {
+			return false
+		}
+	}
+	for _, hit := range queryHits {
+		if _, ok := translateVirtualIDForServer(hit.virtual, serverID, a.IDStore); !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // decodeFallbackBody reads the client body once. A JSON-declared body is decoded

@@ -64,28 +64,49 @@ func (a *App) handleLocalResume(w http.ResponseWriter, r *http.Request, reqCtx *
 		limit = l
 	}
 
-	items, err := a.WatchStore.GetResumeItems(reqCtx.ProxyUser.UserID, limit)
-	if err != nil || len(items) == 0 {
-		writeJSON(w, http.StatusOK, map[string]any{"Items": []any{}, "TotalRecordCount": 0, "StartIndex": 0})
-		return
-	}
-
-	// If ParentId specified, filter to that series only
-	if parentID != "" {
-		var filtered []WatchProgress
-		for _, item := range items {
-			if item.SeriesVirtualID == parentID {
-				filtered = append(filtered, item)
+	// Scan the deduped resume list in batches, keeping only candidates that pass
+	// the ParentId filter and still resolve to an enabled, online, permitted
+	// instance. Doing this before the enrich step means a run of recent records
+	// that all live on paused servers no longer hides later playable entries
+	// behind the client's Limit.
+	const batchSize = 100
+	var candidates []WatchProgress
+	truncated := false
+	for offset := 0; offset < localFilterScanLimit; offset += batchSize {
+		page, err := a.WatchStore.GetResumeItemsPage(reqCtx.ProxyUser.UserID, batchSize, offset)
+		if err != nil {
+			if a.Logger != nil {
+				a.Logger.Warnf("WatchStore resume page read error: %s", redactURLInError(err))
+			}
+			break
+		}
+		if len(page) == 0 {
+			break
+		}
+		for i := range page {
+			if parentID != "" && page[i].SeriesVirtualID != parentID {
+				continue
+			}
+			if _, _, ok := a.resolveWatchItemServer(reqCtx, &page[i]); !ok {
+				continue
+			}
+			candidates = append(candidates, page[i])
+			if len(candidates) >= limit {
+				break
 			}
 		}
-		items = filtered
-		if len(items) == 0 {
-			writeJSON(w, http.StatusOK, map[string]any{"Items": []any{}, "TotalRecordCount": 0, "StartIndex": 0})
-			return
+		if len(candidates) >= limit {
+			break
+		}
+		if offset+batchSize >= localFilterScanLimit {
+			truncated = true
 		}
 	}
+	if truncated && a.Logger != nil {
+		a.Logger.Warnf("local resume scan reached %d records: results may be truncated", localFilterScanLimit)
+	}
 
-	enriched := a.enrichWatchItems(r, reqCtx, items)
+	enriched := a.enrichWatchItems(r, reqCtx, candidates)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"Items":            toAnySlice(enriched),
 		"TotalRecordCount": len(enriched),
@@ -106,7 +127,7 @@ func (a *App) enrichWatchItems(r *http.Request, reqCtx *RequestContext, items []
 	}
 	groups := map[string]*serverGroup{}
 	for i := range items {
-		serverID, originalID, ok := a.resolveWatchItemServer(&items[i])
+		serverID, originalID, ok := a.resolveWatchItemServer(reqCtx, &items[i])
 		if !ok {
 			continue // all instances offline
 		}
@@ -124,6 +145,9 @@ func (a *App) enrichWatchItems(r *http.Request, reqCtx *RequestContext, items []
 	// Fetch metadata per server (all groups now point to online servers)
 	fetched := map[string]map[string]any{} // originalID → item metadata
 	for serverID, g := range groups {
+		if !a.canUseAggregatedServer(reqCtx, serverID) {
+			continue
+		}
 		client := a.Upstream.ClientByID(serverID)
 		if client == nil || !client.IsOnline() {
 			continue
@@ -166,11 +190,12 @@ func (a *App) enrichWatchItems(r *http.Request, reqCtx *RequestContext, items []
 }
 
 // resolveWatchItemServer returns the serverID and originalItemID to use for
-// fetching metadata. If the item's recorded server is offline, it tries to find
-// an online OtherInstance via IDStore.
-func (a *App) resolveWatchItemServer(wp *WatchProgress) (serverID string, originalItemID string, ok bool) {
+// fetching metadata. A recorded server that is offline or has aggregation
+// paused is skipped, and the item is remapped to an enabled, online, permitted
+// copy via IDStore.
+func (a *App) resolveWatchItemServer(reqCtx *RequestContext, wp *WatchProgress) (serverID string, originalItemID string, ok bool) {
 	client := a.Upstream.ClientByID(wp.ServerID)
-	if client != nil && client.IsOnline() {
+	if client != nil && client.IsOnline() && a.canUseAggregatedServer(reqCtx, wp.ServerID) {
 		return wp.ServerID, wp.OriginalItemID, true
 	}
 	resolved := a.IDStore.ResolveVirtualID(wp.VirtualItemID)
@@ -180,14 +205,14 @@ func (a *App) resolveWatchItemServer(wp *WatchProgress) (serverID string, origin
 	// Try IDStore primary (may differ from wp.ServerID if mapping was updated)
 	if resolved.ServerID != wp.ServerID {
 		alt := a.Upstream.ClientByID(resolved.ServerID)
-		if alt != nil && alt.IsOnline() {
+		if alt != nil && alt.IsOnline() && a.canUseAggregatedServer(reqCtx, resolved.ServerID) {
 			return resolved.ServerID, resolved.OriginalID, true
 		}
 	}
 	// Try OtherInstances
 	for _, other := range resolved.OtherInstances {
 		alt := a.Upstream.ClientByID(other.ServerID)
-		if alt != nil && alt.IsOnline() {
+		if alt != nil && alt.IsOnline() && a.canUseAggregatedServer(reqCtx, other.ServerID) {
 			return other.ServerID, other.OriginalID, true
 		}
 	}

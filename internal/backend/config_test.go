@@ -189,3 +189,48 @@ func TestConfigStoreConcurrentSavesKeepEveryMutation(t *testing.T) {
 		t.Fatalf("persisted %d upstreams, want 10: the shrink was overwritten by a stale render", len(parsed.Upstream))
 	}
 }
+
+// TestAggregationDisabledConfigRoundTrip pins the aggregationDisabled field:
+// missing/false means enabled, true writes the key and survives a re-parse, and
+// the rest of the entry is untouched.
+func TestAggregationDisabledConfigRoundTrip(t *testing.T) {
+	base := Config{
+		Server:   ServerConfig{Port: 8096, Name: "s", ID: "sid"},
+		Admin:    AdminConfig{Username: "admin", Password: "pw"},
+		Playback: PlaybackConfig{Mode: "proxy"},
+		Upstream: []UpstreamConfig{
+			{ID: "u1", Name: "A", URL: "http://a", Username: "u", Password: "p", AggregationDisabled: true},
+			{ID: "u2", Name: "B", URL: "http://b", Username: "u", Password: "p"},
+		},
+	}
+	rendered := renderConfigYAML(&base)
+	if !strings.Contains(rendered, "aggregationDisabled: true") {
+		t.Fatalf("rendered config is missing aggregationDisabled: true\n%s", rendered)
+	}
+	parsed, err := parseConfigYAML(rendered)
+	if err != nil {
+		t.Fatalf("parse rendered config: %v", err)
+	}
+	if len(parsed.Upstream) != 2 {
+		t.Fatalf("upstream count = %d, want 2", len(parsed.Upstream))
+	}
+	if !parsed.Upstream[0].AggregationDisabled {
+		t.Errorf("u1 should round-trip as disabled")
+	}
+	if parsed.Upstream[1].AggregationDisabled {
+		t.Errorf("u2 should default to enabled")
+	}
+
+	// A config that omits the key entirely must be enabled (backward compatible).
+	plain := "server:\n  port: 8096\n  name: 's'\n  id: 'sid'\nadmin:\n  username: 'a'\n  password: 'p'\nplayback:\n  mode: 'proxy'\nupstream:\n  - id: 'u3'\n    name: 'C'\n    url: 'http://c'\n    username: 'u'\n    password: 'p'\n"
+	parsedPlain, err := parseConfigYAML(plain)
+	if err != nil {
+		t.Fatalf("parse plain config: %v", err)
+	}
+	if len(parsedPlain.Upstream) != 1 {
+		t.Fatalf("plain upstream count = %d, want 1", len(parsedPlain.Upstream))
+	}
+	if parsedPlain.Upstream[0].AggregationDisabled {
+		t.Errorf("missing aggregationDisabled key should mean enabled")
+	}
+}

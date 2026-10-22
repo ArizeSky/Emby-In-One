@@ -34,7 +34,7 @@ func (a *App) selectedPlaybackSource(w http.ResponseWriter, r *http.Request, res
 	if source == nil {
 		return resolved, true
 	}
-	if !a.isServerAllowed(requestContextFrom(r.Context()), source.ServerID) {
+	if !a.canUseAggregatedServer(requestContextFrom(r.Context()), source.ServerID) {
 		writeJSON(w, http.StatusForbidden, map[string]any{"message": "Access denied"})
 		return nil, false
 	}

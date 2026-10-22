@@ -4,7 +4,7 @@
 
 发布日期：2026-10-19
 
-> V1.4.4-rc3 是 V1.4.4-rc2 之后的预发布，聚焦**代码审查修复与工程门禁**：修复授权快照过期、令牌撤销持久化失败、跨主机重定向转发上游凭据三项安全/权限问题，修复 Series 播放乱序与静态资源陈旧缓存两项前端/资源问题，修正安装脚本完整性校验 fail-open，并补齐 `gofmt` 与前端测试的 CI 门禁。本版还新增 **UA 管理与服务器绑定**（`spoofClient: resident`），支持最近采集、常驻身份与多服务器共用固定身份（详见下方新功能章节）。**对外接口与配置保持兼容，无升级迁移动作。**
+> V1.4.4-rc3 是 V1.4.4-rc2 之后的预发布，聚焦**代码审查修复与工程门禁**：修复授权快照过期、令牌撤销持久化失败、跨主机重定向转发上游凭据三项安全/权限问题，修复 Series 播放乱序与静态资源陈旧缓存两项前端/资源问题，修正安装脚本完整性校验 fail-open，并补齐 `gofmt` 与前端测试的 CI 门禁。本版还新增 **UA 管理与服务器绑定**（`spoofClient: resident`），支持最近采集、常驻身份与多服务器共用固定身份（详见下方新功能章节）；并新增**上游聚合开关**与**根页面双入口**（`/web/` 与 `/admin/`）。**对外接口与配置保持兼容，无升级迁移动作。**
 
 ### 安全与权限修复
 
@@ -46,6 +46,18 @@
 **新增/修改文件**：新增 `ua_library.go`、`ua_library_persistence.go`、`ua_library_test.go`、`upstream_resident_identity.go`、`admin_ua_assignments.go`、`handlers_admin_ua.go`；修改 `config.go`、`admin_validation.go`、`handlers_admin.go`、`handlers_user.go`、`healthcheck.go`、`identity.go`、`routes.go`、`server.go`、`upstream.go`、`upstream_outbound.go`、`public/admin.html`、`public/admin.js`、`public/vendor/tailwind.css`、`README.md`。
 
 **验证**：`go build ./...`、`go vet ./...` 通过；`go test ./...` 全绿（含新增 UA 单元/端到端用例）；`npm test` 55/55；`npm run build:panel` 成功；`gofmt`、`git diff --check` 干净。
+
+### 新功能：上游聚合开关与根页面双入口
+
+- **聚合开关**：`/admin` 的「上游节点」每行新增聚合切换（`role="switch"`，支持键盘与 tooltip）。关闭后该节点保留配置、在线检测、管理员重连、UA 绑定与历史数据，但不参与 `/web` 与 Emby 客户端的内容聚合（媒体库、搜索、最新、继续观看、下一集、跨服副本与播放版本列表等），管理员访问内容时同样受约束。保存即时生效，不重启、不重新登录、不触发全量上游重连。
+- **持久化**：`UpstreamConfig.AggregationDisabled`（YAML `aggregationDisabled`，缺省/`false` 为开启），按持久服务器 ID 绑定，排序/改名不改变绑定；开关判断只读 ConfigStore，不读 `client.Config`。
+- **专用接口**：`PATCH /admin/api/upstream/{id}/aggregation`，请求体 `{"aggregationEnabled": bool}`，幂等；使用 `withAdminMutation` 串行化与 `SaveAndReplace` 原子落盘，不调用登录/Reload。
+- **清理例外**：已开始的播放进度/停止、`PlayingItems` DELETE 与转码清理保留纯授权判断，关闭节点仍可释放播放槽；新播放开始（`/Sessions/Playing`）拒绝关闭节点，且不为关闭节点发起新的元数据补查。
+- **根页面双入口**：`/` 保留管理面板入口并新增 `/web/` 播放客户端入口，使用固定同源路径、无 token、纯 HTML/CSS。
+
+**新增/修改文件**：新增 `aggregation_policy.go`、`handlers_admin_aggregation.go`、`session_cleanup.go`、`root_page.go` 及对应测试；修改 `config.go`、`auth_context.go`、`media.go`、`media_source.go`、`media_stream.go`、`media_resume.go`、`media_nextup.go`、`fallback_proxy.go`、`session_userdata.go`、`watch_store.go`、`handlers_admin.go`、`handlers_system.go`、`routes.go`、`public/admin.html`、`public/admin.js`、`assets/panel.css`、`public/vendor/tailwind.css`、`tests/admin-panel.test.cjs`。
+
+**验证**：`go build ./...`、`go vet ./...` 通过；`go test ./...` 全绿（含新增聚合/根页面用例）；`npm test` 61/61；`npm run build:panel` 成功。
 ## V1.4.4-rc2
 
 发布日期：2026-09-30

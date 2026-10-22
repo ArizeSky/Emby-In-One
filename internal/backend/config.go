@@ -55,18 +55,22 @@ type ProxyConfig struct {
 }
 
 type UpstreamConfig struct {
-	ID                  string
-	Name                string
-	URL                 string
-	Username            string
-	Password            string
-	APIKey              string
-	PlaybackMode        string
-	SpoofClient         string
-	UAProfileID         string
-	FollowRedirects     bool
-	ProxyID             string
-	PriorityMetadata    bool
+	ID               string
+	Name             string
+	URL              string
+	Username         string
+	Password         string
+	APIKey           string
+	PlaybackMode     string
+	SpoofClient      string
+	UAProfileID      string
+	FollowRedirects  bool
+	ProxyID          string
+	PriorityMetadata bool
+	// AggregationDisabled keeps the server configured, online-checked and
+	// manageable but excludes it from content aggregation. The zero value means
+	// aggregation is enabled, so an old config without the key keeps working.
+	AggregationDisabled bool
 	StreamingURL        string   // first entry of StreamingURLs; kept as the single-value view
 	StreamingURLs       []string // ordered stream bases: [0] primary, [1:] fallbacks
 	CustomUserAgent     string
@@ -588,6 +592,8 @@ func assignListField(cfg *Config, listName string, index int, key, value string)
 			upstream.ProxyID = parseStringValue(value)
 		case "priorityMetadata":
 			upstream.PriorityMetadata = parseBoolValue(value)
+		case "aggregationDisabled":
+			upstream.AggregationDisabled = parseBoolValue(value)
 		case "streamingUrl":
 			upstream.StreamingURL = parseStringValue(value)
 		case "streamingUrls":
@@ -676,6 +682,9 @@ func renderConfigYAML(cfg *Config) string {
 				fmt.Fprintf(&b, "  - name: %s\n", yamlStr(upstream.Name))
 			}
 			fmt.Fprintf(&b, "    url: %s\n", yamlStr(upstream.URL))
+			if upstream.AggregationDisabled {
+				b.WriteString("    aggregationDisabled: true\n")
+			}
 			if upstream.APIKey != "" {
 				fmt.Fprintf(&b, "    apiKey: %s\n", yamlStr(upstream.APIKey))
 			} else {

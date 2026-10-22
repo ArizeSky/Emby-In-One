@@ -94,27 +94,17 @@ func requestContextFrom(ctx context.Context) *RequestContext {
 	return reqCtx
 }
 
-// allowedClients returns only the online upstream clients that the
-// current user is permitted to access. Admin users see all online servers.
+// allowedClients returns only the online upstream clients that both the
+// aggregation switch and the current user's account grants allow. Admins are
+// not exempt: turning a server's aggregation off removes it here too.
 func (a *App) allowedClients(reqCtx *RequestContext) []*UpstreamClient {
-	all := a.Upstream.OnlineClients()
-	if reqCtx == nil || reqCtx.ProxyUser == nil {
-		return nil
-	}
-	if reqCtx.ProxyUser.AllowedServers == nil {
-		return all
-	}
-	allowed := make(map[string]bool, len(reqCtx.ProxyUser.AllowedServers))
-	for _, id := range reqCtx.ProxyUser.AllowedServers {
-		allowed[id] = true
-	}
-	filtered := make([]*UpstreamClient, 0, len(all))
-	for _, c := range all {
-		if allowed[c.ID] {
-			filtered = append(filtered, c)
+	out := make([]*UpstreamClient, 0)
+	for _, client := range a.Upstream.OnlineClients() {
+		if a.canUseAggregatedServer(reqCtx, client.ID) {
+			out = append(out, client)
 		}
 	}
-	return filtered
+	return out
 }
 
 // isServerAllowed checks whether the current user is allowed to access the
@@ -138,7 +128,7 @@ func (a *App) isServerAllowed(reqCtx *RequestContext, serverID string) bool {
 // user is not allowed to access the upstream server that owns resolved.
 // A nil resolution returns true so each caller keeps its own not-found response.
 func (a *App) requireServerAccess(w http.ResponseWriter, r *http.Request, resolved *routeResolution) bool {
-	if resolved == nil || a.isServerAllowed(requestContextFrom(r.Context()), resolved.ServerID) {
+	if resolved == nil || a.canUseAggregatedServer(requestContextFrom(r.Context()), resolved.ServerID) {
 		return true
 	}
 	writeJSON(w, http.StatusForbidden, map[string]any{"message": "Access denied"})

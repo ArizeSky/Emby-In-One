@@ -159,10 +159,22 @@ func (ws *WatchStore) SetFavorite(proxyUserID, virtualItemID string, favorite bo
 	`, proxyUserID, virtualItemID, boolToInt(favorite), time.Now().UnixMilli())
 }
 
-// GetResumeItems returns items with position > 0 and not fully played, ordered by last_played desc.
+// GetResumeItems returns items with position > 0 and not fully played, ordered by
+// last_played desc. It is the offset-0 view of GetResumeItemsPage.
 func (ws *WatchStore) GetResumeItems(proxyUserID string, limit int) ([]WatchProgress, error) {
+	return ws.GetResumeItemsPage(proxyUserID, limit, 0)
+}
+
+// GetResumeItemsPage is GetResumeItems with an offset so callers can scan past
+// candidates that are filtered out after the read (for example entries whose
+// only servers are paused). The one-episode-per-series fold is unchanged; only
+// the final window uses LIMIT/OFFSET.
+func (ws *WatchStore) GetResumeItemsPage(proxyUserID string, limit, offset int) ([]WatchProgress, error) {
 	if limit <= 0 {
 		limit = 20
+	}
+	if offset < 0 {
+		offset = 0
 	}
 	return ws.queryProgress(proxyUserID, `
  		SELECT virtual_item_id, server_id, original_item_id, item_type,
@@ -182,8 +194,8 @@ func (ws *WatchStore) GetResumeItems(proxyUserID string, limit int) ([]WatchProg
  		)
  		WHERE rn = 1
  		ORDER BY last_played DESC
- 		LIMIT ?
- 	`, proxyUserID, limit)
+		LIMIT ? OFFSET ?
+	`, proxyUserID, limit, offset)
 }
 
 // GetFavoriteItems returns all favorited items for a user.

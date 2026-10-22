@@ -160,6 +160,9 @@ func (a *App) recordSessionToWatchStore(r *http.Request, virtualItemID string, b
 // enrichWatchProgressMetadata fetches item details from upstream and populates
 // metadata fields on the WatchProgress (type, series info, name, etc.).
 func (a *App) enrichWatchProgressMetadata(r *http.Request, reqCtx *RequestContext, p *WatchProgress, originalItemID string, serverID string) {
+	if !a.canUseAggregatedServer(reqCtx, serverID) {
+		return
+	}
 	client := a.Upstream.ClientByID(serverID)
 	if client == nil || !client.IsOnline() || originalItemID == "" {
 		return
@@ -348,7 +351,7 @@ func (a *App) handleSessionPlaying(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "Cannot determine target server"})
 		return
 	}
-	if !a.isServerAllowed(requestContextFrom(r.Context()), serverID) {
+	if !a.canUseAggregatedServer(requestContextFrom(r.Context()), serverID) {
 		writeJSON(w, http.StatusForbidden, map[string]any{"message": "Access denied"})
 		return
 	}
@@ -546,7 +549,7 @@ func (a *App) handleUserPlayingItemStart(w http.ResponseWriter, r *http.Request)
 }
 
 func (a *App) handleUserPlayingItemStop(w http.ResponseWriter, r *http.Request) {
-	a.handleUserPlayingItem(w, r, http.MethodDelete)
+	a.handleUserPlayingItemCleanup(w, r)
 }
 
 func (a *App) handleUserPlayingItem(w http.ResponseWriter, r *http.Request, method string) {

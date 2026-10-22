@@ -27,7 +27,7 @@ function adminHarness(options = {}) {
     navigator: {},
     document: { createElement: () => ({ click() {}, style: {} }) },
     fetch: (url, opts) => new Promise((resolve, reject) => {
-      seen.push({ url: String(url), signal: opts && opts.signal });
+      seen.push({ url: String(url), signal: opts && opts.signal, method: opts && opts.method, body: opts && opts.body });
       const signal = opts && opts.signal;
       // Mirror the browser: an aborted signal rejects the request with an
       // AbortError, before or after it was issued.
@@ -103,4 +103,99 @@ test('an aborted refresh does not empty the page lists', async () => {
   vm.abortRefresh();
   await pending;
   assert.deepStrictEqual(vm.upstreamList, [{ id: 'srv-1', name: 'A' }], 'an aborted refresh emptied the server list');
+});
+
+// --- Aggregation switch ---------------------------------------------------
+
+test('aggregation switch sends an explicit desired state', async () => {
+  const h = adminHarness({
+    reply: url => url.includes('/aggregation') ? { success: true, id: 's1', aggregationEnabled: false } : {},
+  });
+  const vm = h.vm;
+  vm.currentPage = 'logs'; // no post-toggle page refresh
+  vm.stats = { upstream: [{ id: 's1', name: 'A', aggregationEnabled: true }] };
+  vm.upstreamList = [{ id: 's1', name: 'A', aggregationEnabled: true }];
+  await vm.setServerAggregation(vm.upstreamList[0]);
+  const call = h.seen.find(c => c.url.includes('/aggregation'));
+  assert.ok(call, 'a PATCH was issued');
+  assert.strictEqual(call.method, 'PATCH');
+  assert.deepStrictEqual(JSON.parse(call.body), { aggregationEnabled: false });
+  assert.ok(!String(call.body).includes('password'));
+  assert.strictEqual(vm.upstreamList[0].aggregationEnabled, false);
+  assert.strictEqual(vm.aggregationPending['s1'], undefined);
+});
+
+test('aggregation switch sends true for a disabled row', async () => {
+  const h = adminHarness({
+    reply: url => url.includes('/aggregation') ? { success: true, id: 's2', aggregationEnabled: true } : {},
+  });
+  const vm = h.vm;
+  vm.currentPage = 'logs';
+  vm.stats = { upstream: [{ id: 's2', name: 'B', aggregationEnabled: false }] };
+  vm.upstreamList = [{ id: 's2', name: 'B', aggregationEnabled: false }];
+  await vm.setServerAggregation(vm.upstreamList[0]);
+  const call = h.seen.find(c => c.url.includes('/aggregation'));
+  assert.deepStrictEqual(JSON.parse(call.body), { aggregationEnabled: true });
+  assert.strictEqual(vm.upstreamList[0].aggregationEnabled, true);
+});
+
+test('aggregation switch blocks duplicate clicks while pending', async () => {
+  const h = adminHarness({ reply: url => url.includes('/aggregation') ? { __delay: true } : {} });
+  const vm = h.vm;
+  vm.currentPage = 'logs';
+  vm.stats = { upstream: [] };
+  vm.upstreamList = [{ id: 's1', name: 'A', aggregationEnabled: true }];
+  const first = vm.setServerAggregation(vm.upstreamList[0]); // stays in flight
+  await vm.setServerAggregation(vm.upstreamList[0]); // blocked by pending guard
+  const patches = h.seen.filter(c => c.url.includes('/aggregation'));
+  assert.strictEqual(patches.length, 1, 'the duplicate click issued no request');
+  assert.strictEqual(vm.aggregationPending['s1'], true, 'pending stays set while in flight');
+  void first;
+});
+
+test('aggregation failure preserves the row state', async () => {
+  const h = adminHarness({
+    reply: url => url.includes('/aggregation') ? { __status: 500, __body: { error: 'nope' } } : {},
+  });
+  const vm = h.vm;
+  vm.currentPage = 'logs';
+  vm.stats = { upstream: [{ id: 's1', name: 'A', aggregationEnabled: true }] };
+  vm.upstreamList = [{ id: 's1', name: 'A', aggregationEnabled: true }];
+  await vm.setServerAggregation(vm.upstreamList[0]);
+  assert.strictEqual(vm.upstreamList[0].aggregationEnabled, true, 'row state unchanged after failure');
+  assert.strictEqual(vm.aggregationPending['s1'], undefined, 'pending cleared after failure');
+});
+
+test('server edit does not submit aggregation state', async () => {
+  const h = adminHarness();
+  const vm = h.vm;
+  vm.editID = 's1';
+  vm.editIndex = 0;
+  vm.uaResident = [];
+  vm.serverForm = {
+    name: 'A', url: 'http://x', streamingUrlsText: '', spoofClient: 'passthrough',
+    uaProfileId: '', aggregationEnabled: true,
+  };
+  await vm.saveServer();
+  const put = h.seen.find(c => c.method === 'PUT' && c.url.includes('/admin/api/upstream'));
+  assert.ok(put, 'the edit issued a PUT');
+  assert.ok(!('aggregationEnabled' in JSON.parse(put.body)), 'edit payload must not carry aggregationEnabled');
+});
+
+test('aggregation success aborts stale refreshes', async () => {
+  const h = adminHarness({
+    reply: url => url.includes('/aggregation') ? { success: true, aggregationEnabled: false } : { __delay: true },
+  });
+  const vm = h.vm;
+  vm.currentPage = 'logs';
+  vm.stats = { upstream: [{ id: 's1', name: 'A', aggregationEnabled: true }] };
+  vm.upstreamList = [{ id: 's1', name: 'A', aggregationEnabled: true }];
+  const signal = vm.refreshSignal();
+  const pending = vm.refreshServers(signal); // upstream GET stays in flight
+  const upstreamCall = h.seen.find(c => c.url.includes('/admin/api/upstream') && !c.url.includes('/aggregation'));
+  assert.ok(upstreamCall && upstreamCall.signal && !upstreamCall.signal.aborted);
+  await vm.setServerAggregation({ id: 's1', name: 'A', aggregationEnabled: true });
+  assert.strictEqual(upstreamCall.signal.aborted, true, 'the stale refresh was aborted');
+  await pending.catch(() => {});
+  if (vm._refreshTimer) clearTimeout(vm._refreshTimer);
 });

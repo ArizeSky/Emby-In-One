@@ -28,6 +28,7 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("GET /admin/api/upstream", a.withContext(a.requireAdmin(a.handleAdminUpstreamList)))
 	mux.HandleFunc("POST /admin/api/upstream", a.withAdminMutation(a.withContext(a.requireAdmin(a.handleAdminUpstreamCreate))))
 	mux.HandleFunc("PUT /admin/api/upstream/{id}", a.withAdminMutation(a.withContext(a.requireAdmin(a.handleAdminUpstreamUpdate))))
+	mux.HandleFunc("PATCH /admin/api/upstream/{id}/aggregation", a.withAdminMutation(a.withContext(a.requireAdmin(a.handleAdminUpstreamAggregation))))
 	mux.HandleFunc("POST /admin/api/upstream/reorder", a.withAdminMutation(a.withContext(a.requireAdmin(a.handleAdminUpstreamReorder))))
 	mux.HandleFunc("DELETE /admin/api/upstream/{id}", a.withAdminMutation(a.withContext(a.requireAdmin(a.handleAdminUpstreamDelete))))
 	mux.HandleFunc("POST /admin/api/upstream/{id}/reconnect", a.withContext(a.requireAdmin(a.handleAdminUpstreamReconnect)))

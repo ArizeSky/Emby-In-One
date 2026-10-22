@@ -225,14 +225,16 @@ func (a *App) resolveStreamTarget(w http.ResponseWriter, r *http.Request, resolv
 		}
 		return resolved.Client, resolved.OriginalID, true
 	}
+	// Reject a paused or unauthorized source before rewriting the query and
+	// before the same-server fast return, otherwise a same-server MediaSourceId
+	// would bypass the aggregation switch entirely.
+	if !a.canUseAggregatedServer(requestContextFrom(r.Context()), mediaSource.ServerID) {
+		writeJSON(w, http.StatusForbidden, map[string]any{"message": "Access denied"})
+		return nil, "", false
+	}
 	query.Set("MediaSourceId", mediaSource.OriginalID)
 	if mediaSource.ServerID == resolved.ServerID {
 		return resolved.Client, resolved.OriginalID, true
-	}
-
-	if !a.isServerAllowed(requestContextFrom(r.Context()), mediaSource.ServerID) {
-		writeJSON(w, http.StatusForbidden, map[string]any{"message": "Access denied"})
-		return nil, "", false
 	}
 	target := a.Upstream.ClientByID(mediaSource.ServerID)
 	if target == nil || !target.IsOnline() {
@@ -348,8 +350,13 @@ func (a *App) handleDeleteActiveEncodings(w http.ResponseWriter, r *http.Request
 	query := cloneValues(r.URL.Query())
 	serverID, found := a.resolvePlaySessionID(query)
 	if !found {
-		for _, client := range a.allowedClients(requestContextFrom(r.Context())) {
-			_ = a.forwardNoContent(r, client, http.MethodDelete, "/Videos/ActiveEncodings", query, nil)
+		// Cleanup broadcast: a paused server must still be able to release an
+		// active encoding, so iterate every online client and keep the pure
+		// account-grant check instead of the aggregation-filtered list.
+		for _, client := range a.Upstream.OnlineClients() {
+			if a.isServerAllowed(requestContextFrom(r.Context()), client.ID) {
+				_ = a.forwardNoContent(r, client, http.MethodDelete, "/Videos/ActiveEncodings", query, nil)
+			}
 		}
 		w.WriteHeader(http.StatusNoContent)
 		return

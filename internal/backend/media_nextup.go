@@ -130,7 +130,7 @@ func (a *App) handleLocalNextUp(w http.ResponseWriter, r *http.Request, reqCtx *
 			if batch[i].SeriesOriginalID == "" {
 				continue
 			}
-			serverID, seriesOrigID, client := a.resolveSeriesServer(&batch[i])
+			serverID, seriesOrigID, client := a.resolveSeriesServer(reqCtx, &batch[i])
 			if client == nil {
 				continue
 			}
@@ -163,11 +163,12 @@ func (a *App) handleLocalNextUp(w http.ResponseWriter, r *http.Request, reqCtx *
 	})
 }
 
-// resolveSeriesServer returns an online server/client for a series watch entry.
-// If the recorded server is offline, it tries OtherInstances via IDStore.
-func (a *App) resolveSeriesServer(sp *WatchProgress) (serverID string, seriesOriginalID string, client *UpstreamClient) {
+// resolveSeriesServer returns an online, aggregation-enabled, permitted
+// server/client for a series watch entry. If the recorded server is offline or
+// paused, it tries the IDStore primary and OtherInstances.
+func (a *App) resolveSeriesServer(reqCtx *RequestContext, sp *WatchProgress) (serverID string, seriesOriginalID string, client *UpstreamClient) {
 	c := a.Upstream.ClientByID(sp.ServerID)
-	if c != nil && c.IsOnline() {
+	if c != nil && c.IsOnline() && a.canUseAggregatedServer(reqCtx, sp.ServerID) {
 		return sp.ServerID, sp.SeriesOriginalID, c
 	}
 	if sp.SeriesVirtualID == "" {
@@ -179,13 +180,13 @@ func (a *App) resolveSeriesServer(sp *WatchProgress) (serverID string, seriesOri
 	}
 	if resolved.ServerID != sp.ServerID {
 		alt := a.Upstream.ClientByID(resolved.ServerID)
-		if alt != nil && alt.IsOnline() {
+		if alt != nil && alt.IsOnline() && a.canUseAggregatedServer(reqCtx, resolved.ServerID) {
 			return resolved.ServerID, resolved.OriginalID, alt
 		}
 	}
 	for _, other := range resolved.OtherInstances {
 		alt := a.Upstream.ClientByID(other.ServerID)
-		if alt != nil && alt.IsOnline() {
+		if alt != nil && alt.IsOnline() && a.canUseAggregatedServer(reqCtx, other.ServerID) {
 			return other.ServerID, other.OriginalID, alt
 		}
 	}

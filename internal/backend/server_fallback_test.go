@@ -7,6 +7,13 @@ import (
 	"testing"
 )
 
+// adminRequestContext is an admin-scoped request context for unit tests that
+// call the content resolvers directly. An admin has nil AllowedServers, so the
+// pure grant check passes while the aggregation switch still applies.
+func adminRequestContext() *RequestContext {
+	return &RequestContext{ProxyUser: &tokenInfo{Role: "admin"}}
+}
+
 // ---------- resolveRouteID fallback ----------
 
 func TestResolveRouteIDFallbackToOtherInstance(t *testing.T) {
@@ -102,7 +109,7 @@ func TestResolveWatchItemServerFallback(t *testing.T) {
 		}
 
 		// Primary online: returns server 0
-		serverID, origID, ok := app.resolveWatchItemServer(wp)
+		serverID, origID, ok := app.resolveWatchItemServer(adminRequestContext(), wp)
 		if !ok || serverID != s0 || origID != "movie-a" {
 			t.Fatalf("primary online: serverID=%s origID=%s ok=%v", serverID, origID, ok)
 		}
@@ -110,7 +117,7 @@ func TestResolveWatchItemServerFallback(t *testing.T) {
 		// Set server 0 offline
 		app.Upstream.GetClient(0).setOffline("test offline")
 
-		serverID2, origID2, ok2 := app.resolveWatchItemServer(wp)
+		serverID2, origID2, ok2 := app.resolveWatchItemServer(adminRequestContext(), wp)
 		if !ok2 {
 			t.Fatal("fallback failed: resolveWatchItemServer returned ok=false")
 		}
@@ -120,7 +127,7 @@ func TestResolveWatchItemServerFallback(t *testing.T) {
 
 		// Both offline
 		app.Upstream.GetClient(1).setOffline("test offline")
-		_, _, ok3 := app.resolveWatchItemServer(wp)
+		_, _, ok3 := app.resolveWatchItemServer(adminRequestContext(), wp)
 		if ok3 {
 			t.Fatal("all offline: resolveWatchItemServer should return ok=false")
 		}
@@ -163,14 +170,14 @@ func TestResolveSeriesServerFallback(t *testing.T) {
 		}
 
 		// Primary online
-		serverID, origID, client := app.resolveSeriesServer(sp)
+		serverID, origID, client := app.resolveSeriesServer(adminRequestContext(), sp)
 		if client == nil || serverID != s0 || origID != "series-a" {
 			t.Fatalf("primary online: serverID=%s origID=%s client=%v", serverID, origID, client)
 		}
 
 		// Server 0 offline → fallback to 1
 		app.Upstream.GetClient(0).setOffline("test offline")
-		serverID2, origID2, client2 := app.resolveSeriesServer(sp)
+		serverID2, origID2, client2 := app.resolveSeriesServer(adminRequestContext(), sp)
 		if client2 == nil {
 			t.Fatal("fallback failed: resolveSeriesServer returned nil client")
 		}
@@ -180,7 +187,7 @@ func TestResolveSeriesServerFallback(t *testing.T) {
 
 		// Both offline
 		app.Upstream.GetClient(1).setOffline("test offline")
-		_, _, client3 := app.resolveSeriesServer(sp)
+		_, _, client3 := app.resolveSeriesServer(adminRequestContext(), sp)
 		if client3 != nil {
 			t.Fatal("all offline: resolveSeriesServer should return nil client")
 		}

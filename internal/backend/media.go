@@ -51,7 +51,7 @@ func (a *App) resolveRouteID(id string) *routeResolution {
 	}
 	// Try primary instance first
 	client := a.Upstream.ClientByID(resolved.ServerID)
-	if client != nil && client.IsOnline() {
+	if client != nil && client.IsOnline() && a.isServerAggregationEnabled(resolved.ServerID) {
 		return &routeResolution{
 			OriginalID:     resolved.OriginalID,
 			ServerID:       resolved.ServerID,
@@ -62,7 +62,7 @@ func (a *App) resolveRouteID(id string) *routeResolution {
 	// Primary offline — try OtherInstances
 	for _, other := range resolved.OtherInstances {
 		alt := a.Upstream.ClientByID(other.ServerID)
-		if alt != nil && alt.IsOnline() {
+		if alt != nil && alt.IsOnline() && a.isServerAggregationEnabled(other.ServerID) {
 			remaining := make([]AdditionalInstance, 0, len(resolved.OtherInstances))
 			remaining = append(remaining, AdditionalInstance{
 				OriginalID: resolved.OriginalID,
@@ -88,14 +88,16 @@ func (a *App) resolveRouteID(id string) *routeResolution {
 // current user may access. ID mappings are global, so an item's OtherInstances
 // can reference upstream servers the user has no permission for; those are
 // dropped here so no handler forwards a request to them.
+// collectAllowedInstances returns the online instances of an item that the
+// current user may access and whose aggregation switch is on. ID mappings are
+// global, so an item's OtherInstances can reference upstream servers the user
+// has no permission for, or that an administrator paused; both are dropped here
+// so no handler forwards a request to them. Admins are filtered too.
 func (a *App) collectAllowedInstances(reqCtx *RequestContext, resolved *routeResolution) []seriesInstance {
 	instances := buildSeriesInstances(resolved, a.Upstream)
-	if reqCtx == nil || reqCtx.ProxyUser == nil || reqCtx.ProxyUser.AllowedServers == nil {
-		return instances
-	}
-	allowed := instances[:0]
+	allowed := make([]seriesInstance, 0, len(instances))
 	for _, instance := range instances {
-		if a.isServerAllowed(reqCtx, instance.ServerID) {
+		if a.canUseAggregatedServer(reqCtx, instance.ServerID) {
 			allowed = append(allowed, instance)
 		}
 	}

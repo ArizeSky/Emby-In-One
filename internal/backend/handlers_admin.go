@@ -62,6 +62,12 @@ func (a *App) handleAdminClientInfo(w http.ResponseWriter, r *http.Request) {
 func (a *App) handleAdminStatus(w http.ResponseWriter, r *http.Request) {
 	cfg := a.ConfigStore.Snapshot()
 	clients := a.Upstream.Clients()
+	// The aggregation switch is read from the authoritative config, never from a
+	// client's own copy, so a rebuilt pool cannot report a stale value.
+	aggregationByID := make(map[string]bool, len(cfg.Upstream))
+	for _, upstream := range cfg.Upstream {
+		aggregationByID[upstream.ID] = !upstream.AggregationDisabled
+	}
 	upstream := make([]map[string]any, 0, len(clients))
 	online := 0
 	for _, client := range clients {
@@ -69,12 +75,13 @@ func (a *App) handleAdminStatus(w http.ResponseWriter, r *http.Request) {
 			online++
 		}
 		upstream = append(upstream, map[string]any{
-			"id":           client.ID,
-			"index":        client.ServerIndex,
-			"name":         client.Name,
-			"url":          sanitizeUpstreamURL(client.BaseURL),
-			"online":       client.Online,
-			"playbackMode": client.Config.PlaybackMode,
+			"id":                 client.ID,
+			"index":              client.ServerIndex,
+			"name":               client.Name,
+			"url":                sanitizeUpstreamURL(client.BaseURL),
+			"online":             client.Online,
+			"playbackMode":       client.Config.PlaybackMode,
+			"aggregationEnabled": aggregationByID[client.ID],
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -138,6 +145,7 @@ func (a *App) handleAdminUpstreamList(w http.ResponseWriter, r *http.Request) {
 			"username":             upstream.Username,
 			"authType":             authType,
 			"online":               onlineByIndex[index],
+			"aggregationEnabled":   !upstream.AggregationDisabled,
 			"playbackMode":         upstream.PlaybackMode,
 			"spoofClient":          upstream.SpoofClient,
 			"followRedirects":      upstream.FollowRedirects,

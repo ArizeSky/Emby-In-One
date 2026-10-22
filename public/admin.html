@@ -124,7 +124,7 @@
             <tr v-for="s in stats.upstream" :key="s.name" class="hover:bg-slate-50/50 transition-colors">
               <td class="px-6 py-4 font-medium">{{ s.name }}</td><td class="px-6 py-4 text-slate-500 text-sm">{{ s.url }}</td>
               <td class="px-6 py-4"><span class="px-2 py-1 bg-slate-100 rounded text-xs">{{ s.playbackMode }}</span></td>
-              <td class="px-6 py-4"><span :class="s.online ? 'text-green-600' : 'text-red-600'" class="flex items-center space-x-2"><span class="w-2 h-2 rounded-full" :class="s.online ? 'bg-green-500' : 'bg-red-500'"></span><span>{{ s.online ? '在线' : '离线' }}</span></span></td>
+              <td class="px-6 py-4"><span :class="s.online ? 'text-green-600' : 'text-red-600'" class="flex items-center space-x-2"><span class="w-2 h-2 rounded-full" :class="s.online ? 'bg-green-500' : 'bg-red-500'"></span><span>{{ s.online ? '在线' : '离线' }}</span></span><span v-if="s.aggregationEnabled === false" class="aggregation-paused">已暂停聚合</span></td>
             </tr>
           </tbody>
         </table>
@@ -145,8 +145,8 @@
             <td class="px-6 py-4 text-slate-500 text-sm max-w-xs truncate">{{ s.url }}</td>
             <td class="px-6 py-4 text-sm">{{ getProxyName(s.proxyId) }}</td>
             <td class="px-6 py-4"><span v-if="s.priorityMetadata" class="px-2 py-0.5 bg-purple-100 text-purple-700 rounded text-xs font-bold">元数据优先</span></td>
-            <td class="px-6 py-4"><span :class="s.online ? 'bg-green-50 text-green-600' : 'bg-red-50 text-red-600'" class="px-2 py-1 rounded-full text-xs font-bold border">{{ s.online ? '在线' : '离线' }}</span></td>
-            <td class="px-6 py-4"><div class="flex space-x-2"><button @click="editServer(s)" class="p-2 text-slate-400 hover:text-blue-600"><i data-lucide="edit-3" class="w-4 h-4"></i></button><button @click="reconnectServer(s.id || s.index)" class="p-2 text-slate-400 hover:text-green-600"><i data-lucide="refresh-cw" class="w-4 h-4"></i></button><button @click="deleteServer(s.id || s.index)" class="p-2 text-slate-400 hover:text-red-600"><i data-lucide="trash-2" class="w-4 h-4"></i></button></div></td>
+            <td class="px-6 py-4"><span :class="s.online ? 'bg-green-50 text-green-600' : 'bg-red-50 text-red-600'" class="px-2 py-1 rounded-full text-xs font-bold border">{{ s.online ? '在线' : '离线' }}</span><span v-if="s.aggregationEnabled === false" class="aggregation-paused">已暂停聚合</span></td>
+            <td class="px-6 py-4"><div class="flex items-center space-x-2 flex-nowrap"><span class="aggregation-control"><button type="button" class="aggregation-switch" role="switch" :aria-checked="s.aggregationEnabled !== false" :aria-label="(s.aggregationEnabled === false ? '开启聚合：' : '关闭聚合：') + s.name" :disabled="!!aggregationPending[s.id]" :class="{ 'is-enabled': s.aggregationEnabled !== false }" @click="setServerAggregation(s)"><span v-if="s.aggregationEnabled !== false" key="aggregation-on"><i data-lucide="toggle-right" class="w-5 h-5"></i></span><span v-else key="aggregation-off"><i data-lucide="toggle-left" class="w-5 h-5"></i></span></button><span role="tooltip" class="aggregation-tooltip">{{ aggregationPending[s.id] ? '保存中' : (s.aggregationEnabled === false ? '开启聚合' : '关闭聚合') }}</span></span><button @click="editServer(s)" class="p-2 text-slate-400 hover:text-blue-600"><i data-lucide="edit-3" class="w-4 h-4"></i></button><button @click="reconnectServer(s.id || s.index)" class="p-2 text-slate-400 hover:text-green-600"><i data-lucide="refresh-cw" class="w-4 h-4"></i></button><button @click="deleteServer(s.id || s.index)" class="p-2 text-slate-400 hover:text-red-600"><i data-lucide="trash-2" class="w-4 h-4"></i></button></div></td>
           </tr>
         </tbody>
       </table>

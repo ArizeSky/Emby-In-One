@@ -28,6 +28,7 @@ createApp({
       uaTab: 'resident', uaRecent: [], uaResident: [], uaServers: [],
       uaLoading: false, uaError: '', uaDetail: null,
       uaSaveDialog: null, uaReplaceDialog: null, uaAssignmentDialog: null, uaPending: {},
+      aggregationPending: {},
     };
   },
   computed: { pageTitle() { return this.pages.find(p => p.id === this.currentPage)?.name || '管理面板'; },
@@ -133,6 +134,7 @@ createApp({
       const m = target === null || target === undefined ? 'POST' : 'PUT';
       const payload = { ...this.serverForm, streamingUrls: (this.serverForm.streamingUrlsText || '').split(/[\n,]/).map(x => x.trim()).filter(x => x !== '') };
       delete payload.streamingUrlsText;
+      delete payload.aggregationEnabled;
       payload.uaProfileId = this.serverForm.uaProfileId || '';
       if (payload.spoofClient === 'resident') {
         const resident = (this.uaResident || []).find(r => r.id === payload.uaProfileId);
@@ -153,6 +155,30 @@ createApp({
     async deleteServer(id) { if(!confirm('删除服务器？')) return; try { await this.api('/admin/api/upstream/'+id, { method:'DELETE' }); await this.refreshServers(); } catch(e) { alert('删除失败：' + (e.message || '未知错误')); } },
     async reconnectServer(id) { try { await this.api('/admin/api/upstream/'+id+'/reconnect', { method:'POST' }); await this.refreshServers(); } catch(e) { alert('重连失败：' + (e.message || '未知错误')); } },
     async reorder(from, to) { try { await this.api('/admin/api/upstream/reorder', { method:'POST', body:JSON.stringify({fromIndex:from, toIndex:to}) }); await this.refreshServers(); } catch(e) { alert('排序失败：' + (e.message || '未知错误')); } },
+    async setServerAggregation(s) {
+      const id = s.id;
+      if (!id || this.aggregationPending[id]) return;
+      const enabled = s.aggregationEnabled === false;
+      this.aggregationPending[id] = true;
+      try {
+        const result = await this.api(
+          '/admin/api/upstream/' + encodeURIComponent(id) + '/aggregation',
+          { method: 'PATCH', body: JSON.stringify({ aggregationEnabled: enabled }) }
+        );
+        this.abortRefresh();
+        this.upstreamList = this.upstreamList.map(row => row.id === id
+          ? { ...row, aggregationEnabled: result.aggregationEnabled } : row);
+        this.stats.upstream = this.stats.upstream.map(row => row.id === id
+          ? { ...row, aggregationEnabled: result.aggregationEnabled } : row);
+        if (this.currentPage === 'servers') await this.refreshServers(this.refreshSignal());
+        if (this.currentPage === 'dashboard') await this.refreshDashboard(this.refreshSignal());
+      } catch (e) {
+        alert('聚合设置失败：' + (e.message || '未知错误'));
+      } finally {
+        delete this.aggregationPending[id];
+        this.$nextTick(() => lucide.createIcons());
+      }
+    },
     openAddProxy() { this.proxyForm = { name:'', url:'' }; this.proxyTestState = { loading: false, result: null }; this.showProxyModal = true; },
     async testProxy(proxyUrl, targetUrl) {
       try {
