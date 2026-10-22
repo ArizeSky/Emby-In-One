@@ -1,7 +1,6 @@
 package backend
 
 import (
-	"context"
 	"sort"
 )
 
@@ -74,25 +73,60 @@ func (a *App) uaServerSummaries(cfg Config) []uaServerSummary {
 	return out
 }
 
-// commitConfigForUAChanges persists the config atomically, rebuilds the pool and
-// re-logs-in only the affected servers. A save failure changes nothing. A login
-// failure leaves the new binding in place and the server offline; it never
-// reverts to the old identity.
-func (a *App) commitConfigForUAChanges(nextCfg Config, serverIDs []string) ([]string, error) {
-	if err := a.ConfigStore.SaveAndReplace(nextCfg); err != nil {
-		return nil, err
+// swapUAClients swaps the listed servers' pool clients for fresh ones built
+// from cfg (resident servers fixed to the given profile copies) and starts
+// their targeted logins. It returns the IDs whose login could be attempted.
+// Callers hold adminMutationMu, so the pool cannot be rebuilt between prepare
+// and publish.
+func (a *App) swapUAClients(cfg Config, serverIDs []string, profiles map[string]ResidentUA) []string {
+	change := a.Upstream.prepareUAChanges(cfg, serverIDs, profiles)
+	if len(change.replacements)+len(change.additions) != len(serverIDs) {
+		// Defensive: an ID vanished between validation and publish (cannot
+		// happen under adminMutationMu); a full reload still converges.
+		a.Upstream.Reload(cfg)
+	} else {
+		a.Upstream.publishUAChanges(change)
 	}
-	a.Upstream.Reload(nextCfg)
 	reconnecting := make([]string, 0, len(serverIDs))
 	for _, id := range serverIDs {
 		client := a.Upstream.ClientByID(id)
 		if client == nil {
 			continue
 		}
+		// A released server switched to passthrough with no captured identity
+		// must not send a credential login without any client identity: the
+		// same invariant LoginAll, manual reconnect and the health check keep.
+		if !a.Upstream.canAttemptIdentityLogin(client) {
+			if a.Logger != nil {
+				a.Logger.Infof("[%s] UA change skipped login — waiting for a usable identity", client.Name)
+			}
+			continue
+		}
 		reconnecting = append(reconnecting, id)
-		go client.Login(context.Background(), nil, a.Identity)
 	}
-	return reconnecting, nil
+	if len(reconnecting) > 0 {
+		a.startUAReconnectJobs(reconnecting)
+	}
+	return reconnecting
+}
+
+// commitConfigForUAChanges persists a binding change atomically, swaps only
+// the affected clients in the pool and starts their targeted logins. A save
+// failure changes nothing. A login failure leaves the new binding in place
+// and the server offline; it never reverts to the old identity.
+func (a *App) commitConfigForUAChanges(nextCfg Config, serverIDs []string) ([]string, error) {
+	if err := a.ConfigStore.SaveAndReplace(nextCfg); err != nil {
+		return nil, err
+	}
+	return a.swapUAClients(nextCfg, serverIDs, residentProfilesByID(a.UALibrary)), nil
+}
+
+// applyResidentIdentityToServers swaps in new clients carrying the given
+// resident profile for the listed servers and starts their targeted logins.
+// It writes no file: the binding did not change, only the library content
+// did, so a single action never spans both files (execution plan §7.3).
+func (a *App) applyResidentIdentityToServers(cfg Config, profile ResidentUA, serverIDs []string) []string {
+	return a.swapUAClients(cfg, serverIDs, map[string]ResidentUA{profile.ID: profile})
 }
 
 // applyUAAssignments applies an incremental batch of server bindings for one

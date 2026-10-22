@@ -68,6 +68,7 @@ type UpstreamClient struct {
 	logger           *Logger
 	timeouts         TimeoutsConfig
 	recoveryMu       sync.Mutex
+	loginMu          sync.Mutex
 	lastRecovery     time.Time
 	onAuthError      func(c *UpstreamClient)
 	// streamFailures tracks per-stream-base connect-level failure times for
@@ -557,6 +558,11 @@ func (c *UpstreamClient) Login(ctx context.Context, reqCtx *RequestContext, iden
 }
 
 func (c *UpstreamClient) loginWithHeaders(ctx context.Context, reqCtx *RequestContext, identity *ClientIdentityService, override http.Header) {
+	// Serialize logins on this client: a targeted reconnect, a health-check
+	// retry and an auth recovery can otherwise race and the last writer
+	// silently clobbers the others' session state (execution plan §7.3).
+	c.loginMu.Lock()
+	defer c.loginMu.Unlock()
 	if ctx == nil {
 		ctx = context.Background()
 	}

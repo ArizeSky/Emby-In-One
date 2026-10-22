@@ -208,11 +208,10 @@ func (a *App) handleAdminUAResidentReplace(w http.ResponseWriter, r *http.Reques
 			affected = append(affected, bound.ID)
 		}
 		if len(affected) > 0 {
-			reconnecting, err = a.commitConfigForUAChanges(cfg, affected)
-			if err != nil {
-				a.writeUAError(w, err)
-				return
-			}
+			// The binding did not change — only the library content did — so
+			// this action writes no second file: the pool swaps the affected
+			// clients directly and re-logs them in (execution plan §7.3).
+			reconnecting = a.applyResidentIdentityToServers(cfg, resident, affected)
 		}
 	}
 

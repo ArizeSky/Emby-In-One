@@ -32,6 +32,13 @@ type App struct {
 	// persists the config or the UA library, so two admin writes cannot each
 	// base their change on a stale snapshot and overwrite one another.
 	adminMutationMu sync.Mutex
+	// uaJobs* own the lifecycle of the targeted login jobs UA changes start:
+	// jobs derive from uaJobsCtx so Close cancels them, and uaJobsWG lets
+	// Close wait for the in-flight ones instead of leaving background logins
+	// behind (execution plan §7.3).
+	uaJobsCtx    context.Context
+	uaJobsCancel context.CancelFunc
+	uaJobsWG     sync.WaitGroup
 }
 
 func NewApp() (*App, error) {
@@ -87,6 +94,10 @@ func NewApp() (*App, error) {
 		}
 	}
 
+	// Created here, after every early return, so no error path can leak it: the
+	// cancel func lives for the whole App lifetime and Close uses it.
+	uaJobsCtx, uaJobsCancel := context.WithCancel(context.Background())
+
 	return &App{
 		ConfigStore:     configStore,
 		Logger:          logger,
@@ -100,6 +111,8 @@ func NewApp() (*App, error) {
 		HiddenLibraries: hiddenLibraries,
 		libraryCache:    newUpstreamLibraryCache(),
 		PlaybackLimiter: NewPlaybackLimiter(),
+		uaJobsCtx:       uaJobsCtx,
+		uaJobsCancel:    uaJobsCancel,
 	}, nil
 }
 
@@ -116,6 +129,12 @@ func logTimeoutNotice(logger *Logger, timeouts TimeoutsConfig) {
 }
 
 func (a *App) Close() error {
+	// Cancel targeted login jobs first and wait for them: they hold client
+	// references and must not outlive the pool's health checks.
+	if a.uaJobsCancel != nil {
+		a.uaJobsCancel()
+		a.uaJobsWG.Wait()
+	}
 	if a.Upstream != nil {
 		a.Upstream.stopHealthChecks()
 	}
