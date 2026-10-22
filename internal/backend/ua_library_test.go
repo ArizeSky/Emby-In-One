@@ -2,10 +2,13 @@ package backend
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -113,8 +116,9 @@ func TestUALibrarySaveRenameReplace(t *testing.T) {
 
 	// residentA holds identity h1; recent2 (identity h2) is already resident as
 	// `second`, so replacing residentA with recent2 is a duplicate error.
-	if _, err := store.ReplaceResident(replaceResidentUAInput{ResidentID: residentA.ID, RecentID: recent2.ID, ExpectedRevision: residentA.Revision}); err == nil {
-		t.Fatalf("expected a duplicate-resident error")
+	var dup *uaDuplicateResidentError
+	if _, err := store.ReplaceResident(replaceResidentUAInput{ResidentID: residentA.ID, RecentID: recent2.ID, ExpectedRevision: residentA.Revision}); !errors.As(err, &dup) || dup.ExistingID != second.ID {
+		t.Fatalf("duplicate replace error = %v, want uaDuplicateResidentError pointing at %s", err, second.ID)
 	}
 	// Refreshing `second` with its own recent identity keeps the identity version.
 	refreshed, err := store.ReplaceResident(replaceResidentUAInput{ResidentID: second.ID, RecentID: recent2.ID, ExpectedRevision: renamed.Revision})
@@ -430,6 +434,119 @@ func TestAdminUAResidentLifecycle(t *testing.T) {
 		}
 		if len(app.UALibrary.Snapshot().Resident) != 0 {
 			t.Fatalf("resident not deleted")
+		}
+	})
+}
+
+func TestResidentUpstreamConfigRoundTrip(t *testing.T) {
+	base := Config{
+		Server:   ServerConfig{Port: 8096, Name: "s", ID: "sid"},
+		Admin:    AdminConfig{Username: "admin", Password: "pw"},
+		Playback: PlaybackConfig{Mode: "proxy"},
+		Upstream: []UpstreamConfig{
+			{ID: "u1", Name: "A", URL: "http://a", Username: "u", Password: "p",
+				SpoofClient: "resident", UAProfileID: "profile-1"},
+			{ID: "u2", Name: "B", URL: "http://b", Username: "u", Password: "p",
+				SpoofClient: "passthrough"},
+		},
+	}
+	rendered := renderConfigYAML(&base)
+	if !strings.Contains(rendered, "uaProfileId") {
+		t.Fatalf("rendered config is missing uaProfileId\n%s", rendered)
+	}
+	parsed, err := parseConfigYAML(rendered)
+	if err != nil {
+		t.Fatalf("parse rendered config: %v", err)
+	}
+	if len(parsed.Upstream) != 2 {
+		t.Fatalf("upstream count = %d, want 2", len(parsed.Upstream))
+	}
+	if parsed.Upstream[0].SpoofClient != "resident" || parsed.Upstream[0].UAProfileID != "profile-1" {
+		t.Errorf("resident mode/profile did not round-trip: spoofClient=%q uaProfileId=%q",
+			parsed.Upstream[0].SpoofClient, parsed.Upstream[0].UAProfileID)
+	}
+	if parsed.Upstream[1].SpoofClient == "resident" || parsed.Upstream[1].UAProfileID != "" {
+		t.Errorf("passthrough entry must keep an empty profile: spoofClient=%q uaProfileId=%q",
+			parsed.Upstream[1].SpoofClient, parsed.Upstream[1].UAProfileID)
+	}
+}
+
+func TestUAIdentityFromHeadersRejectsInvalidInput(t *testing.T) {
+	valid := uaTestHeaders("Emby/1.0", "Emby", "1.0", "Dev", "dev-1")
+	if _, err := uaIdentityFromHeaders(valid); err != nil {
+		t.Fatalf("valid identity rejected: %v", err)
+	}
+	crlf := uaTestHeaders("Emby/1.0", "Emby", "1.0", "Dev", "dev-1")
+	crlf.Set("X-Emby-Device-Name", "Dev\r\nX-Injected: 1")
+	if _, err := uaIdentityFromHeaders(crlf); err == nil {
+		t.Fatalf("a CR/LF in an identity field must be rejected")
+	}
+	long := uaTestHeaders("Emby/1.0", "Emby", "1.0", "Dev", "dev-1")
+	long.Set("User-Agent", strings.Repeat("a", maxUAFieldBytes+1))
+	if _, err := uaIdentityFromHeaders(long); err == nil {
+		t.Fatalf("an over-length field must be rejected")
+	}
+}
+
+func TestConcurrentFirstCaptureCreatesOneResident(t *testing.T) {
+	store := newTestUALibrary(t)
+	headers := uaTestHeaders("Emby/1.0", "Emby", "1.0", "Dev", "dev-1")
+	const n = 8
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs[i] = store.CaptureAuthenticatedUA(headers)
+		}(i)
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("capture %d: %v", i, err)
+		}
+	}
+	snapshot := store.Snapshot()
+	if len(snapshot.Resident) != 1 {
+		t.Fatalf("concurrent first captures created %d residents, want 1", len(snapshot.Resident))
+	}
+	if len(snapshot.Recent) != 1 {
+		t.Fatalf("concurrent captures created %d recent entries, want 1", len(snapshot.Recent))
+	}
+	if !snapshot.BootstrapCompleted {
+		t.Fatalf("bootstrap flag not set")
+	}
+}
+
+func TestUAEndpointsRejectNonAdmin(t *testing.T) {
+	withTempApp(t, func(app *App, handler http.Handler) {
+		adminToken := loginToken(t, handler, "secret")
+		if rr := doAuthJSON(t, handler, http.MethodPost, "/admin/api/users", map[string]any{"username": "mallory", "password": "mallory12345"}, adminToken); rr.Code != http.StatusCreated {
+			t.Fatalf("create user: status=%d body=%s", rr.Code, rr.Body.String())
+		}
+		userToken := loginTokenAs(t, handler, "mallory", "mallory12345")
+
+		const profileID = "any"
+		endpoints := []struct {
+			method string
+			path   string
+			body   any
+		}{
+			{http.MethodGet, "/admin/api/ua", nil},
+			{http.MethodPost, "/admin/api/ua/resident", map[string]any{"recentId": "x", "name": "n"}},
+			{http.MethodPatch, "/admin/api/ua/resident/" + profileID, map[string]any{"name": "n", "expectedRevision": 1}},
+			{http.MethodPost, "/admin/api/ua/resident/" + profileID + "/replace", map[string]any{"recentId": "x", "expectedRevision": 1}},
+			{http.MethodDelete, "/admin/api/ua/resident/" + profileID, map[string]any{"expectedRevision": 1}},
+			{http.MethodPost, "/admin/api/ua/resident/" + profileID + "/assignments", map[string]any{}},
+		}
+		for _, ep := range endpoints {
+			if rr := doJSONRequest(t, handler, ep.method, ep.path, ep.body, ""); rr.Code != http.StatusUnauthorized {
+				t.Errorf("%s %s without token: status=%d, want 401", ep.method, ep.path, rr.Code)
+			}
+			if rr := doJSONRequest(t, handler, ep.method, ep.path, ep.body, userToken); rr.Code != http.StatusForbidden {
+				t.Errorf("%s %s as regular user: status=%d, want 403", ep.method, ep.path, rr.Code)
+			}
 		}
 	})
 }
