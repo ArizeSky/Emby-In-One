@@ -38,11 +38,16 @@ function adminHarness(options = {}) {
       }
       const result = reply(String(url), opts);
       if (result && result.__delay) return; // only an abort settles a delayed reply
-      if (result && result.__status) {
-        resolve({ ok: false, status: result.__status, statusText: 'Error', headers: { get: () => null }, json: async () => result.__body || {} });
-        return;
-      }
-      resolve({ ok: true, status: 200, headers: { get: () => null }, json: async () => result });
+      const status = result && result.__status ? result.__status : 200;
+      const payload = result && Object.prototype.hasOwnProperty.call(result, '__body') ? result.__body : result;
+      const bodyText = typeof payload === 'string' ? payload : JSON.stringify(payload);
+      resolve({
+        ok: status >= 200 && status < 300,
+        status,
+        headers: { get: () => null },
+        json: async () => JSON.parse(bodyText),
+        text: async () => bodyText,
+      });
     }),
     Vue: {
       createApp: opts => ({ mount() { appOptions = opts; } }),
@@ -105,6 +110,112 @@ test('an aborted refresh does not empty the page lists', async () => {
   assert.deepStrictEqual(vm.upstreamList, [{ id: 'srv-1', name: 'A' }], 'an aborted refresh emptied the server list');
 });
 
+
+for (const status of [404, 500]) {
+  test(`api reports empty HTTP ${status} responses as errors with status`, async () => {
+    const h = adminHarness({ reply: () => ({ __status: status, __body: '' }) });
+    await assert.rejects(h.vm.api('/test'), error => {
+      assert.strictEqual(error.status, status);
+      assert.match(error.message, new RegExp(`HTTP ${status}`));
+      return true;
+    });
+  });
+}
+
+test('api preserves a JSON error body and HTTP status', async () => {
+  const h = adminHarness({ reply: () => ({ __status: 400, __body: { error: 'invalid setting' } }) });
+  await assert.rejects(h.vm.api('/test'), error => {
+    assert.strictEqual(error.status, 400);
+    assert.strictEqual(error.message, 'invalid setting');
+    return true;
+  });
+});
+
+test('api reports status for JSON null error bodies', async () => {
+  const h = adminHarness({ reply: () => ({ __status: 502, __body: null }) });
+  await assert.rejects(h.vm.api('/test'), error => error.status === 502 && /HTTP 502/.test(error.message));
+});
+
+test('api accepts 204 but rejects an empty non-204 success response', async () => {
+  const h = adminHarness({ reply: () => ({ __status: 204, __body: '' }) });
+  assert.strictEqual((await h.vm.api('/test')).success, true);
+
+  const empty = adminHarness({ reply: () => ({ __status: 200, __body: '' }) });
+  await assert.rejects(empty.vm.api('/test'), error => error.status === 200 && /empty response/.test(error.message));
+});
+
+test('first settings load failure blocks saving and retry loads settings', async () => {
+  let attempts = 0;
+  const h = adminHarness({ reply: url => {
+    if (!url.includes('/admin/api/settings')) return {};
+    attempts++;
+    return attempts === 1
+      ? { __status: 500, __body: '' }
+      : { serverName: 'Recovered', timeouts: { api: 30000 } };
+  } });
+  const vm = h.vm;
+  await vm.refreshSettings();
+  assert.strictEqual(vm.settingsLoadState, 'error');
+  assert.strictEqual(vm.settingsLoadedOnce, false);
+  await vm.saveSettings();
+  assert.ok(!h.seen.some(call => call.method === 'PUT' && call.url.includes('/admin/api/settings')),
+    'an initial load failure must not issue a settings save');
+
+  await vm.refreshSettings();
+  assert.strictEqual(vm.settingsLoadState, 'loaded');
+  assert.strictEqual(vm.settingsError, '');
+  assert.strictEqual(vm.settings.serverName, 'Recovered');
+});
+
+test('failed settings reload keeps the last successful data until retry succeeds', async () => {
+  let attempts = 0;
+  const h = adminHarness({ reply: url => {
+    if (!url.includes('/admin/api/settings')) return {};
+    attempts++;
+    if (attempts === 1) return { serverName: 'Known', timeouts: { api: 25000 } };
+    if (attempts === 2) return { __status: 500, __body: '' };
+    return { serverName: 'Retried', timeouts: { api: 15000 } };
+  } });
+  const vm = h.vm;
+  await vm.refreshSettings();
+  await vm.refreshSettings();
+  assert.strictEqual(vm.settingsLoadState, 'error');
+  assert.strictEqual(vm.settings.serverName, 'Known');
+  assert.strictEqual(vm.settings.timeouts.api, 25000);
+  await vm.refreshSettings();
+  assert.strictEqual(vm.settingsLoadState, 'loaded');
+  assert.strictEqual(vm.settings.serverName, 'Retried');
+});
+
+test('stale settings responses cannot overwrite the latest request', async () => {
+  const h = adminHarness();
+  const vm = h.vm;
+  const pending = [];
+  vm.api = () => new Promise(resolve => pending.push(resolve));
+  const oldRequest = vm.refreshSettings();
+  const newRequest = vm.refreshSettings();
+  assert.strictEqual(vm.settingsLoadState, 'loading');
+  pending[1]({ serverName: 'newest', timeouts: { api: 20000 } });
+  await newRequest;
+  pending[0]({ serverName: 'stale', timeouts: { api: 10000 } });
+  await oldRequest;
+  assert.strictEqual(vm.settings.serverName, 'newest');
+  assert.strictEqual(vm.settingsLoadState, 'loaded');
+});
+
+test('failed list refresh preserves known entries and reports the error', async () => {
+  const h = adminHarness({ reply: url => {
+    if (url.includes('/admin/api/upstream')) return { __status: 500, __body: '' };
+    if (url.includes('/admin/api/proxies')) return [];
+    if (url.includes('/admin/api/ua')) return { resident: [], servers: [] };
+    return {};
+  } });
+  const vm = h.vm;
+  vm.upstreamList = [{ id: 'known', name: 'Known server' }];
+  await vm.refreshServers();
+  assert.strictEqual(vm.upstreamList[0].id, 'known');
+  assert.match(vm.listErrors.upstream, /HTTP 500/);
+});
 // --- Aggregation switch ---------------------------------------------------
 
 test('aggregation switch sends an explicit desired state', async () => {

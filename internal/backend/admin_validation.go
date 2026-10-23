@@ -601,44 +601,52 @@ func applyDeclaredAuthType(dst *UpstreamConfig, body adminUpstreamInput) {
 	}
 }
 
-func toPositiveInt(raw any) (int, bool) {
-	switch value := raw.(type) {
-	case float64:
-		if value > 0 {
-			return int(value), true
-		}
-	case string:
-		parsed, err := strconv.Atoi(strings.TrimSpace(value))
-		if err == nil && parsed > 0 {
-			return parsed, true
-		}
-	case json.Number:
-		parsed, err := value.Int64()
-		if err == nil && parsed > 0 {
-			return int(parsed), true
-		}
+func timeoutBounds(key string) (min, max int64, ok bool) {
+	switch key {
+	case "api", "global", "login", "healthCheck":
+		return 1, maxTimeoutMillis, true
+	case "healthInterval":
+		return 1, maxIntervalMillis, true
+	case "searchGracePeriod", "metadataGracePeriod", "latestGracePeriod":
+		return 0, maxGraceMillis, true
+	default:
+		return 0, 0, false
 	}
-	return 0, false
 }
 
-func toNonNegativeInt(raw any) (int, bool) {
-	switch value := raw.(type) {
-	case float64:
-		if value >= 0 {
-			return int(value), true
-		}
-	case string:
-		parsed, err := strconv.Atoi(strings.TrimSpace(value))
-		if err == nil && parsed >= 0 {
-			return parsed, true
-		}
-	case json.Number:
-		parsed, err := value.Int64()
-		if err == nil && parsed >= 0 {
-			return int(parsed), true
-		}
+func validateTimeoutOverride(key string, value int64) error {
+	min, max, ok := timeoutBounds(key)
+	if !ok {
+		return &httpError{message: "未知的超时设置字段：" + key}
 	}
-	return 0, false
+	if value < min || value > max {
+		return &httpError{message: fmt.Sprintf("timeouts.%s 必须介于 %d 和 %d 之间（毫秒），当前值 %d", key, min, max, value)}
+	}
+	return nil
+}
+
+// parseTimeoutInteger preserves the JSON number's exact representation so
+// decimals and values beyond int64 cannot be truncated through float64.
+func parseTimeoutInteger(raw json.RawMessage) (int64, bool) {
+	value := strings.TrimSpace(string(raw))
+	if value == "" || value == "null" {
+		return 0, false
+	}
+	if strings.HasPrefix(value, `"`) {
+		var text string
+		if err := json.Unmarshal(raw, &text); err != nil {
+			return 0, false
+		}
+		value = strings.TrimSpace(text)
+	}
+	if value == "" {
+		return 0, false
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return parsed, true
 }
 
 func intToString(v int) string {

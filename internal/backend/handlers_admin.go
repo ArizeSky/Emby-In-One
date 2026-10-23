@@ -2,6 +2,7 @@ package backend
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"net/http"
 	"net/url"
@@ -46,12 +47,12 @@ type adminIdentityBinding struct {
 }
 
 type adminSettingsInput struct {
-	ServerName      *string        `json:"serverName"`
-	PlaybackMode    *string        `json:"playbackMode"`
-	AdminUsername   *string        `json:"adminUsername"`
-	AdminPassword   *string        `json:"adminPassword"`
-	CurrentPassword *string        `json:"currentPassword"`
-	Timeouts        map[string]any `json:"timeouts"`
+	ServerName      *string                    `json:"serverName"`
+	PlaybackMode    *string                    `json:"playbackMode"`
+	AdminUsername   *string                    `json:"adminUsername"`
+	AdminPassword   *string                    `json:"adminPassword"`
+	CurrentPassword *string                    `json:"currentPassword"`
+	Timeouts        map[string]json.RawMessage `json:"timeouts"`
 }
 
 type adminProxyInput struct {
@@ -683,25 +684,34 @@ func (a *App) handleAdminSettingsUpdate(w http.ResponseWriter, r *http.Request) 
 		}
 		nextCfg.Admin.Password = hashed
 	}
-	for _, key := range positiveTimeoutKeys {
-		if raw, ok := body.Timeouts[key]; ok {
-			if parsed, ok := toPositiveInt(raw); ok {
-				assignTimeout(&nextCfg.Timeouts, key, parsed)
-			}
+	candidateTimeouts := cfg.Timeouts
+	for key := range body.Timeouts {
+		if _, _, ok := timeoutBounds(key); !ok {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "未知的超时设置字段：" + key})
+			return
 		}
 	}
-	for _, key := range nonNegativeTimeoutKeys {
-		if raw, ok := body.Timeouts[key]; ok {
-			if parsed, ok := toNonNegativeInt(raw); ok {
-				assignTimeout(&nextCfg.Timeouts, key, parsed)
-			}
+	for _, key := range append(append([]string{}, positiveTimeoutKeys...), nonNegativeTimeoutKeys...) {
+		raw, present := body.Timeouts[key]
+		if !present {
+			continue
 		}
+		parsed, ok := parseTimeoutInteger(raw)
+		if !ok {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "timeouts." + key + " 必须是整数毫秒值"})
+			return
+		}
+		if err := validateTimeoutOverride(key, parsed); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
+		assignTimeout(&candidateTimeouts, key, int(parsed))
 	}
+	nextCfg.Timeouts = candidateTimeouts
 	if err := validateTimeouts(nextCfg.Timeouts); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
-
 	passwordChanged := nextCfg.Admin.Password != cfg.Admin.Password
 
 	if err := a.commitConfigSettingsOnly(nextCfg); err != nil {

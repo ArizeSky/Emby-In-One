@@ -132,6 +132,8 @@
     </div>
 
     <!-- Servers -->
+    <div v-if="currentPage === 'servers' && listErrors.upstream" role="alert" class="card p-4 text-amber-700 bg-amber-50 border border-amber-200">服务器列表加载失败：{{ listErrors.upstream }} <button @click="refreshServers" class="ml-2 text-blue-600 hover:underline">重试</button></div>
+    <div v-if="currentPage === 'servers' && listErrors.proxies" role="alert" class="card p-4 text-amber-700 bg-amber-50 border border-amber-200">代理列表加载失败：{{ listErrors.proxies }} <button @click="refreshServers" class="ml-2 text-blue-600 hover:underline">重试</button></div>
     <div v-if="currentPage === 'servers'" class="card overflow-x-auto">
       <table class="w-full min-w-[700px] text-left border-collapse">
         <thead class="bg-slate-50 text-slate-500 text-xs font-semibold uppercase"><tr><th class="px-6 py-4">顺序</th><th class="px-6 py-4">名称</th><th class="px-6 py-4">地址</th><th class="px-6 py-4">代理</th><th class="px-6 py-4">权重</th><th class="px-6 py-4">状态</th><th class="px-6 py-4">操作</th></tr></thead>
@@ -211,7 +213,8 @@
 
     <!-- Proxies -->
     <div v-if="currentPage === 'proxies'" class="space-y-6">
-      <div v-if="proxyList.length === 0" class="card p-12 text-center text-slate-400 italic">暂未添加网络代理</div>
+      <div v-if="listErrors.proxies" role="alert" class="card p-4 text-amber-700 bg-amber-50 border border-amber-200">代理列表加载失败：{{ listErrors.proxies }} <button @click="refreshProxies" class="ml-2 text-blue-600 hover:underline">重试</button></div>
+      <div v-else-if="proxyList.length === 0" class="card p-12 text-center text-slate-400 italic">暂未添加网络代理</div>
       <div v-else class="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6">
         <div v-for="p in proxyList" :key="p.id" class="card p-4 md:p-6 flex justify-between items-center">
           <div class="min-w-0 flex-1 mr-3"><h4 class="font-bold text-lg">{{ p.name }}</h4><p class="text-sm text-slate-500 font-mono truncate">{{ p.url }}</p></div>
@@ -225,6 +228,8 @@
 
     <!-- Settings -->
     <div v-if="currentPage === 'settings'" class="card p-4 md:p-8 space-y-6 max-w-2xl">
+      <div v-if="settingsLoadState === 'loading'" class="text-sm text-slate-400" role="status">正在加载设置...</div>
+      <div v-else-if="settingsLoadState === 'error'" role="alert" class="p-3 text-amber-700 bg-amber-50 border border-amber-200 rounded-lg">设置加载失败：{{ settingsError }} <button @click="refreshSettings()" class="ml-2 text-blue-600 hover:underline">重试</button></div>
       <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div class="space-y-4"><h3 class="text-xs font-bold text-slate-400 uppercase tracking-widest">系统设置</h3>
           <div><label class="block text-sm font-medium mb-1">系统名称</label><input type="text" v-model="settings.serverName" class="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"></div>
@@ -249,11 +254,13 @@
           <div><label class="block text-sm font-medium mb-1">最新添加宽恕期 (ms) <span class="text-slate-400 font-normal">0=禁用</span></label><input type="number" v-model.number="settings.timeouts.latestGracePeriod" min="0" max="30000" step="500" class="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"></div>
         </div>
       </div>
-      <div class="pt-4 flex items-center space-x-4"><button @click="saveSettings" class="btn-primary px-8 py-2.5 rounded-xl font-bold">保存修改</button><span v-if="saveSuccess" class="text-green-600 text-sm flex items-center space-x-1"><i data-lucide="check-circle" class="w-4 h-4"></i><span>保存成功！</span></span></div>
+      <div class="pt-4 flex items-center space-x-4"><button @click="saveSettings" :disabled="!settingsLoadedOnce || settingsLoadState === 'loading'" class="btn-primary px-8 py-2.5 rounded-xl font-bold disabled:opacity-50 disabled:cursor-not-allowed">保存修改</button><span v-if="saveSuccess" class="text-green-600 text-sm flex items-center space-x-1"><i data-lucide="check-circle" class="w-4 h-4"></i><span>保存成功！</span></span></div>
     </div>
 
     <!-- Users -->
     <div v-if="currentPage === 'users'" class="space-y-6">
+      <div v-if="listErrors.users" role="alert" class="card p-4 text-amber-700 bg-amber-50 border border-amber-200">用户列表加载失败：{{ listErrors.users }} <button @click="refreshUsers" class="ml-2 text-blue-600 hover:underline">重试</button></div>
+      <div v-if="listErrors.upstream" role="alert" class="card p-4 text-amber-700 bg-amber-50 border border-amber-200">服务器列表加载失败：{{ listErrors.upstream }} <button @click="refreshUsers" class="ml-2 text-blue-600 hover:underline">重试</button></div>
       <div class="card p-4 md:p-6 flex flex-wrap justify-between items-center gap-3">
         <div>
           <h4 class="font-bold">管理员（我）</h4>
@@ -261,8 +268,8 @@
         </div>
         <button @click="openAdminHome" class="btn-primary px-4 py-2 rounded-lg flex items-center space-x-2"><i data-lucide="layout-grid" class="w-4 h-4"></i><span>首页库显示</span></button>
       </div>
-      <div v-if="userList.length === 0" class="card p-12 text-center text-slate-400 italic">暂未添加普通用户</div>
-      <div v-else class="card overflow-x-auto">
+      <div v-if="!listErrors.users && userList.length === 0" class="card p-12 text-center text-slate-400 italic">暂未添加普通用户</div>
+      <div v-else-if="userList.length > 0" class="card overflow-x-auto">
         <table class="w-full min-w-[600px] text-left border-collapse">
           <thead class="bg-slate-50 text-slate-500 text-xs font-semibold uppercase"><tr><th class="px-6 py-4">用户名</th><th class="px-6 py-4">允许服务器</th><th class="px-6 py-4">状态</th><th class="px-6 py-4">创建时间</th><th class="px-6 py-4">操作</th></tr></thead>
           <tbody class="divide-y divide-slate-100">
@@ -287,6 +294,7 @@
 
     <!-- Logs -->
     <div v-if="currentPage === 'logs'" class="space-y-4">
+      <div v-if="listErrors.logs" role="alert" class="text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3">日志加载失败：{{ listErrors.logs }} <button @click="refreshLogs" class="ml-2 text-blue-600 hover:underline">重试</button></div>
       <div class="flex flex-wrap items-center gap-2">
         <div class="flex space-x-1 bg-white border rounded-lg p-1">
           <button v-for="lv in ['ALL','ERROR','WARN','INFO','DEBUG']" :key="lv" @click="logLevelFilter = lv"

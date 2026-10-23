@@ -3,6 +3,7 @@ package backend
 import (
 	"context"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 )
@@ -75,18 +76,73 @@ func TestAdminSettingsRejectsOutOfRangeTimeout(t *testing.T) {
 	})
 }
 
+func TestAdminSettingsRejectsUnparseableTimeoutsAtomically(t *testing.T) {
+	cases := []struct {
+		name, body, field string
+	}{
+		{"fractional value", `{"serverName":"must-not-save","timeouts":{"api":1.5}}`, "timeouts.api"},
+		{"exponent value", `{"timeouts":{"api":1e3}}`, "timeouts.api"},
+		{"beyond int64", `{"timeouts":{"api":9223372036854775808}}`, "timeouts.api"},
+		{"past milliseconds cap", `{"timeouts":{"api":3600001}}`, "timeouts.api"},
+		{"negative value", `{"timeouts":{"api":-1}}`, "timeouts.api"},
+		{"zero positive timeout", `{"timeouts":{"api":0}}`, "timeouts.api"},
+		{"negative grace period", `{"timeouts":{"searchGracePeriod":-1}}`, "timeouts.searchGracePeriod"},
+		{"empty string", `{"timeouts":{"api":""}}`, "timeouts.api"},
+		{"null value", `{"timeouts":{"api":null}}`, "timeouts.api"},
+	}
+	withTempApp(t, func(app *App, handler http.Handler) {
+		token := loginToken(t, handler, "secret")
+		before := app.ConfigStore.Snapshot()
+		beforeDisk, err := os.ReadFile(before.Path)
+		if err != nil {
+			t.Fatalf("read initial config: %v", err)
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				rr := doJSONRequest(t, handler, http.MethodPut, "/admin/api/settings", tc.body, token)
+				if rr.Code != http.StatusBadRequest {
+					t.Fatalf("status = %d, want 400; body=%s", rr.Code, rr.Body.String())
+				}
+				if !strings.Contains(rr.Body.String(), tc.field) {
+					t.Fatalf("error should name %s: %s", tc.field, rr.Body.String())
+				}
+				got := app.ConfigStore.Snapshot()
+				if got.Server.Name != before.Server.Name || got.Timeouts != before.Timeouts {
+					t.Fatalf("rejected update partially changed config: before=%+v after=%+v", before, got)
+				}
+				afterDisk, err := os.ReadFile(before.Path)
+				if err != nil {
+					t.Fatalf("read config after rejection: %v", err)
+				}
+				if string(afterDisk) != string(beforeDisk) {
+					t.Fatal("rejected update changed the persisted config")
+				}
+			})
+		}
+	})
+}
+
 func TestAdminSettingsAcceptsZeroGracePeriod(t *testing.T) {
 	withTempApp(t, func(app *App, handler http.Handler) {
 		token := loginToken(t, handler, "secret")
+		before := app.ConfigStore.Snapshot()
 
 		rr := doJSONRequest(t, handler, http.MethodPut, "/admin/api/settings",
-			map[string]any{"timeouts": map[string]any{"searchGracePeriod": 0, "metadataGracePeriod": 0}}, token)
+			`{"serverName":"Saved Settings","timeouts":{"api":45000,"searchGracePeriod":0,"metadataGracePeriod":0}}`, token)
 		if rr.Code != http.StatusOK {
 			t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
 		}
-		got := app.ConfigStore.Snapshot().Timeouts
-		if got.SearchGracePeriod != 0 || got.MetadataGracePeriod != 0 {
-			t.Fatalf("zero (disabled) grace periods were not applied: %+v", got)
+		got := app.ConfigStore.Snapshot()
+		if got.Server.Name != "Saved Settings" || got.Timeouts.API != 45000 || got.Timeouts.SearchGracePeriod != 0 || got.Timeouts.MetadataGracePeriod != 0 ||
+			got.Timeouts.Global != before.Timeouts.Global || got.Timeouts.Login != before.Timeouts.Login || got.Timeouts.HealthCheck != before.Timeouts.HealthCheck || got.Timeouts.HealthInterval != before.Timeouts.HealthInterval {
+			t.Fatalf("valid settings were not applied (including omitted-field preservation): %+v", got)
+		}
+		disk, err := os.ReadFile(got.Path)
+		if err != nil {
+			t.Fatalf("read persisted config: %v", err)
+		}
+		if !strings.Contains(string(disk), "api: 45000") {
+			t.Fatalf("valid settings were not persisted: %s", disk)
 		}
 	})
 }

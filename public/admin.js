@@ -17,6 +17,8 @@ createApp({
       stats: { upstreamCount: 0, upstreamOnline: 0, idMappings: { mappingCount: 0, persistent: true }, upstream: [] },
       upstreamList: [], proxyList: [],
       settings: { serverName: '', playbackMode: 'proxy', adminUsername: '', adminPassword: '', currentPassword: '', timeouts: { api: 30000, global: 15000, login: 10000, healthCheck: 10000, healthInterval: 60000, searchGracePeriod: 3000, metadataGracePeriod: 3000, latestGracePeriod: 0 } },
+      settingsLoadState: 'loading', settingsLoadedOnce: false, settingsError: '', settingsRequestID: 0,
+      listErrors: { upstream: '', proxies: '', users: '', logs: '' },
       adminUsernameOriginal: '',   // 服务端当前的管理员用户名，用于判断这次保存是否真的改了用户名
       logs: [], isLoadingLogs: false, saveSuccess: false,
       logLevelFilter: 'ALL', logSearch: '',
@@ -57,12 +59,24 @@ createApp({
       const h = { 'Content-Type': 'application/json' };
       if(t) h['X-Emby-Token'] = t;
       const r = await fetch(path, { ...opts, headers: h });
-      if(r.status === 401) { this.logout(); throw new Error('Unauthorized'); }
-      if(r.status === 204 || r.headers.get('content-length') === '0') return { success: true };
-      let data = {};
-      try { data = await r.json(); } catch(e) {}
-      if(!r.ok) { const err = new Error(data.error || data.message || ('HTTP ' + r.status)); err.status = r.status; err.data = data; throw err; }
-      return data;
+      if (!r.ok) {
+        let data = {};
+        try { data = await r.json(); } catch(e) {}
+        if (r.status === 401) this.logout();
+        const message = data && (data.error || data.message);
+        const err = new Error(message || ('HTTP ' + r.status));
+        err.status = r.status; err.data = data;
+        throw err;
+      }
+      if (r.status === 204) return { success: true };
+      let body;
+      try { body = await r.text(); } catch(e) {
+        const err = new Error('HTTP ' + r.status + ': response body could not be read'); err.status = r.status; throw err;
+      }
+      if (!body.trim()) { const err = new Error('HTTP ' + r.status + ': empty response'); err.status = r.status; throw err; }
+      try { return JSON.parse(body); } catch(e) {
+        const err = new Error('HTTP ' + r.status + ': invalid JSON response'); err.status = r.status; throw err;
+      }
     },
     async checkAuth() { try { const s = await this.api('/admin/api/status'); if(!s || s.error) { this.logout(); return; } this.isLoggedIn = true; this.refresh(); this.refreshClientInfo(); } catch(e) { /* api() already logs out on 401; a transient failure (server restart, network blip) keeps the stored token so a refresh can retry */ } },
     async doLogin() { try {
@@ -96,10 +110,29 @@ createApp({
     },
     async refreshDashboard(signal) { try { this.stats = await this.api('/admin/api/status', { signal }); } catch(e) { if (this.isAbort(e)) return; } this.refreshClientInfo(signal); this.$nextTick(()=>lucide.createIcons()); },
     async refreshClientInfo(signal) { try { this.clientInfo = await this.api('/admin/api/client-info', { signal }); } catch(e) { if (this.isAbort(e)) return; } this.$nextTick(()=>lucide.createIcons()); },
-    async refreshServers(signal) { try { this.upstreamList = await this.api('/admin/api/upstream', { signal }); } catch(e) { if (!this.isAbort(e)) this.upstreamList = []; } try { await this.refreshProxies(signal); } catch(e) {} try { const ua = await this.api('/admin/api/ua', { signal }); this.uaResident = ua.resident || []; this.uaServers = ua.servers || []; } catch(e) {} this.$nextTick(()=>lucide.createIcons()); },
-    async refreshProxies(signal) { try { this.proxyList = await this.api('/admin/api/proxies', { signal }); } catch(e) { if (!this.isAbort(e)) this.proxyList = []; } this.$nextTick(()=>lucide.createIcons()); },
-    async refreshSettings(signal) { try { const s = await this.api('/admin/api/settings', { signal }); this.settings = { ...this.settings, ...s, adminPassword: '', currentPassword: '', timeouts: s.timeouts || this.settings.timeouts }; this.adminUsernameOriginal = s.adminUsername || ''; } catch(e) { if (this.isAbort(e)) return; } },
+    async refreshServers(signal) { try { this.upstreamList = await this.api('/admin/api/upstream', { signal }); this.listErrors.upstream = ''; } catch(e) { if (this.isAbort(e)) return; this.listErrors.upstream = e.message || '加载服务器列表失败'; } try { await this.refreshProxies(signal); } catch(e) {} try { const ua = await this.api('/admin/api/ua', { signal }); this.uaResident = ua.resident || []; this.uaServers = ua.servers || []; } catch(e) {} this.$nextTick(()=>lucide.createIcons()); },
+    async refreshProxies(signal) { try { this.proxyList = await this.api('/admin/api/proxies', { signal }); this.listErrors.proxies = ''; } catch(e) { if (!this.isAbort(e)) this.listErrors.proxies = e.message || '加载代理列表失败'; } this.$nextTick(()=>lucide.createIcons()); },
+    async refreshSettings(signal) {
+      const requestID = ++this.settingsRequestID;
+      this.settingsLoadState = 'loading';
+      this.settingsError = '';
+      this.saveSuccess = false;
+      try {
+        const s = await this.api('/admin/api/settings', { signal });
+        if (requestID !== this.settingsRequestID) return;
+        if (!s || typeof s !== 'object' || Array.isArray(s)) throw new Error('设置响应格式无效');
+        this.settings = { ...this.settings, ...s, adminPassword: '', currentPassword: '', timeouts: s.timeouts || this.settings.timeouts };
+        this.adminUsernameOriginal = s.adminUsername || '';
+        this.settingsLoadedOnce = true;
+        this.settingsLoadState = 'loaded';
+      } catch(e) {
+        if (requestID !== this.settingsRequestID || this.isAbort(e)) return;
+        this.settingsLoadState = 'error';
+        this.settingsError = e.message || '加载设置失败';
+      }
+    },
     async saveSettings() {
+      if (!this.settingsLoadedOnce || this.settingsLoadState === 'loading') { alert('设置尚未成功加载，无法保存'); return; }
       const nextUsername = (this.settings.adminUsername || '').trim();
       const usernameChanged = !!nextUsername && nextUsername !== this.adminUsernameOriginal;
       const passwordChanged = !!this.settings.adminPassword;
@@ -113,7 +146,7 @@ createApp({
         setTimeout(()=>this.saveSuccess=false,3000);
       } catch(e) { alert('保存失败：' + (e.message || '未知错误')); }
     },
-    async refreshLogs(signal) { this.isLoadingLogs = true; try { this.logs = await this.api('/admin/api/logs?limit=500', { signal }); this.$nextTick(() => { const b=this.$refs.logBox; if(b) b.scrollTop=b.scrollHeight; lucide.createIcons(); }); } catch(e) { if (!this.isAbort(e)) this.logs = []; } finally { this.isLoadingLogs=false; } },
+    async refreshLogs(signal) { this.isLoadingLogs = true; try { this.logs = await this.api('/admin/api/logs?limit=500', { signal }); this.listErrors.logs = ''; this.$nextTick(() => { const b=this.$refs.logBox; if(b) b.scrollTop=b.scrollHeight; lucide.createIcons(); }); } catch(e) { if (!this.isAbort(e)) this.listErrors.logs = e.message || '加载日志失败'; } finally { this.isLoadingLogs=false; } },
     async downloadLogs() {
       const t = localStorage.getItem('eio_admin_token');
       const res = await fetch('/admin/api/logs/download', { headers: t ? { 'X-Emby-Token': t } : {} });
@@ -218,7 +251,7 @@ createApp({
     },
     async saveProxy() { try { await this.api('/admin/api/proxies', { method:'POST', body:JSON.stringify(this.proxyForm) }); this.showProxyModal = false; await this.refreshProxies(); } catch(e) { alert('添加失败：' + (e.message || '未知错误')); } },
     async deleteProxy(id) { if(!confirm('删除代理？')) return; try { await this.api('/admin/api/proxies/'+id, { method:'DELETE' }); await this.refreshProxies(); } catch(e) { alert('删除失败：' + (e.message || '未知错误')); } },
-    async refreshUsers(signal) { try { this.userList = await this.api('/admin/api/users', { signal }); } catch(e) { if (!this.isAbort(e)) this.userList = []; } try { this.upstreamList = await this.api('/admin/api/upstream', { signal }); } catch(e) { if (this.isAbort(e)) return; } this.$nextTick(()=>lucide.createIcons()); },
+    async refreshUsers(signal) { try { this.userList = await this.api('/admin/api/users', { signal }); this.listErrors.users = ''; } catch(e) { if (this.isAbort(e)) return; this.listErrors.users = e.message || '加载用户列表失败'; } try { this.upstreamList = await this.api('/admin/api/upstream', { signal }); this.listErrors.upstream = ''; } catch(e) { if (this.isAbort(e)) return; this.listErrors.upstream = e.message || '加载服务器列表失败'; } this.$nextTick(()=>lucide.createIcons()); },
     openAddUser() { this.editUserId = null; this.userForm = { username:'', password:'', enabled:true, allowedServers:[], maxParentalRating:0, blockUnratedItems:false }; this.userLibraryGroups = []; this.showUserModal = true; this.$nextTick(()=>lucide.createIcons()); },
     editUser(u) {
       this.editUserId = u.id;
