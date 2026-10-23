@@ -30,7 +30,7 @@
 - **gofmt 归位**：全量 `gofmt -w cmd internal`，修复此前提交进 HEAD 的 914 行行首多余空格（26 个文件，17 个 `gofmt -l` 不通过）；新增 `.git-blame-ignore-revs` 忽略该纯空白提交。
 - **CI 门禁**：`.github/workflows/ci.yml` 的 go job 增加 `gofmt` 校验，新增 `js` job 运行 `tests/` 下 55 个前端用例；`package.json` 增加 `test` 脚本。
 - **文件拆分**：身份头与重定向/超时辅助从 `upstream.go` 拆到 `upstream_outbound.go`，`upstream.go` 回到 1000 行以内。
-- **手动镜像构建工作流**：新增可手动触发的 GHCR 镜像构建流程，配置 `linux/amd64` 与 `linux/arm64` 双架构；当前不随代码推送自动发布，本轮未执行镜像构建或发布。
+- **镜像构建工作流**：新增 GHCR 镜像构建流程，支持手动触发 `linux/amd64` 与 `linux/arm64` 双架构镜像的构建与发布。
 
 ### 验证
 
@@ -89,7 +89,7 @@
 
 ### 社区 PR 与贡献者致谢
 
-本次 rc3 整合了以下社区 PR 的贡献，并在此基础上完善与现有架构的衔接及验证：
+感谢以下社区 PR 为本版带来的功能与兼容性改进：
 
 | PR | 贡献内容 | 贡献者 |
 | --- | --- | --- |
