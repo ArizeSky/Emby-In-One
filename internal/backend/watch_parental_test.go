@@ -35,6 +35,25 @@ func TestParentalResumeMetadataKeepsServerOwnership(t *testing.T) {
 	})
 }
 
+func TestParentalWatchRoutesWithoutLocalStoreStillFilter(t *testing.T) {
+	up := thirdReviewUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"Items": []any{map[string]any{"Id": "adult", "Name": "FORBIDDEN-FALLBACK", "Type": "Episode", "SeriesId": "series", "OfficialRating": "R"}}, "TotalRecordCount": 1})
+	})
+	withTempAppConfig(t, upstreamsConfigYAML(upstreamEntryYAML("A", up.URL, false)), func(a *App, h http.Handler) {
+		u, token := review23User(t, a)
+		id := a.IDStore.GetOrCreateVirtualID("series", a.Upstream.Clients()[0].ID)
+		saved := a.WatchStore
+		a.WatchStore = nil
+		defer func() { a.WatchStore = saved }()
+		for _, path := range []string{"/Users/" + u.ID + "/Items/Resume", "/Users/" + u.ID + "/Items/Resume?ParentId=" + id, "/Shows/NextUp", "/Shows/NextUp?SeriesId=" + id} {
+			rr := doJSONRequest(t, h, "GET", path, nil, token)
+			if rr.Code != 200 || len(asItems(thirdReviewPayload(t, rr))) != 0 || strings.Contains(rr.Body.String(), "FORBIDDEN-FALLBACK") {
+				t.Fatalf("watch fallback bypassed policy: %s => %d %s", path, rr.Code, rr.Body.String())
+			}
+		}
+	})
+}
+
 func TestParentalResumeRefillsAfterDeniedPage(t *testing.T) {
 	var batches atomic.Int32
 	var fail atomic.Bool

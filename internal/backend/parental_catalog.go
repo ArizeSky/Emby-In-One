@@ -6,6 +6,15 @@ import (
 	"strconv"
 )
 
+func (a *App) writeMergedParentalResponse(w http.ResponseWriter, r *http.Request, results []upstreamItemsResult, incomplete bool) {
+	results = a.parentalVisibleResults(r, results)
+	payload := a.mergedItemsPayload(results, a.clientFacingUserIDFor(r))
+	if incomplete {
+		markIncompleteResults(w, payload)
+	}
+	a.writeParentalItemsResponse(w, r, payload)
+}
+
 func (a *App) handleRestrictedContainerItems(w http.ResponseWriter, r *http.Request, resolved *routeResolution, query url.Values, filter userStateFilter, localFilter bool) {
 	requestMergedCandidateSet(query)
 	// The shared scanner performs the one translation from the original virtual IDs.

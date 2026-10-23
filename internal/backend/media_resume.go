@@ -41,17 +41,18 @@ func (a *App) handleUserItemsResume(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			filtered := filterSeriesItems(asItems(payload), originalIDs)
+			filtered = a.parentalFilterServerItems(r, inst.Client, filtered)
 			if len(filtered) > 0 {
 				a.rewriteItems(filtered, inst.ServerID, a.clientFacingUserIDFor(r))
-				writeJSON(w, http.StatusOK, map[string]any{"Items": filtered, "TotalRecordCount": len(filtered), "StartIndex": 0})
+				a.writeParentalItemsResponse(w, r, map[string]any{"Items": filtered, "TotalRecordCount": len(filtered), "StartIndex": 0})
 				return
 			}
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"Items": []any{}, "TotalRecordCount": 0, "StartIndex": 0})
+		a.writeParentalItemsResponse(w, r, map[string]any{"Items": []any{}, "TotalRecordCount": 0, "StartIndex": 0})
 		return
 	}
 	results, incomplete := a.fetchItemsAcrossUpstreams(r.Context(), requestContextFrom(r.Context()), "/Users/%s/Items/Resume", query, nil)
-	a.writeItemsResponse(w, a.mergedItemsPayload(results, a.clientFacingUserIDFor(r)), incomplete)
+	a.writeMergedParentalResponse(w, r, results, incomplete)
 }
 
 // handleLocalResume serves resume items from local WatchStore for non-admin users.
