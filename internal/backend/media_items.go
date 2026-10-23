@@ -103,9 +103,9 @@ func (a *App) handleItemsCollection(w http.ResponseWriter, r *http.Request) {
 	}, tasks)
 	merged := a.mergedItemsPayload(collected, a.clientFacingUserIDFor(r))
 	items := asItems(merged)
-	if maxR, blockUnrated := a.parentalPolicyFor(r); maxR > 0 || blockUnrated {
-		items = filterItemsByPolicy(items, maxR, blockUnrated)
-	}
+	items = a.parentalFilterItems(r, items)
+	merged["Items"] = toAnySlice(items)
+	merged["TotalRecordCount"] = len(items)
 	if localFilter {
 		kept, recency := a.filterItemsByLocalUserState(r, items, filter)
 		localItemSort(kept, r.URL.Query(), recency)
@@ -122,19 +122,6 @@ func (a *App) handleItemsCollection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.overlayLocalUserDataItems(r, items)
-	if maxR, blockUnrated := a.parentalPolicyFor(r); maxR > 0 || blockUnrated {
-		items = filterItemsByPolicy(items, maxR, blockUnrated)
-		payload := map[string]any{
-			"Items":            toAnySlice(items),
-			"TotalRecordCount": len(items),
-			"StartIndex":       0,
-		}
-		if report.Incomplete {
-			markIncompleteResults(w, payload)
-		}
-		writeJSON(w, http.StatusOK, payload)
-		return
-	}
 	if report.Incomplete {
 		markIncompleteResults(w, merged)
 	}
@@ -178,12 +165,13 @@ func (a *App) handleUserItems(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		items := a.rewriteItems(asItems(payload), resolved.ServerID, a.clientFacingUserIDFor(r))
-		if maxR, blockUnrated := a.parentalPolicyFor(r); maxR > 0 || blockUnrated {
-			items = filterItemsByPolicy(items, maxR, blockUnrated)
-			if m, ok := payload.(map[string]any); ok {
-				m["Items"] = toAnySlice(items)
-				m["TotalRecordCount"] = len(items)
-			}
+		// Sparse list DTOs may omit the rating fields entirely; the unified
+		// filter confirms missing ratings (with parent inheritance) instead of
+		// reading "absent" as "unrated" (plan §8.3/§8.4).
+		items = a.parentalFilterItems(r, items)
+		if m, ok := payload.(map[string]any); ok {
+			m["Items"] = toAnySlice(items)
+			m["TotalRecordCount"] = len(items)
 		}
 		if localFilter {
 			kept, recency := a.filterItemsByLocalUserState(r, items, filter)
@@ -218,10 +206,9 @@ func (a *App) handleUserItems(w http.ResponseWriter, r *http.Request) {
 		}
 		// Root-level listings must honor the user's parental ceiling too: a
 		// restricted user must not see an over-ceiling item just because they
-		// browsed the root instead of a library (plan §8.4).
-		if maxR, blockUnrated := a.parentalPolicyFor(r); maxR > 0 || blockUnrated {
-			asMaps = filterItemsByPolicy(asMaps, maxR, blockUnrated)
-		}
+		// browsed the root instead of a library (plan §8.4). Sparse DTOs are
+		// confirmed through the unified filter, not treated as unrated.
+		asMaps = a.parentalFilterItems(r, asMaps)
 		if localFilter {
 			kept, recency := a.filterItemsByLocalUserState(r, asMaps, filter)
 			localItemSort(kept, r.URL.Query(), recency)
@@ -261,9 +248,7 @@ func (a *App) handleUserItemsLatest(w http.ResponseWriter, r *http.Request) {
 		items := asItems(payload)
 		a.rewriteItems(items, resolved.ServerID, a.clientFacingUserIDFor(r))
 		a.overlayLocalUserDataItems(r, items)
-		if maxR, blockUnrated := a.parentalPolicyFor(r); maxR > 0 || blockUnrated {
-			items = filterItemsByPolicy(items, maxR, blockUnrated)
-		}
+		items = a.parentalFilterItems(r, items)
 		writeJSON(w, http.StatusOK, items)
 		return
 	}
@@ -302,10 +287,8 @@ func (a *App) handleUserItemsLatest(w http.ResponseWriter, r *http.Request) {
 	for _, result := range collected {
 		allItems = append(allItems, result.Items...)
 	}
+	allItems = a.parentalFilterItems(r, allItems)
 	a.overlayLocalUserDataItems(r, allItems)
-	if maxR, blockUnrated := a.parentalPolicyFor(r); maxR > 0 || blockUnrated {
-		allItems = filterItemsByPolicy(allItems, maxR, blockUnrated)
-	}
 	if report.Incomplete {
 		markIncompleteResultsHeader(w)
 	}
@@ -343,11 +326,11 @@ func (a *App) handleUserItemByID(w http.ResponseWriter, r *http.Request) {
 		annotateItemSources(payload, resolved.Client)
 		rewriteResponseIDs(payload, resolved.ServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 		a.overlayLocalUserData(r, r.PathValue("itemId"), payload)
-		if maxR, blockUnrated := a.parentalPolicyFor(r); maxR > 0 || blockUnrated {
-			if m, ok := payload.(map[string]any); ok && !itemAllowedByPolicy(m, maxR, blockUnrated) {
-				writeJSON(w, http.StatusForbidden, map[string]any{"message": "Content restricted by parental rating"})
-				return
-			}
+		// The detail DTO can be sparse (an Episode carries no rating of its
+		// own); check the owning instance with parent inheritance instead of
+		// trusting the response fields (plan §8.3/§8.5).
+		if !a.parentalDetailAllowed(w, r, resolved.Client, resolved.OriginalID) {
+			return
 		}
 		writeJSON(w, http.StatusOK, payload)
 		return
@@ -373,11 +356,8 @@ func (a *App) handleItemByID(w http.ResponseWriter, r *http.Request) {
 	cfg := a.ConfigStore.Snapshot()
 	rewriteResponseIDs(payload, resolved.ServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 	a.overlayLocalUserData(r, r.PathValue("itemId"), payload)
-	if maxR, blockUnrated := a.parentalPolicyFor(r); maxR > 0 || blockUnrated {
-		if m, ok := payload.(map[string]any); ok && !itemAllowedByPolicy(m, maxR, blockUnrated) {
-			writeJSON(w, http.StatusForbidden, map[string]any{"message": "Content restricted by parental rating"})
-			return
-		}
+	if !a.parentalDetailAllowed(w, r, resolved.Client, resolved.OriginalID) {
+		return
 	}
 	writeJSON(w, http.StatusOK, payload)
 }
@@ -400,6 +380,11 @@ func (a *App) handleItemSimilar(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg := a.ConfigStore.Snapshot()
 	rewriteResponseIDs(payload, resolved.ServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
+	// The recommendation list is content: filter it through the unified
+	// parental read path before it reaches the client (plan §8.4).
+	if m, ok := payload.(map[string]any); ok {
+		a.parentalFilterPayloadItems(r, m)
+	}
 	a.overlayLocalUserDataItems(r, asItems(payload))
 	writeJSON(w, http.StatusOK, payload)
 }
@@ -426,6 +411,11 @@ func (a *App) handleItemThemeMedia(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg := a.ConfigStore.Snapshot()
 	rewriteResponseIDs(payload, resolved.ServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
+	// Theme videos/songs are content items nested under three result keys;
+	// every nested list is filtered before the payload is returned (plan §8.4).
+	if m, ok := payload.(map[string]any); ok {
+		a.parentalFilterPayloadItems(r, m)
+	}
 	writeJSON(w, http.StatusOK, payload)
 }
 

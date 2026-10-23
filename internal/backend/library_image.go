@@ -217,7 +217,10 @@ func (a *App) handleShowsSeasons(w http.ResponseWriter, r *http.Request) {
 		items = append(items, entry.Item)
 	}
 	// Seasons and episodes carry per-user UserData: for a regular user the local
-	// record wins over the shared upstream account's state.
+	// record wins over the shared upstream account's state. The parental filter
+	// runs first: a sparse season/episode DTO is confirmed (with parent-chain
+	// inheritance) instead of being read as unrated (plan §8.3/§8.4).
+	items = a.parentalFilterItems(r, items)
 	a.overlayLocalUserDataItems(r, items)
 	writeJSON(w, http.StatusOK, paginateItems(items, r.URL.Query()))
 }
@@ -328,7 +331,10 @@ func (a *App) handleShowsEpisodes(w http.ResponseWriter, r *http.Request) {
 		items = append(items, entry.Item)
 	}
 	// Seasons and episodes carry per-user UserData: for a regular user the local
-	// record wins over the shared upstream account's state.
+	// record wins over the shared upstream account's state. The parental filter
+	// runs first, with parent-chain inheritance for rating-less episode DTOs
+	// (plan §8.3/§8.4).
+	items = a.parentalFilterItems(r, items)
 	a.overlayLocalUserDataItems(r, items)
 	writeJSON(w, http.StatusOK, paginateItems(items, r.URL.Query()))
 }
@@ -363,6 +369,7 @@ func (a *App) handleSearchHints(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	merged := a.mergeRoundRobinItems(collected, a.clientFacingUserIDFor(r))
+	merged = a.parentalFilterItems(r, merged)
 
 	a.overlayLocalUserDataItems(r, merged)
 	writeJSON(w, http.StatusOK, map[string]any{
