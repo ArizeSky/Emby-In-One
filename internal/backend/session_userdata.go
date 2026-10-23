@@ -613,8 +613,13 @@ func (a *App) handleUserItemUserData(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(status)
 		return
 	}
-	// Overlay local UserData for non-admin users
-	a.overlayLocalUserData(r, virtualItemID, payload)
+	// Overlay local UserData for non-admin users. A local read failure must
+	// never leave the shared upstream state in the body: it answers 502 the
+	// same way an unverifiable upstream read already does.
+	if err := a.sanitizeResponseUserDataScoped(r, virtualItemID, payload); err != nil {
+		a.writeLocalWatchReadError(w, err)
+		return
+	}
 	cfg := a.ConfigStore.Snapshot()
 	rewriteResponseIDs(payload, resolved.ServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 	writeJSON(w, status, payload)
@@ -655,7 +660,10 @@ func (a *App) handleFavoriteItemAdd(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(status)
 		return
 	}
-	a.overlayLocalUserData(r, virtualItemID, payload)
+	if err := a.sanitizeResponseUserDataScoped(r, virtualItemID, payload); err != nil {
+		a.writeLocalWatchReadError(w, err)
+		return
+	}
 	cfg := a.ConfigStore.Snapshot()
 	rewriteResponseIDs(payload, resolved.ServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 	writeJSON(w, status, payload)
@@ -696,129 +704,11 @@ func (a *App) handleFavoriteItemRemove(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(status)
 		return
 	}
-	a.overlayLocalUserData(r, virtualItemID, payload)
+	if err := a.sanitizeResponseUserDataScoped(r, virtualItemID, payload); err != nil {
+		a.writeLocalWatchReadError(w, err)
+		return
+	}
 	cfg := a.ConfigStore.Snapshot()
 	rewriteResponseIDs(payload, resolved.ServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 	writeJSON(w, status, payload)
-}
-
-// overlayLocalUserData patches the UserData fields in a response payload
-// to reflect the local per-user state (for non-admin users only).
-// overlayLocalUserDataItems overlays local UserData on each item in a list.
-// Items must have an "Id" field with the virtual item ID.
-func (a *App) overlayLocalUserDataItems(r *http.Request, items []map[string]any) {
-	if a.WatchStore == nil {
-		return
-	}
-	reqCtx := requestContextFrom(r.Context())
-	if reqCtx == nil || reqCtx.ProxyUser == nil || reqCtx.ProxyUser.Role == "admin" {
-		return
-	}
-	for _, item := range items {
-		if id, _ := item["Id"].(string); id != "" {
-			a.overlayLocalUserData(r, id, item)
-		}
-	}
-}
-
-// localWatchState overlays only this user's records across verified aliases.
-// Favorite/played flags are unions; a favorite-only row must not displace the
-// most recently played positive position. Reads never migrate or delete rows.
-func (a *App) localWatchState(userID, virtualItemID string) (*WatchProgress, error) {
-	aliases := []string{virtualItemID}
-	if a.IDStore != nil {
-		aliases = a.IDStore.AliasVirtualIDs(virtualItemID)
-	}
-	var merged *WatchProgress
-	var positionTime int64
-	for _, alias := range aliases {
-		p, err := a.WatchStore.GetProgress(userID, alias)
-		if err != nil {
-			return nil, err
-		}
-		if p == nil {
-			continue
-		}
-		if merged == nil {
-			copy := *p
-			merged = &copy
-			merged.PositionTicks = 0
-		}
-		merged.IsFavorite = merged.IsFavorite || p.IsFavorite
-		merged.Played = merged.Played || p.Played
-		if p.LastPlayed > merged.LastPlayed {
-			merged.LastPlayed = p.LastPlayed
-		}
-		if p.PositionTicks > 0 && (merged.PositionTicks == 0 || p.LastPlayed > positionTime) {
-			merged.PositionTicks, merged.RuntimeTicks = p.PositionTicks, p.RuntimeTicks
-			positionTime = p.LastPlayed
-		}
-	}
-	return merged, nil
-}
-
-func (a *App) overlayLocalUserData(r *http.Request, virtualItemID string, payload any) {
-	if a.WatchStore == nil {
-		return
-	}
-	reqCtx := requestContextFrom(r.Context())
-	if reqCtx == nil || reqCtx.ProxyUser == nil || reqCtx.ProxyUser.Role == "admin" {
-		return
-	}
-	progress, progressErr := a.localWatchState(reqCtx.ProxyUser.UserID, virtualItemID)
-	if progressErr != nil {
-		// A failed read must not be mistaken for "no local record": clearing the
-		// upstream userdata here would zero out the user's progress display on a
-		// transient database error. Leave the payload untouched and log it.
-		if a.Logger != nil {
-			a.Logger.Warnf("WatchStore read error, skipping local overlay: %s", redactURLInError(progressErr))
-		}
-		return
-	}
-	if progress == nil {
-		// No local record → clear upstream admin's UserData to avoid leaking
-		clearUpstreamUserData(payload)
-		return
-	}
-	m, ok := payload.(map[string]any)
-	if !ok {
-		return
-	}
-	// Overlay top-level fields if this IS a UserData object
-	if _, hasPlayPos := m["PlaybackPositionTicks"]; hasPlayPos {
-		m["PlaybackPositionTicks"] = progress.PositionTicks
-		m["Played"] = progress.Played
-		m["IsFavorite"] = progress.IsFavorite
-	}
-	// Overlay nested UserData if present
-	if ud, ok := m["UserData"].(map[string]any); ok {
-		ud["PlaybackPositionTicks"] = progress.PositionTicks
-		ud["Played"] = progress.Played
-		ud["IsFavorite"] = progress.IsFavorite
-	}
-}
-
-// clearUpstreamUserData resets UserData fields to a clean state, preventing
-// the upstream admin's watch history from leaking to non-admin users.
-func clearUpstreamUserData(payload any) {
-	m, ok := payload.(map[string]any)
-	if !ok {
-		return
-	}
-	// Top-level UserData fields (when payload IS a UserData object)
-	if _, hasPlayPos := m["PlaybackPositionTicks"]; hasPlayPos {
-		m["PlaybackPositionTicks"] = 0
-		m["Played"] = false
-		m["IsFavorite"] = false
-		m["PlayedPercentage"] = 0
-		delete(m, "LastPlayedDate")
-	}
-	// Nested UserData (when payload is an item with UserData sub-object)
-	if ud, ok := m["UserData"].(map[string]any); ok {
-		ud["PlaybackPositionTicks"] = 0
-		ud["Played"] = false
-		ud["IsFavorite"] = false
-		ud["PlayedPercentage"] = 0
-		delete(ud, "LastPlayedDate")
-	}
 }

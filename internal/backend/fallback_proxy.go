@@ -44,6 +44,18 @@ func (a *App) handleFallbackProxy(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// A collection filter that names local per-user state (watched/unplayed/
+	// resumable) cannot be honoured by forwarding to the shared upstream
+	// account: the upstream would pre-filter with its own shared state, so a
+	// UserData overlay can never repair the result set. A restricted user gets
+	// an explicit refusal instead of a silently wrong list.
+	if isUserRestricted(r) && fallbackCarriesLocalStateFilters(r.URL.Query()) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"message": "LocalUserStateFilterNotSupportedOnFallback",
+			"code":    "LocalUserStateFilterNotSupportedOnFallback",
+		})
+		return
+	}
 	targetClient, rewrittenPath, serverID, query, ambiguous := a.resolveFallbackTarget(r, reqCtx)
 	if targetClient == nil {
 		if ambiguous {
@@ -93,7 +105,13 @@ func (a *App) handleFallbackProxy(w http.ResponseWriter, r *http.Request) {
 	// silently truncated and a shorter one leaves the client waiting for bytes that
 	// never arrive. Each path below is responsible for its own length: the byte-exact
 	// passthrough re-copies it, the buffered paths let net/http compute it.
-	copySelectedHeaders(w.Header(), resp.Header, []string{"Content-Type", "Content-Range", "Accept-Ranges", "Cache-Control", "ETag", "Last-Modified", "Content-Disposition"})
+	// The header set a restricted caller may keep is narrower: the upstream's
+	// validators and shared cache policy cannot describe a per-user body.
+	fallbackHeaders := []string{"Content-Type", "Content-Range", "Accept-Ranges", "Cache-Control", "ETag", "Last-Modified", "Content-Disposition"}
+	if isUserRestricted(r) {
+		fallbackHeaders = []string{"Content-Type", "Content-Range", "Accept-Ranges", "Content-Disposition"}
+	}
+	copySelectedHeaders(w.Header(), resp.Header, fallbackHeaders)
 	contentType := resp.Header.Get("Content-Type")
 
 	// For successful responses with binary (non-text, non-JSON) content types,
@@ -135,6 +153,13 @@ func (a *App) handleFallbackProxy(w http.ResponseWriter, r *http.Request) {
 		}
 		cfg := a.ConfigStore.Snapshot()
 		rewriteResponseIDs(payload, serverID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
+		if err := a.sanitizeResponseUserData(r, payload); err != nil {
+			a.writeLocalWatchReadError(w, err)
+			return
+		}
+		if isUserRestricted(r) {
+			w.Header().Set("Cache-Control", "private,no-store")
+		}
 		writeJSON(w, resp.StatusCode, payload)
 		return
 	}
@@ -399,4 +424,24 @@ func minInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// localStateFilterTokens are Filters= values that name per-user watch state.
+var localStateFilterTokens = []string{"isplayed", "isunplayed", "isresumable", "hasplayed"}
+
+// fallbackCarriesLocalStateFilters reports whether a passthrough query asks for
+// local per-user watch filtering, which the shared-account upstream cannot
+// honour for a restricted user.
+func fallbackCarriesLocalStateFilters(query url.Values) bool {
+	for _, raw := range query["Filters"] {
+		for _, token := range strings.Split(strings.ToLower(raw), ",") {
+			token = strings.TrimSpace(token)
+			for _, match := range localStateFilterTokens {
+				if token == match {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }

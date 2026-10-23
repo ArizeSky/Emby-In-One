@@ -271,7 +271,9 @@ func TestFinalReviewKnownGroupKeepsWatchAliases(t *testing.T) {
 		merged[0]["UserData"] = map[string]any{"IsFavorite": false}
 		req := httptest.NewRequest("GET", "/", nil)
 		req = req.WithContext(context.WithValue(req.Context(), requestContextKey{}, &RequestContext{ProxyUser: &tokenInfo{Role: "user", UserID: u.ID}}))
-		app.overlayLocalUserData(req, gotID, merged[0])
+		if err := app.sanitizeResponseUserDataScoped(req, gotID, merged[0]); err != nil {
+			t.Fatalf("sanitizer: %v", err)
+		}
 		data, _ := merged[0]["UserData"].(map[string]any)
 		if favorite, _ := data["IsFavorite"].(bool); !favorite {
 			t.Errorf("pre-existing favorite under alias vanished from canonical DTO: %v", data)

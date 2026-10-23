@@ -34,7 +34,9 @@ func (a *App) handleRestrictedContainerItems(w http.ResponseWriter, r *http.Requ
 		items, recency = a.filterItemsByLocalUserState(r, items, filter)
 		localItemSort(items, r.URL.Query(), recency)
 	}
-	a.overlayLocalUserDataItems(r, items)
+	if !a.strictSanitizedUserDataItems(w, r, items) {
+		return
+	}
 	payload := paginateItems(items, r.URL.Query())
 	if !complete || truncated {
 		markIncompleteResults(w, payload)

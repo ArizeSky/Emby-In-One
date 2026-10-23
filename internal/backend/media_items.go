@@ -115,7 +115,9 @@ func (a *App) handleItemsCollection(w http.ResponseWriter, r *http.Request) {
 	if localFilter {
 		kept, recency := a.filterItemsByLocalUserState(r, items, filter)
 		localItemSort(kept, r.URL.Query(), recency)
-		a.overlayLocalUserDataItems(r, kept)
+		if !a.strictSanitizedUserDataItems(w, r, kept) {
+			return
+		}
 		payload := map[string]any{
 			"Items":            toAnySlice(kept),
 			"TotalRecordCount": len(kept),
@@ -127,7 +129,9 @@ func (a *App) handleItemsCollection(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, payload)
 		return
 	}
-	a.overlayLocalUserDataItems(r, items)
+	if !a.strictSanitizedUserDataItems(w, r, items) {
+		return
+	}
 	if report.Incomplete {
 		markIncompleteResults(w, merged)
 	}
@@ -191,11 +195,15 @@ func (a *App) handleUserItems(w http.ResponseWriter, r *http.Request) {
 		if localFilter {
 			kept, recency := a.filterItemsByLocalUserState(r, items, filter)
 			localItemSort(kept, r.URL.Query(), recency)
-			a.overlayLocalUserDataItems(r, kept)
+			if !a.strictSanitizedUserDataItems(w, r, kept) {
+				return
+			}
 			writeJSON(w, http.StatusOK, paginateItems(kept, r.URL.Query()))
 			return
 		}
-		a.overlayLocalUserDataItems(r, items)
+		if !a.strictSanitizedUserDataItems(w, r, items) {
+			return
+		}
 		writeJSON(w, http.StatusOK, payload)
 		return
 	}
@@ -231,14 +239,18 @@ func (a *App) handleUserItems(w http.ResponseWriter, r *http.Request) {
 		if localFilter {
 			kept, recency := a.filterItemsByLocalUserState(r, asMaps, filter)
 			localItemSort(kept, r.URL.Query(), recency)
-			a.overlayLocalUserDataItems(r, kept)
+			if !a.strictSanitizedUserDataItems(w, r, kept) {
+				return
+			}
 			a.writeItemsResponse(w, paginateItems(kept, r.URL.Query()), incomplete)
 			return
 		}
 		if len(asMaps) >= mergedItemsScanLimit {
 			a.warnTruncatedMerge(len(asMaps))
 		}
-		a.overlayLocalUserDataItems(r, asMaps)
+		if !a.strictSanitizedUserDataItems(w, r, asMaps) {
+			return
+		}
 		a.writeItemsResponse(w, paginateItems(asMaps, r.URL.Query()), incomplete)
 		return
 	}
@@ -266,7 +278,9 @@ func (a *App) handleUserItemsLatest(w http.ResponseWriter, r *http.Request) {
 		}
 		items := a.parentalFilterServerItems(r, resolved.Client, asItems(payload))
 		a.rewriteItems(items, resolved.ServerID, a.clientFacingUserIDFor(r))
-		a.overlayLocalUserDataItems(r, items)
+		if !a.strictSanitizedUserDataItems(w, r, items) {
+			return
+		}
 		if !a.parentalResponseReady(w, r, nil) {
 			return
 		}
@@ -311,7 +325,9 @@ func (a *App) handleUserItemsLatest(w http.ResponseWriter, r *http.Request) {
 	if !a.parentalResponseReady(w, r, nil) {
 		return
 	}
-	a.overlayLocalUserDataItems(r, allItems)
+	if !a.strictSanitizedUserDataItems(w, r, allItems) {
+		return
+	}
 	if report.Incomplete {
 		markIncompleteResultsHeader(w)
 	}
@@ -348,7 +364,9 @@ func (a *App) handleUserItemByID(w http.ResponseWriter, r *http.Request) {
 		cfg := a.ConfigStore.Snapshot()
 		annotateItemSources(payload, resolved.Client)
 		rewriteResponseIDs(payload, resolved.ServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
-		a.overlayLocalUserData(r, r.PathValue("itemId"), payload)
+		if !a.strictSanitizedUserData(w, r, r.PathValue("itemId"), payload) {
+			return
+		}
 		// The detail DTO can be sparse (an Episode carries no rating of its
 		// own); check the owning instance with parent inheritance instead of
 		// trusting the response fields (plan §8.3/§8.5).
@@ -378,7 +396,9 @@ func (a *App) handleItemByID(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg := a.ConfigStore.Snapshot()
 	rewriteResponseIDs(payload, resolved.ServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
-	a.overlayLocalUserData(r, r.PathValue("itemId"), payload)
+	if !a.strictSanitizedUserData(w, r, r.PathValue("itemId"), payload) {
+		return
+	}
 	if !a.parentalDetailAllowed(w, r, resolved.Client, resolved.OriginalID) {
 		return
 	}
@@ -411,7 +431,9 @@ func (a *App) handleItemSimilar(w http.ResponseWriter, r *http.Request) {
 	if !a.parentalResponseReady(w, r, payload) {
 		return
 	}
-	a.overlayLocalUserDataItems(r, asItems(payload))
+	if !a.strictSanitizedUserDataItems(w, r, asItems(payload)) {
+		return
+	}
 	writeJSON(w, http.StatusOK, payload)
 }
 

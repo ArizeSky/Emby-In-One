@@ -90,7 +90,9 @@ func (a *App) handleLocalNextUp(w http.ResponseWriter, r *http.Request, reqCtx *
 			return
 		}
 		rewriteResponseIDs(nextEp, resolved.ServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
-		a.overlayLocalUserDataItems(r, []map[string]any{nextEp})
+		if !a.strictSanitizedUserDataItems(w, r, []map[string]any{nextEp}) {
+			return
+		}
 		a.writeParentalItemsResponse(w, r, map[string]any{"Items": []any{nextEp}, "TotalRecordCount": 1, "StartIndex": 0})
 		return
 	}
@@ -159,7 +161,9 @@ func (a *App) handleLocalNextUp(w http.ResponseWriter, r *http.Request, reqCtx *
 			}
 			rewriteResponseIDs(nextEp, serverIDs[i], a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 			if id, _ := nextEp["Id"].(string); id != "" {
-				a.overlayLocalUserData(r, id, nextEp)
+				if !a.strictSanitizedUserData(w, r, id, nextEp) {
+					continue
+				}
 			}
 			nextUpItems = append(nextUpItems, nextEp)
 		}

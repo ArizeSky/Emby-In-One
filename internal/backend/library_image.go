@@ -221,7 +221,9 @@ func (a *App) handleShowsSeasons(w http.ResponseWriter, r *http.Request) {
 		entry.Item["Id"] = preservedID
 		items = append(items, entry.Item)
 	}
-	a.overlayLocalUserDataItems(r, items)
+	if !a.strictSanitizedUserDataItems(w, r, items) {
+		return
+	}
 	payload := paginateItems(items, r.URL.Query())
 	if a.parentalResponseReady(w, r, payload) {
 		writeJSON(w, http.StatusOK, payload)
@@ -338,7 +340,9 @@ func (a *App) handleShowsEpisodes(w http.ResponseWriter, r *http.Request) {
 		entry.Item["Id"] = preservedID
 		items = append(items, entry.Item)
 	}
-	a.overlayLocalUserDataItems(r, items)
+	if !a.strictSanitizedUserDataItems(w, r, items) {
+		return
+	}
 	payload := paginateItems(items, r.URL.Query())
 	if a.parentalResponseReady(w, r, payload) {
 		writeJSON(w, http.StatusOK, payload)
@@ -377,7 +381,9 @@ func (a *App) handleSearchHints(w http.ResponseWriter, r *http.Request) {
 	collected = a.parentalVisibleResults(r, collected)
 	merged := a.mergeRoundRobinItems(collected, a.clientFacingUserIDFor(r))
 
-	a.overlayLocalUserDataItems(r, merged)
+	if !a.strictSanitizedUserDataItems(w, r, merged) {
+		return
+	}
 	payload := map[string]any{
 		"SearchHints":      toAnySlice(merged),
 		"TotalRecordCount": len(merged),

@@ -118,8 +118,11 @@ metadataDone:
 		writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Upstream request failed"})
 		return
 	}
+	// Restrict a non-admin viewer's MediaSources: the file path and upstream
+	// direct URLs are intentionally separate from the container/track data
+	// the client needs to issue its own PlaybackInfo call.
 	mediaSources := make([]any, 0, len(allMediaSources))
-	for _, mediaSource := range allMediaSources {
+	for _, mediaSource := range privacyDetailMediaSources(r, allMediaSources) {
 		mediaSources = append(mediaSources, mediaSource)
 	}
 	// delete-and-restore: prevent rewriteResponseIDs from double-wrapping
@@ -129,7 +132,10 @@ metadataDone:
 	base["Id"] = r.PathValue("itemId")
 	base["MediaSources"] = mediaSources
 	base["EioIncompleteSources"] = received < len(instances) || failed > 0 || unconfirmed > 0
-	a.overlayLocalUserData(r, r.PathValue("itemId"), base)
+	// 与其他出口一致的严格契约：本地读取失败必须 502，不得退回共享态。
+	if !a.strictSanitizedUserData(w, r, r.PathValue("itemId"), base) {
+		return
+	}
 	// Each contributing instance was already checked with inheritance. Checking
 	// the sparse response DTO again would discard that confirmed parent rating.
 	writeJSON(w, http.StatusOK, base)

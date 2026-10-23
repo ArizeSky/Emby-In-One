@@ -247,7 +247,7 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 	delete(base, "MediaSources")
 	rewriteResponseIDs(base, baseServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 	base["MediaSources"] = make([]any, 0, len(allMediaSources))
-	for _, mediaSource := range allMediaSources {
+	for _, mediaSource := range privacyDetailMediaSources(r, allMediaSources) {
 		base["MediaSources"] = append(base["MediaSources"].([]any), mediaSource)
 	}
 	writeJSON(w, http.StatusOK, base)
