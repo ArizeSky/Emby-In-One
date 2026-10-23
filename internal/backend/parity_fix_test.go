@@ -264,3 +264,122 @@ upstream: []
 		}
 	})
 }
+
+// TestMergeCrossCoverageTmdbAsymmetry pins the fix for the merge failure seen on
+// the live deployment: one upstream returns a title with its Tmdb id, another
+// returns the same title without any ProviderIds. Strict key equality ("tmdb:x"
+// vs "name:x:year") could never collide; fact matching must.
+func TestMergeCrossCoverageTmdbAsymmetry(t *testing.T) {
+	config := "server:\n  port: 8096\n  name: TestServer\nadmin:\n  username: admin\n  password: testpass\nupstream: []\n"
+	withTempAppPrepared(t, config, nil, func(app *App, handler http.Handler, dir string) {
+		app.ConfigStore.Mutate(func(cfg *Config) error {
+			cfg.Upstream = []UpstreamConfig{
+				{ID: "srv-0", Name: "S0"},
+				{ID: "srv-1", Name: "S1"},
+			}
+			return nil
+		})
+
+		results := []upstreamItemsResult{
+			{ServerID: "srv-0", Items: []map[string]any{
+				{"Id": "a-1", "Type": "Movie", "Name": "流浪地球", "ProductionYear": 2019,
+					"ProviderIds": map[string]any{"Tmdb": "535167"}},
+			}},
+			{ServerID: "srv-1", Items: []map[string]any{
+				// same title, no Tmdb id at all
+				{"Id": "b-1", "Type": "Movie", "Name": "流浪地球", "ProductionYear": 2019},
+			}},
+		}
+		payload := app.mergedItemsPayload(results, app.Auth.ProxyUserID())
+		if n := payload["TotalRecordCount"]; n != 1 {
+			t.Fatalf("tmdb-vs-nameless copies: merged count = %v, want 1", n)
+		}
+	})
+}
+
+// TestMergeYearlessSideStillMerges covers the year asymmetry: a copy without a
+// production year must join its year-stamped twin instead of duplicating it.
+func TestMergeYearlessSideStillMerges(t *testing.T) {
+	config := "server:\n  port: 8096\n  name: TestServer\nadmin:\n  username: admin\n  password: testpass\nupstream: []\n"
+	withTempAppPrepared(t, config, nil, func(app *App, handler http.Handler, dir string) {
+		app.ConfigStore.Mutate(func(cfg *Config) error {
+			cfg.Upstream = []UpstreamConfig{
+				{ID: "srv-0", Name: "S0"},
+				{ID: "srv-1", Name: "S1"},
+			}
+			return nil
+		})
+
+		results := []upstreamItemsResult{
+			{ServerID: "srv-0", Items: []map[string]any{
+				{"Id": "a-1", "Type": "Series", "Name": "瑞克和莫蒂", "ProductionYear": 2013,
+					"ProviderIds": map[string]any{"Tmdb": "60625"}},
+			}},
+			{ServerID: "srv-1", Items: []map[string]any{
+				{"Id": "b-1", "Type": "Series", "Name": "瑞克和莫蒂"},
+			}},
+		}
+		payload := app.mergedItemsPayload(results, app.Auth.ProxyUserID())
+		if n := payload["TotalRecordCount"]; n != 1 {
+			t.Fatalf("yearless copy: merged count = %v, want 1", n)
+		}
+	})
+}
+
+// TestMergeConflictingTmdbStaysApart guards against over-merging: the same name
+// with two different Tmdb ids means two different titles, year or no year.
+func TestMergeConflictingTmdbStaysApart(t *testing.T) {
+	config := "server:\n  port: 8096\n  name: TestServer\nadmin:\n  username: admin\n  password: testpass\nupstream: []\n"
+	withTempAppPrepared(t, config, nil, func(app *App, handler http.Handler, dir string) {
+		app.ConfigStore.Mutate(func(cfg *Config) error {
+			cfg.Upstream = []UpstreamConfig{
+				{ID: "srv-0", Name: "S0"},
+				{ID: "srv-1", Name: "S1"},
+			}
+			return nil
+		})
+
+		results := []upstreamItemsResult{
+			{ServerID: "srv-0", Items: []map[string]any{
+				{"Id": "a-1", "Type": "Movie", "Name": "狮子王", "ProductionYear": 1994,
+					"ProviderIds": map[string]any{"Tmdb": "8587"}},
+			}},
+			{ServerID: "srv-1", Items: []map[string]any{
+				{"Id": "b-1", "Type": "Movie", "Name": "狮子王", "ProductionYear": 2019,
+					"ProviderIds": map[string]any{"Tmdb": "420818"}},
+			}},
+		}
+		payload := app.mergedItemsPayload(results, app.Auth.ProxyUserID())
+		if n := payload["TotalRecordCount"]; n != 2 {
+			t.Fatalf("distinct tmdb ids: merged count = %v, want 2", n)
+		}
+	})
+}
+
+// TestIsBetterMetadataIgnoresPrimaryImage pins the four-level rule (plan §6.4):
+// poster presence must never reorder the metadata choice. A Chinese overview still
+// wins over an English one that happens to carry a poster, and an imageless copy is
+// not displaced merely because a sibling has an image. priorityMetadata still
+// outranks the overview tiers.
+func TestIsBetterMetadataIgnoresPrimaryImage(t *testing.T) {
+	cfg := Config{Upstream: []UpstreamConfig{{ID: "srv-a"}, {ID: "srv-b"}}}
+	noImage := map[string]any{"Overview": "同一段简介", "ImageTags": map[string]any{}}
+	withImage := map[string]any{"Overview": "同一段简介", "ImageTags": map[string]any{"Primary": "abc123"}}
+	// Equal metadata: poster presence alone must not make a later-server copy win.
+	if isBetterMetadata(noImage, "srv-a", withImage, "srv-b", cfg) {
+		t.Fatal("poster presence must not reorder the metadata choice at equal metadata")
+	}
+	// A Chinese overview beats an English overview even if only the latter has a poster.
+	chineseNoImage := map[string]any{"Overview": "中文简介"}
+	englishWithImage := map[string]any{"Overview": "English", "ImageTags": map[string]any{"Primary": "poster-b"}}
+	if isBetterMetadata(chineseNoImage, "srv-a", englishWithImage, "srv-b", cfg) {
+		t.Fatal("a poster must not let an English overview displace a Chinese one")
+	}
+	// priorityMetadata still outranks the overview tiers and image presence.
+	cfgPriority := Config{Upstream: []UpstreamConfig{{ID: "srv-a", PriorityMetadata: true}, {ID: "srv-b"}}}
+	priorityNoImage := map[string]any{"Overview": "x", "ImageTags": map[string]any{}}
+	imageLowPriority := map[string]any{"Overview": "x", "ImageTags": map[string]any{"Primary": "abc"}}
+	if isBetterMetadata(priorityNoImage, "srv-a", imageLowPriority, "srv-b", cfgPriority) {
+		t.Fatal("priorityMetadata flag must outrank image presence")
+	}
+}

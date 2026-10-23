@@ -50,8 +50,8 @@ func (a *App) handleUserItemsResume(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"Items": []any{}, "TotalRecordCount": 0, "StartIndex": 0})
 		return
 	}
-	results := a.fetchItemsAcrossUpstreams(r.Context(), requestContextFrom(r.Context()), "/Users/%s/Items/Resume", query, nil)
-	writeJSON(w, http.StatusOK, a.mergedItemsPayload(results, a.clientFacingUserIDFor(r)))
+	results, incomplete := a.fetchItemsAcrossUpstreams(r.Context(), requestContextFrom(r.Context()), "/Users/%s/Items/Resume", query, nil)
+	a.writeItemsResponse(w, a.mergedItemsPayload(results, a.clientFacingUserIDFor(r)), incomplete)
 }
 
 // handleLocalResume serves resume items from local WatchStore for non-admin users.

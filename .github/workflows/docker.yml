@@ -1,0 +1,60 @@
+name: Docker image
+
+# 构建并推送多架构镜像到 GHCR。镜像地址跟随仓库本身
+# （ghcr.io/<owner>/<repo>，metadata-action 自动转小写）：
+# 在哪个仓库跑就推哪个仓库的命名空间，fork 与上游互不干扰。
+# 本分支整合阶段仅保留手动触发（workflow_dispatch）；不随 push 自动发布。
+# 自动发布触发方式、latest 策略与凭据权限留待后续提交/PR 时讨论决定。
+# 镜像 tag：latest（默认分支最新）+ 短 commit sha（方便回滚定位）。
+# 多架构 amd64+arm64，用 GHA 缓存加速后续构建。
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and push image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=,format=short
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

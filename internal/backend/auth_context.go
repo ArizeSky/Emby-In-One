@@ -3,6 +3,8 @@ package backend
 import (
 	"context"
 	"net/http"
+	"net/url"
+	"sort"
 	"strings"
 )
 
@@ -135,14 +137,40 @@ func (a *App) requireServerAccess(w http.ResponseWriter, r *http.Request, resolv
 	return false
 }
 
+// queryTokenLookup finds a proxy token carried in the URL query and the key it
+// came from. Matching is case-insensitive so a client that emits X-Emby-Token,
+// x-emby-token, X-EMBY-TOKEN or any other casing authenticates. The api_key
+// spellings keep their historical precedence over the X-Emby-Token spellings,
+// and among equivalent spellings the order is fixed (the original spellings
+// first, then any other casing in sorted order) so the outcome never depends on
+// Go's map iteration order.
+func queryTokenLookup(values url.Values) (token, key string) {
+	for _, k := range []string{"api_key", "ApiKey", "X-Emby-Token", "x-emby-token", "X-EMBY-TOKEN"} {
+		if v := values.Get(k); v != "" {
+			return v, k
+		}
+	}
+	var extra []string
+	for k := range values {
+		switch strings.ToLower(k) {
+		case "api_key", "apikey", "x-emby-token":
+			extra = append(extra, k)
+		}
+	}
+	sort.Strings(extra)
+	for _, k := range extra {
+		if v := values.Get(k); v != "" {
+			return v, k
+		}
+	}
+	return "", ""
+}
+
 func extractToken(r *http.Request) string {
 	if token := r.Header.Get("X-Emby-Token"); token != "" {
 		return token
 	}
-	if token := r.URL.Query().Get("api_key"); token != "" {
-		return token
-	}
-	if token := r.URL.Query().Get("ApiKey"); token != "" {
+	if token, _ := queryTokenLookup(r.URL.Query()); token != "" {
 		return token
 	}
 	for _, headerName := range []string{"X-Emby-Authorization", "Authorization"} {

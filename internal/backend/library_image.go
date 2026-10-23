@@ -1,9 +1,12 @@
 package backend
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 )
@@ -19,6 +22,7 @@ func (a *App) registerLibraryAndImageRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /Library/VirtualFolders", a.withContext(a.requireAuth(a.handleLibraryVirtualFolders)))
 	mux.HandleFunc("GET /Library/SelectableRemoteLibraries", a.withContext(a.requireAuth(a.handleLibrarySelectableRemoteLibraries)))
 	mux.HandleFunc("GET /Library/MediaFolders", a.withContext(a.requireAuth(a.handleLibraryMediaFolders)))
+	mux.HandleFunc("GET /Items/Prefixes", a.withContext(a.requireAuth(a.handleItemsPrefixes)))
 	for _, endpoint := range []string{"Genres", "MusicGenres", "Studios", "Persons", "Artists", "Artists/AlbumArtists"} {
 		current := endpoint
 		mux.HandleFunc("GET /"+current, a.withContext(a.requireAuth(func(w http.ResponseWriter, r *http.Request) {
@@ -99,6 +103,18 @@ func (a *App) handleLibraryTaxonomy(w http.ResponseWriter, r *http.Request, endp
 	groups := fanOutClients(clients, func(c *UpstreamClient) []map[string]any {
 		query := cloneValues(r.URL.Query())
 		query.Set("UserId", c.clientUserID())
+		// Taxonomies scoped to a library arrive with a *virtual* ParentId. Translate it
+		// per upstream and skip servers that do not own that library, otherwise the
+		// upstream cannot resolve the id and the genre/studio tab renders empty.
+		if pid := firstQueryValue(query, "ParentId", "parentId", "parentid"); pid != "" {
+			resolvedParent := a.resolveRouteID(pid)
+			if resolvedParent == nil || resolvedParent.ServerID != c.ID {
+				return nil
+			}
+			query.Set("ParentId", resolvedParent.OriginalID)
+			query.Del("parentId")
+			query.Del("parentid")
+		}
 		if hasBatchIDQuery(query) {
 			translated, ok := translateBatchIDQueryForServer(query, c.ID, a.IDStore)
 			if !ok {
@@ -356,31 +372,152 @@ func (a *App) handleSearchHints(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleItemImage(w http.ResponseWriter, r *http.Request) {
+	reqCtx := requestContextFrom(r.Context())
+	// Distinguish "no credentials" from "credentials present but invalid or
+	// disabled". Anonymous image requests stay public (existing behaviour), but a
+	// request that carried a token which no longer validates must not be silently
+	// downgraded to anonymous — that would let a revoked or disabled user keep
+	// reading images. See plan §8.8.
+	authenticated := reqCtx != nil && reqCtx.ProxyUser != nil
+	if reqCtx != nil && reqCtx.ProxyToken != "" && reqCtx.ProxyUser == nil {
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
 	resolved := a.resolveRouteID(r.PathValue("itemId"))
 	if resolved == nil {
+		w.Header().Set("Cache-Control", "no-store")
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
 	// Image URLs are embedded by clients and stay reachable without a token, so
 	// the server access check only applies to authenticated requests.
-	if reqCtx := requestContextFrom(r.Context()); reqCtx != nil && reqCtx.ProxyUser != nil && !a.isServerAllowed(reqCtx, resolved.ServerID) {
+	if authenticated && !a.isServerAllowed(reqCtx, resolved.ServerID) {
+		w.Header().Set("Cache-Control", "no-store")
 		writeJSON(w, http.StatusForbidden, map[string]any{"message": "Access denied"})
 		return
 	}
-	imagePath := "/Items/" + resolved.OriginalID + "/Images/" + r.PathValue("imageType")
+	imageType := r.PathValue("imageType")
+	imageClient := resolved.Client
+	imageOriginalID := resolved.OriginalID
+	// Route to the display-winning instance recorded by the merge: the merged DTO's
+	// non-Primary image tags belong to that server, not necessarily the IDStore
+	// primary (plan §6.4.2). A matching tag below can still override to a sibling
+	// that owns the exact requested tag.
+	if src, ok := a.IDStore.ResolveDisplaySource(r.PathValue("itemId")); ok {
+		if srcClient := a.Upstream.ClientByID(src.ServerID); srcClient != nil && srcClient.IsOnline() {
+			if !authenticated || a.isServerAllowed(reqCtx, src.ServerID) {
+				imageClient = srcClient
+				imageOriginalID = src.OriginalID
+			}
+		}
+	}
+	// The merged DTO can advertise a sibling copy's poster tag while keeping its
+	// own virtual id (plan §6.4.1). Fetch the bytes from the server that actually
+	// owns that tag instead of the primary, which 404s (plan §6.4.2).
+	if tag := r.URL.Query().Get("tag"); tag != "" {
+		if src, ok := a.IDStore.ResolveImageSource(r.PathValue("itemId"), imageType, tag); ok {
+			if srcClient := a.Upstream.ClientByID(src.ServerID); srcClient != nil && srcClient.IsOnline() {
+				if authenticated && !a.isServerAllowed(reqCtx, src.ServerID) {
+					w.Header().Set("Cache-Control", "no-store")
+					writeJSON(w, http.StatusForbidden, map[string]any{"message": "Access denied"})
+					return
+				}
+				imageClient = srcClient
+				imageOriginalID = src.OriginalID
+			}
+		}
+	}
+	// For an authenticated request, enforce the user's live parental policy on the
+	// actual copy the bytes come from (plan §8.8): a denied copy is 403, an
+	// unconfirmable rating is 502, and neither is cached.
+	if authenticated {
+		allowed, confirmed := a.checkInstanceParentalAccess(r, imageClient, imageOriginalID)
+		if !allowed {
+			w.Header().Set("Cache-Control", "no-store")
+			if !confirmed {
+				w.WriteHeader(http.StatusBadGateway)
+			} else {
+				writeJSON(w, http.StatusForbidden, map[string]any{"message": "Access denied"})
+			}
+			return
+		}
+	}
+	imagePath := "/Items/" + imageOriginalID + "/Images/" + imageType
 	if imageIndex := r.PathValue("imageIndex"); imageIndex != "" {
 		imagePath += "/" + imageIndex
 	}
 	imageQuery := cloneValues(r.URL.Query())
-	imageQuery.Del("api_key")
-	imageQuery.Del("ApiKey")
-	resp, err := resolved.Client.Stream(r.Context(), requestContextFrom(r.Context()), a.Identity, imagePath, imageQuery)
+	// Never forward a client credential to the upstream; the auth snapshot adds
+	// the real one. Strip every casing of the token query keys (plan §5.2/§8.8).
+	stripProxyCredentialQuery(imageQuery)
+	resp, err := imageClient.Stream(r.Context(), reqCtx, a.Identity, imagePath, imageQuery)
 	if err != nil {
+		w.Header().Set("Cache-Control", "no-store")
 		w.WriteHeader(http.StatusBadGateway)
 		return
 	}
+	// Images ride the stream request path, which stops at redirects when
+	// directRedirect is enabled so the playback handler can classify each hop.
+	// The image handler has no such contract with the client: a 123-style
+	// upstream answers poster requests with a 302 to the netdisk's image CDN,
+	// and forwarding it while dropping the Location header leaves the client a
+	// broken image. Follow the hops here instead — posters are small, so
+	// relaying them through this proxy is cheap.
+	// followRedirects off keeps the rc3 failure semantics for images too (plan
+	// §7.4): a poster that answers with a redirect is reported as a 502 rather
+	// than being silently followed or handed to the client as a Location-less 3xx.
+	if isRedirectStatus(resp.StatusCode) && !imageClient.Config.FollowRedirects {
+		resp.Body.Close()
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusBadGateway)
+		return
+	}
+	for hop := 0; isRedirectStatus(resp.StatusCode) && hop < maxStreamRedirectHops; hop++ {
+		location := resp.Header.Get("Location")
+		if location == "" {
+			break
+		}
+		var base *url.URL
+		if resp.Request != nil {
+			base = resp.Request.URL
+		}
+		abs, rerr := resolveRedirectTarget(base, location)
+		if rerr != nil || abs == nil {
+			break
+		}
+		followed, ferr := imageClient.fetchRedirectTarget(r.Context(), abs.String(), nil)
+		if ferr != nil {
+			if errors.Is(ferr, context.Canceled) || errors.Is(ferr, context.DeadlineExceeded) {
+				return
+			}
+			resp.Body.Close()
+			w.Header().Set("Cache-Control", "no-store")
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		resp.Body.Close()
+		resp = followed
+	}
 	defer resp.Body.Close()
-	w.Header().Set("Cache-Control", "public, max-age=86400")
+	// A chain that never resolves to real bytes (missing/invalid Location, hop
+	// limit) must not be handed to the client as a Location-less 3xx.
+	if isRedirectStatus(resp.StatusCode) {
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusBadGateway)
+		return
+	}
+	// Cache policy (plan §8.8): every error is no-store (never cache a 404 for a
+	// day); an authenticated success is private and re-validated; an anonymous
+	// success is the one public, cacheable case.
+	switch {
+	case resp.StatusCode >= 400:
+		w.Header().Set("Cache-Control", "no-store")
+	case authenticated:
+		w.Header().Set("Cache-Control", "private, no-store")
+	default:
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+	}
 	for _, header := range []string{"Content-Type", "Content-Length", "ETag", "Last-Modified", "Content-Range"} {
 		if value := resp.Header.Get(header); value != "" {
 			w.Header().Set(header, value)

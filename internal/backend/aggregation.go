@@ -18,12 +18,35 @@ type indexedResult struct {
 	result upstreamItemsResult
 }
 
-// aggregateUpstreams runs tasks in parallel with grace period and background completion.
-// It returns partial results immediately when the grace period expires,
-// then continues draining remaining results in the background for ID mapping only.
+// aggregationReport summarises one parallel aggregation (plan §6.2): how many
+// servers were expected, how many answered, how many failed or timed out, and
+// whether the merged candidate set is incomplete. Callers use it to attach the
+// incomplete-results marker instead of pretending a partial answer is complete.
+type aggregationReport struct {
+	Expected     int
+	Received     int
+	Failed       int
+	TimedOut     int
+	GraceExpired bool
+	Truncated    bool
+	Incomplete   bool
+}
+
+// aggregateUpstreams runs tasks in parallel and returns the results, discarding
+// the report. Callers that must surface partial results use
+// aggregateUpstreamsWithReport instead.
 func (a *App) aggregateUpstreams(parentCtx context.Context, cfg aggregationConfig, tasks []upstreamTask) []upstreamItemsResult {
+	results, _ := a.aggregateUpstreamsWithReport(parentCtx, cfg, tasks)
+	return results
+}
+
+// aggregateUpstreamsWithReport runs tasks in parallel with grace period and
+// background completion, and returns both the collected results and a report
+// describing what was and was not obtained (plan §6.2).
+func (a *App) aggregateUpstreamsWithReport(parentCtx context.Context, cfg aggregationConfig, tasks []upstreamTask) ([]upstreamItemsResult, aggregationReport) {
+	report := aggregationReport{Expected: len(tasks)}
 	if len(tasks) == 0 {
-		return nil
+		return nil, report
 	}
 
 	// Background context: not tied to the HTTP request, so goroutines survive
@@ -52,8 +75,19 @@ func (a *App) aggregateUpstreams(parentCtx context.Context, cfg aggregationConfi
 		select {
 		case res := <-resultCh:
 			received++
+			report.Received++
 			if res.result.Err == nil {
 				collected = append(collected, res.result)
+				if res.result.Truncated {
+					report.Truncated = true
+					report.Incomplete = true
+				}
+				if !res.result.Complete {
+					report.Incomplete = true
+				}
+			} else {
+				report.Failed++
+				report.Incomplete = true
 			}
 			if graceTimer == nil && len(collected) > 0 && cfg.gracePeriod > 0 {
 				graceTimer = time.After(cfg.gracePeriod)
@@ -62,17 +96,22 @@ func (a *App) aggregateUpstreams(parentCtx context.Context, cfg aggregationConfi
 			if a.Logger != nil && received < len(tasks) {
 				a.Logger.Debugf("Aggregation grace period expired: %d/%d servers responded", received, len(tasks))
 			}
+			report.GraceExpired = true
+			report.TimedOut = len(tasks) - received
+			report.Incomplete = true
 			a.drainBackgroundResults(bgCtx, bgCancel, resultCh, len(tasks)-received)
-			return collected
+			return collected, report
 		case <-parentCtx.Done():
+			report.TimedOut = len(tasks) - received
+			report.Incomplete = true
 			a.drainBackgroundResults(bgCtx, bgCancel, resultCh, len(tasks)-received)
-			return collected
+			return collected, report
 		}
 	}
 
 	// All tasks completed within grace period
 	bgCancel()
-	return collected
+	return collected, report
 }
 
 // drainBackgroundResults continues collecting late results in a background goroutine.

@@ -21,6 +21,8 @@ type adminUpstreamInput struct {
 	FollowRedirects           *bool                 `json:"followRedirects"`
 	ProxyID                   *string               `json:"proxyId"`
 	PriorityMetadata          *bool                 `json:"priorityMetadata"`
+	DirectRedirect            *bool                 `json:"directRedirect"`
+	PagedScan                 *bool                 `json:"pagedScan"`
 	CustomUserAgent           *string               `json:"customUserAgent"`
 	CustomClient              *string               `json:"customClient"`
 	CustomClientVersion       *string               `json:"customClientVersion"`
@@ -152,6 +154,8 @@ func (a *App) handleAdminUpstreamList(w http.ResponseWriter, r *http.Request) {
 			"followRedirects":      upstream.FollowRedirects,
 			"proxyId":              valueOrNil(upstream.ProxyID),
 			"priorityMetadata":     upstream.PriorityMetadata,
+			"directRedirect":       upstream.DirectRedirect,
+			"pagedScan":            upstream.PagedScan,
 			"customUserAgent":      upstream.CustomUserAgent,
 			"customClient":         upstream.CustomClient,
 			"customClientVersion":  upstream.CustomClientVersion,
@@ -764,13 +768,15 @@ func (a *App) handleAdminUsersList(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		result = append(result, map[string]any{
-			"id":              u.ID,
-			"username":        u.Username,
-			"enabled":         u.Enabled,
-			"allowedServers":  u.AllowedServers,
-			"hiddenLibraries": a.hiddenLibrariesJSONFor(u.ID),
-			"serverNames":     serverNames,
-			"createdAt":       u.CreatedAt,
+			"id":                u.ID,
+			"username":          u.Username,
+			"enabled":           u.Enabled,
+			"allowedServers":    u.AllowedServers,
+			"hiddenLibraries":   a.hiddenLibrariesJSONFor(u.ID),
+			"maxParentalRating": u.MaxParentalRating,
+			"blockUnratedItems": u.BlockUnratedItems,
+			"serverNames":       serverNames,
+			"createdAt":         u.CreatedAt,
 		})
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -782,9 +788,11 @@ func (a *App) handleAdminUsersCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct {
-		Username       string   `json:"username"`
-		Password       string   `json:"password"`
-		AllowedServers []string `json:"allowedServers"`
+		Username          string   `json:"username"`
+		Password          string   `json:"password"`
+		AllowedServers    []string `json:"allowedServers"`
+		MaxParentalRating int      `json:"maxParentalRating"`
+		BlockUnratedItems bool     `json:"blockUnratedItems"`
 	}
 	if err := decodeJSONBody(r, &input); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "Invalid request body"})
@@ -803,7 +811,11 @@ func (a *App) handleAdminUsersCreate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]any{"error": "用户名与管理员冲突"})
 		return
 	}
-	user, err := a.UserStore.Create(input.Username, input.Password, input.AllowedServers)
+	if !validParentalRating(input.MaxParentalRating) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "非法的分级限制值"})
+		return
+	}
+	user, err := a.UserStore.CreateWithPolicy(input.Username, input.Password, input.AllowedServers, input.MaxParentalRating, input.BlockUnratedItems)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") || strings.Contains(err.Error(), "already exists") {
 			writeJSON(w, http.StatusConflict, map[string]any{"error": "用户名已存在"})
@@ -812,7 +824,7 @@ func (a *App) handleAdminUsersCreate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"id": user.ID, "username": user.Username})
+	writeJSON(w, http.StatusCreated, map[string]any{"id": user.ID, "username": user.Username, "maxParentalRating": input.MaxParentalRating, "blockUnratedItems": input.BlockUnratedItems})
 }
 
 func (a *App) handleAdminUsersUpdate(w http.ResponseWriter, r *http.Request) {
@@ -822,11 +834,13 @@ func (a *App) handleAdminUsersUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	id := r.PathValue("id")
 	var input struct {
-		Username        *string              `json:"username"`
-		Password        *string              `json:"password"`
-		Enabled         *bool                `json:"enabled"`
-		AllowedServers  *[]string            `json:"allowedServers"`
-		HiddenLibraries map[string]*[]string `json:"hiddenLibraries"`
+		Username          *string              `json:"username"`
+		Password          *string              `json:"password"`
+		Enabled           *bool                `json:"enabled"`
+		AllowedServers    *[]string            `json:"allowedServers"`
+		HiddenLibraries   map[string]*[]string `json:"hiddenLibraries"`
+		MaxParentalRating *int                 `json:"maxParentalRating"`
+		BlockUnratedItems *bool                `json:"blockUnratedItems"`
 	}
 	if err := decodeJSONBody(r, &input); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "Invalid request body"})
@@ -845,7 +859,15 @@ func (a *App) handleAdminUsersUpdate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := a.UserStore.Update(id, input.Username, input.Password, input.Enabled, input.AllowedServers); err != nil {
+	if input.MaxParentalRating != nil && !validParentalRating(*input.MaxParentalRating) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "非法的分级限制值"})
+		return
+	}
+	if err := a.UserStore.UpdateWithPolicy(id, input.Username, input.Password, input.Enabled, input.AllowedServers, input.MaxParentalRating, input.BlockUnratedItems); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": "用户不存在"})
+			return
+		}
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}

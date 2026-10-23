@@ -231,13 +231,64 @@ func TestImageProxyStreamsBytesAndSupportsEmbyPrefix(t *testing.T) {
 		if rr.Code != http.StatusOK {
 			t.Fatalf("image status = %d, body=%s", rr.Code, rr.Body.String())
 		}
-		if got := rr.Header().Get("Cache-Control"); !strings.Contains(got, "max-age=86400") {
-			t.Fatalf("unexpected cache-control: %q", got)
+		if got := rr.Header().Get("Cache-Control"); !strings.Contains(got, "no-store") || strings.Contains(got, "public") {
+			t.Fatalf("authenticated image cache-control = %q, want private no-store (plan §8.8)", got)
 		}
 		if got := rr.Header().Get("Content-Type"); got != "image/jpeg" {
 			t.Fatalf("unexpected image content type: %q", got)
 		}
 		if rr.Body.String() != "jpeg-bytes" {
+			t.Fatalf("unexpected image body: %q", rr.Body.String())
+		}
+	})
+}
+
+// TestImageProxyFollowsRedirectUnderDirectRedirect pins the poster fix for
+// 123-style upstreams: with directRedirect on, the stream path stops at
+// redirects so the playback handler can classify each hop — but an image
+// forwarded as a Location-less 302 is just a broken poster. The image handler
+// must follow the hops itself.
+func TestImageProxyFollowsRedirectUnderDirectRedirect(t *testing.T) {
+	var cdnURL string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/Users/AuthenticateByName":
+			_ = json.NewEncoder(w).Encode(map[string]any{"AccessToken": "token-a", "User": map[string]any{"Id": "user-a"}})
+		case r.Method == http.MethodGet && r.URL.Path == "/Items/item-a/Images/Primary":
+			http.Redirect(w, r, cdnURL+"/img.jpg", http.StatusFound)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/img.jpg" {
+			w.Header().Set("Content-Type", "image/jpeg")
+			_, _ = w.Write([]byte("cdn-jpeg-bytes"))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer cdn.Close()
+	cdnURL = cdn.URL
+
+	config := fmt.Sprintf("server:\n  port: 8096\n  name: \"Test Server\"\n  id: \"server-1\"\n\nadmin:\n  username: \"admin\"\n  password: \"secret\"\n\nplayback:\n  mode: \"proxy\"\n\ntimeouts:\n  api: 30000\n  global: 15000\n  login: 10000\n  healthCheck: 10000\n  healthInterval: 60000\n\nproxies: []\nupstream:\n  - name: \"A\"\n    url: %q\n    username: \"u1\"\n    password: \"p1\"\n    directRedirect: true\n", upstream.URL)
+
+	withTempAppConfig(t, config, func(app *App, handler http.Handler) {
+		token := loginToken(t, handler, "secret")
+		virtualItem := app.IDStore.GetOrCreateVirtualID("item-a", app.Upstream.Clients()[0].ID)
+
+		req := httptest.NewRequest(http.MethodGet, "/emby/Items/"+virtualItem+"/Images/Primary?api_key="+token, nil)
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("image status = %d, want 200 after following the redirect; body=%s", rr.Code, rr.Body.String())
+		}
+		if got := rr.Header().Get("Content-Type"); got != "image/jpeg" {
+			t.Fatalf("unexpected image content type: %q", got)
+		}
+		if rr.Body.String() != "cdn-jpeg-bytes" {
 			t.Fatalf("unexpected image body: %q", rr.Body.String())
 		}
 	})

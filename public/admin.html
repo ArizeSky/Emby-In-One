@@ -144,7 +144,7 @@
             <td class="px-6 py-4 font-medium">{{ s.name }}</td>
             <td class="px-6 py-4 text-slate-500 text-sm max-w-xs truncate">{{ s.url }}</td>
             <td class="px-6 py-4 text-sm">{{ getProxyName(s.proxyId) }}</td>
-            <td class="px-6 py-4"><span v-if="s.priorityMetadata" class="px-2 py-0.5 bg-purple-100 text-purple-700 rounded text-xs font-bold">元数据优先</span></td>
+            <td class="px-6 py-4"><span v-if="s.priorityMetadata" class="px-2 py-0.5 bg-purple-100 text-purple-700 rounded text-xs font-bold">元数据优先</span><span v-if="s.directRedirect" class="ml-1 px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded text-xs font-bold">302直通</span><span v-if="s.pagedScan" class="ml-1 px-2 py-0.5 bg-sky-100 text-sky-700 rounded text-xs font-bold">分页扫描</span></td>
             <td class="px-6 py-4"><span :class="s.online ? 'bg-green-50 text-green-600' : 'bg-red-50 text-red-600'" class="px-2 py-1 rounded-full text-xs font-bold border">{{ s.online ? '在线' : '离线' }}</span><span v-if="s.aggregationEnabled === false" class="aggregation-paused">已暂停聚合</span></td>
             <td class="px-6 py-4"><div class="flex items-center space-x-2 flex-nowrap"><span class="aggregation-control"><button type="button" class="aggregation-switch" role="switch" :aria-checked="s.aggregationEnabled !== false" :aria-label="(s.aggregationEnabled === false ? '开启聚合：' : '关闭聚合：') + s.name" :disabled="!!aggregationPending[s.id]" :class="{ 'is-enabled': s.aggregationEnabled !== false }" @click="setServerAggregation(s)"><span v-if="s.aggregationEnabled !== false" key="aggregation-on"><i data-lucide="toggle-right" class="w-5 h-5"></i></span><span v-else key="aggregation-off"><i data-lucide="toggle-left" class="w-5 h-5"></i></span></button><span role="tooltip" class="aggregation-tooltip">{{ aggregationPending[s.id] ? '保存中' : (s.aggregationEnabled === false ? '开启聚合' : '关闭聚合') }}</span></span><button @click="editServer(s)" class="p-2 text-slate-400 hover:text-blue-600"><i data-lucide="edit-3" class="w-4 h-4"></i></button><button @click="reconnectServer(s.id || s.index)" class="p-2 text-slate-400 hover:text-green-600"><i data-lucide="refresh-cw" class="w-4 h-4"></i></button><button @click="deleteServer(s.id || s.index)" class="p-2 text-slate-400 hover:text-red-600"><i data-lucide="trash-2" class="w-4 h-4"></i></button></div></td>
           </tr>
@@ -323,6 +323,8 @@
             <p v-if="serverForm.playbackMode === 'redirect'" class="mt-1 text-xs text-amber-600">直连模式会把播放地址交给客户端，最终媒体请求由客户端自身发起，代理无法替它强制使用常驻 UA；常驻身份仅作用于代理侧的登录与 API 请求。</p>
           </div>
           <div><label class="text-sm font-medium">跟随上游重定向</label><select v-model="serverForm.followRedirects" class="w-full px-4 py-2 border rounded-lg outline-none"><option :value="true">跟随（默认）</option><option :value="false">不跟随</option></select><p class="mt-1 text-xs text-slate-400">上游返回 301/302/303/307/308 时是否自动跟到新地址。选择「不跟随」后按上游错误处理，不会把上游的重定向地址交给客户端。</p></div>
+          <div><label class="text-sm font-medium">播放 302 直通</label><select v-model="serverForm.directRedirect" class="w-full px-4 py-2 border rounded-lg outline-none"><option :value="false">关闭（默认）</option><option :value="true">开启</option></select><p class="mt-1 text-xs text-slate-400">代理模式下，上游对播放流返回 302 跳转（STRM 网盘直链）时把跳转地址交给播放器直连，媒体流量不经本代理。开启后「跟随上游重定向」对流请求不再生效。</p></div>
+          <div><label class="text-sm font-medium">合并查询分页扫描</label><select v-model="serverForm.pagedScan" class="w-full px-4 py-2 border rounded-lg outline-none"><option :value="false">单次拉取（默认）</option><option :value="true">200 分页</option></select><p class="mt-1 text-xs text-slate-400">跨服合并条目查询的拉取方式。默认单次 Limit=5000；「200 分页」改为每次 Limit=200 翻页拉满 5000，适合拒绝大 Limit 请求的上游（如魔改 Emby）。</p></div>
           <div><label class="text-sm font-medium">使用网络代理</label><select v-model="serverForm.proxyId" class="w-full px-4 py-2 border rounded-lg outline-none"><option :value="null">不使用</option><option v-for="p in proxyList" :key="p.id" :value="p.id">{{ p.name }}</option></select></div>
           <div class="flex items-center space-x-2 sm:pt-6"><input type="checkbox" v-model="serverForm.priorityMetadata" class="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"><label class="text-sm font-bold text-purple-600">元数据优先</label></div>
           <div><label class="text-sm font-medium">最大同时播放数</label><input type="number" v-model.number="serverForm.maxConcurrent" min="0" step="1" placeholder="0=不限制" class="w-full px-4 py-2 border rounded-lg outline-none"><p class="mt-1 text-xs text-slate-400">0 表示不限制；仅对普通用户生效</p></div>
@@ -352,6 +354,23 @@
       <div class="space-y-4">
         <div><label class="text-sm font-medium">用户名</label><input type="text" v-model="userForm.username" class="w-full px-4 py-2 border rounded-lg outline-none"></div>
         <div><label class="text-sm font-medium">密码</label><input type="password" v-model="userForm.password" minlength="8" maxlength="128" :placeholder="editUserId ? '留空不修改' : '8–128 字符'" class="w-full px-4 py-2 border rounded-lg outline-none"><p class="mt-1 text-xs text-slate-400">长度需为 8–128 字符{{ editUserId ? '；留空表示不修改' : '' }}。</p></div>
+        <div>
+          <label class="text-sm font-medium">内容分级上限</label>
+          <select v-model.number="userForm.maxParentalRating" class="w-full px-4 py-2 border rounded-lg outline-none">
+            <option :value="0">不限制</option>
+            <option :value="1">1 · 幼儿（G / TV-Y）</option>
+            <option :value="3">3 · 儿童（TV-Y7）</option>
+            <option :value="4">4 · 儿童（TV-Y7-FV）</option>
+            <option :value="5">5 · 儿童（PG）</option>
+            <option :value="7">7 · 青少年（PG-13）</option>
+            <option :value="8">8 · 16+（TV-14）</option>
+            <option :value="9">9 · 成人（R / TV-MA）</option>
+            <option :value="10">10 · 限制级（NC-17）</option>
+            <option :value="15">15 · 全部（含 XXX）</option>
+          </select>
+          <p class="mt-1 text-xs text-slate-400">超过该分级的影片和剧集不会显示给此用户（0 = 不限制）。</p>
+        </div>
+        <div class="flex items-center space-x-2"><input type="checkbox" v-model="userForm.blockUnratedItems" class="w-4 h-4 rounded border-slate-300 text-blue-600"><label class="text-sm font-medium">拦截未分级内容</label></div>
         <div v-if="editUserId" class="flex items-center space-x-2"><input type="checkbox" v-model="userForm.enabled" class="w-4 h-4 rounded border-slate-300 text-blue-600"><label class="text-sm font-medium">启用</label></div>
         <div><label class="text-sm font-medium block mb-2">允许访问的服务器</label>
           <p class="text-xs text-slate-400 mb-2">不勾选任何服务器表示允许访问全部</p>

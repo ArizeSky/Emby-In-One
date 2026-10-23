@@ -283,3 +283,17 @@ test('aggregation success refreshes the servers page', async () => {
     'the servers page re-fetched the upstream list');
   if (vm._refreshTimer) clearTimeout(vm._refreshTimer);
 });
+
+test('editing and saving an existing server preserves separate streaming URLs', async () => {
+  const h = adminHarness();
+  const vm = h.vm;
+  const urls = ['https://stream-a.example', 'https://stream-b.example'];
+  vm.editServer({ id: 'srv', streamingUrls: urls, spoofClient: 'passthrough' });
+  await vm.saveServer();
+  const save = h.seen.find(c => c.url.includes('/admin/api/upstream') && c.method === 'PUT');
+  assert.ok(save, 'saving an existing server issued a PUT');
+  const body = JSON.parse(save.body);
+  assert.deepStrictEqual(Array.from(body.streamingUrls), urls,
+    'opening and saving an existing server must preserve its separate streaming URLs');
+  if (vm._refreshTimer) clearTimeout(vm._refreshTimer);
+});

@@ -37,6 +37,11 @@ type activeStreamEntry struct {
 	CreatedAt  time.Time
 }
 
+type imageSourceEntry struct {
+	ServerID   string
+	OriginalID string
+}
+
 // activeStreamTTL bounds how long a recorded playback server stays valid.
 const activeStreamTTL = 4 * time.Hour
 
@@ -50,6 +55,8 @@ type IDStore struct {
 	originalToVirtual   map[string]string
 	originalIDToVirtual map[string][]string          // originalID → virtual IDs known for it
 	activeStreamServer  map[string]activeStreamEntry // virtualItemID → last-chosen server
+	imageSources        map[string]imageSourceEntry  // virtualID|type|tag → real image source
+	displaySources      map[string]imageSourceEntry  // virtualID → display winner's real instance
 }
 
 func NewIDStore(dataDir string, logger *Logger, upstreamIDs ...string) (*IDStore, error) {
@@ -66,6 +73,8 @@ func NewIDStore(dataDir string, logger *Logger, upstreamIDs ...string) (*IDStore
 		originalToVirtual:   map[string]string{},
 		originalIDToVirtual: map[string][]string{},
 		activeStreamServer:  map[string]activeStreamEntry{},
+		imageSources:        map[string]imageSourceEntry{},
+		displaySources:      map[string]imageSourceEntry{},
 	}
 
 	dbPath := filepath.Join(dataDir, "mappings.db")
@@ -445,4 +454,66 @@ func (s *IDStore) GetActiveStream(virtualItemID string) (string, bool) {
 		return "", false
 	}
 	return entry.ServerID, true
+}
+
+// imageSourceKey identifies one (item, image type, tag) image-source record.
+func imageSourceKey(virtualID, imageType, tag string) string {
+	return virtualID + "|" + imageType + "|" + tag
+}
+
+// SetImageSource records which upstream instance actually owns the image bytes a
+// virtual item advertises. The merged DTO can borrow a sibling's poster tag while
+// keeping its own virtual id (plan §6.4.1), so the image handler needs this to
+// fetch from the server that really has the image instead of the primary that 404s.
+func (s *IDStore) SetImageSource(virtualID, imageType, tag, serverID, originalID string) {
+	if virtualID == "" || tag == "" || serverID == "" || originalID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.imageSources == nil {
+		s.imageSources = map[string]imageSourceEntry{}
+	}
+	s.imageSources[imageSourceKey(virtualID, imageType, tag)] = imageSourceEntry{ServerID: serverID, OriginalID: originalID}
+}
+
+// ResolveImageSource returns the recorded real source for a virtual item's image.
+func (s *IDStore) ResolveImageSource(virtualID, imageType, tag string) (AdditionalInstance, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	entry, ok := s.imageSources[imageSourceKey(virtualID, imageType, tag)]
+	if !ok {
+		return AdditionalInstance{}, false
+	}
+	return AdditionalInstance{OriginalID: entry.OriginalID, ServerID: entry.ServerID}, true
+}
+
+// SetDisplaySource records which real upstream instance supplied the display
+// metadata (and therefore the non-Primary image tags) for a virtual item. The
+// merged DTO can be served from a server other than the IDStore primary instance,
+// so the image handler must route Backdrop/Logo/Thumb to this winner instead of
+// the primary, which does not own those tags (plan §6.4.2). The source is only a
+// server-side fetch hint; it is never a permission grant.
+func (s *IDStore) SetDisplaySource(virtualID, serverID, originalID string) {
+	if virtualID == "" || serverID == "" || originalID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.displaySources == nil {
+		s.displaySources = map[string]imageSourceEntry{}
+	}
+	s.displaySources[virtualID] = imageSourceEntry{ServerID: serverID, OriginalID: originalID}
+}
+
+// ResolveDisplaySource returns the recorded display-winning instance for a
+// virtual item, if one has been recorded by a merge.
+func (s *IDStore) ResolveDisplaySource(virtualID string) (AdditionalInstance, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	entry, ok := s.displaySources[virtualID]
+	if !ok {
+		return AdditionalInstance{}, false
+	}
+	return AdditionalInstance{OriginalID: entry.OriginalID, ServerID: entry.ServerID}, true
 }

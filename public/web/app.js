@@ -9,6 +9,9 @@
 
   const API = ''; // same origin
   const { query, all: allItems, episodeOrder, defaultAudio, defaultSubtitle } = EIOData;
+  // Set by setup() so a partial-results response can surface a lightweight toast
+  // without api() needing the reactive toast store directly (plan §8.9).
+  let notifyPartialResults = null;
 
   /* ================= helpers ================= */
 
@@ -23,13 +26,26 @@
     if (!res.ok) {
       const body = await res.text().catch(() => '');
       let detail = body || res.statusText;
-      try { const parsed = JSON.parse(body); if (parsed && parsed.message) detail = parsed.message; } catch (e) {}
+      let hasMessage = false;
+      try { const parsed = JSON.parse(body); if (parsed && parsed.message) { detail = parsed.message; hasMessage = true; } } catch (e) {}
+      // A bare 403/502 (no upstream message) gets a clear local explanation so a
+      // parental restriction is not shown as a generic network failure (plan §8.9).
+      if (!hasMessage) {
+        if (res.status === 403) detail = '内容受限，无法访问该内容';
+        else if (res.status === 502) detail = '暂时无法确认内容，请稍后重试';
+      }
       const error = new Error(`${res.status}: ${detail}`);
       error.status = res.status;
       throw error;
     }
     if (res.status === 204) return null;
-    return res.json();
+    const data = await res.json();
+    // A partial merged candidate set is still usable; surface it lightly rather
+    // than rendering the failure as an empty library (plan §8.9).
+    if (data && data.EioIncompleteResults && typeof notifyPartialResults === 'function') {
+      notifyPartialResults();
+    }
+    return data;
   }
 
   // Raw URLs (images, streams, subtitles) authenticate with api_key in the
@@ -111,6 +127,15 @@
 
       /* ---- toast ---- */
       const toasts = reactive(EIOUI.createToasts());
+      // Surface a single lightweight notice when a list response is partial
+      // (plan §8.9); debounce so rapid page loads do not stack toasts.
+      let partialNoticeShownAt = 0;
+      notifyPartialResults = () => {
+        const now = Date.now();
+        if (now - partialNoticeShownAt < 15000) return;
+        partialNoticeShownAt = now;
+        toasts.push({ message: '部分结果：部分服务器响应较慢，列表可能不完整', kind: 'info' });
+      };
 
       /* ---- auth flows ---- */
       function togglePassword() { passwordVisible.value = !passwordVisible.value; }

@@ -20,12 +20,25 @@ type upstreamItemsResult struct {
 	// answer", which the index can no longer express now that an empty page is collected
 	// from every server alike.
 	Err error
+	// Complete reports that this server's candidate set was read in full (not just
+	// that the last request succeeded). Truncated reports that a scan cap or a
+	// known remaining tail left the set incomplete (plan §6.2). The zero value is
+	// not "complete": callers that fully read a server must set Complete=true
+	// explicitly, so a task that was never wired into the scanner is not silently
+	// reported as a partial failure.
+	Complete  bool
+	Truncated bool
 }
 
 // errBatchQueryNotTranslatable marks a request an upstream cannot answer because the batch
 // ID query it carries names items that server does not know. It is a failure of that
 // server, not an empty result.
 var errBatchQueryNotTranslatable = errors.New("batch query is not translatable for this server")
+
+// errTaxonomyQueryNotTranslatable marks a catalog request whose taxonomy filter
+// (GenreIds) names an id this server cannot translate. The server is skipped
+// rather than queried without the filter, which would return the whole library.
+var errTaxonomyQueryNotTranslatable = errors.New("taxonomy query is not translatable for this server")
 
 func (a *App) registerMediaRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /Users/{userId}/Items", a.withContext(a.requireAuth(a.handleUserItems)))
@@ -41,6 +54,11 @@ func (a *App) registerMediaRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /Items/{itemId}/PlaybackInfo", a.withContext(a.requireAuth(a.handlePlaybackInfo)))
 	mux.HandleFunc("GET /Videos/{itemId}/{rest...}", a.withContext(a.requireAuth(a.handleVideoProxy)))
 	mux.HandleFunc("GET /Audio/{itemId}/{rest...}", a.withContext(a.requireAuth(a.handleAudioProxy)))
+	// Some clients (montage, Emby ATV) lowercase the route. Without these the
+	// request falls through to the plain pass-through proxy, which forwards the
+	// virtual item/mediaSource ids unchanged and the player stalls.
+	mux.HandleFunc("GET /videos/{itemId}/{rest...}", a.withContext(a.requireAuth(a.handleVideoProxy)))
+	mux.HandleFunc("GET /audio/{itemId}/{rest...}", a.withContext(a.requireAuth(a.handleAudioProxy)))
 	mux.HandleFunc("DELETE /Videos/ActiveEncodings", a.withContext(a.requireAuth(a.handleDeleteActiveEncodings)))
 }
 

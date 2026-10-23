@@ -129,11 +129,8 @@ func identifyTokenSource(r *http.Request) string {
 	if r.Header.Get("X-Emby-Token") != "" {
 		return "X-Emby-Token"
 	}
-	if r.URL.Query().Get("api_key") != "" {
-		return "api_key"
-	}
-	if r.URL.Query().Get("ApiKey") != "" {
-		return "ApiKey"
+	if _, key := queryTokenLookup(r.URL.Query()); key != "" {
+		return "query:" + key
 	}
 	if r.Header.Get("X-Emby-Authorization") != "" {
 		return "X-Emby-Authorization"

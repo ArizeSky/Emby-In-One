@@ -35,6 +35,15 @@ func readAllLimited(r io.Reader, limit int64) ([]byte, error) {
 
 func (a *App) handleFallbackProxy(w http.ResponseWriter, r *http.Request) {
 	reqCtx := requestContextFrom(r.Context())
+	// A parental-restricted user must not be handed content or an unknown binary
+	// through the generic fallback proxy (plan §8.7). Only explicit control
+	// endpoints pass; anything else is refused before any upstream request.
+	if maxR, blockUnrated := a.parentalPolicyFor(r); maxR > 0 || blockUnrated {
+		if !parentalFallbackAllowed(r.Method, r.URL.Path) {
+			writeParentalRouteNotSupported(w)
+			return
+		}
+	}
 	targetClient, rewrittenPath, serverID, query, ambiguous := a.resolveFallbackTarget(r, reqCtx)
 	if targetClient == nil {
 		if ambiguous {

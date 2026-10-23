@@ -79,6 +79,17 @@ type UpstreamConfig struct {
 	CustomDeviceName    string
 	CustomDeviceId      string
 	MaxConcurrent       int
+	// PagedScan opts this upstream into the narrow-window paged scan. Most Emby
+	// servers accept a single Limit=5000 item query; a modified deployment refuses
+	// any window above 200 with a bare 400, so those need one marked here.
+	PagedScan bool
+	// DirectRedirect makes stream requests see the upstream's redirect instead of
+	// following it: a STRM-based server answers a stream request with a 302 to the
+	// netdisk's signed CDN link, and relaying that body through this proxy would
+	// spend the proxy host's own upload for the whole film. With the flag set, an
+	// external redirect target is handed to the client; targets that stay on the
+	// proxy itself or on the upstream's own hosts are fetched here instead.
+	DirectRedirect bool
 }
 
 type ConfigStore struct {
@@ -610,6 +621,10 @@ func assignListField(cfg *Config, listName string, index int, key, value string)
 			upstream.CustomDeviceId = parseStringValue(value)
 		case "maxConcurrent":
 			upstream.MaxConcurrent = parseIntValue(value)
+		case "pagedScan":
+			upstream.PagedScan = parseBoolValue(value)
+		case "directRedirect":
+			upstream.DirectRedirect = parseBoolValue(value)
 		}
 	}
 }
@@ -733,6 +748,12 @@ func renderConfigYAML(cfg *Config) string {
 			}
 			if upstream.MaxConcurrent > 0 {
 				fmt.Fprintf(&b, "    maxConcurrent: %d\n", upstream.MaxConcurrent)
+			}
+			if upstream.PagedScan {
+				fmt.Fprintf(&b, "    pagedScan: true\n")
+			}
+			if upstream.DirectRedirect {
+				fmt.Fprintf(&b, "    directRedirect: true\n")
 			}
 		}
 	}

@@ -95,5 +95,9 @@ metadataDone:
 	base["MediaSources"] = mediaSources
 	base["EioIncompleteSources"] = received < len(instances) || failed > 0
 	a.overlayLocalUserData(r, r.PathValue("itemId"), base)
+	if maxR, blockUnrated := a.parentalPolicyFor(r); (maxR > 0 || blockUnrated) && !itemAllowedByPolicy(base, maxR, blockUnrated) {
+		writeJSON(w, http.StatusForbidden, map[string]any{"message": "Content restricted by parental rating"})
+		return
+	}
 	writeJSON(w, http.StatusOK, base)
 }

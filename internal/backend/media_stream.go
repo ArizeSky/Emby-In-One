@@ -21,8 +21,22 @@ var (
 	audioStreamRoute = streamRoute{pathPrefix: "/Audio", label: "Audio stream"}
 )
 
+// maxStreamRedirectHops bounds the per-hop redirect walk for directRedirect: each
+// hop is re-evaluated against the self-host rules, and a chain that never reaches
+// an external target or real bytes is cut off as a bad gateway.
+const maxStreamRedirectHops = 5
+
 func (a *App) handleVideoProxy(w http.ResponseWriter, r *http.Request) {
 	a.proxyStream(w, r, videoStreamRoute)
+}
+
+// itemRatingAllowedOnServer reports whether the item is within the user's
+// parental policy on the given server. The second result is "confirmed": false
+// when the rating (or an inherited parent rating) could not be read, so callers
+// deny with 502 instead of allowing playback they could not verify (plan §8.6).
+// It delegates to the inheritance-aware access check in parental_access.go.
+func (a *App) itemRatingAllowedOnServer(r *http.Request, client *UpstreamClient, originalID string) (bool, bool) {
+	return a.checkInstanceParentalAccess(r, client, originalID)
 }
 
 func (a *App) handleAudioProxy(w http.ResponseWriter, r *http.Request) {
@@ -56,8 +70,18 @@ func (a *App) proxyStream(w http.ResponseWriter, r *http.Request, route streamRo
 		writeJSON(w, http.StatusNotFound, map[string]any{"message": "Stream not found"})
 		return
 	}
+	// A rewritten external HLS resource for a restricted user arrives as
+	// /Videos/<virtualItemID>/eio-resource/<opaque>. It is served from the
+	// server-side opaque map, never appended to an upstream path (plan §8.6.1).
+	if strings.HasPrefix(rest, "eio-resource/") {
+		a.serveStreamResource(w, r, virtualItemID, strings.TrimPrefix(rest, "eio-resource/"))
+		return
+	}
 	// Resolve a virtual MediaSourceId embedded in subtitle/attachment paths:
 	// /Videos/{itemId}/{mediaSourceId}/Subtitles/...  or  .../Attachments/...
+	// This only records a source-selection hint. The actual path rewrite is
+	// deferred until the real target server and its original item id are known,
+	// so a cross-source MediaSourceId is rewritten for the server that serves it.
 	if slash := strings.IndexByte(rest, '/'); slash > 0 && query.Get("MediaSourceId") == "" {
 		if tail := rest[slash:]; strings.HasPrefix(tail, "/Subtitles/") || strings.HasPrefix(tail, "/Attachments/") {
 			if a.IDStore.ResolveVirtualID(rest[:slash]) != nil {
@@ -65,12 +89,33 @@ func (a *App) proxyStream(w http.ResponseWriter, r *http.Request, route streamRo
 			}
 		}
 	}
-	rest = resolveMediaSourceInPath(rest, a.IDStore)
 
 	client, originalID, ok := a.resolveStreamTarget(w, r, resolved, virtualItemID, query)
 	if !ok {
 		return
 	}
+	// Parental gate on the ACTUAL source that will serve the bytes, before any
+	// playback-slot change (plan §8.6): a restricted user may not play a source
+	// above their ceiling even when the primary copy is allowed, and an
+	// unconfirmable rating must not fall through to playback.
+	if maxR, blockUnrated := a.parentalPolicyFor(r); maxR > 0 || blockUnrated {
+		allowed, confirmed := a.itemRatingAllowedOnServer(r, client, originalID)
+		if !confirmed {
+			writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Cannot verify content rating"})
+			return
+		}
+		if !allowed {
+			writeJSON(w, http.StatusForbidden, map[string]any{"message": "Content restricted by parental rating"})
+			return
+		}
+	}
+	// Authorization passed: commit the playback-slot switch to the target server.
+	if client.ID != resolved.ServerID {
+		if !a.switchPlaybackSlot(w, r, client.ID, resolved.ServerID, virtualItemID) {
+			return
+		}
+	}
+	rest = resolveMediaSourceInPathForServer(rest, a.IDStore, client.ID, originalID)
 	a.resolvePlaySessionID(query)
 
 	upstreamPath := route.pathPrefix + "/" + originalID + "/" + rest
@@ -80,10 +125,12 @@ func (a *App) proxyStream(w http.ResponseWriter, r *http.Request, route streamRo
 			route.label, route.pathPrefix, virtualItemID, rest, client.Name, upstreamPath)
 	}
 
-	// Redirect mode: hand the client a direct upstream stream URL. The URL is
-	// prepared by the shared layer, so its identity and its single credential come
-	// from one auth snapshot and no local token can leak into it.
-	if a.streamPlaybackMode(client) == "redirect" {
+	// Redirect mode: hand the client a direct upstream stream URL. A restricted
+	// user is always forced through the proxy (plan §8.6): the client must never
+	// receive an upstream Location, so redirect mode is bypassed for them.
+	redirectMax, redirectBlock := a.parentalPolicyFor(r)
+	restrictedPlayback := redirectMax > 0 || redirectBlock
+	if a.streamPlaybackMode(client) == "redirect" && !restrictedPlayback {
 		redirectURL, err := client.BuildURL(upstreamPath, query, true, reqCtx)
 		if err != nil {
 			if !writePreparationError(w, err) {
@@ -98,12 +145,12 @@ func (a *App) proxyStream(w http.ResponseWriter, r *http.Request, route streamRo
 		return
 	}
 
-	a.forwardStream(w, r, client, upstreamPath, query, rest, virtualItemID)
+	a.forwardStream(w, r, client, upstreamPath, query, rest, virtualItemID, originalID)
 }
 
 // forwardStream performs the upstream request and copies the response back,
 // rewriting HLS manifests so their URLs keep pointing at this proxy.
-func (a *App) forwardStream(w http.ResponseWriter, r *http.Request, client *UpstreamClient, upstreamPath string, query url.Values, rest, virtualItemID string) {
+func (a *App) forwardStream(w http.ResponseWriter, r *http.Request, client *UpstreamClient, upstreamPath string, query url.Values, rest, virtualItemID, originalID string) {
 	reqCtx := requestContextFrom(r.Context())
 	timelineSession := ""
 	if session := query.Get("PlaySessionId"); session != "" {
@@ -131,7 +178,106 @@ func (a *App) forwardStream(w http.ResponseWriter, r *http.Request, client *Upst
 		writeJSON(w, http.StatusBadGateway, map[string]any{"message": err.Error()})
 		return
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if resp != nil {
+			resp.Body.Close()
+		}
+	}()
+
+	// Redirect handling (plan §7.2 matrix). A restricted user is always proxied:
+	// the client never receives an upstream Location, so an external CDN link can
+	// only be relayed here. For an unrestricted user the configured switches
+	// decide whether a safe external redirect is handed to the player.
+	maxR, blockUnrated := a.parentalPolicyFor(r)
+	restricted := maxR > 0 || blockUnrated
+	directEffective := client.Config.DirectRedirect && !restricted
+	followEffective := client.Config.FollowRedirects
+	if isRedirectStatus(resp.StatusCode) {
+		if directEffective {
+			// Per-hop: an internal hop is fetched here, a safe external hop is
+			// handed to the player — but only when following is enabled. With
+			// followRedirects off, needing an internal follow is an explicit 502.
+			handled := false
+			for hop := 0; hop < maxStreamRedirectHops && resp != nil && isRedirectStatus(resp.StatusCode); hop++ {
+				target, follow := client.resolveStreamRedirectTarget(resp, r.Host)
+				if !follow {
+					if a.Logger != nil {
+						a.Logger.Infof("Stream redirect: itemId=%s -> %d %s (direct to client, hop %d)", virtualItemID, resp.StatusCode, formatOutboundURLForLog(target), hop)
+					}
+					copyStreamResponseHeaders(w, resp)
+					w.Header().Set("Location", target)
+					w.WriteHeader(resp.StatusCode)
+					handled = true
+					break
+				}
+				if !followEffective {
+					writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Upstream redirect requires internal follow but followRedirects is disabled"})
+					return
+				}
+				if target == "" {
+					writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Upstream redirect without a target"})
+					return
+				}
+				followed, ferr := client.fetchRedirectTarget(r.Context(), target, streamRequestHeaders(r))
+				if ferr != nil {
+					if errors.Is(ferr, context.Canceled) || errors.Is(ferr, context.DeadlineExceeded) {
+						return
+					}
+					if a.Logger != nil {
+						a.Logger.Errorf("Stream redirect follow failed: itemId=%s: %s", virtualItemID, redactURLInError(ferr))
+					}
+					writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Failed to follow upstream redirect"})
+					return
+				}
+				if resp != nil {
+					resp.Body.Close()
+				}
+				resp = followed
+			}
+			if handled {
+				return
+			}
+			if resp != nil && isRedirectStatus(resp.StatusCode) {
+				writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Too many upstream redirects"})
+				return
+			}
+		} else {
+			// Proxy-only path: the user is restricted, or directRedirect is off and
+			// net/http already stopped at the redirect because following is off.
+			// The proxy must fetch the target itself; if following is disabled, a
+			// redirect that needs following is a 502.
+			if !followEffective {
+				writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Upstream redirect not followed (followRedirects is off)"})
+				return
+			}
+			for hop := 0; hop < maxStreamRedirectHops && resp != nil && isRedirectStatus(resp.StatusCode); hop++ {
+				target, _ := client.resolveStreamRedirectTarget(resp, r.Host)
+				if target == "" {
+					writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Upstream redirect without a target"})
+					return
+				}
+				followed, ferr := client.fetchRedirectTarget(r.Context(), target, streamRequestHeaders(r))
+				if ferr != nil {
+					if errors.Is(ferr, context.Canceled) || errors.Is(ferr, context.DeadlineExceeded) {
+						return
+					}
+					if a.Logger != nil {
+						a.Logger.Errorf("Stream redirect follow failed: itemId=%s: %s", virtualItemID, redactURLInError(ferr))
+					}
+					writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Failed to follow upstream redirect"})
+					return
+				}
+				if resp != nil {
+					resp.Body.Close()
+				}
+				resp = followed
+			}
+			if resp != nil && isRedirectStatus(resp.StatusCode) {
+				writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Too many upstream redirects"})
+				return
+			}
+		}
+	}
 
 	contentType := resp.Header.Get("Content-Type")
 	// A playlist is only rewritten when the upstream actually served one. A non-2xx
@@ -179,7 +325,31 @@ func (a *App) forwardStream(w http.ResponseWriter, r *http.Request, client *Upst
 			}
 			baseURL = prepared
 		}
-		manifest := RewriteM3U8ForItem(string(body), baseURL, virtualItemID, proxyToken)
+		var manifest string
+		if rmax, rblock := a.parentalPolicyFor(r); rmax > 0 || rblock {
+			// A restricted user must fetch every manifest resource through the local
+			// authorized entry, including external URLs (plan §8.6.1).
+			userID := ""
+			if reqCtx != nil && reqCtx.ProxyUser != nil {
+				userID = reqCtx.ProxyUser.UserID
+			}
+			rewritten, rerr := a.RewriteM3U8ForItemWithResources(string(body), baseURL, proxyToken, resourceRewriteContext{
+				UserID:        userID,
+				VirtualItemID: virtualItemID,
+				ServerID:      client.ID,
+				OriginalID:    originalID,
+			})
+			if rerr != nil {
+				if a.Logger != nil {
+					a.Logger.Errorf("Stream resource rewrite failed: itemId=%s: %v", virtualItemID, rerr)
+				}
+				writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Failed to rewrite HLS manifest for restricted playback"})
+				return
+			}
+			manifest = rewritten
+		} else {
+			manifest = RewriteM3U8ForItem(string(body), baseURL, virtualItemID, proxyToken)
+		}
 		// Remember where each media segment starts so proxied segments can have
 		// their fMP4 timeline restored to the playlist position (see
 		// rewriteHLSSegmentBody).
@@ -241,19 +411,28 @@ func (a *App) resolveStreamTarget(w http.ResponseWriter, r *http.Request, resolv
 		writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Target media source server is unavailable"})
 		return nil, "", false
 	}
+	// Attribute the cross-source MediaSourceId to this item before touching the
+	// playback slot: a source on another server only proves it belongs to this movie
+	// when the item has a known copy there. Otherwise playing it would silently
+	// substitute the current item's id on a server that never had it.
+	originalID := ""
+	for _, other := range resolved.OtherInstances {
+		if other.ServerID == mediaSource.ServerID {
+			originalID = other.OriginalID
+			break
+		}
+	}
+	if originalID == "" {
+		if a.Logger != nil {
+			a.Logger.Warnf("Stream: MediaSourceId %s is on server [%s] with no matching copy of the item", virtualMediaSourceID, target.Name)
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "MediaSource does not belong to this item"})
+		return nil, "", false
+	}
 	if a.Logger != nil {
 		a.Logger.Infof("Stream: switching to server [%s] for MediaSourceId %s", target.Name, virtualMediaSourceID)
 	}
-	if !a.switchPlaybackSlot(w, r, mediaSource.ServerID, resolved.ServerID, virtualItemID) {
-		return nil, "", false
-	}
-	// Prefer this server's own copy of the item when it has one.
-	for _, other := range resolved.OtherInstances {
-		if other.ServerID == mediaSource.ServerID {
-			return target, other.OriginalID, true
-		}
-	}
-	return target, resolved.OriginalID, true
+	return target, originalID, true
 }
 
 // switchPlaybackSlot enforces the concurrency limit on the server that will serve

@@ -57,13 +57,48 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Remove proxy token from query before forwarding to upstream
-	query.Del("api_key")
-	query.Del("ApiKey")
+	stripProxyCredentialQuery(query)
 
 	var base map[string]any
 	baseServerID := resolved.ServerID
 	allMediaSources := []map[string]any{}
+	maxR, blockUnrated := a.parentalPolicyFor(r)
+	restricted := maxR > 0 || blockUnrated
+	_, hasBodySelection := body["MediaSourceId"]
+	explicitSelected := hasBodySelection || query.Get("MediaSourceId") != ""
+	selectedServerID := resolved.ServerID
+	anyDenied := false
+	anyUnconfirmed := false
+	releaseSlot := func() {
+		if limiterUserID, ok := a.playbackLimiterKey(reqCtx, r, resolved.ServerID); ok {
+			a.PlaybackLimiter.Stop(limiterUserID, resolved.ServerID)
+		}
+	}
 	for _, inst := range instances {
+		// Per-instance parental check (plan §8.4): an explicit selection of a
+		// denied instance is a hard 403 (not masked by an allowed sibling), an
+		// unconfirmable rating fails closed with 502, and otherwise denied
+		// instances are simply dropped from the returned MediaSources.
+		if restricted {
+			allowed, confirmed := a.checkInstanceParentalAccess(r, inst.Client, inst.OriginalID)
+			if !allowed {
+				if explicitSelected && inst.ServerID == selectedServerID {
+					releaseSlot()
+					if !confirmed {
+						writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Cannot verify content rating"})
+					} else {
+						writeJSON(w, http.StatusForbidden, map[string]any{"message": "Content restricted by parental rating"})
+					}
+					return
+				}
+				if confirmed {
+					anyDenied = true
+				} else {
+					anyUnconfirmed = true
+				}
+				continue
+			}
+		}
 		// The client only ever holds EIO's virtual user ID, and Emby prefers a UserId in the
 		// query or body over the one the request was authenticated as. Forwarding the virtual
 		// ID made the upstream look up a user that does not exist there and answer 500
@@ -135,8 +170,7 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 					proxyPath = replacePathItemID(proxyPath, "videos", inst.OriginalID, r.PathValue("itemId"))
 					proxyPath = replacePathItemID(proxyPath, "audio", inst.OriginalID, r.PathValue("itemId"))
 					queryValues := parsed.Query()
-					queryValues.Del("api_key")
-					queryValues.Del("ApiKey")
+					stripProxyCredentialQuery(queryValues)
 					if originalMSID != "" {
 						queryValues.Set("MediaSourceId", virtualMSID)
 					}
@@ -166,8 +200,7 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 							}
 							if parsed, err := url.Parse(deliveryURL); err == nil {
 								queryValues := parsed.Query()
-								queryValues.Del("api_key")
-								queryValues.Del("ApiKey")
+								stripProxyCredentialQuery(queryValues)
 								if reqCtx != nil && reqCtx.ProxyToken != "" {
 									queryValues.Set("api_key", reqCtx.ProxyToken)
 								}
@@ -199,7 +232,11 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 		if limiterUserID, ok := a.playbackLimiterKey(reqCtx, r, resolved.ServerID); ok {
 			a.PlaybackLimiter.Stop(limiterUserID, resolved.ServerID)
 		}
-		writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Failed to fetch playback info from upstream"})
+		if anyDenied && !anyUnconfirmed {
+			writeJSON(w, http.StatusForbidden, map[string]any{"message": "Content restricted by parental rating"})
+		} else {
+			writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Failed to fetch playback info from upstream"})
+		}
 		return
 	}
 	if a.Logger != nil {
@@ -265,6 +302,46 @@ func resolveMediaSourceInPath(rest string, idStore *IDStore) string {
 	}
 	if resolved := idStore.ResolveVirtualID(firstSeg); resolved != nil {
 		return resolved.OriginalID + after
+	}
+	// Emby clients (notably Android TV) build the subtitle/attachment path as
+	// "mediasource_<itemId>" rather than echoing the MediaSourceId we issued.
+	// Strip that prefix and resolve the embedded virtual item ID, then re-add
+	// it because some upstreams also address their sources as "mediasource_<id>".
+	if strings.HasPrefix(firstSeg, "mediasource_") {
+		if resolved := idStore.ResolveVirtualID(strings.TrimPrefix(firstSeg, "mediasource_")); resolved != nil {
+			return "mediasource_" + resolved.OriginalID + after
+		}
+	}
+	return rest
+}
+
+// resolveMediaSourceInPathForServer rewrites the leading MediaSourceId segment of a
+// subtitle/attachment path so it addresses the item on the server that will actually
+// serve it. It is the server-aware counterpart of resolveMediaSourceInPath: the caller
+// resolves the real target server first, then passes that server's id and the item's
+// original id there, so a cross-source MediaSourceId ends up on the right server instead
+// of the primary's id. Unknown ids are left untouched.
+func resolveMediaSourceInPathForServer(rest string, idStore *IDStore, serverID, itemOriginalID string) string {
+	slash := strings.IndexByte(rest, '/')
+	if slash <= 0 {
+		return rest
+	}
+	firstSeg := rest[:slash]
+	after := rest[slash:]
+	if !strings.HasPrefix(after, "/Subtitles/") && !strings.HasPrefix(after, "/Attachments/") {
+		return rest
+	}
+	// Exact virtual MediaSourceId match wins over the mediasource_ prefix form.
+	if resolved := idStore.ResolveVirtualID(firstSeg); resolved != nil {
+		if resolved.ServerID == serverID {
+			return resolved.OriginalID + after
+		}
+		return rest
+	}
+	if strings.HasPrefix(firstSeg, "mediasource_") {
+		if idStore.ResolveVirtualID(strings.TrimPrefix(firstSeg, "mediasource_")) != nil && itemOriginalID != "" {
+			return "mediasource_" + itemOriginalID + after
+		}
 	}
 	return rest
 }

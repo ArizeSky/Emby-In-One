@@ -26,6 +26,7 @@ type App struct {
 	HiddenLibraries *HiddenLibraryStore
 	libraryCache    *upstreamLibraryCache
 	PlaybackLimiter *PlaybackLimiter
+	StreamResources *streamResourceStore
 	loginLimiter    loginRateLimiter
 	noticeThrottle  noticeThrottle
 	// adminMutationMu serializes every handler that reads, validates and then
@@ -111,6 +112,7 @@ func NewApp() (*App, error) {
 		HiddenLibraries: hiddenLibraries,
 		libraryCache:    newUpstreamLibraryCache(),
 		PlaybackLimiter: NewPlaybackLimiter(),
+		StreamResources: newStreamResourceStore(),
 		uaJobsCtx:       uaJobsCtx,
 		uaJobsCancel:    uaJobsCancel,
 	}, nil

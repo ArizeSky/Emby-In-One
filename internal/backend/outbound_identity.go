@@ -130,24 +130,12 @@ func applyUserIDQuery(values url.Values, userID string) bool {
 	return changed
 }
 
-// stripAPIKeyVariants removes api_key/ApiKey in every spelling, whatever the case
-// and whether it came from params or from the base URL. The upstream token is
-// written by this same snapshot afterwards, so query token and identity can never
-// come from two different authentication states.
+// stripAPIKeyVariants removes every proxy credential spelling a client can carry
+// in the query string — api_key/ApiKey and the x-emby-token variants — whatever
+// the case. The upstream token is written from this same snapshot afterwards, so
+// a local client token can never reach the upstream as an authentication parameter.
 func stripAPIKeyVariants(values url.Values) (bool, string) {
-	changed := false
-	token := ""
-	for key := range values {
-		switch strings.ToLower(key) {
-		case "api_key", "apikey":
-			if !changed && len(values[key]) > 0 {
-				token = values[key][0]
-			}
-			changed = true
-			values.Del(key)
-		}
-	}
-	return changed, token
+	return stripProxyCredentialQuery(values)
 }
 
 // urlPathPrefix separates the request path from the upstream base URL's own path

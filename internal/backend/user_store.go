@@ -15,6 +15,12 @@ type User struct {
 	Enabled        bool
 	AllowedServers []string
 	CreatedAt      int64 // Unix milliseconds
+	// MaxParentalRating hides items whose Emby parental score exceeds this
+	// value (see parental.go). 0 = no restriction.
+	MaxParentalRating int
+	// BlockUnratedItems hides items that carry no recognisable parental rating
+	// when true (plan §8.2). Defaults false, matching Emby.
+	BlockUnratedItems bool
 }
 
 type UserStore struct {
@@ -36,7 +42,9 @@ func NewUserStore(db *sqliteDB, logger *Logger) (*UserStore, error) {
 			username TEXT UNIQUE NOT NULL COLLATE NOCASE,
 			password TEXT NOT NULL,
 			enabled INTEGER NOT NULL DEFAULT 1,
-			created_at INTEGER NOT NULL
+			created_at INTEGER NOT NULL,
+			max_parental_rating INTEGER NOT NULL DEFAULT 0,
+			block_unrated_items INTEGER NOT NULL DEFAULT 0
 		);
 		CREATE TABLE IF NOT EXISTS user_servers (
 			user_id TEXT NOT NULL,
@@ -46,6 +54,9 @@ func NewUserStore(db *sqliteDB, logger *Logger) (*UserStore, error) {
 		);
 	`); err != nil {
 		return nil, fmt.Errorf("user_store: create tables: %w", err)
+	}
+	if err := migrateUsersTable(db); err != nil {
+		return nil, fmt.Errorf("user_store: migrate: %w", err)
 	}
 	store := &UserStore{
 		db:     db,
@@ -62,11 +73,83 @@ func NewUserStore(db *sqliteDB, logger *Logger) (*UserStore, error) {
 	return store, nil
 }
 
+// migrateUsersTable adds columns introduced after the initial schema, so
+// existing deployments keep their users when upgrading.
+func migrateUsersTable(db *sqliteDB) error {
+	stmt, err := db.prepare(`PRAGMA table_info(users)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.finalize()
+	hasParental := false
+	hasBlockUnrated := false
+	for {
+		hasRow, err := stmt.step()
+		if err != nil {
+			return err
+		}
+		if !hasRow {
+			break
+		}
+		switch stmt.columnText(1) {
+		case "max_parental_rating":
+			hasParental = true
+		case "block_unrated_items":
+			hasBlockUnrated = true
+		}
+	}
+	if !hasParental {
+		if err := db.exec(`ALTER TABLE users ADD COLUMN max_parental_rating INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+	}
+	if !hasBlockUnrated {
+		if err := db.exec(`ALTER TABLE users ADD COLUMN block_unrated_items INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// SetMaxParentalRating updates a user's parental ceiling (0 = unrestricted).
+func (s *UserStore) SetMaxParentalRating(id string, rating int) error {
+	if rating < 0 {
+		rating = 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.db.execParams(`UPDATE users SET max_parental_rating = ? WHERE id = ?`, rating, id); err != nil {
+		return err
+	}
+	if u, ok := s.users[id]; ok {
+		u.MaxParentalRating = rating
+	}
+	return nil
+}
+
+// SetParentalPolicy updates a user's parental ceiling and unrated-blocking flag in
+// one statement, so the two policy fields can never be left half-updated (plan §8.2).
+func (s *UserStore) SetParentalPolicy(id string, maxRating int, blockUnrated bool) error {
+	if maxRating < 0 {
+		maxRating = 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.db.execParams(`UPDATE users SET max_parental_rating = ?, block_unrated_items = ? WHERE id = ?`, maxRating, boolToInt(blockUnrated), id); err != nil {
+		return err
+	}
+	if u, ok := s.users[id]; ok {
+		u.MaxParentalRating = maxRating
+		u.BlockUnratedItems = blockUnrated
+	}
+	return nil
+}
+
 func (s *UserStore) loadAll() error {
 	s.users = make(map[string]*User)
 	s.byName = make(map[string]*User)
 
-	stmt, err := s.db.prepare(`SELECT id, username, password, enabled, created_at FROM users`)
+	stmt, err := s.db.prepare(`SELECT id, username, password, enabled, created_at, max_parental_rating, block_unrated_items FROM users`)
 	if err != nil {
 		return err
 	}
@@ -80,11 +163,13 @@ func (s *UserStore) loadAll() error {
 			break
 		}
 		user := &User{
-			ID:        stmt.columnText(0),
-			Username:  stmt.columnText(1),
-			Password:  stmt.columnText(2),
-			Enabled:   stmt.columnInt(3) != 0,
-			CreatedAt: stmt.columnInt64(4),
+			ID:                stmt.columnText(0),
+			Username:          stmt.columnText(1),
+			Password:          stmt.columnText(2),
+			Enabled:           stmt.columnInt(3) != 0,
+			CreatedAt:         stmt.columnInt64(4),
+			MaxParentalRating: stmt.columnInt(5),
+			BlockUnratedItems: stmt.columnInt(6) != 0,
 		}
 		s.users[user.ID] = user
 		s.byName[strings.ToLower(user.Username)] = user
@@ -112,7 +197,20 @@ func (s *UserStore) loadAll() error {
 	return nil
 }
 
+// Create registers a new user with no parental restriction. It delegates to
+// CreateWithPolicy so existing callers keep a stable signature.
 func (s *UserStore) Create(username, password string, allowedServers []string) (*User, error) {
+	return s.CreateWithPolicy(username, password, allowedServers, 0, false)
+}
+
+// CreateWithPolicy registers a new user and its parental policy in a single
+// transaction (plan §8.2): the policy columns, the user row and user_servers are
+// written atomically, so a policy failure can never leave a created account with
+// the wrong (or default) ceiling.
+func (s *UserStore) CreateWithPolicy(username, password string, allowedServers []string, maxRating int, blockUnrated bool) (*User, error) {
+	if !validParentalRating(maxRating) {
+		return nil, fmt.Errorf("invalid max parental rating: %d", maxRating)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -130,8 +228,8 @@ func (s *UserStore) Create(username, password string, allowedServers []string) (
 
 	if err := s.db.withWriteTx(func() error {
 		if err := s.db.execParams(
-			`INSERT INTO users (id, username, password, enabled, created_at) VALUES (?, ?, ?, 1, ?)`,
-			id, username, hashed, now,
+			`INSERT INTO users (id, username, password, enabled, created_at, max_parental_rating, block_unrated_items) VALUES (?, ?, ?, 1, ?, ?, ?)`,
+			id, username, hashed, now, maxRating, boolToInt(blockUnrated),
 		); err != nil {
 			return err
 		}
@@ -141,12 +239,14 @@ func (s *UserStore) Create(username, password string, allowedServers []string) (
 	}
 
 	user := &User{
-		ID:             id,
-		Username:       username,
-		Password:       hashed,
-		Enabled:        true,
-		AllowedServers: append([]string(nil), allowedServers...),
-		CreatedAt:      now,
+		ID:                id,
+		Username:          username,
+		Password:          hashed,
+		Enabled:           true,
+		AllowedServers:    append([]string(nil), allowedServers...),
+		CreatedAt:         now,
+		MaxParentalRating: maxRating,
+		BlockUnratedItems: blockUnrated,
 	}
 	s.users[id] = user
 	s.byName[strings.ToLower(username)] = user
@@ -247,7 +347,20 @@ func (s *UserStore) LiveGrants(id string) (allowed []string, found bool) {
 	return append([]string(nil), user.AllowedServers...), true
 }
 
+// Update applies basic field changes without touching the parental policy. It
+// delegates to UpdateWithPolicy so existing callers keep a stable signature.
 func (s *UserStore) Update(id string, username *string, password *string, enabled *bool, allowedServers *[]string) error {
+	return s.UpdateWithPolicy(id, username, password, enabled, allowedServers, nil, nil)
+}
+
+// UpdateWithPolicy applies basic field changes and the parental policy in one
+// transaction (plan §8.2). A nil policy pointer leaves that column untouched; a
+// non-nil pointer sets it. The in-memory copy is updated only after commit, so a
+// failed write cannot leave memory ahead of the database.
+func (s *UserStore) UpdateWithPolicy(id string, username *string, password *string, enabled *bool, allowedServers *[]string, maxRating *int, blockUnrated *bool) error {
+	if maxRating != nil && !validParentalRating(*maxRating) {
+		return fmt.Errorf("invalid max parental rating: %d", *maxRating)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -287,6 +400,16 @@ func (s *UserStore) Update(id string, username *string, password *string, enable
 				return err
 			}
 		}
+		if maxRating != nil {
+			if err := s.db.execParams(`UPDATE users SET max_parental_rating = ? WHERE id = ?`, *maxRating, id); err != nil {
+				return err
+			}
+		}
+		if blockUnrated != nil {
+			if err := s.db.execParams(`UPDATE users SET block_unrated_items = ? WHERE id = ?`, boolToInt(*blockUnrated), id); err != nil {
+				return err
+			}
+		}
 		if allowedServers != nil {
 			return s.replaceAllowedServersParams(id, *allowedServers)
 		}
@@ -310,6 +433,12 @@ func (s *UserStore) Update(id string, username *string, password *string, enable
 	}
 	if allowedServers != nil {
 		user.AllowedServers = append([]string(nil), *allowedServers...)
+	}
+	if maxRating != nil {
+		user.MaxParentalRating = *maxRating
+	}
+	if blockUnrated != nil {
+		user.BlockUnratedItems = *blockUnrated
 	}
 
 	return nil
@@ -385,11 +514,13 @@ func (s *UserStore) replaceAllowedServersParams(id string, servers []string) err
 
 func (s *UserStore) copyUser(user *User) *User {
 	return &User{
-		ID:             user.ID,
-		Username:       user.Username,
-		Password:       user.Password,
-		Enabled:        user.Enabled,
-		AllowedServers: append([]string(nil), user.AllowedServers...),
-		CreatedAt:      user.CreatedAt,
+		ID:                user.ID,
+		Username:          user.Username,
+		Password:          user.Password,
+		Enabled:           user.Enabled,
+		AllowedServers:    append([]string(nil), user.AllowedServers...),
+		CreatedAt:         user.CreatedAt,
+		MaxParentalRating: user.MaxParentalRating,
+		BlockUnratedItems: user.BlockUnratedItems,
 	}
 }

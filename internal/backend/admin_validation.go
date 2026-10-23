@@ -485,6 +485,12 @@ func applyAdminUpstreamInput(dst *UpstreamConfig, body adminUpstreamInput, isCre
 		if body.PriorityMetadata != nil {
 			dst.PriorityMetadata = *body.PriorityMetadata
 		}
+		if body.DirectRedirect != nil {
+			dst.DirectRedirect = *body.DirectRedirect
+		}
+		if body.PagedScan != nil {
+			dst.PagedScan = *body.PagedScan
+		}
 		applyStreamingURLsInput(dst, body)
 		if body.CustomUserAgent != nil {
 			dst.CustomUserAgent = strings.TrimSpace(*body.CustomUserAgent)
@@ -542,6 +548,12 @@ func applyAdminUpstreamInput(dst *UpstreamConfig, body adminUpstreamInput, isCre
 	}
 	if body.PriorityMetadata != nil {
 		dst.PriorityMetadata = *body.PriorityMetadata
+	}
+	if body.DirectRedirect != nil {
+		dst.DirectRedirect = *body.DirectRedirect
+	}
+	if body.PagedScan != nil {
+		dst.PagedScan = *body.PagedScan
 	}
 	applyStreamingURLsInput(dst, body)
 	if body.CustomUserAgent != nil {

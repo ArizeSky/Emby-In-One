@@ -47,8 +47,8 @@ func (a *App) handleShowsNextUp(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"Items": []any{}, "TotalRecordCount": 0, "StartIndex": 0})
 		return
 	}
-	results := a.fetchItemsAcrossUpstreams(r.Context(), requestContextFrom(r.Context()), "/Shows/NextUp", query, nil)
-	writeJSON(w, http.StatusOK, a.mergedItemsPayload(results, a.clientFacingUserIDFor(r)))
+	results, incomplete := a.fetchItemsAcrossUpstreams(r.Context(), requestContextFrom(r.Context()), "/Shows/NextUp", query, nil)
+	a.writeItemsResponse(w, a.mergedItemsPayload(results, a.clientFacingUserIDFor(r)), incomplete)
 }
 
 // handleLocalNextUp computes NextUp from local WatchStore for non-admin users.

@@ -23,7 +23,7 @@ createApp({
       showModal: false, editIndex: null, serverForm: {},
       showProxyModal: false, proxyForm: { name: '', url: '' },
       proxyTestState: { loading: false, result: null },
-      userList: [], showUserModal: false, editUserId: null, userForm: { username: '', password: '', enabled: true, allowedServers: [] },
+      userList: [], showUserModal: false, editUserId: null, userForm: { username: '', password: '', enabled: true, allowedServers: [], maxParentalRating: 0, blockUnratedItems: false },
       userLibraryGroups: [], adminHomeOpen: false, adminLibraryGroups: [], libraryGroupsLoading: false,
       uaTab: 'resident', uaRecent: [], uaResident: [], uaServers: [],
       uaLoading: false, uaError: '', uaDetail: null,
@@ -127,7 +127,7 @@ createApp({
     },
     async clearLogs() { if(!confirm('确认清空所有日志？')) return; try { await this.api('/admin/api/logs', { method:'DELETE' }); this.logs = []; } catch(e) { alert('清空失败：' + (e.message || '未知错误')); } },
     getProxyName(id) { const p = this.proxyList.find(x => x.id === id); return p ? p.name : '不使用'; },
-    openAddServer() { this.editID = null; this.editIndex = null; this.serverForm = { name:'', url:'', streamingUrlsText:'', authType:'password', spoofClient:'passthrough', uaProfileId:'', expectedIdentityBinding:null, followRedirects:true, proxyId:null, priorityMetadata:false, maxConcurrent:0, customUserAgent:'', customClient:'', customClientVersion:'', customDeviceName:'', customDeviceId:'' }; this.showModal = true; this.refreshServerUAOptions(); },
+    openAddServer() { this.editID = null; this.editIndex = null; this.serverForm = { name:'', url:'', streamingUrlsText:'', authType:'password', spoofClient:'passthrough', uaProfileId:'', expectedIdentityBinding:null, followRedirects:true, proxyId:null, priorityMetadata:false, directRedirect:false, pagedScan:false, maxConcurrent:0, customUserAgent:'', customClient:'', customClientVersion:'', customDeviceName:'', customDeviceId:'' }; this.showModal = true; this.refreshServerUAOptions(); },
     editServer(s) { this.editID = s.id || s.index; this.editIndex = s.index; this.serverForm = { ...s, password:'', apiKey:'', maxConcurrent: s.maxConcurrent || 0, uaProfileId: s.uaProfileId || '', expectedIdentityBinding: { spoofClient: s.spoofClient, uaProfileId: s.uaProfileId || '' }, streamingUrlsText: (s.streamingUrls && s.streamingUrls.length ? s.streamingUrls : (s.streamingUrl ? [s.streamingUrl] : [])).join('\n'), customUserAgent: s.customUserAgent || '', customClient: s.customClient || '', customClientVersion: s.customClientVersion || '', customDeviceName: s.customDeviceName || '', customDeviceId: s.customDeviceId || '' }; this.showModal = true; this.refreshServerUAOptions(); },
     async saveServer() {
       const target = this.editID !== null && this.editID !== undefined ? this.editID : this.editIndex;
@@ -219,10 +219,10 @@ createApp({
     async saveProxy() { try { await this.api('/admin/api/proxies', { method:'POST', body:JSON.stringify(this.proxyForm) }); this.showProxyModal = false; await this.refreshProxies(); } catch(e) { alert('添加失败：' + (e.message || '未知错误')); } },
     async deleteProxy(id) { if(!confirm('删除代理？')) return; try { await this.api('/admin/api/proxies/'+id, { method:'DELETE' }); await this.refreshProxies(); } catch(e) { alert('删除失败：' + (e.message || '未知错误')); } },
     async refreshUsers(signal) { try { this.userList = await this.api('/admin/api/users', { signal }); } catch(e) { if (!this.isAbort(e)) this.userList = []; } try { this.upstreamList = await this.api('/admin/api/upstream', { signal }); } catch(e) { if (this.isAbort(e)) return; } this.$nextTick(()=>lucide.createIcons()); },
-    openAddUser() { this.editUserId = null; this.userForm = { username:'', password:'', enabled:true, allowedServers:[] }; this.userLibraryGroups = []; this.showUserModal = true; this.$nextTick(()=>lucide.createIcons()); },
+    openAddUser() { this.editUserId = null; this.userForm = { username:'', password:'', enabled:true, allowedServers:[], maxParentalRating:0, blockUnratedItems:false }; this.userLibraryGroups = []; this.showUserModal = true; this.$nextTick(()=>lucide.createIcons()); },
     editUser(u) {
       this.editUserId = u.id;
-      this.userForm = { username:u.username, password:'', enabled:u.enabled, allowedServers: u.allowedServers ? [...u.allowedServers] : [] };
+      this.userForm = { username:u.username, password:'', enabled:u.enabled, allowedServers: u.allowedServers ? [...u.allowedServers] : [], maxParentalRating: u.maxParentalRating || 0, blockUnratedItems: !!u.blockUnratedItems };
       this.showUserModal = true;
       // 折叠列表：只渲染服务器骨架，点击条目时才按需拉取库列表，避免服务器多时打开卡顿。
       const scope = this.userForm.allowedServers.length > 0
@@ -240,13 +240,15 @@ createApp({
           if (this.userForm.password) body.password = this.userForm.password;
           body.enabled = this.userForm.enabled;
           body.allowedServers = this.userForm.allowedServers.length > 0 ? this.userForm.allowedServers : null;
+          body.maxParentalRating = parseInt(this.userForm.maxParentalRating || 0, 10);
+          body.blockUnratedItems = !!this.userForm.blockUnratedItems;
           // 离线服务器不提交 key（后端保持原配置），在线服务器提交勾选结果（含空数组 = 全部显示）。
           body.hiddenLibraries = this.groupHiddenPayload(this.userLibraryGroups);
           await this.api('/admin/api/users/' + this.editUserId, { method:'PUT', body:JSON.stringify(body) });
         } else {
           if (!this.userForm.username || !this.userForm.password) { alert('用户名和密码不能为空'); return; }
           if (this.userForm.password.length < 8 || this.userForm.password.length > 128) { alert('密码长度必须介于 8 和 128 之间'); return; }
-          const body = { username:this.userForm.username, password:this.userForm.password, allowedServers: this.userForm.allowedServers.length > 0 ? this.userForm.allowedServers : null };
+          const body = { username:this.userForm.username, password:this.userForm.password, allowedServers: this.userForm.allowedServers.length > 0 ? this.userForm.allowedServers : null, maxParentalRating: parseInt(this.userForm.maxParentalRating || 0, 10), blockUnratedItems: !!this.userForm.blockUnratedItems };
           await this.api('/admin/api/users', { method:'POST', body:JSON.stringify(body) });
         }
         this.showUserModal = false; await this.refreshUsers();

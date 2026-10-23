@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 )
 
 // outboundPreparationError is returned while preparing a request that never left
@@ -122,4 +123,43 @@ func (e *redactedError) Unwrap() error {
 		return nil
 	}
 	return e.err
+}
+
+// upstreamResponseError is returned when an upstream answered a request with a
+// non-2xx status. It carries the HTTP status code so a scanner can tell a
+// window-too-large 400 apart from an outage without matching error strings
+// (plan §6.2). Its message never repeats the request URL or any credential; the
+// Detail snippet is bounded and only ever holds the upstream's own error body.
+type upstreamResponseError struct {
+	StatusCode int
+	Method     string
+	Path       string
+	Detail     string
+}
+
+func (e *upstreamResponseError) Error() string {
+	if e.Detail != "" {
+		return fmt.Sprintf("upstream %s %s failed: %d %s", e.Method, e.Path, e.StatusCode, e.Detail)
+	}
+	return fmt.Sprintf("upstream %s %s failed: %d", e.Method, e.Path, e.StatusCode)
+}
+
+// asUpstreamResponseError extracts an upstream response error from a chain.
+func asUpstreamResponseError(err error) (*upstreamResponseError, bool) {
+	var resp *upstreamResponseError
+	if errors.As(err, &resp) {
+		return resp, true
+	}
+	return nil, false
+}
+
+// trimErrorDetail bounds an upstream error body for inclusion in a message. It
+// keeps the first 512 bytes only; a scanner never parses this text.
+func trimErrorDetail(payload []byte) string {
+	const max = 512
+	trimmed := payload
+	if len(trimmed) > max {
+		trimmed = trimmed[:max]
+	}
+	return strings.TrimSpace(string(trimmed))
 }
