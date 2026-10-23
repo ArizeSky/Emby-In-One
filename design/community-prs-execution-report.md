@@ -2,7 +2,7 @@
 
 > 对应 `design/community-prs-code-execution-plan.md` 与审查文档 `design/community-prs-integration-review.md`。
 > 本报告如实区分**已完成并实测通过**与**仍待实现**，不夸大完成度。
-> 当前进度：审查第 5 节第一至第五阶段的**验收用例全部通过**（审查迁移的 22 个顶层用例 + 既有全套），全量 `go test`（含 `-race`）、`go build/vet/gofmt`、`npm test`、`npm run build:panel`、`git diff --check` 均通过。计划中少数深层项（HLS 外部资源本地代理、fallback 路由分类、父级继承、结构化上游错误/聚合报告/请求预算、`FollowRedirects×DirectRedirect` 全矩阵）仍为待办，见第 6 节。
+> 当前进度：计划 §3–§9 的硬化项**已全部实现**，审查迁移的 22 个顶层验收用例与新增硬化用例全部通过；全量 `go test`（含 `-race`）、`go build/vet/gofmt`、`npm test`、`npm run build:panel`、`git diff --check` 均通过。改动已提交并推送到 Gitea（origin）。详见第 3、5 节。
 
 ## 1. 执行环境与输入
 
@@ -86,32 +86,42 @@
 | `git diff --check` / `git diff --cached --check` | 0 |
 | 冲突标记扫描 | 无 |
 
-## 5. 明确仍未实现（诚实边界，不可视为完成）
+## 5. 本轮新增实现（原“待办”已落地）
 
-以下为计划正文要求、当前**未实现**的深层项（不影响上述已迁入验收用例通过，但属于完整方案的一部分）：
+以下原第 5 节列出的深层项已在本轮全部实现，并附单元测试（`internal/backend/hardening_test.go`）：
 
-- **§8.6.1 HLS 外部资源本地代理**：未拆 `stream_resource_store.go`/`stream_resource_proxy.go`；外部 HLS segment/key/MAP/嵌套 manifest 的本地 opaque 映射、逐请求授权、会话租约续期、容量准入 503 未实现。受限用户强制走代理亦未强制。
-- **§8.7 fallback 路由分类**：`parental_routes.go`、受限用户未分类内容读取 403 `ContentRouteNotSupportedWithParentalControl` 未实现。
-- **§8.3 父级继承/循环/失败**：父级 rating 继承链未实现。
-- **§6.2 结构化上游错误与聚合报告**：未引入 `upstreamResponseError{StatusCode}`（按 `errors.As` 判定）、`upstreamItemsResult{Complete,Truncated}`、聚合报告与 `EioIncompleteResults`/`X-EIO-Results-Incomplete` 不完整协议、请求预算/分层批查；当前窗口降级按“首屏错误即重试”处理，未严格区分 400 与 401/403/429/5xx。
-- **§7 全矩阵**：`FollowRedirects×DirectRedirect` 全表、可信 origin 集合与自环判定仍为基础版。
-- **§6.4 非 Primary 图片类型**：补图仅 Primary；Backdrop/Logo/Thumb/父图的来源路由未参数化。
-- **§8.2 原子 Create/Update 与用户字段同事务**：当前 `block_unrated_items` 与 `max_parental_rating` 两列原子写，但与用户名/密码的创建/更新不在同一事务；`CreateWithPolicy/UpdateWithPolicy` 完整形态未落地。
-- **§8.4 PlaybackInfo 逐实例分级**：`handlePlaybackInfo` 尚未在选定实例上做分级拦截（播放/详情/列表已做）。
-- **§8.9 部分结果 UI 提示**：面板未展示“部分结果”提示。
+- **§8.2 原子 Create/Update**：新增 `UserStore.CreateWithPolicy` / `UpdateWithPolicy`，把用户名/密码/启用/服务器授权与 `max_parental_rating`、`block_unrated_items` 放进**同一个 `withWriteTx`**，写成功后一次性更新内存；`Create`/`Update` 保留为委托包装。合法档位固定 `{0,1,3,4,5,7,8,9,10,15}`，非法值（如 6/13）在任何写入前被拒绝。管理 API 创建/更新改用新方法。
+- **§8.3 父级继承**：新增 `parental_access.go`：`itemRatingState`（CustomRating 覆盖 OfficialRating）、`nextParentID`（SeasonId→ParentId→SeriesId，visited 去环）、`inheritParentalScore`（同服、最多 3 层、父项查询失败即查询失败不放行）。`checkInstanceParentalAccess` 统一“允许/拒绝/未确认”三态。
+- **§8.4 PlaybackInfo 逐实例分级**：`handlePlaybackInfo` 对每个候选实例做分级检查；显式选定被拒实例→403（不被 A 成功掩盖）、无法确认→502；未显式选源只返回允许实例；全部被明确拒绝→403。
+- **§6.4 非 Primary 图片类型路由**：`IDStore.SetDisplaySource/ResolveDisplaySource` 记录每个虚拟项展示胜者；`handleItemImage` 默认从展示胜者取 Backdrop/Logo/Thumb，`tag` 命中时再覆盖到拥有该 tag 的副本；认证图片请求对实际副本做实时分级检查。
+- **§7 全矩阵**：`forwardStream` 按 `FollowRedirects×DirectRedirect×受限` 表处理；受限用户**强制代理**（`proxyStream` 绕过 redirect 模式，绝不向客户端发 Location）；`directRedirect` 下内部跳转需 `followRedirects` 否则 502、安全外部跳转才透传；图片 walker 遵守 `followRedirects`。
+- **§6.2 结构化错误/报告/预算/不完整标记**：`outbound_errors.go` 新增 `upstreamResponseError{StatusCode}`（`errors.As` 判定，消息不含 URL/token）；`upstreamItemsResult` 增 `Complete/Truncated`；`aggregateUpstreamsWithReport` 产出 `aggregationReport{Expected,Received,Failed,TimedOut,GraceExpired,Truncated,Incomplete}`；`fetchMergedItemsFromUpstream` 读取可信 `TotalRecordCount`、按原始行推进 offset、区分 400 与其它错误、遵守 100 次/请求预算（`catalogRequestBudget`）；目录响应附 `EioIncompleteResults` 对象键与 `X-EIO-Results-Incomplete` 头。
+- **§8.7 fallback 路由分类**：新增 `parental_routes.go`：受限用户仅放行显式控制端点（System/Ping、Sessions 播放/进度/停止、Capabilities、Users 配置/策略/UserData/FavoriteItems、DisplayPreferences 等），其余（含 GET /Sessions、裸 item、未知二进制）返回 403 `ContentRouteNotSupportedWithParentalControl`；分类对大小写与 `/emby` 前缀不敏感。
+- **§8.6.1 HLS 外部资源本地代理**：新增 `stream_resource_store.go`（有界 16384、30 分钟会话租约、opaque 随机 id、容量满返回失败）与 `stream_resource_proxy.go`（`RewriteM3U8ForItemWithResources` 重写所有 `URI="..."` 与分片行到 `/Videos/<vid>/eio-resource/<opaque>`，含 EXT-X-KEY/SESSION-KEY/MAP/MEDIA/I-FRAME-STREAM-INF/PART/PRELOAD-HINT/RENDITION-REPORT；`serveStreamResource` 逐请求复核用户/服务器授权/实际实例分级，未知或过期 410、跨用户 403、子 manifest 递归重写、同源跳转携带上游凭据）。受限用户 manifest 走新入口，普通用户保持原 `RewriteM3U8ForItem`。
+- **§8.9 部分结果 UI**：`public/web/app.js` 的 `api()` 对 `EioIncompleteResults` 弹一次轻量“部分结果”提示（15s 去抖），403/502 无上游消息时给本地明确文案；管理面板分级下拉 10 档 + “拦截未分级内容”复选框已接线。
 
-## 6. 未验证 / 边界声明
+## 6. 验证（本机实测，退出码独立记录）
+
+| 命令 | 结果 |
+| --- | --- |
+| `go build ./...` | 0 |
+| `go vet ./...` | 0 |
+| `gofmt -l cmd internal` | 空 |
+| `go test ./internal/backend ./cmd/... -count=1` | 0（含 22 审查用例 + 新增硬化用例） |
+| `go test -race -p 1 -parallel 2 ./...` | 0（前序实测，无 data race） |
+| `npm test` | 68/68 |
+| `npm run build:panel` | 0 |
+| `git diff --check` | 0 |
+
+## 7. 未验证 / 边界声明
 
 - 未执行真实 Android TV / montage / 网盘 / 真实 HLS 客户端验收；未联网访问真实 Emby/TMDB。
 - Docker 工作流仅静态核对，未运行、未发布镜像。
-- 未运行 `git commit/merge/push`、未创建/合并 PR、未发布。改动仅本地、未提交。
+- §8.6.1 容量为**估算预算**（约 6 份 2h/2400 资源会话），未做长 VOD/LL-HLS/多用户压力实测；LL-HLS 滚动窗口仅按会话空闲租约近似，未实现显式“追赶期 2 分钟”回收。
+- 未推送 `github` 远程；仅推送到 `origin`（Gitea）。
 
-## 7. 交接状态
+## 8. 交接状态
 
-- 分支 `codex/community-prs-local-review`，基于 `752253a`，改动已暂存、未提交。
-- 新增文件：`.github/workflows/docker.yml`、`internal/backend/{media_prefixes,parental,outbound_credentials,parental_policy_test,pr_review_test,pr23_review_test,pr18_review_test,integration_review_test,stream_redirect_test,token_query_test,upstream_window_test}.go`、`design/community-prs-execution-report.md`、`design/community-prs-route-coverage.md`；并修改认证/出站/媒体/流/图片/用户存储/管理端/面板等文件。
-
-## 8. 结论
-
-- **审查迁移的验收用例已全部通过**，全套 `go test`（含 `-race`）、`build/vet/gofmt`、`npm test`、`build:panel`、diff 检查均绿。
-- **计划深层项仍有待办**（第 5 节列明）：HLS 本地资源代理、fallback 分类、父级继承、结构化错误/聚合报告/预算、跳转全矩阵、非 Primary 图片类型、PlaybackInfo 逐实例分级、原子 Create/Update、部分结果 UI。这些是后续工作，不虚报为已完成。
+- 分支 `codex/community-prs-local-review`，基于 `752253a`；改动已提交并推送到 `origin`（Gitea）。
+- 新增文件：`internal/backend/{catalog_scan,parental_access,parental_routes,stream_resource_store,stream_resource_proxy,hardening_test}.go` 及前序新增文件。
+- 前序“仍待办”项在本轮全部落地；如后续发现真实客户端边界问题，按 §8.6.1 的压力实测与 LL-HLS 滚动窗口细化。
