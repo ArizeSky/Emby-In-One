@@ -121,7 +121,7 @@ func (a *App) handleItemsCollection(w http.ResponseWriter, r *http.Request) {
 			"TotalRecordCount": len(kept),
 			"StartIndex":       0,
 		}
-		if report.Incomplete {
+		if report.Incomplete || w.Header().Get("X-EIO-Results-Incomplete") == "true" {
 			markIncompleteResults(w, payload)
 		}
 		writeJSON(w, http.StatusOK, payload)
@@ -165,6 +165,10 @@ func (a *App) handleUserItems(w http.ResponseWriter, r *http.Request) {
 		// scopes the query to the requested container, but it no longer decides which
 		// of that container's items the user sees.
 		filter, localFilter := a.prepareLocalUserFilter(w, r, query)
+		if a.parentalSessionFor(r).restricted() {
+			a.handleRestrictedContainerItems(w, r, resolved, query, filter, localFilter)
+			return
+		}
 		payload, err := resolved.Client.RequestJSON(r.Context(), requestContextFrom(r.Context()), a.Identity, http.MethodGet, "/Users/"+resolved.Client.clientUserID()+"/Items", query, nil)
 		if err != nil {
 			writeJSON(w, http.StatusBadGateway, map[string]any{"message": err.Error()})

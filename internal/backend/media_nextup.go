@@ -63,7 +63,7 @@ func (a *App) handleLocalNextUp(w http.ResponseWriter, r *http.Request, reqCtx *
 	if seriesID != "" {
 		resolved := a.resolveRouteID(seriesID)
 		if resolved == nil {
-			writeJSON(w, http.StatusOK, empty)
+			a.writeParentalItemsResponse(w, r, empty)
 			return
 		}
 		if !a.requireServerAccess(w, r, resolved) {
@@ -76,29 +76,33 @@ func (a *App) handleLocalNextUp(w http.ResponseWriter, r *http.Request, reqCtx *
 			if a.Logger != nil {
 				a.Logger.Warnf("WatchStore next-up read error: %s", redactURLInError(err))
 			}
-			writeJSON(w, http.StatusOK, empty)
+			a.writeParentalItemsResponse(w, r, empty)
 			return
 		}
 		if seriesProgress == nil {
-			writeJSON(w, http.StatusOK, empty)
+			a.writeParentalItemsResponse(w, r, empty)
 			return
 		}
 		nextEp := a.fetchNextEpisode(r, reqCtx, resolved.Client, resolved.OriginalID, resolved.ServerID, seriesProgress)
 		if nextEp == nil {
-			writeJSON(w, http.StatusOK, empty)
+			a.writeParentalItemsResponse(w, r, empty)
 			return
 		}
 		rewriteResponseIDs(nextEp, resolved.ServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 		a.overlayLocalUserDataItems(r, []map[string]any{nextEp})
-		writeJSON(w, http.StatusOK, map[string]any{"Items": []any{nextEp}, "TotalRecordCount": 1, "StartIndex": 0})
+		a.writeParentalItemsResponse(w, r, map[string]any{"Items": []any{nextEp}, "TotalRecordCount": 1, "StartIndex": 0})
 		return
 	}
 
 	// No SeriesId: compute for all series the user is watching
 	seriesList, err := a.WatchStore.GetNextUpSeries(reqCtx.ProxyUser.UserID)
 	if err != nil || len(seriesList) == 0 {
-		writeJSON(w, http.StatusOK, empty)
+		a.writeParentalItemsResponse(w, r, empty)
 		return
+	}
+	if len(seriesList) > localFilterScanLimit {
+		seriesList = seriesList[:localFilterScanLimit]
+		markIncompleteResultsHeader(w)
 	}
 
 	var nextUpItems []map[string]any
@@ -118,6 +122,10 @@ func (a *App) handleLocalNextUp(w http.ResponseWriter, r *http.Request, reqCtx *
 	}
 
 	for start := 0; start < len(seriesList) && len(nextUpItems) < limit; start += nextUpBatch {
+		if r.Context().Err() != nil {
+			markIncompleteResultsHeader(w)
+			break
+		}
 		end := start + nextUpBatch
 		if end > len(seriesList) {
 			end = len(seriesList)
@@ -156,7 +164,7 @@ func (a *App) handleLocalNextUp(w http.ResponseWriter, r *http.Request, reqCtx *
 		}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	a.writeParentalItemsResponse(w, r, map[string]any{
 		"Items":            toAnySlice(nextUpItems),
 		"TotalRecordCount": len(nextUpItems),
 		"StartIndex":       0,
@@ -197,54 +205,15 @@ func (a *App) resolveSeriesServer(reqCtx *RequestContext, sp *WatchProgress) (se
 // the user's last played episode in a series.
 func (a *App) fetchNextEpisode(r *http.Request, reqCtx *RequestContext, client *UpstreamClient, seriesOriginalID string, serverID string, lastPlayed *WatchProgress) map[string]any {
 	q := url.Values{}
-	q.Set("Fields", "BasicSyncInfo,CanDelete,PrimaryImageAspectRatio,Overview,DateCreated,MediaSources,Path,SortName,Studios,Taglines,Genres,CommunityRating,OfficialRating,CumulativeRunTimeTicks,Chapters,ProviderIds")
+	q.Set("Fields", "BasicSyncInfo,CanDelete,PrimaryImageAspectRatio,Overview,DateCreated,MediaSources,Path,SortName,Studios,Taglines,Genres,CommunityRating,OfficialRating,CustomRating,Type,SeriesId,SeasonId,ParentId,CumulativeRunTimeTicks,Chapters,ProviderIds")
 	q.Set("UserId", client.clientUserID())
 	q.Set("Season", strconv.Itoa(lastPlayed.ParentIndexNumber))
 	q.Set("SortBy", "SortName")
 	q.Set("SortOrder", "Ascending")
 
-	payload, err := client.RequestJSON(r.Context(), reqCtx, a.Identity, http.MethodGet, "/Shows/"+seriesOriginalID+"/Episodes", q, nil)
-	if err != nil {
-		return nil
-	}
-	items := asItems(payload)
-	// Find the first episode after the user's last played one
-	foundCurrent := false
-	var sameSeasonFallback map[string]any
-	fallbackIndex := 0
-	for _, ep := range items {
-		parentIdx, _ := numericInt(ep["ParentIndexNumber"])
-		idx, _ := numericInt(ep["IndexNumber"])
-
-		if parentIdx == lastPlayed.ParentIndexNumber && idx == lastPlayed.IndexNumber {
-			foundCurrent = true
-			// If the current episode is not fully played yet (still in progress),
-			// it IS the next-up item (user hasn't finished it)
-			if !lastPlayed.Played && lastPlayed.PositionTicks > 0 {
-				return ep
-			}
-			continue
-		}
-		if foundCurrent {
-			return ep
-		}
-		// The remembered episode is not in this page — an upstream that renumbered the
-		// season, or a page that stops before reaching it. Remember the first same-season
-		// episode numbered after it instead of walking straight past the season.
-		if parentIdx == lastPlayed.ParentIndexNumber && idx > lastPlayed.IndexNumber {
-			if sameSeasonFallback == nil || idx < fallbackIndex {
-				sameSeasonFallback = ep
-				fallbackIndex = idx
-			}
-			continue
-		}
-		// Handle case where episodes are in a later season
-		if parentIdx > lastPlayed.ParentIndexNumber {
-			return ep
-		}
-	}
-	if sameSeasonFallback != nil {
-		return sameSeasonFallback
+	items := a.fetchNextUpSeason(r, reqCtx, client, seriesOriginalID, serverID, q)
+	if next := a.firstAllowedNextEpisode(r, client, nextEpisodeCandidates(items, lastPlayed)); next != nil {
+		return next
 	}
 
 	// If we didn't find a next episode in this season and the current one was played,
@@ -256,15 +225,10 @@ func (a *App) fetchNextEpisode(r *http.Request, reqCtx *RequestContext, client *
 		q2.Set("Season", strconv.Itoa(lastPlayed.ParentIndexNumber+1))
 		q2.Set("SortBy", "SortName")
 		q2.Set("SortOrder", "Ascending")
-		q2.Set("Limit", "1")
-
-		payload2, err2 := client.RequestJSON(r.Context(), reqCtx, a.Identity, http.MethodGet, "/Shows/"+seriesOriginalID+"/Episodes", q2, nil)
-		if err2 == nil {
-			items2 := asItems(payload2)
-			if len(items2) > 0 {
-				return items2[0]
-			}
+		if !a.parentalSessionFor(r).restricted() {
+			q2.Set("Limit", "1")
 		}
+		return a.firstAllowedNextEpisode(r, client, a.fetchNextUpSeason(r, reqCtx, client, seriesOriginalID, serverID, q2))
 	}
 	return nil
 }

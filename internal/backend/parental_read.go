@@ -195,6 +195,15 @@ func (a *App) parentalResponseReady(w http.ResponseWriter, r *http.Request, payl
 	return true
 }
 
+func (a *App) writeParentalItemsResponse(w http.ResponseWriter, r *http.Request, payload map[string]any) {
+	if a.parentalResponseReady(w, r, payload) {
+		if w.Header().Get("X-EIO-Results-Incomplete") == "true" {
+			markIncompleteResults(w, payload)
+		}
+		writeJSON(w, http.StatusOK, payload)
+	}
+}
+
 func (a *App) parentalFilterServerPayloadItems(r *http.Request, client *UpstreamClient, payload map[string]any) {
 	for _, key := range []string{"Items", "SearchHints"} {
 		if raw, ok := payload[key].([]any); ok {

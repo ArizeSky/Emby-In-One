@@ -70,19 +70,25 @@ func (a *App) handleLocalResume(w http.ResponseWriter, r *http.Request, reqCtx *
 	// that all live on paused servers no longer hides later playable entries
 	// behind the client's Limit.
 	const batchSize = 100
-	var candidates []WatchProgress
+	var enriched []map[string]any
 	truncated := false
 	for offset := 0; offset < localFilterScanLimit; offset += batchSize {
+		if r.Context().Err() != nil {
+			truncated = true
+			break
+		}
 		page, err := a.WatchStore.GetResumeItemsPage(reqCtx.ProxyUser.UserID, batchSize, offset)
 		if err != nil {
 			if a.Logger != nil {
 				a.Logger.Warnf("WatchStore resume page read error: %s", redactURLInError(err))
 			}
-			break
+			writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Failed to read resume history"})
+			return
 		}
 		if len(page) == 0 {
 			break
 		}
+		var candidates []WatchProgress
 		for i := range page {
 			if parentID != "" && page[i].SeriesVirtualID != parentID {
 				continue
@@ -91,11 +97,13 @@ func (a *App) handleLocalResume(w http.ResponseWriter, r *http.Request, reqCtx *
 				continue
 			}
 			candidates = append(candidates, page[i])
-			if len(candidates) >= limit {
-				break
-			}
 		}
-		if len(candidates) >= limit {
+		enriched = append(enriched, a.enrichWatchItems(r, reqCtx, candidates)...)
+		if len(enriched) >= limit {
+			enriched = enriched[:limit]
+			break
+		}
+		if len(page) < batchSize {
 			break
 		}
 		if offset+batchSize >= localFilterScanLimit && len(page) == batchSize {
@@ -106,12 +114,15 @@ func (a *App) handleLocalResume(w http.ResponseWriter, r *http.Request, reqCtx *
 		a.Logger.Warnf("local resume scan reached %d records: results may be truncated", localFilterScanLimit)
 	}
 
-	enriched := a.enrichWatchItems(r, reqCtx, candidates)
-	writeJSON(w, http.StatusOK, map[string]any{
+	payload := map[string]any{
 		"Items":            toAnySlice(enriched),
 		"TotalRecordCount": len(enriched),
 		"StartIndex":       0,
-	})
+	}
+	if truncated {
+		markIncompleteResults(w, payload)
+	}
+	a.writeParentalItemsResponse(w, r, payload)
 }
 
 // enrichWatchItems fetches fresh metadata from upstream for a list of WatchProgress items,
@@ -121,11 +132,7 @@ func (a *App) enrichWatchItems(r *http.Request, reqCtx *RequestContext, items []
 	cfg := a.ConfigStore.Snapshot()
 
 	// Group by server ID, remapping offline servers to online alternatives
-	type serverGroup struct {
-		originalIDs []string
-		watchItems  []WatchProgress
-	}
-	groups := map[string]*serverGroup{}
+	groups := map[string][]string{}
 	for i := range items {
 		serverID, originalID, ok := a.resolveWatchItemServer(reqCtx, &items[i])
 		if !ok {
@@ -133,46 +140,19 @@ func (a *App) enrichWatchItems(r *http.Request, reqCtx *RequestContext, items []
 		}
 		items[i].ServerID = serverID
 		items[i].OriginalItemID = originalID
-		g, exists := groups[serverID]
-		if !exists {
-			g = &serverGroup{}
-			groups[serverID] = g
-		}
-		g.originalIDs = append(g.originalIDs, originalID)
-		g.watchItems = append(g.watchItems, items[i])
+		groups[serverID] = append(groups[serverID], originalID)
 	}
 
-	// Fetch metadata per server (all groups now point to online servers)
-	fetched := map[string]map[string]any{} // originalID → item metadata
-	for serverID, g := range groups {
-		if !a.canUseAggregatedServer(reqCtx, serverID) {
-			continue
-		}
-		client := a.Upstream.ClientByID(serverID)
-		if client == nil || !client.IsOnline() {
-			continue
-		}
-		q := url.Values{}
-		q.Set("Ids", joinComma(g.originalIDs))
-		q.Set("Fields", "BasicSyncInfo,CanDelete,PrimaryImageAspectRatio,Overview,DateCreated,MediaSources,Path,SortName,Studios,Taglines,Genres,CommunityRating,OfficialRating,CumulativeRunTimeTicks,Chapters,ProviderIds")
-		payload, err := client.RequestJSON(r.Context(), reqCtx, a.Identity, http.MethodGet, "/Items", q, nil)
-		if err != nil {
-			continue
-		}
-		for _, item := range asItems(payload) {
-			if id, _ := item["Id"].(string); id != "" {
-				fetched[id] = item
-			}
-		}
-	}
+	fetched := a.fetchWatchMetadata(r, reqCtx, groups)
 
 	// Build result in original order, overlay local UserData
 	var result []map[string]any
 	for _, wp := range items {
-		item, ok := fetched[wp.OriginalItemID]
+		metadata, ok := fetched[watchMetadataKey{wp.ServerID, wp.OriginalItemID}]
 		if !ok {
 			continue
 		}
+		item := deepCloneMap(metadata)
 		// Rewrite upstream IDs to virtual
 		rewriteResponseIDs(item, wp.ServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 		// Overlay local UserData

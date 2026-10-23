@@ -2,8 +2,36 @@ package backend
 
 import (
 	"net/http"
+	"net/url"
 	"strconv"
 )
+
+func (a *App) handleRestrictedContainerItems(w http.ResponseWriter, r *http.Request, resolved *routeResolution, query url.Values, filter userStateFilter, localFilter bool) {
+	requestMergedCandidateSet(query)
+	// The shared scanner performs the one translation from the original virtual IDs.
+	if genre := firstQueryValue(r.URL.Query(), "GenreIds", "genreIds", "genreids"); genre != "" {
+		query.Set("GenreIds", genre)
+	}
+	s := a.parentalSessionFor(r)
+	rows, complete, truncated, err := a.fetchMergedItemsFromUpstream(r.Context(), requestContextFrom(r.Context()), resolved.Client, "/Users/%s/Items", query, nil, s.catalog)
+	if err != nil || (len(rows) == 0 && (!complete || truncated)) {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Failed to load item candidates"})
+		return
+	}
+	items := a.parentalFilterServerItems(r, resolved.Client, rows)
+	a.rewriteItems(items, resolved.ServerID, a.clientFacingUserIDFor(r))
+	if localFilter {
+		var recency map[string]int64
+		items, recency = a.filterItemsByLocalUserState(r, items, filter)
+		localItemSort(items, r.URL.Query(), recency)
+	}
+	a.overlayLocalUserDataItems(r, items)
+	payload := paginateItems(items, r.URL.Query())
+	if !complete || truncated {
+		markIncompleteResults(w, payload)
+	}
+	a.writeParentalItemsResponse(w, r, payload)
+}
 
 func (a *App) recordShowDisplaySource(item map[string]any, virtualID, serverID string) {
 	originalID, _ := item["_originalId"].(string)

@@ -19,6 +19,9 @@ func (a *App) fetchShowItems(ctx context.Context, reqCtx *RequestContext, inst s
 	seen := map[string]bool{}
 	for offset := 0; ; {
 		query.Set("StartIndex", strconv.Itoa(offset))
+		if reqCtx != nil && reqCtx.Parental != nil && reqCtx.Parental.restricted() && !reqCtx.Parental.catalog.tryAcquire() {
+			return nil, errParentalBudgetExhausted
+		}
 		payload, err := inst.Client.RequestJSON(ctx, reqCtx, a.Identity, http.MethodGet, path, query, nil)
 		if err != nil {
 			return nil, err
