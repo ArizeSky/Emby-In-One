@@ -14,11 +14,8 @@ const maxParentalInheritanceDepth = 3
 // override rule in plan §8.3). ok is false when the value is empty or not
 // recognisable, which is exactly the "unrated / unknown" state.
 func itemRatingState(item map[string]any) (score int, ok bool) {
-	rating, _ := item["CustomRating"].(string)
-	if rating == "" {
-		rating, _ = item["OfficialRating"].(string)
-	}
-	return ratingScore(rating)
+	score, presence := classifyItemRating(item)
+	return score, presence == ratingPresent
 }
 
 // fetchItemForParentalCheck reads one item's rating-relevant fields from a single
@@ -88,8 +85,11 @@ func (a *App) inheritParentalScore(r *http.Request, client *UpstreamClient, item
 		if ferr != nil {
 			return 0, false, ferr
 		}
-		if s, ok := itemRatingState(parent); ok {
-			return s, true, nil
+		s, presence := classifyItemRating(parent)
+		if presence != ratingMissing {
+			// Explicit unknown ratings are terminal, just like an item's own
+			// override. Only absent ratings may climb to another ancestor.
+			return s, presence == ratingPresent, nil
 		}
 		cur = parent
 	}
@@ -111,8 +111,9 @@ func (a *App) checkInstanceParentalAccess(r *http.Request, client *UpstreamClien
 	if err != nil {
 		return false, false
 	}
-	score, ok := itemRatingState(item)
-	if !ok && needsRatingInheritance(item) {
+	score, presence := classifyItemRating(item)
+	ok := presence == ratingPresent
+	if presence == ratingMissing && needsRatingInheritance(item) {
 		inherited, inheritedOK, ierr := a.inheritParentalScore(r, client, item)
 		if ierr != nil {
 			return false, false

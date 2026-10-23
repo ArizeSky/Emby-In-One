@@ -111,7 +111,7 @@ metadataDone:
 		// Every instance was either denied by policy or could not be checked.
 		// A definite deny is a 403; only unconfirmable/unreachable metadata is
 		// a 502 (plan §8.5).
-		if denied > 0 {
+		if denied == len(instances) && received == len(instances) {
 			writeJSON(w, http.StatusForbidden, map[string]any{"message": "Content restricted by parental rating"})
 			return
 		}
@@ -130,9 +130,7 @@ metadataDone:
 	base["MediaSources"] = mediaSources
 	base["EioIncompleteSources"] = received < len(instances) || failed > 0 || unconfirmed > 0
 	a.overlayLocalUserData(r, r.PathValue("itemId"), base)
-	if maxR, blockUnrated := a.parentalPolicyFor(r); (maxR > 0 || blockUnrated) && !itemAllowedByPolicy(base, maxR, blockUnrated) {
-		writeJSON(w, http.StatusForbidden, map[string]any{"message": "Content restricted by parental rating"})
-		return
-	}
+	// Each contributing instance was already checked with inheritance. Checking
+	// the sparse response DTO again would discard that confirmed parent rating.
 	writeJSON(w, http.StatusOK, base)
 }
