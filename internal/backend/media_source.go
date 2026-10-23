@@ -35,12 +35,12 @@ func (a *App) selectedPlaybackSource(w http.ResponseWriter, r *http.Request, res
 		return resolved, true
 	}
 	if !a.canUseAggregatedServer(requestContextFrom(r.Context()), source.ServerID) {
-		writeJSON(w, http.StatusForbidden, map[string]any{"message": "Access denied"})
+		a.writeRouteAccessError(w, http.StatusForbidden)
 		return nil, false
 	}
 	client := a.Upstream.ClientByID(source.ServerID)
 	if client == nil || !client.IsOnline() {
-		writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Selected media source server is unavailable"})
+		a.writeRouteAccessError(w, http.StatusServiceUnavailable)
 		return nil, false
 	}
 	itemID, ok := translateVirtualIDForServer(r.PathValue("itemId"), source.ServerID, a.IDStore)

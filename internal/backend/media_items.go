@@ -142,12 +142,9 @@ func (a *App) handleUserItems(w http.ResponseWriter, r *http.Request) {
 	query := cloneValues(r.URL.Query())
 	parentID := firstQueryValue(query, "ParentId", "parentId", "parentid")
 	if parentID != "" && parentID != "0" && parentID != "root" {
-		resolved := a.resolveRouteID(parentID)
-		if resolved == nil {
+		resolved, routeStatus := a.resolveRouteForRequest(requestContextFrom(r.Context()), parentID)
+		if routeStatus != 0 {
 			writeJSON(w, http.StatusOK, map[string]any{"Items": []any{}, "TotalRecordCount": 0, "StartIndex": 0})
-			return
-		}
-		if !a.requireServerAccess(w, r, resolved) {
 			return
 		}
 		query.Set("ParentId", resolved.OriginalID)
@@ -261,12 +258,13 @@ func (a *App) handleUserItemsLatest(w http.ResponseWriter, r *http.Request) {
 	query := cloneValues(r.URL.Query())
 	parentID := query.Get("ParentId")
 	if parentID != "" {
-		resolved := a.resolveRouteID(parentID)
-		if resolved == nil {
+		resolved, routeStatus := a.resolveRouteForRequest(requestContextFrom(r.Context()), parentID)
+		if routeStatus != 0 {
 			writeJSON(w, http.StatusOK, []any{})
 			return
 		}
-		if !a.requireServerAccess(w, r, resolved) {
+		if resolved == nil {
+			writeJSON(w, http.StatusOK, []any{})
 			return
 		}
 		query.Set("ParentId", resolved.OriginalID)
@@ -335,9 +333,9 @@ func (a *App) handleUserItemsLatest(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleUserItemByID(w http.ResponseWriter, r *http.Request) {
-	resolved := a.resolveRouteID(r.PathValue("itemId"))
-	if resolved == nil {
-		writeJSON(w, http.StatusNotFound, map[string]any{"message": "Item not found"})
+	resolved, routeStatus := a.resolveRouteForRequest(requestContextFrom(r.Context()), r.PathValue("itemId"))
+	if routeStatus != 0 {
+		a.writeRouteAccessError(w, routeStatus)
 		return
 	}
 	reqCtx := requestContextFrom(r.Context())
@@ -355,7 +353,10 @@ func (a *App) handleUserItemByID(w http.ResponseWriter, r *http.Request) {
 		}
 		if item, ok := payload.(map[string]any); ok {
 			a.discoverItemCopies(r, r.PathValue("itemId"), item)
-			instances = a.collectAllowedInstances(reqCtx, a.resolveRouteID(r.PathValue("itemId")))
+			refreshed, refreshStatus := a.resolveRouteForRequest(reqCtx, r.PathValue("itemId"))
+			if refreshStatus == 0 {
+				instances = a.collectAllowedInstances(reqCtx, refreshed)
+			}
 			if len(instances) > 1 {
 				a.handleMergedItemDetail(w, r, instances)
 				return
@@ -381,9 +382,9 @@ func (a *App) handleUserItemByID(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleItemByID(w http.ResponseWriter, r *http.Request) {
-	resolved := a.resolveRouteID(r.PathValue("itemId"))
-	if resolved == nil {
-		writeJSON(w, http.StatusNotFound, map[string]any{"message": "Item not found"})
+	resolved, routeStatus := a.resolveRouteForRequest(requestContextFrom(r.Context()), r.PathValue("itemId"))
+	if routeStatus != 0 {
+		a.writeRouteAccessError(w, routeStatus)
 		return
 	}
 	if !a.requireServerAccess(w, r, resolved) {
@@ -406,8 +407,12 @@ func (a *App) handleItemByID(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleItemSimilar(w http.ResponseWriter, r *http.Request) {
-	resolved := a.resolveRouteID(r.PathValue("itemId"))
-	if resolved == nil {
+	resolved, routeStatus := a.resolveRouteForRequest(requestContextFrom(r.Context()), r.PathValue("itemId"))
+	if routeStatus != 0 {
+		if routeStatus != http.StatusNotFound {
+			a.writeRouteAccessError(w, routeStatus)
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"Items": []any{}, "TotalRecordCount": 0})
 		return
 	}
@@ -438,8 +443,12 @@ func (a *App) handleItemSimilar(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleItemThemeMedia(w http.ResponseWriter, r *http.Request) {
-	resolved := a.resolveRouteID(r.PathValue("itemId"))
-	if resolved == nil {
+	resolved, routeStatus := a.resolveRouteForRequest(requestContextFrom(r.Context()), r.PathValue("itemId"))
+	if routeStatus != 0 {
+		if routeStatus != http.StatusNotFound {
+			a.writeRouteAccessError(w, routeStatus)
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ThemeVideosResult":     map[string]any{"Items": []any{}, "TotalRecordCount": 0},
 			"ThemeSongsResult":      map[string]any{"Items": []any{}, "TotalRecordCount": 0},

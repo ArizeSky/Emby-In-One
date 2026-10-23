@@ -9,12 +9,12 @@ import (
 )
 
 func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
-	resolved := a.resolveRouteID(r.PathValue("itemId"))
-	if resolved == nil {
-		if a.Logger != nil {
+	resolved, routeStatus := a.resolveRouteForRequest(requestContextFrom(r.Context()), r.PathValue("itemId"))
+	if routeStatus != 0 {
+		if routeStatus == http.StatusNotFound && a.Logger != nil {
 			a.Logger.Warnf("PlaybackInfo: itemId=%s not found in mappings", r.PathValue("itemId"))
 		}
-		writeJSON(w, http.StatusNotFound, map[string]any{"message": "Item not found"})
+		a.writeRouteAccessError(w, routeStatus)
 		return
 	}
 	reqCtx := requestContextFrom(r.Context())

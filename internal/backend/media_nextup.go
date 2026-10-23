@@ -17,8 +17,8 @@ func (a *App) handleShowsNextUp(w http.ResponseWriter, r *http.Request) {
 	query := cloneValues(r.URL.Query())
 	seriesID := query.Get("SeriesId")
 	if seriesID != "" {
-		resolved := a.resolveRouteID(seriesID)
-		if resolved == nil {
+		resolved, routeStatus := a.resolveRouteForRequest(reqCtx, seriesID)
+		if routeStatus != 0 {
 			writeJSON(w, http.StatusOK, map[string]any{"Items": []any{}, "TotalRecordCount": 0, "StartIndex": 0})
 			return
 		}
@@ -62,8 +62,8 @@ func (a *App) handleLocalNextUp(w http.ResponseWriter, r *http.Request, reqCtx *
 	// If SeriesId specified, only compute for that series
 	seriesID := query.Get("SeriesId")
 	if seriesID != "" {
-		resolved := a.resolveRouteID(seriesID)
-		if resolved == nil {
+		resolved, routeStatus := a.resolveRouteForRequest(reqCtx, seriesID)
+		if routeStatus != 0 {
 			a.writeParentalItemsResponse(w, r, empty)
 			return
 		}

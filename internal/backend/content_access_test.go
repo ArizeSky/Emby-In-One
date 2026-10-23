@@ -53,10 +53,11 @@ func permittedUpstreamStub(t *testing.T) *httptest.Server {
 
 // itemRoute is one request that carries a virtual item id to the server owning it.
 type itemRoute struct {
-	name   string
-	method string
-	path   string
-	body   map[string]any
+	name           string
+	method         string
+	path           string
+	body           map[string]any
+	expectedStatus int
 }
 
 // itemScopedRoutes lists every route that resolves a virtual item id from the
@@ -69,11 +70,11 @@ func itemScopedRoutes(userID, movieID, seriesID string) []itemRoute {
 		{name: "item image", method: http.MethodGet, path: "/Items/" + movieID + "/Images/Primary"},
 		{name: "playback info", method: http.MethodPost, path: "/Items/" + movieID + "/PlaybackInfo"},
 		{name: "video stream", method: http.MethodGet, path: "/Videos/" + movieID + "/stream.mp4"},
-		{name: "user items by parent", method: http.MethodGet, path: "/Users/" + userID + "/Items?ParentId=" + seriesID},
-		{name: "user items latest", method: http.MethodGet, path: "/Users/" + userID + "/Items/Latest?ParentId=" + seriesID},
-		{name: "next up", method: http.MethodGet, path: "/Shows/NextUp?SeriesId=" + seriesID},
-		{name: "show seasons", method: http.MethodGet, path: "/Shows/" + seriesID + "/Seasons"},
-		{name: "show episodes", method: http.MethodGet, path: "/Shows/" + seriesID + "/Episodes"},
+		{name: "user items by parent", method: http.MethodGet, path: "/Users/" + userID + "/Items?ParentId=" + seriesID, expectedStatus: http.StatusOK},
+		{name: "user items latest", method: http.MethodGet, path: "/Users/" + userID + "/Items/Latest?ParentId=" + seriesID, expectedStatus: http.StatusOK},
+		{name: "next up", method: http.MethodGet, path: "/Shows/NextUp?SeriesId=" + seriesID, expectedStatus: http.StatusOK},
+		{name: "show seasons", method: http.MethodGet, path: "/Shows/" + seriesID + "/Seasons", expectedStatus: http.StatusOK},
+		{name: "show episodes", method: http.MethodGet, path: "/Shows/" + seriesID + "/Episodes", expectedStatus: http.StatusOK},
 		{name: "user data", method: http.MethodPost, path: "/Users/" + userID + "/Items/" + movieID + "/UserData"},
 		{name: "favorite add", method: http.MethodPost, path: "/Users/" + userID + "/FavoriteItems/" + movieID},
 		{name: "favorite remove", method: http.MethodDelete, path: "/Users/" + userID + "/FavoriteItems/" + movieID},
@@ -105,8 +106,12 @@ func TestItemRoutesRejectUpstreamOutsideAllowedServers(t *testing.T) {
 
 		for _, route := range itemScopedRoutes(userID, forbiddenMovie, forbiddenSeries) {
 			rr := doAuthJSON(t, handler, route.method, route.path, route.body, userToken)
-			if rr.Code != http.StatusForbidden {
-				t.Errorf("%s: status=%d, want 403; body=%s", route.name, rr.Code, rr.Body.String())
+			want := route.expectedStatus
+			if want == 0 {
+				want = http.StatusForbidden
+			}
+			if rr.Code != want {
+				t.Errorf("%s: status=%d, want %d; body=%s", route.name, rr.Code, want, rr.Body.String())
 			}
 		}
 		// Checked before the administrator request below, which does reach server B.

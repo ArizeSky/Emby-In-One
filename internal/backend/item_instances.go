@@ -28,8 +28,10 @@ func (a *App) discoverItemCopies(r *http.Request, virtualID string, item map[str
 	sort.Strings(terms)
 	reqCtx := requestContextFrom(r.Context())
 	known := map[string]bool{}
-	for _, inst := range a.collectAllowedInstances(reqCtx, a.resolveRouteID(virtualID)) {
-		known[inst.ServerID] = true
+	if resolved, status := a.resolveRouteForRequest(reqCtx, virtualID); status == 0 {
+		for _, inst := range a.collectAllowedInstances(reqCtx, resolved) {
+			known[inst.ServerID] = true
+		}
 	}
 	for _, client := range a.allowedClients(reqCtx) {
 		if known[client.ID] {

@@ -17,8 +17,8 @@ func (a *App) handleUserItemsResume(w http.ResponseWriter, r *http.Request) {
 	query := cloneValues(r.URL.Query())
 	parentID := firstQueryValue(query, "ParentId", "parentId", "parentid")
 	if parentID != "" {
-		resolved := a.resolveRouteID(parentID)
-		if resolved == nil {
+		resolved, routeStatus := a.resolveRouteForRequest(reqCtx, parentID)
+		if routeStatus != 0 {
 			writeJSON(w, http.StatusOK, map[string]any{"Items": []any{}, "TotalRecordCount": 0, "StartIndex": 0})
 			return
 		}

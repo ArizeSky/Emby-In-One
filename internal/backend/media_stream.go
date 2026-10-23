@@ -53,28 +53,24 @@ func (a *App) proxyStream(w http.ResponseWriter, r *http.Request, route streamRo
 		a.Logger.Debugf("%s request: itemId=%s, query=%s", route.label, virtualItemID, formatValuesForLog(query))
 	}
 
-	resolved := a.resolveRouteID(virtualItemID)
-	if resolved == nil {
-		if a.Logger != nil {
-			a.Logger.Warnf("%s: itemId=%s not found in mappings", route.label, virtualItemID)
-		}
-		writeJSON(w, http.StatusNotFound, map[string]any{"message": "Item not found"})
-		return
-	}
-	if !a.requireServerAccess(w, r, resolved) {
-		return
-	}
-
 	rest := r.PathValue("rest")
-	if rest == "" {
-		writeJSON(w, http.StatusNotFound, map[string]any{"message": "Stream not found"})
-		return
-	}
-	// A rewritten external HLS resource for a restricted user arrives as
-	// /Videos/<virtualItemID>/eio-resource/<opaque>. It is served from the
-	// server-side opaque map, never appended to an upstream path (plan §8.6.1).
+	// Resource handles are bound to their serving instance in StreamResources.
+	// Let that handler validate the bound user/server directly rather than first
+	// routing the parent item through an unrelated global primary.
 	if strings.HasPrefix(rest, "eio-resource/") {
 		a.serveStreamResource(w, r, virtualItemID, strings.TrimPrefix(rest, "eio-resource/"))
+		return
+	}
+	resolved, routeStatus := a.resolveRouteForRequest(requestContextFrom(r.Context()), virtualItemID)
+	if routeStatus != 0 {
+		if routeStatus == http.StatusNotFound && a.Logger != nil {
+			a.Logger.Warnf("%s: itemId=%s not found in mappings", route.label, virtualItemID)
+		}
+		a.writeRouteAccessError(w, routeStatus)
+		return
+	}
+	if rest == "" {
+		writeJSON(w, http.StatusNotFound, map[string]any{"message": "Stream not found"})
 		return
 	}
 	// Resolve a virtual MediaSourceId embedded in subtitle/attachment paths:
@@ -387,6 +383,26 @@ func (a *App) forwardStream(w http.ResponseWriter, r *http.Request, client *Upst
 func (a *App) resolveStreamTarget(w http.ResponseWriter, r *http.Request, resolved *routeResolution, virtualItemID string, query url.Values) (*UpstreamClient, string, bool) {
 	virtualMediaSourceID := query.Get("MediaSourceId")
 	if virtualMediaSourceID == "" {
+		if playSessionID := query.Get("PlaySessionId"); playSessionID != "" {
+			playSession := a.IDStore.ResolveVirtualID(playSessionID)
+			if playSession != nil {
+				if !a.canUseAggregatedServer(requestContextFrom(r.Context()), playSession.ServerID) {
+					a.writeRouteAccessError(w, http.StatusForbidden)
+					return nil, "", false
+				}
+				target := a.Upstream.ClientByID(playSession.ServerID)
+				if target == nil || !target.IsOnline() {
+					a.writeRouteAccessError(w, http.StatusServiceUnavailable)
+					return nil, "", false
+				}
+				originalID, ok := translateVirtualIDForServer(virtualItemID, playSession.ServerID, a.IDStore)
+				if !ok {
+					writeJSON(w, http.StatusBadRequest, map[string]any{"message": "Play session does not belong to this item"})
+					return nil, "", false
+				}
+				return target, originalID, true
+			}
+		}
 		return resolved.Client, resolved.OriginalID, true
 	}
 	mediaSource := a.IDStore.ResolveVirtualID(virtualMediaSourceID)
@@ -396,26 +412,23 @@ func (a *App) resolveStreamTarget(w http.ResponseWriter, r *http.Request, resolv
 		}
 		return resolved.Client, resolved.OriginalID, true
 	}
-	// Reject a paused or unauthorized source before rewriting the query and
-	// before the same-server fast return, otherwise a same-server MediaSourceId
-	// would bypass the aggregation switch entirely.
+	// An explicit source stays bound to its server; it is never replaced by a
+	// different usable replica of the item.
 	if !a.canUseAggregatedServer(requestContextFrom(r.Context()), mediaSource.ServerID) {
-		writeJSON(w, http.StatusForbidden, map[string]any{"message": "Access denied"})
+		a.writeRouteAccessError(w, http.StatusForbidden)
+		return nil, "", false
+	}
+	target := a.Upstream.ClientByID(mediaSource.ServerID)
+	if target == nil || !target.IsOnline() {
+		a.writeRouteAccessError(w, http.StatusServiceUnavailable)
 		return nil, "", false
 	}
 	query.Set("MediaSourceId", mediaSource.OriginalID)
 	if mediaSource.ServerID == resolved.ServerID {
-		return resolved.Client, resolved.OriginalID, true
+		return target, resolved.OriginalID, true
 	}
-	target := a.Upstream.ClientByID(mediaSource.ServerID)
-	if target == nil || !target.IsOnline() {
-		writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Target media source server is unavailable"})
-		return nil, "", false
-	}
-	// Attribute the cross-source MediaSourceId to this item before touching the
-	// playback slot: a source on another server only proves it belongs to this movie
-	// when the item has a known copy there. Otherwise playing it would silently
-	// substitute the current item's id on a server that never had it.
+	// A source on another server only proves it belongs to this item when the
+	// item has a known copy there.
 	originalID := ""
 	for _, other := range resolved.OtherInstances {
 		if other.ServerID == mediaSource.ServerID {

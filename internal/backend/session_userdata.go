@@ -553,15 +553,17 @@ func (a *App) handleUserPlayingItemStop(w http.ResponseWriter, r *http.Request) 
 }
 
 func (a *App) handleUserPlayingItem(w http.ResponseWriter, r *http.Request, method string) {
-	resolved := a.resolveRouteID(r.PathValue("itemId"))
-	if resolved == nil {
-		writeJSON(w, http.StatusNotFound, map[string]any{"message": "Item not found"})
-		return
-	}
-	if !a.requireServerAccess(w, r, resolved) {
+	resolved, routeStatus := a.resolveRouteForRequest(requestContextFrom(r.Context()), r.PathValue("itemId"))
+	if routeStatus != 0 {
+		a.writeRouteAccessError(w, routeStatus)
 		return
 	}
 	query := cloneValues(r.URL.Query())
+	var selected bool
+	resolved, selected = a.selectedPlaybackSource(w, r, resolved, map[string]any{}, query)
+	if !selected {
+		return
+	}
 	a.translateMediaSourceQuery(query)
 	path := "/Users/" + resolved.Client.clientUserID() + "/PlayingItems/" + resolved.OriginalID
 	_ = a.forwardNoContent(r, resolved.Client, method, path, query, nil)
@@ -570,12 +572,9 @@ func (a *App) handleUserPlayingItem(w http.ResponseWriter, r *http.Request, meth
 
 func (a *App) handleUserItemUserData(w http.ResponseWriter, r *http.Request) {
 	virtualItemID := r.PathValue("itemId")
-	resolved := a.resolveRouteID(virtualItemID)
-	if resolved == nil {
-		writeJSON(w, http.StatusNotFound, map[string]any{"message": "Item not found"})
-		return
-	}
-	if !a.requireServerAccess(w, r, resolved) {
+	resolved, routeStatus := a.resolveRouteForRequest(requestContextFrom(r.Context()), virtualItemID)
+	if routeStatus != 0 {
+		a.writeRouteAccessError(w, routeStatus)
 		return
 	}
 	body, err := decodeOptionalJSON(r)
@@ -627,12 +626,9 @@ func (a *App) handleUserItemUserData(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handleFavoriteItemAdd(w http.ResponseWriter, r *http.Request) {
 	virtualItemID := r.PathValue("itemId")
-	resolved := a.resolveRouteID(virtualItemID)
-	if resolved == nil {
-		writeJSON(w, http.StatusNotFound, map[string]any{"message": "Item not found"})
-		return
-	}
-	if !a.requireServerAccess(w, r, resolved) {
+	resolved, routeStatus := a.resolveRouteForRequest(requestContextFrom(r.Context()), virtualItemID)
+	if routeStatus != 0 {
+		a.writeRouteAccessError(w, routeStatus)
 		return
 	}
 	body, err := decodeOptionalJSON(r)
@@ -671,12 +667,9 @@ func (a *App) handleFavoriteItemAdd(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handleFavoriteItemRemove(w http.ResponseWriter, r *http.Request) {
 	virtualItemID := r.PathValue("itemId")
-	resolved := a.resolveRouteID(virtualItemID)
-	if resolved == nil {
-		writeJSON(w, http.StatusNotFound, map[string]any{"message": "Item not found"})
-		return
-	}
-	if !a.requireServerAccess(w, r, resolved) {
+	resolved, routeStatus := a.resolveRouteForRequest(requestContextFrom(r.Context()), virtualItemID)
+	if routeStatus != 0 {
+		a.writeRouteAccessError(w, routeStatus)
 		return
 	}
 	body, err := decodeOptionalJSON(r)

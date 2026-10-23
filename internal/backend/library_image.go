@@ -107,8 +107,8 @@ func (a *App) handleLibraryTaxonomy(w http.ResponseWriter, r *http.Request, endp
 		// per upstream and skip servers that do not own that library, otherwise the
 		// upstream cannot resolve the id and the genre/studio tab renders empty.
 		if pid := firstQueryValue(query, "ParentId", "parentId", "parentid"); pid != "" {
-			resolvedParent := a.resolveRouteID(pid)
-			if resolvedParent == nil || resolvedParent.ServerID != c.ID {
+			resolvedParent, status := a.resolveRouteForRequest(reqCtx, pid)
+			if status != 0 || resolvedParent.ServerID != c.ID {
 				return nil
 			}
 			query.Set("ParentId", resolvedParent.OriginalID)
@@ -136,8 +136,8 @@ func (a *App) handleLibraryTaxonomy(w http.ResponseWriter, r *http.Request, endp
 	writeJSON(w, http.StatusOK, map[string]any{"Items": toAnySlice(results), "TotalRecordCount": len(results), "StartIndex": 0})
 }
 func (a *App) handleShowsSeasons(w http.ResponseWriter, r *http.Request) {
-	resolved := a.resolveRouteID(r.PathValue("seriesId"))
-	if resolved == nil {
+	resolved, routeStatus := a.resolveRouteForRequest(requestContextFrom(r.Context()), r.PathValue("seriesId"))
+	if routeStatus != 0 {
 		writeJSON(w, http.StatusOK, map[string]any{"Items": []any{}, "TotalRecordCount": 0, "StartIndex": 0})
 		return
 	}
@@ -231,8 +231,8 @@ func (a *App) handleShowsSeasons(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleShowsEpisodes(w http.ResponseWriter, r *http.Request) {
-	resolved := a.resolveRouteID(r.PathValue("seriesId"))
-	if resolved == nil {
+	resolved, routeStatus := a.resolveRouteForRequest(requestContextFrom(r.Context()), r.PathValue("seriesId"))
+	if routeStatus != 0 {
 		writeJSON(w, http.StatusOK, map[string]any{"Items": []any{}, "TotalRecordCount": 0, "StartIndex": 0})
 		return
 	}
@@ -426,13 +426,27 @@ func (a *App) handleItemImage(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
-	resolved := a.resolveRouteID(r.PathValue("itemId"))
-	if resolved == nil {
-		w.Header().Set("Cache-Control", "no-store")
-		w.WriteHeader(http.StatusNotFound)
-		return
+	var resolved *routeResolution
+	if authenticated {
+		var routeStatus int
+		resolved, routeStatus = a.resolveRouteForRequest(reqCtx, r.PathValue("itemId"))
+		if routeStatus != 0 {
+			w.Header().Set("Cache-Control", "no-store")
+			if routeStatus == http.StatusNotFound {
+				w.WriteHeader(http.StatusNotFound)
+			} else {
+				a.writeRouteAccessError(w, routeStatus)
+			}
+			return
+		}
+	} else {
+		resolved = a.resolveRouteID(r.PathValue("itemId"))
+		if resolved == nil {
+			w.Header().Set("Cache-Control", "no-store")
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 	}
-	// Image URLs are embedded by clients and stay reachable without a token, so
 	// the server access check only applies to authenticated requests.
 	if authenticated && !a.isServerAllowed(reqCtx, resolved.ServerID) {
 		w.Header().Set("Cache-Control", "no-store")

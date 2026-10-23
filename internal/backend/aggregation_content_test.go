@@ -51,11 +51,11 @@ func TestDisabledAggregationContentRoutes(t *testing.T) {
 			t.Errorf("user views queried the paused server A %d time(s)", a.contentHits.Load())
 		}
 
-		// Item detail on the paused server: 404, no upstream request.
+		// Known item on a paused server: 403 because no aggregated replica is usable.
 		a.reset()
 		vidA := app.IDStore.GetOrCreateVirtualID("movie-a", idA)
-		if rr := doAuthJSON(t, handler, http.MethodGet, "/Items/"+vidA, nil, adminToken); rr.Code != http.StatusNotFound {
-			t.Errorf("paused item detail: status=%d, want 404", rr.Code)
+		if rr := doAuthJSON(t, handler, http.MethodGet, "/Items/"+vidA, nil, adminToken); rr.Code != http.StatusForbidden {
+			t.Errorf("paused item detail: status=%d, want 403", rr.Code)
 		}
 		if a.contentHits.Load() != 0 {
 			t.Errorf("paused item detail queried server A")
