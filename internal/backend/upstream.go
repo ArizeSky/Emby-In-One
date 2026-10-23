@@ -793,6 +793,12 @@ func (c *UpstreamClient) resolveStreamRedirectTarget(resp *http.Response, proxyH
 // response is returned as-is (ErrUseLastResponse), so the stream handler can
 // re-evaluate every hop — an internal hop that bounces to an external CDN must
 // still reach the player instead of being silently relayed from here.
+// fetchRedirectTarget retrieves an upstream redirect target through this proxy's
+// own line. The target is taken as issued: the upstream built it for exactly this
+// request, so no identity rewrite happens here. Single hop on purpose: each
+// response is returned as-is (ErrUseLastResponse), so the stream handler can
+// re-evaluate every hop — an internal hop that bounces to an external CDN must
+// still reach the player instead of being silently relayed from here.
 func (c *UpstreamClient) fetchRedirectTarget(ctx context.Context, rawURL string, extraHeaders http.Header) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
@@ -804,10 +810,15 @@ func (c *UpstreamClient) fetchRedirectTarget(ctx context.Context, rawURL string,
 		}
 	}
 	// A same-origin hop is served by this upstream itself, so it expects the
-	// upstream's own credentials. Carry them from the client's snapshot; a foreign
-	// target (a CDN) must never receive them (plan §7.3).
-	if c.AccessToken != "" && c.isSelfURL(rawURL) {
-		req.Header.Set("X-Emby-Token", c.AccessToken)
+	// upstream's own credentials. Carry them from one consistent auth snapshot
+	// (setOnline writes the token under c.mu, so a bare field read here is a
+	// data race); a foreign target (a CDN) must never receive them (plan §7.3).
+	// Trust is decided on the full origin — scheme, host and effective port —
+	// never on the host alone: an HTTPS-configured upstream must not extend
+	// credential trust to a plaintext URL that merely shares its host:port.
+	auth := c.authSnapshot()
+	if auth.AccessToken != "" && c.isSelfURL(rawURL) {
+		req.Header.Set("X-Emby-Token", auth.AccessToken)
 	}
 	client := &http.Client{Transport: c.transport, Timeout: 0, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	resp, doErr := client.Do(req)
@@ -817,19 +828,74 @@ func (c *UpstreamClient) fetchRedirectTarget(ctx context.Context, rawURL string,
 	return resp, nil
 }
 
-// isSelfURL reports whether rawURL points at one of this upstream's own hosts, so
-// its credentials may be attached. External/CDN targets return false.
+// isSelfURL reports whether rawURL points at one of this upstream's own
+// configured origins — scheme, host and effective port all matching — so its
+// credentials may be attached. External/CDN targets return false, and so does a
+// URL that only shares the host with a configured origin but arrives over a
+// different scheme or port (plan §7.3: the trust set is the configured origins,
+// not "same host").
 func (c *UpstreamClient) isSelfURL(rawURL string) bool {
 	u, err := url.Parse(rawURL)
 	if err != nil || u.Host == "" {
 		return false
 	}
-	for _, host := range c.selfHosts() {
-		if strings.EqualFold(u.Host, host) {
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return false
+	}
+	origin := canonicalURLOrigin(u)
+	if origin == "" {
+		return false
+	}
+	for _, base := range c.selfOrigins() {
+		if origin == base {
 			return true
 		}
 	}
 	return false
+}
+
+// selfOrigins lists the canonical origins this upstream answers on, across its
+// API base and its live stream bases. The proxy's own address is per-request and
+// is passed to the redirect classifier separately.
+func (c *UpstreamClient) selfOrigins() []string {
+	bases := append([]string{c.BaseURL}, c.streamBaseCandidates()...)
+	origins := make([]string, 0, len(bases))
+	seen := map[string]bool{}
+	for _, base := range bases {
+		u, err := url.Parse(base)
+		if err != nil || u.Host == "" {
+			continue
+		}
+		origin := canonicalURLOrigin(u)
+		if origin == "" || seen[origin] {
+			continue
+		}
+		seen[origin] = true
+		origins = append(origins, origin)
+	}
+	return origins
+}
+
+// canonicalURLOrigin renders a URL's origin with the scheme's default port made
+// explicit, so http://h and http://h:80 are one origin and https://h and
+// https://h:443 are another. A plaintext URL never canonicalises onto an HTTPS
+// origin: the scheme is part of the identity.
+func canonicalURLOrigin(u *url.URL) string {
+	if u == nil || u.Hostname() == "" {
+		return ""
+	}
+	port := u.Port()
+	if port == "" {
+		switch u.Scheme {
+		case "http":
+			port = "80"
+		case "https":
+			port = "443"
+		default:
+			return ""
+		}
+	}
+	return strings.ToLower(u.Scheme) + "://" + strings.ToLower(u.Hostname()) + ":" + port
 }
 
 // selfHosts lists the hosts this upstream answers on, across its API and stream
