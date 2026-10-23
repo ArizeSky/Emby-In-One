@@ -71,17 +71,45 @@ func TestLoginRateLimiterRecordFailureResetsExpiredWindow(t *testing.T) {
 	}
 }
 
-func TestLoginRateLimiterRecordSuccessClears(t *testing.T) {
+// TestLoginRateLimiterSuccessDoesNotResetFailures ensures a successful login
+// cannot spend or reset a shared IP's failure budget: a low-privilege account
+// must not be able to refresh the brute-force window of another account.
+func TestLoginRateLimiterSuccessDoesNotResetFailures(t *testing.T) {
 	limiter := &loginRateLimiter{}
-	for i := 0; i < loginMaxFailures; i++ {
+	for i := 0; i < loginMaxFailures-1; i++ {
 		limiter.recordFailure("203.0.113.5")
 	}
-	limiter.recordSuccess("203.0.113.5")
+	// A successful login keeps the existing failure record untouched.
 	if !limiter.allowed("203.0.113.5") {
-		t.Fatal("a successful login must clear the failure history")
+		t.Fatal("entry below the threshold must still be allowed")
 	}
-	if _, ok := limiter.attempts["203.0.113.5"]; ok {
-		t.Fatal("recordSuccess must remove the entry")
+	if got := limiter.attempts["203.0.113.5"].failures; got != loginMaxFailures-1 {
+		t.Fatalf("failures = %d, want preserved %d", got, loginMaxFailures-1)
+	}
+	limiter.recordFailure("203.0.113.5")
+	if limiter.allowed("203.0.113.5") {
+		t.Fatal("a success login must not add budget: next failure still locks out")
+	}
+}
+
+// TestLoginRateLimiterSuccessDoesNotExtendWindow ensures a success neither clears
+// nor extends the failure window: only the window expiry rule unlocks an IP.
+func TestLoginRateLimiterSuccessDoesNotExtendWindow(t *testing.T) {
+	limiter := &loginRateLimiter{}
+	for i := 0; i < loginMaxFailures; i++ {
+		limiter.recordFailure("203.0.113.6")
+	}
+	// Failures stay fresh: still locked out.
+	if limiter.allowed("203.0.113.6") {
+		t.Fatal("fresh locked-out IP must stay blocked without a success reset")
+	}
+	// Nothing other than window expiry can unlock: entries expire per existing rule.
+	limiter.attempts["203.0.113.6"].lastFail = time.Now().Add(-(loginLockoutWindow + time.Minute))
+	if !limiter.allowed("203.0.113.6") {
+		t.Fatal("expired window must unlock without any success login")
+	}
+	if got := limiter.attempts["203.0.113.6"].failures; got != loginMaxFailures {
+		t.Fatalf("failures = %d, want untouched %d", got, loginMaxFailures)
 	}
 }
 

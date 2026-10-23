@@ -102,12 +102,6 @@ func (l *loginRateLimiter) evictOne() {
 	}
 }
 
-func (l *loginRateLimiter) recordSuccess(ip string) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	delete(l.attempts, ip)
-}
-
 func (l *loginRateLimiter) cleanup() {
 	l.mu.Lock()
 	defer l.mu.Unlock()

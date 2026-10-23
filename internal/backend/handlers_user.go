@@ -78,7 +78,8 @@ func (a *App) handleAuthenticateByName(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusForbidden, map[string]any{"message": "管理员账号不能通过 Web 客户端登录，请使用 /admin 管理面板"})
 			return
 		}
-		a.loginLimiter.recordSuccess(ip)
+		// 登录成功不能清除本 IP 的失败记录：低权账号的成功登录
+		// 否则可为本 IP 的暴力破解刷新预算（失败记录只随窗口到期清理）。
 		if token, _ := result["AccessToken"].(string); token != "" {
 			if hasPassthroughIdentity(r.Header) {
 				a.Identity.SetCaptured(token, r.Header)
@@ -105,7 +106,7 @@ func (a *App) handleAuthenticateByName(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, http.StatusInternalServerError, map[string]any{"message": authErr.Error()})
 				return
 			}
-			a.loginLimiter.recordSuccess(ip)
+			// 同 S1：成功登录保留既有失败记录，不清零、不延长。
 			if a.Logger != nil {
 				a.Logger.Infof("Login success: user=%q role=user ip=%s", user.Username, r.RemoteAddr)
 			}
