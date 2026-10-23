@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -398,9 +399,17 @@ func (s *IDStore) evictExpiredStreamState() {
 	}
 }
 
-// RemoveByServerID removes every mapping belonging to the deleted upstream,
-// both primary entries registered for it and additional-instance entries on surviving primaries.
-// It cascades to drop additional instances belonging to primaries on the deleted server.
+type serverIDRemovalGroup struct {
+	virtualID     string
+	primaryTarget bool
+	remove        bool
+	route         AdditionalInstance
+}
+
+// RemoveByServerID removes an upstream's instances while retaining each virtual
+// identity that still has a surviving copy. Durable mappings and watch-state
+// rehoming commit together; in-memory indexes and routing hints change only after
+// that transaction succeeds.
 func (s *IDStore) RemoveByServerID(serverID string) error {
 	if serverID == "" {
 		return nil
@@ -408,54 +417,183 @@ func (s *IDStore) RemoveByServerID(serverID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	virtualIDs := make([]string, 0, len(s.virtualToOriginal))
+	for virtualID := range s.virtualToOriginal {
+		virtualIDs = append(virtualIDs, virtualID)
+	}
+	sort.Strings(virtualIDs)
+	nextEntries := make(map[string]*idEntry, len(s.virtualToOriginal))
+	removedVirtualIDs := map[string]bool{}
+	groups := make([]serverIDRemovalGroup, 0)
+	for _, virtualID := range virtualIDs {
+		entry := s.virtualToOriginal[virtualID]
+		next := &idEntry{
+			OriginalID:     entry.OriginalID,
+			ServerID:       entry.ServerID,
+			OtherInstances: append([]AdditionalInstance(nil), entry.OtherInstances...),
+		}
+		if entry.ServerID == serverID {
+			survivors := make([]AdditionalInstance, 0, len(entry.OtherInstances))
+			for _, other := range entry.OtherInstances {
+				if other.ServerID != serverID {
+					survivors = append(survivors, other)
+				}
+			}
+			if len(survivors) == 0 {
+				removedVirtualIDs[virtualID] = true
+				groups = append(groups, serverIDRemovalGroup{virtualID: virtualID, primaryTarget: true, remove: true})
+				continue
+			}
+			sort.Slice(survivors, func(i, j int) bool {
+				if survivors[i].ServerID != survivors[j].ServerID {
+					return survivors[i].ServerID < survivors[j].ServerID
+				}
+				return survivors[i].OriginalID < survivors[j].OriginalID
+			})
+			promoted := survivors[0]
+			next.OriginalID, next.ServerID = promoted.OriginalID, promoted.ServerID
+			next.OtherInstances = append([]AdditionalInstance(nil), survivors[1:]...)
+			groups = append(groups, serverIDRemovalGroup{virtualID: virtualID, primaryTarget: true, route: promoted})
+		} else {
+			kept := make([]AdditionalInstance, 0, len(entry.OtherInstances))
+			removedTargetInstance := false
+			for _, other := range entry.OtherInstances {
+				if other.ServerID == serverID {
+					removedTargetInstance = true
+					continue
+				}
+				kept = append(kept, other)
+			}
+			if removedTargetInstance {
+				next.OtherInstances = kept
+				groups = append(groups, serverIDRemovalGroup{
+					virtualID: virtualID,
+					route:     AdditionalInstance{OriginalID: entry.OriginalID, ServerID: entry.ServerID},
+				})
+			}
+		}
+		nextEntries[virtualID] = next
+	}
+
 	if s.db != nil {
-		err := s.db.withWriteTx(func() error {
-			// 1. Cascade cleanup: delete additional instances owned by primaries that belong to this server.
-			if err := s.db.execParams(
-				`DELETE FROM id_additional_instances WHERE virtual_id IN (SELECT virtual_id FROM id_mappings WHERE server_id = ?)`,
-				serverID,
-			); err != nil {
+		if err := s.db.withWriteTx(func() error {
+			hasWatchTable, err := tableExists(s.db, "user_watch_progress")
+			if err != nil {
 				return err
 			}
-			// 2. Delete additional instances that point directly to this server.
+			if hasWatchTable {
+				for _, group := range groups {
+					if group.remove {
+						if err := s.db.execParams(`DELETE FROM user_watch_progress WHERE virtual_item_id = ?`, group.virtualID); err != nil {
+							return err
+						}
+						continue
+					}
+					if err := s.db.execParams(`
+						UPDATE user_watch_progress
+						SET server_id = ?, original_item_id = ?
+						WHERE virtual_item_id = ? AND server_id = ?`,
+						group.route.ServerID, group.route.OriginalID, group.virtualID, serverID,
+					); err != nil {
+						return err
+					}
+				}
+				for _, group := range groups {
+					if !group.remove {
+						if err := s.db.execParams(`
+							UPDATE user_watch_progress SET series_original_id = ?
+							WHERE series_virtual_id = ?`, group.route.OriginalID, group.virtualID); err != nil {
+							return err
+						}
+					}
+				}
+				// Remove any stale/orphan watch rows that did not correspond to a
+				// surviving identity group. Local-only rows for surviving virtual IDs
+				// remain attached to those IDs.
+				if err := s.db.execParams(`DELETE FROM user_watch_progress WHERE server_id = ?`, serverID); err != nil {
+					return err
+				}
+			}
+
+			for _, group := range groups {
+				if !group.primaryTarget {
+					continue
+				}
+				if group.remove {
+					if err := s.db.execParams(`DELETE FROM id_additional_instances WHERE virtual_id = ?`, group.virtualID); err != nil {
+						return err
+					}
+					if err := s.db.execParams(`DELETE FROM id_mappings WHERE virtual_id = ?`, group.virtualID); err != nil {
+						return err
+					}
+					continue
+				}
+				if err := s.db.execParams(`
+					UPDATE id_mappings SET original_id = ?, server_id = ? WHERE virtual_id = ?`,
+					group.route.OriginalID, group.route.ServerID, group.virtualID,
+				); err != nil {
+					return err
+				}
+				if err := s.db.execParams(`
+					DELETE FROM id_additional_instances
+					WHERE virtual_id = ? AND original_id = ? AND server_id = ?`,
+					group.virtualID, group.route.OriginalID, group.route.ServerID,
+				); err != nil {
+					return err
+				}
+			}
 			if err := s.db.execParams(`DELETE FROM id_additional_instances WHERE server_id = ?`, serverID); err != nil {
 				return err
 			}
-			// 3. Delete primary mappings for this server.
 			return s.db.execParams(`DELETE FROM id_mappings WHERE server_id = ?`, serverID)
-		})
-		if err != nil {
+		}); err != nil {
 			return err
 		}
 	}
 
-	for virtualID, entry := range s.virtualToOriginal {
-		if entry.ServerID == serverID {
-			delete(s.virtualToOriginal, virtualID)
-			continue
-		}
-		kept := entry.OtherInstances[:0]
-		for _, other := range entry.OtherInstances {
-			if other.ServerID == serverID {
-				continue
-			}
-			kept = append(kept, other)
-		}
-		entry.OtherInstances = kept
-	}
+	s.virtualToOriginal = nextEntries
 	s.rebuildIndexesLocked()
+	for virtualID, stream := range s.activeStreamServer {
+		if stream.ServerID == serverID || removedVirtualIDs[virtualID] {
+			delete(s.activeStreamServer, virtualID)
+		}
+	}
+	for key, source := range s.imageSources {
+		virtualID, _, _ := strings.Cut(key, "|")
+		if source.ServerID == serverID || removedVirtualIDs[virtualID] {
+			delete(s.imageSources, key)
+		}
+	}
+	for virtualID, source := range s.displaySources {
+		if source.ServerID == serverID || removedVirtualIDs[virtualID] {
+			delete(s.displaySources, virtualID)
+		}
+	}
 	return nil
 }
 
 // rebuildIndexesLocked recomputes both derived indexes from virtualToOriginal.
+// Sorting makes duplicate historical alias pairs resolve deterministically.
 func (s *IDStore) rebuildIndexesLocked() {
+	virtualIDs := make([]string, 0, len(s.virtualToOriginal))
+	for virtualID := range s.virtualToOriginal {
+		virtualIDs = append(virtualIDs, virtualID)
+	}
+	sort.Strings(virtualIDs)
 	rebuilt := make(map[string]string, len(s.originalToVirtual))
 	byOriginal := make(map[string][]string, len(s.originalIDToVirtual))
-	for virtualID, entry := range s.virtualToOriginal {
-		rebuilt[compositeKey(entry.OriginalID, entry.ServerID)] = virtualID
+	for _, virtualID := range virtualIDs {
+		entry := s.virtualToOriginal[virtualID]
+		primaryKey := compositeKey(entry.OriginalID, entry.ServerID)
+		if _, exists := rebuilt[primaryKey]; !exists {
+			rebuilt[primaryKey] = virtualID
+		}
 		byOriginal[entry.OriginalID] = append(byOriginal[entry.OriginalID], virtualID)
 		for _, other := range entry.OtherInstances {
-			rebuilt[compositeKey(other.OriginalID, other.ServerID)] = virtualID
+			key := compositeKey(other.OriginalID, other.ServerID)
+			if _, exists := rebuilt[key]; !exists {
+				rebuilt[key] = virtualID
+			}
 			if !containsString(byOriginal[other.OriginalID], virtualID) {
 				byOriginal[other.OriginalID] = append(byOriginal[other.OriginalID], virtualID)
 			}

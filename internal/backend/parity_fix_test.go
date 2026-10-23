@@ -297,9 +297,9 @@ func TestMergeCrossCoverageTmdbAsymmetry(t *testing.T) {
 	})
 }
 
-// TestMergeYearlessSideStillMerges covers the year asymmetry: a copy without a
-// production year must join its year-stamped twin instead of duplicating it.
-func TestMergeYearlessSideStillMerges(t *testing.T) {
+// TestMergeYearlessSideDoesNotMergeWithoutStrongEvidence pins the strict
+// fallback: an equal name without a matching non-empty year is not identity.
+func TestMergeYearlessSideDoesNotMergeWithoutStrongEvidence(t *testing.T) {
 	config := "server:\n  port: 8096\n  name: TestServer\nadmin:\n  username: admin\n  password: testpass\nupstream: []\n"
 	withTempAppPrepared(t, config, nil, func(app *App, handler http.Handler, dir string) {
 		app.ConfigStore.Mutate(func(cfg *Config) error {
@@ -320,8 +320,8 @@ func TestMergeYearlessSideStillMerges(t *testing.T) {
 			}},
 		}
 		payload := app.mergedItemsPayload(results, app.Auth.ProxyUserID())
-		if n := payload["TotalRecordCount"]; n != 1 {
-			t.Fatalf("yearless copy: merged count = %v, want 1", n)
+		if n := payload["TotalRecordCount"]; n != 2 {
+			t.Fatalf("yearless copy without matching strong ID: merged count = %v, want 2", n)
 		}
 	})
 }

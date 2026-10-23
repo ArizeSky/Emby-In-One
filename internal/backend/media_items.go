@@ -608,79 +608,170 @@ func (a *App) fetchItemsAcrossUpstreamsWithGrace(ctx context.Context, reqCtx *Re
 	return results, report.Incomplete
 }
 
-// getItemKey generates a deduplication key for an item.
-// Returns empty string if the item cannot be deduplicated.
-func getItemKey(item map[string]any) string {
-	// Priority 1: TMDB ID
-	if providerIDs, ok := item["ProviderIds"].(map[string]any); ok {
-		if tmdb, ok := providerIDs["Tmdb"].(string); ok && tmdb != "" {
-			return "tmdb:" + tmdb
-		}
-	}
-	// Priority 2: Movie/Series by Name + Year
-	itemType, _ := item["Type"].(string)
-	if itemType == "Movie" || itemType == "Series" {
-		name, _ := item["Name"].(string)
-		year := ""
-		if y, ok := numericInt(item["ProductionYear"]); ok {
-			year = strconv.Itoa(y)
-		}
-		return "name:" + strings.ToLower(name) + ":" + year
-	}
-	// Priority 3: Episode by SeriesName + Season:Episode
-	if itemType == "Episode" {
-		seriesName, _ := item["SeriesName"].(string)
-		parentIdx, okP := numericInt(item["ParentIndexNumber"])
-		idx, okE := numericInt(item["IndexNumber"])
-		if seriesName != "" && okP && okE {
-			return "ep:" + strings.ToLower(seriesName) + ":S" + strconv.Itoa(parentIdx) + "E" + strconv.Itoa(idx)
-		}
-	}
-	return ""
+// dedupFacts carries identity evidence collected for one media item. Provider
+// identifiers are namespaced by provider, and their lookup keys also include the
+// media type so a Movie id cannot collide with a Series/Episode id.
+type dedupFacts struct {
+	typ               string
+	providers         map[string]string
+	name              string // lower-cased and trimmed
+	year              string // empty when the upstream did not send one
+	episodeSignatures []episodeDedupSignature
 }
 
-// dedupFacts carries the attributes a Movie/Series match is allowed on. Servers
-// disagree about metadata coverage: the same title comes back from one upstream
-// with a Tmdb id and from another without one, or one side has a year and the
-// other does not. Strict key equality (getItemKey) misses those pairs — a copy
-// keyed "tmdb:535167" can never collide with its own "name:流浪地球:2019" twin —
-// so the merger matches on facts instead and only refuses clearly different items.
-type dedupFacts struct {
-	tmdb string
-	name string // lower-cased
-	year string // "" when the upstream did not send one
-	typ  string // "Movie" or "Series"
+type episodeDedupSignature struct {
+	season       int
+	episode      int
+	seriesGroups map[string]struct{}
 }
 
 func dedupFactsOf(item map[string]any) dedupFacts {
 	f := dedupFacts{}
 	f.typ, _ = item["Type"].(string)
 	f.name, _ = item["Name"].(string)
-	f.name = strings.ToLower(f.name)
-	if y, ok := numericInt(item["ProductionYear"]); ok {
+	f.name = strings.ToLower(strings.TrimSpace(f.name))
+	if y, ok := numericInt(item["ProductionYear"]); ok && y > 0 {
 		f.year = strconv.Itoa(y)
 	}
 	if providerIDs, ok := item["ProviderIds"].(map[string]any); ok {
-		f.tmdb, _ = providerIDs["Tmdb"].(string)
+		f.providers = make(map[string]string, len(providerIDs))
+		for provider, rawID := range providerIDs {
+			id, ok := rawID.(string)
+			provider = strings.ToLower(strings.TrimSpace(provider))
+			id = strings.TrimSpace(id)
+			if ok && provider != "" && id != "" {
+				f.providers[provider] = id
+			}
+		}
 	}
 	return f
 }
 
-// movieSeriesMatch reports whether candidate and existing plausibly describe the
-// same title. Distinct non-empty Tmdb ids always mean different titles; otherwise
-// the name must agree and the years must not contradict (a missing year on either
-// side keeps the match possible — that asymmetry is exactly what broke merging).
-func movieSeriesMatch(a, b dedupFacts) bool {
-	if a.tmdb != "" && b.tmdb != "" && a.tmdb != b.tmdb {
-		return false
-	}
-	if a.name == "" || a.name != b.name {
-		return false
-	}
+func providerBucketKey(facts dedupFacts, provider, providerID string) string {
+	return strings.ToLower(strings.TrimSpace(facts.typ)) + "\x00" + provider + "\x00" + providerID
+}
+
+// providerIdentityMatch returns whether the records share a strong provider ID
+// and whether their strong evidence conflicts. If both sides have provider IDs
+// but no same-provider match, they are not allowed to fall through to title/year
+// heuristics (including same-number IDs from different provider namespaces).
+func providerIdentityMatch(a, b dedupFacts) (matched, conflict bool) {
 	if a.typ != b.typ {
+		return false, true
+	}
+	if len(a.providers) == 0 || len(b.providers) == 0 {
+		return false, false
+	}
+	matched = false
+	for provider, aID := range a.providers {
+		if bID, ok := b.providers[provider]; ok {
+			if aID != bID {
+				return false, true
+			}
+			matched = true
+		}
+	}
+	if matched {
+		return true, false
+	}
+	return false, true
+}
+
+func movieSeriesMatch(a, b dedupFacts) bool {
+	if a.typ != b.typ || (a.typ != "Movie" && a.typ != "Series") {
 		return false
 	}
-	return a.year == "" || b.year == "" || a.year == b.year
+	if matched, conflict := providerIdentityMatch(a, b); matched {
+		return true
+	} else if conflict {
+		return false
+	}
+	return a.name != "" && a.name == b.name && a.year != "" && a.year == b.year
+}
+
+func episodeSeriesSignature(item map[string]any, serverID string, store *IDStore) (episodeDedupSignature, bool) {
+	seriesID, _ := item["SeriesId"].(string)
+	seriesID = strings.TrimSpace(seriesID)
+	season, hasSeason := numericInt(item["ParentIndexNumber"])
+	episode, hasEpisode := numericInt(item["IndexNumber"])
+	if store == nil || serverID == "" || seriesID == "" || !hasSeason || !hasEpisode || season < 0 || episode < 0 {
+		return episodeDedupSignature{}, false
+	}
+	seriesVirtualID := store.GetOrCreateVirtualID(seriesID, serverID)
+	aliases := store.AliasVirtualIDs(seriesVirtualID)
+	groups := make(map[string]struct{}, len(aliases)+1)
+	groups[seriesVirtualID] = struct{}{}
+	for _, alias := range aliases {
+		groups[alias] = struct{}{}
+	}
+	return episodeDedupSignature{season: season, episode: episode, seriesGroups: groups}, true
+}
+
+func episodeSignaturesMatch(a, b []episodeDedupSignature) bool {
+	for _, left := range a {
+		for _, right := range b {
+			if left.season != right.season || left.episode != right.episode {
+				continue
+			}
+			for group := range left.seriesGroups {
+				if _, ok := right.seriesGroups[group]; ok {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func episodeMatch(a, b dedupFacts) bool {
+	if a.typ != "Episode" || b.typ != "Episode" {
+		return false
+	}
+	if matched, conflict := providerIdentityMatch(a, b); matched {
+		return true
+	} else if conflict {
+		return false
+	}
+	return episodeSignaturesMatch(a.episodeSignatures, b.episodeSignatures)
+}
+
+type dedupSeenEntry struct {
+	virtualID   string
+	mergedIndex int
+	serverID    string
+	originalID  string
+	facts       dedupFacts
+}
+
+func episodeSignatureBucketKey(group string, signature episodeDedupSignature) string {
+	return group + "\x00" + strconv.Itoa(signature.season) + "\x00" + strconv.Itoa(signature.episode)
+}
+
+func appendSeenEntry(entries []*dedupSeenEntry, candidate *dedupSeenEntry) []*dedupSeenEntry {
+	for _, entry := range entries {
+		if entry == candidate {
+			return entries
+		}
+	}
+	return append(entries, candidate)
+}
+
+func mergeDedupFacts(dst *dedupFacts, src dedupFacts) {
+	if dst.providers == nil && len(src.providers) != 0 {
+		dst.providers = map[string]string{}
+	}
+	for provider, providerID := range src.providers {
+		if _, exists := dst.providers[provider]; !exists {
+			dst.providers[provider] = providerID
+		}
+	}
+	if dst.name == "" {
+		dst.name = src.name
+	}
+	if dst.year == "" {
+		dst.year = src.year
+	}
+	dst.episodeSignatures = append(dst.episodeSignatures, src.episodeSignatures...)
 }
 
 // containsChinese checks if a string contains CJK Unified Ideographs (U+4E00–U+9FA5).
@@ -772,29 +863,34 @@ func (a *App) mergedItemsPayload(results []upstreamItemsResult, clientUserID str
 	}
 }
 
-// mergeRoundRobinItems interleaves items from every server in turn, deduplicating
-// Movies/Series by fact-compatible match (tmdb id when both sides carry one, name
-// with non-contradicting year otherwise) and Episodes by series+season+episode:
-// the first copy keeps the virtual id and later copies are registered as
-// additional instances of it, replacing the display item only when their metadata
-// is better.
+// mergeRoundRobinItems interleaves results while deduplicating only on
+// type-scoped strong provider IDs, strict name+year fallback, or a trusted
+// episode-series identity plus season/episode coordinates.
 func (a *App) mergeRoundRobinItems(results []upstreamItemsResult, clientUserID string) []map[string]any {
 	cfg := a.ConfigStore.Snapshot()
 	merged := make([]map[string]any, 0)
-	type seenEntry struct {
-		virtualID   string
-		mergedIndex int // position in merged slice
-		serverID    string
-		originalID  string // this entry's own original id on serverID
-		facts       dedupFacts
+	seenProviders := map[string][]*dedupSeenEntry{}
+	seenName := map[string][]*dedupSeenEntry{}
+	seenEpisode := map[string][]*dedupSeenEntry{}
+	var entries []*dedupSeenEntry
+
+	addEntryIndexes := func(entry *dedupSeenEntry) {
+		for provider, providerID := range entry.facts.providers {
+			key := providerBucketKey(entry.facts, provider, providerID)
+			seenProviders[key] = appendSeenEntry(seenProviders[key], entry)
+		}
+		if (entry.facts.typ == "Movie" || entry.facts.typ == "Series") && entry.facts.name != "" {
+			seenName[entry.facts.name] = appendSeenEntry(seenName[entry.facts.name], entry)
+		}
+		if entry.facts.typ == "Episode" {
+			for _, signature := range entry.facts.episodeSignatures {
+				for group := range signature.seriesGroups {
+					key := episodeSignatureBucketKey(group, signature)
+					seenEpisode[key] = appendSeenEntry(seenEpisode[key], entry)
+				}
+			}
+		}
 	}
-	// Buckets for O(1) lookup: by tmdb id and by lower-cased name. Name buckets
-	// hold every candidate with that name; year/type compatibility is checked per
-	// entry because a bare name is not unique across a whole library.
-	seenTmdb := map[string]*seenEntry{}
-	seenName := map[string][]*seenEntry{}
-	seenEpisode := map[string]*seenEntry{}
-	var entries []*seenEntry
 
 	maxLen := 0
 	for _, result := range results {
@@ -816,27 +912,53 @@ func (a *App) mergeRoundRobinItems(results []upstreamItemsResult, clientUserID s
 				continue
 			}
 
-			itemType, _ := item["Type"].(string)
-			var entry *seenEntry
-			var episodeKey string
 			facts := dedupFactsOf(item)
-			switch itemType {
-			case "Movie", "Series":
-				if facts.tmdb != "" {
-					entry = seenTmdb[tmdbBucketKey(facts)]
+			if facts.typ == "Episode" {
+				if signature, ok := episodeSeriesSignature(item, result.ServerID, a.IDStore); ok {
+					facts.episodeSignatures = append(facts.episodeSignatures, signature)
 				}
-				if entry == nil {
-					for _, e := range seenName[facts.name] {
-						if movieSeriesMatch(facts, e.facts) {
-							entry = e
-							break
-						}
+			}
+
+			var candidates []*dedupSeenEntry
+			candidateSet := map[*dedupSeenEntry]struct{}{}
+			addCandidates := func(bucket []*dedupSeenEntry) {
+				for _, candidate := range bucket {
+					if _, exists := candidateSet[candidate]; exists {
+						continue
+					}
+					candidateSet[candidate] = struct{}{}
+					candidates = append(candidates, candidate)
+				}
+			}
+			switch facts.typ {
+			case "Movie", "Series":
+				for provider, providerID := range facts.providers {
+					addCandidates(seenProviders[providerBucketKey(facts, provider, providerID)])
+				}
+				addCandidates(seenName[facts.name])
+			case "Episode":
+				for provider, providerID := range facts.providers {
+					addCandidates(seenProviders[providerBucketKey(facts, provider, providerID)])
+				}
+				for _, signature := range facts.episodeSignatures {
+					for group := range signature.seriesGroups {
+						addCandidates(seenEpisode[episodeSignatureBucketKey(group, signature)])
 					}
 				}
-			case "Episode":
-				episodeKey = getItemKey(item)
-				if episodeKey != "" {
-					entry = seenEpisode[episodeKey]
+			}
+
+			var entry *dedupSeenEntry
+			for _, candidate := range candidates {
+				matches := false
+				switch facts.typ {
+				case "Movie", "Series":
+					matches = movieSeriesMatch(facts, candidate.facts)
+				case "Episode":
+					matches = episodeMatch(facts, candidate.facts)
+				}
+				if matches {
+					entry = candidate
+					break
 				}
 			}
 
@@ -855,8 +977,6 @@ func (a *App) mergeRoundRobinItems(results []upstreamItemsResult, clientUserID s
 					merged[entry.mergedIndex] = item
 					entry.serverID = result.ServerID
 					entry.originalID = originalID
-					// The new base lost a poster the old base had: keep the new
-					// (better) metadata but carry the poster over (plan §6.4.1).
 					if !candidateHasImage && baseHasImage {
 						if tag, ok := primaryImageTag(base); ok {
 							copyPrimaryImageFields(item, base)
@@ -864,46 +984,23 @@ func (a *App) mergeRoundRobinItems(results []upstreamItemsResult, clientUserID s
 						}
 					}
 				} else if !baseHasImage && candidateHasImage {
-					// Keep the richer-metadata base; fill only its missing Primary
-					// image from this copy without switching any other field.
 					if tag, ok := primaryImageTag(item); ok {
 						copyPrimaryImageFields(base, item)
 						a.IDStore.SetImageSource(entry.virtualID, "Primary", tag, result.ServerID, originalID)
 					}
 				}
-				// Identity facts accumulate regardless of which copy is displayed
-				// (plan §6.3): a known TMDB/year from any copy joins the group, so a
-				// later conflicting id cannot be bridged through the group's blank
-				// slot, and a poster-only fill never discards the group facts.
-				if facts.tmdb != "" {
-					if entry.facts.tmdb == "" {
-						entry.facts.tmdb = facts.tmdb
-					}
-					if entry.facts.tmdb == facts.tmdb {
-						seenTmdb[tmdbBucketKey(entry.facts)] = entry
-					}
-				}
-				if entry.facts.year == "" && facts.year != "" {
-					entry.facts.year = facts.year
-				}
+				// Retain every newly verified provider/signature fact so a later
+				// incomplete copy cannot bridge two conflicting identity groups.
+				mergeDedupFacts(&entry.facts, facts)
+				addEntryIndexes(entry)
 				continue
 			}
 
 			// First occurrence: keep the virtual ID, rewrite everything else.
 			virtualID := a.IDStore.GetOrCreateVirtualID(originalID, result.ServerID)
-			entry = &seenEntry{virtualID: virtualID, mergedIndex: len(merged), serverID: result.ServerID, originalID: originalID, facts: facts}
+			entry = &dedupSeenEntry{virtualID: virtualID, mergedIndex: len(merged), serverID: result.ServerID, originalID: originalID, facts: facts}
 			entries = append(entries, entry)
-			switch itemType {
-			case "Movie", "Series":
-				if facts.tmdb != "" {
-					seenTmdb[tmdbBucketKey(facts)] = entry
-				}
-				seenName[facts.name] = append(seenName[facts.name], entry)
-			case "Episode":
-				if episodeKey != "" {
-					seenEpisode[episodeKey] = entry
-				}
-			}
+			addEntryIndexes(entry)
 			delete(item, "Id")
 			rewriteResponseIDs(item, result.ServerID, a.IDStore, cfg.Server.ID, clientUserID)
 			item["Id"] = virtualID
@@ -911,14 +1008,8 @@ func (a *App) mergeRoundRobinItems(results []upstreamItemsResult, clientUserID s
 		}
 	}
 
-	// Record each group's display-winning instance so the image handler can route
-	// the group's non-Primary image types (Backdrop/Logo/Thumb) to the server that
-	// actually owns those tags, instead of the IDStore primary that may not
-	// (plan §6.4.2). Every non-Primary tag the displayed DTO advertises is also
-	// recorded per-tag: a later merge can change the display winner while clients
-	// still hold this DTO's tags, and those tags must keep routing to the instance
-	// that owns the bytes. Primary is skipped here because the poster carryover
-	// above already records its exact owner.
+	// Record each group's display-winning instance so image routing only uses the
+	// upstream that actually owns the advertised image tags.
 	for _, entry := range entries {
 		a.IDStore.SetDisplaySource(entry.virtualID, entry.serverID, entry.originalID)
 		if entry.mergedIndex >= 0 && entry.mergedIndex < len(merged) {
@@ -927,12 +1018,6 @@ func (a *App) mergeRoundRobinItems(results []upstreamItemsResult, clientUserID s
 	}
 
 	return merged
-}
-
-// tmdbBucketKey scopes a TMDB id to its media type so Movie 123 and Series 123
-// never share a dedup bucket (plan §6.3). A missing type never reaches this path.
-func tmdbBucketKey(facts dedupFacts) string {
-	return "tmdb:" + facts.typ + ":" + facts.tmdb
 }
 
 // primaryImageTag returns the Primary poster hash when the item carries a usable

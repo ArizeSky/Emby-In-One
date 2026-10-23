@@ -27,6 +27,9 @@ func TestRemoveByServerIDCascadeClean(t *testing.T) {
 	// 3. virtC is purely on srv-C
 	virtC := store.GetOrCreateVirtualID("movie-3", "srv-C")
 
+	// 4. A group with no surviving copy is removed.
+	virtOnlyA := store.GetOrCreateVirtualID("movie-only-a", "srv-A")
+
 	// Verify all exist before deletion
 	if r := store.ResolveVirtualID(virtA); r == nil || len(r.OtherInstances) != 1 {
 		t.Fatalf("virtA setup incorrect: %+v", r)
@@ -40,16 +43,20 @@ func TestRemoveByServerIDCascadeClean(t *testing.T) {
 		t.Fatalf("RemoveByServerID(srv-A): %v", err)
 	}
 
-	// Verify:
-	// a. virtA must be completely gone (primary was on srv-A, and the child instance on srv-B should also be cleaned up!)
-	if r := store.ResolveVirtualID(virtA); r != nil {
-		t.Errorf("virtA should be removed completely, but got: %+v", r)
+	// a. virtA must survive by promoting its srv-B copy while retaining the old
+	// virtual ID; the deleted srv-A original must no longer resolve.
+	rA := store.ResolveVirtualID(virtA)
+	if rA == nil || rA.ServerID != "srv-B" || rA.OriginalID != "movie-1-b" || len(rA.OtherInstances) != 0 {
+		t.Fatalf("virtA should be promoted to its surviving srv-B copy: %+v", rA)
 	}
 	if r := store.ResolveByOriginalID("movie-1"); r != nil {
 		t.Errorf("movie-1 on srv-A should not be resolvable, but got: %+v", r)
 	}
-	if r := store.ResolveByOriginalID("movie-1-b"); r != nil {
-		t.Errorf("movie-1-b (orphan additional instance) should not be resolvable, but got: %+v", r)
+	if r := store.ResolveByOriginalID("movie-1-b"); r == nil || r.ServerID != "srv-B" || r.OriginalID != "movie-1-b" {
+		t.Errorf("promoted movie-1-b should resolve to srv-B, got: %+v", r)
+	}
+	if r := store.ResolveVirtualID(virtOnlyA); r != nil {
+		t.Errorf("group with no surviving instance should be removed: %+v", r)
 	}
 
 	// b. virtB must still exist on srv-B, but its additional instance from srv-A must be gone!
@@ -71,11 +78,9 @@ func TestRemoveByServerIDCascadeClean(t *testing.T) {
 	}
 }
 
-// TestDeleteServerDataCascadesSkeletonRows is the regression for the orphaned
-// skeleton rows: MarkPlayed/SetFavorite insert a row with server_id = ” when the
-// item has no prior record, and a plain server_id delete left those rows behind.
-// DeleteServerData now also cascades them through id_mappings, so it must be
-// called before RemoveByServerID.
+// TestDeleteServerDataCascadesSkeletonRows keeps the standalone cleanup helper's
+// skeleton-row behavior covered. The admin deletion path now leaves watch-state
+// handoff to RemoveByServerID so surviving groups retain their history.
 func TestDeleteServerDataCascadesSkeletonRows(t *testing.T) {
 	tempDir := t.TempDir()
 	store, err := NewIDStore(tempDir, nil)
