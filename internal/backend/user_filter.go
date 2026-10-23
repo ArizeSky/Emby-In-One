@@ -245,11 +245,28 @@ func (a *App) localUserStateRows(proxyUserID string, f userStateFilter) map[stri
 		return nil
 	}
 	matched := make(map[string]WatchProgress, len(rows))
+	seen := map[string]bool{}
 	for _, row := range rows {
-		if !satisfiesUserState(row, f) {
+		if seen[row.VirtualItemID] {
 			continue
 		}
-		matched[row.VirtualItemID] = row
+		merged, err := a.localWatchState(proxyUserID, row.VirtualItemID)
+		if err != nil {
+			if a.Logger != nil {
+				a.Logger.Warnf("alias user-state filter read failed: %s", redactURLInError(err))
+			}
+			return nil
+		}
+		aliases := []string{row.VirtualItemID}
+		if a.IDStore != nil {
+			aliases = a.IDStore.AliasVirtualIDs(row.VirtualItemID)
+		}
+		for _, id := range aliases {
+			seen[id] = true
+			if merged != nil && satisfiesUserState(*merged, f) {
+				matched[id] = *merged
+			}
+		}
 	}
 	return matched
 }

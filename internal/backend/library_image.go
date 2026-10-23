@@ -377,6 +377,7 @@ func (a *App) handleSearchHints(w http.ResponseWriter, r *http.Request) {
 		"TotalRecordCount": len(merged),
 	})
 }
+
 // imageSourceUsable reports whether a recorded display/image source may still
 // serve bytes for this request: the client must exist and be online, the server
 // must currently participate in aggregation (a node paused by an administrator

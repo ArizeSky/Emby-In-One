@@ -60,9 +60,9 @@ func classifyItemRating(item map[string]any) (int, ratingPresence) {
 type parentalItemDecision int
 
 const (
-	parentalAllow parentalItemDecision = iota
-	parentalDeny                            // confirmed above the ceiling / blocked unrated
-	parentalUnconfirmed                     // lookup failed or budget exhausted: fail closed
+	parentalAllow       parentalItemDecision = iota
+	parentalDeny                             // confirmed above the ceiling / blocked unrated
+	parentalUnconfirmed                      // lookup failed or budget exhausted: fail closed
 )
 
 // decideRating applies the policy to a confirmed (score, presence) pair.
