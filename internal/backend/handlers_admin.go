@@ -1,6 +1,8 @@
 package backend
 
 import (
+	"context"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -563,27 +565,21 @@ func (a *App) handleAdminProxyTest(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "Invalid target URL: " + err.Error()})
 		return
 	}
-	// SSRF protection: this endpoint probes egress, so it only accepts public targets.
-	// This pre-check produces a friendly message; it is advisory only. The dialer
-	// below is the enforcement point: it resolves once, rejects any blocked resolved
-	// IP, and connects only to validated addresses, so a DNS answer that changes
-	// between this check and the connect cannot smuggle a blocked target through.
+	// The entire probe, including DNS and redirects, shares one deadline.
+	probeCtx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
 	parsedTarget, _ := url.Parse(body.TargetURL)
-	if parsedTarget != nil {
-		if reason, blocked := blockedTargetReason(r.Context(), parsedTarget.Hostname()); blocked {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": probeTargetBlockedMessage(parsedTarget.Hostname(), reason)})
-			return
-		}
+	if _, err := probeTargetIPs(probeCtx, parsedTarget, net.DefaultResolver.LookupIPAddr); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
 	}
 	transport, ok := buildProxyTransport(proxyURL, a.Logger, "proxy-test")
 	if !ok {
 		writeJSON(w, http.StatusOK, map[string]any{"success": false, "latency": int64(0), "error": "Failed to create proxy transport (invalid URL or scheme)"})
 		return
 	}
-	// Wrap transport with the SSRF-safe dialer that re-checks resolved IPs at connect
-	// time against a single DNS answer, preventing DNS rebinding attacks where a
-	// hostname resolves to a public IP during validation but a private IP at connect.
-	safeTransport := wrapTransportWithSSRFCheck(transport)
+	// Validate and pin the actual target on every hop, independently of the proxy.
+	safeTransport := &proxyProbeTransport{base: transport.(*http.Transport), lookup: net.DefaultResolver.LookupIPAddr}
 	client := &http.Client{Transport: safeTransport, Timeout: 10 * time.Second}
 	start := time.Now()
 	// This is a probe-only exit: it talks to an administrator-supplied URL and
@@ -591,7 +587,8 @@ func (a *App) handleAdminProxyTest(w http.ResponseWriter, r *http.Request) {
 	// the shared outbound preparation layer. If it is ever changed to forward a
 	// real business request, it must be wired into that layer instead of relying
 	// on this comment.
-	resp, err := client.Get(body.TargetURL)
+	request, _ := http.NewRequestWithContext(probeCtx, http.MethodGet, body.TargetURL, nil)
+	resp, err := client.Do(request)
 	latency := time.Since(start).Milliseconds()
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"success": false, "latency": latency, "error": err.Error()})
