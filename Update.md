@@ -87,6 +87,20 @@
 - **播放与资源路径**：支持小写 `/videos/`、`/audio/` 播放路径，以及字幕、附件路径中的 `mediasource_<虚拟影片ID>` 写法，按实际来源转换。
 - **字母索引**：新增 `/Items/Prefixes`，供客户端显示 A–Z 跳转索引；启用内容分级限制的用户不展示该索引。
 
+### 社区 PR 与贡献者致谢
+
+本次 rc3 整合了以下社区 PR 的贡献，并在此基础上完善与现有架构的衔接及验证：
+
+| PR | 贡献内容 | 贡献者 |
+| --- | --- | --- |
+| [#18](https://github.com/ArizeSky/Emby-In-One/pull/18) | 按上游分页扫描、播放 302 直通、跨服资料匹配与图片处理，以及 GHCR 镜像构建工作流 | [@ssabv](https://github.com/ssabv) |
+| [#20](https://github.com/ArizeSky/Emby-In-One/pull/20) | URL 编码表单登录，改善 Emby Android TV 客户端兼容性 | [@CucumberOnMoon](https://github.com/CucumberOnMoon) |
+| [#22](https://github.com/ArizeSky/Emby-In-One/pull/22) | ATV 风格 `mediasource_<itemId>` 字幕与附件路径兼容 | [@CucumberOnMoon](https://github.com/CucumberOnMoon) |
+| [#23](https://github.com/ArizeSky/Emby-In-One/pull/23) | 按用户设置内容分级上限及代理侧分级限制 | [@CucumberOnMoon](https://github.com/CucumberOnMoon) |
+| [#24](https://github.com/ArizeSky/Emby-In-One/pull/24) | 查询参数 Token、小写媒体路由、分类与 GenreIds 翻译、A–Z 字母索引 | [@CucumberOnMoon](https://github.com/CucumberOnMoon) |
+
+感谢 **@ssabv** 和 **@CucumberOnMoon** 投入时间提交代码、反馈问题并提出功能建议，让项目的上游适配、客户端兼容与用户访问管理更加完善。也感谢所有参与测试和提出建议的朋友。
+
 ## V1.4.4-rc2
 
 发布日期：2026-09-30
