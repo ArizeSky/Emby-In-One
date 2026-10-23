@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 )
@@ -330,6 +331,44 @@ func (s *IDStore) ResolveByOriginalID(originalID string) *ResolvedID {
 		}
 	}
 	return nil
+}
+
+// AliasVirtualIDs finds previously published IDs connected by a verified
+// (original ID, server ID) pair. Bare original-ID collisions are not aliases.
+// Existing primary and additional-instance rows make this restart-compatible.
+func (s *IDStore) AliasVirtualIDs(virtualID string) []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	seen := map[string]bool{virtualID: true}
+	queue := []string{virtualID}
+	for i := 0; i < len(queue); i++ {
+		entry := s.virtualToOriginal[queue[i]]
+		if entry == nil {
+			continue
+		}
+		pairs := append([]AdditionalInstance{{OriginalID: entry.OriginalID, ServerID: entry.ServerID}}, entry.OtherInstances...)
+		for _, pair := range pairs {
+			for _, candidate := range s.originalIDToVirtual[pair.OriginalID] {
+				if seen[candidate] {
+					continue
+				}
+				other := s.virtualToOriginal[candidate]
+				if other == nil {
+					continue
+				}
+				shared := other.OriginalID == pair.OriginalID && other.ServerID == pair.ServerID
+				for _, instance := range other.OtherInstances {
+					shared = shared || instance == pair
+				}
+				if shared {
+					seen[candidate] = true
+					queue = append(queue, candidate)
+				}
+			}
+		}
+	}
+	sort.Strings(queue[1:])
+	return queue
 }
 
 func containsString(values []string, candidate string) bool {

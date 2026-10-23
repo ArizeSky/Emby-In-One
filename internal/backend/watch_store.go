@@ -159,6 +159,25 @@ func (ws *WatchStore) SetFavorite(proxyUserID, virtualItemID string, favorite bo
 	`, proxyUserID, virtualItemID, boolToInt(favorite), time.Now().UnixMilli())
 }
 
+// SetFavoriteAliases updates all verified public IDs in one transaction. In
+// particular, removing a favorite must clear the old alias that contributed it.
+func (ws *WatchStore) SetFavoriteAliases(userID string, aliases []string, favorite bool) error {
+	ws.mu.Lock()
+	defer ws.mu.Unlock()
+	return ws.db.withWriteTx(func() error {
+		for _, id := range aliases {
+			if err := ws.db.execParams(`
+    INSERT INTO user_watch_progress (proxy_user_id, virtual_item_id, server_id, is_favorite, last_played)
+    VALUES (?, ?, '', ?, ?)
+    ON CONFLICT(proxy_user_id, virtual_item_id) DO UPDATE SET is_favorite = excluded.is_favorite
+   `, userID, id, boolToInt(favorite), time.Now().UnixMilli()); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 // GetResumeItems returns items with position > 0 and not fully played, ordered by
 // last_played desc. It is the offset-0 view of GetResumeItemsPage.
 func (ws *WatchStore) GetResumeItems(proxyUserID string, limit int) ([]WatchProgress, error) {

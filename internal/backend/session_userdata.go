@@ -643,7 +643,7 @@ func (a *App) handleFavoriteItemAdd(w http.ResponseWriter, r *http.Request) {
 	// Dual-write favorite
 	if a.WatchStore != nil {
 		if reqCtx := requestContextFrom(r.Context()); reqCtx != nil && reqCtx.ProxyUser != nil && reqCtx.ProxyUser.Role != "admin" {
-			if err := a.WatchStore.SetFavorite(reqCtx.ProxyUser.UserID, virtualItemID, true); err != nil && a.Logger != nil {
+			if err := a.WatchStore.SetFavoriteAliases(reqCtx.ProxyUser.UserID, a.IDStore.AliasVirtualIDs(virtualItemID), true); err != nil && a.Logger != nil {
 				a.Logger.Warnf("WatchStore SetFavorite(true) error: %s", redactURLInError(err))
 			}
 		}
@@ -684,7 +684,7 @@ func (a *App) handleFavoriteItemRemove(w http.ResponseWriter, r *http.Request) {
 	// Dual-write favorite removal
 	if a.WatchStore != nil {
 		if reqCtx := requestContextFrom(r.Context()); reqCtx != nil && reqCtx.ProxyUser != nil && reqCtx.ProxyUser.Role != "admin" {
-			if err := a.WatchStore.SetFavorite(reqCtx.ProxyUser.UserID, virtualItemID, false); err != nil && a.Logger != nil {
+			if err := a.WatchStore.SetFavoriteAliases(reqCtx.ProxyUser.UserID, a.IDStore.AliasVirtualIDs(virtualItemID), false); err != nil && a.Logger != nil {
 				a.Logger.Warnf("WatchStore SetFavorite(false) error: %s", redactURLInError(err))
 			}
 		}
@@ -721,6 +721,42 @@ func (a *App) overlayLocalUserDataItems(r *http.Request, items []map[string]any)
 	}
 }
 
+// localWatchState overlays only this user's records across verified aliases.
+// Favorite/played flags are unions; a favorite-only row must not displace the
+// most recently played positive position. Reads never migrate or delete rows.
+func (a *App) localWatchState(userID, virtualItemID string) (*WatchProgress, error) {
+	aliases := []string{virtualItemID}
+	if a.IDStore != nil {
+		aliases = a.IDStore.AliasVirtualIDs(virtualItemID)
+	}
+	var merged *WatchProgress
+	var positionTime int64
+	for _, alias := range aliases {
+		p, err := a.WatchStore.GetProgress(userID, alias)
+		if err != nil {
+			return nil, err
+		}
+		if p == nil {
+			continue
+		}
+		if merged == nil {
+			copy := *p
+			merged = &copy
+			merged.PositionTicks = 0
+		}
+		merged.IsFavorite = merged.IsFavorite || p.IsFavorite
+		merged.Played = merged.Played || p.Played
+		if p.LastPlayed > merged.LastPlayed {
+			merged.LastPlayed = p.LastPlayed
+		}
+		if p.PositionTicks > 0 && (merged.PositionTicks == 0 || p.LastPlayed > positionTime) {
+			merged.PositionTicks, merged.RuntimeTicks = p.PositionTicks, p.RuntimeTicks
+			positionTime = p.LastPlayed
+		}
+	}
+	return merged, nil
+}
+
 func (a *App) overlayLocalUserData(r *http.Request, virtualItemID string, payload any) {
 	if a.WatchStore == nil {
 		return
@@ -729,7 +765,7 @@ func (a *App) overlayLocalUserData(r *http.Request, virtualItemID string, payloa
 	if reqCtx == nil || reqCtx.ProxyUser == nil || reqCtx.ProxyUser.Role == "admin" {
 		return
 	}
-	progress, progressErr := a.WatchStore.GetProgress(reqCtx.ProxyUser.UserID, virtualItemID)
+	progress, progressErr := a.localWatchState(reqCtx.ProxyUser.UserID, virtualItemID)
 	if progressErr != nil {
 		// A failed read must not be mistaken for "no local record": clearing the
 		// upstream userdata here would zero out the user's progress display on a
