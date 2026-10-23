@@ -2,6 +2,7 @@ package backend
 
 import (
 	"context"
+	"sort"
 	"sync"
 	"time"
 )
@@ -9,7 +10,7 @@ import (
 // aggregationConfig controls the behavior of parallel upstream aggregation.
 type aggregationConfig struct {
 	gracePeriod   time.Duration // 0 = wait for all
-	globalTimeout time.Duration // hard deadline for background goroutines (prevents zombie goroutines)
+	globalTimeout time.Duration // collector deadline; cooperative tasks also observe cancellation
 }
 
 // indexedResult pairs a server index with its upstream fetch result.
@@ -68,7 +69,7 @@ func (a *App) aggregateUpstreamsWithReport(parentCtx context.Context, cfg aggreg
 
 	// Collect results with optional grace period
 	var graceTimer <-chan time.Time
-	collected := make([]upstreamItemsResult, 0, len(tasks))
+	collected := make([]indexedResult, 0, len(tasks))
 	received := 0
 
 	for received < len(tasks) {
@@ -77,7 +78,7 @@ func (a *App) aggregateUpstreamsWithReport(parentCtx context.Context, cfg aggreg
 			received++
 			report.Received++
 			if res.result.Err == nil {
-				collected = append(collected, res.result)
+				collected = append(collected, res)
 				if res.result.Truncated {
 					report.Truncated = true
 					report.Incomplete = true
@@ -100,18 +101,33 @@ func (a *App) aggregateUpstreamsWithReport(parentCtx context.Context, cfg aggreg
 			report.TimedOut = len(tasks) - received
 			report.Incomplete = true
 			a.drainBackgroundResults(bgCtx, bgCancel, resultCh, len(tasks)-received)
-			return collected, report
+			return orderedAggregationResults(collected), report
+		case <-bgCtx.Done():
+			report.TimedOut = len(tasks) - received
+			report.Incomplete = true
+			a.drainBackgroundResults(bgCtx, bgCancel, resultCh, len(tasks)-received)
+			return orderedAggregationResults(collected), report
 		case <-parentCtx.Done():
 			report.TimedOut = len(tasks) - received
 			report.Incomplete = true
 			a.drainBackgroundResults(bgCtx, bgCancel, resultCh, len(tasks)-received)
-			return collected, report
+			return orderedAggregationResults(collected), report
 		}
 	}
 
 	// All tasks completed within grace period
 	bgCancel()
-	return collected, report
+	return orderedAggregationResults(collected), report
+}
+
+// orderedAggregationResults makes identity selection independent of arrival order.
+func orderedAggregationResults(collected []indexedResult) []upstreamItemsResult {
+	sort.SliceStable(collected, func(i, j int) bool { return collected[i].index < collected[j].index })
+	out := make([]upstreamItemsResult, len(collected))
+	for i, result := range collected {
+		out[i] = result.result
+	}
+	return out
 }
 
 // drainBackgroundResults continues collecting late results in a background goroutine.

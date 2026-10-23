@@ -92,7 +92,7 @@ func (a *App) handleItemsCollection(w http.ResponseWriter, r *http.Request) {
 				if err != nil {
 					return upstreamItemsResult{Err: err}
 				}
-				return upstreamItemsResult{ServerID: c.ID, Items: asItems(payload)}
+				return upstreamItemsResult{ServerID: c.ID, Items: asItems(payload), Complete: true}
 			},
 		}
 	}
