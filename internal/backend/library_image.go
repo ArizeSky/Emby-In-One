@@ -97,9 +97,12 @@ func (a *App) handleLibraryMediaFolders(w http.ResponseWriter, r *http.Request) 
 
 func (a *App) handleLibraryTaxonomy(w http.ResponseWriter, r *http.Request, endpoint string) {
 	reqCtx := requestContextFrom(r.Context())
+	if hasBatchIDQuery(r.URL.Query()) && validateBatchIDQuery(r.URL.Query()) != nil {
+		invalidBatchIDResponse(w)
+		return
+	}
 	clients := a.allowedClients(reqCtx)
 	cfg := a.ConfigStore.Snapshot()
-
 	groups := fanOutClients(clients, func(c *UpstreamClient) []map[string]any {
 		query := cloneValues(r.URL.Query())
 		query.Set("UserId", c.clientUserID())
@@ -116,11 +119,11 @@ func (a *App) handleLibraryTaxonomy(w http.ResponseWriter, r *http.Request, endp
 			query.Del("parentid")
 		}
 		if hasBatchIDQuery(query) {
-			translated, ok := translateBatchIDQueryForServer(query, c.ID, a.IDStore)
-			if !ok {
+			translated := translateBatchIDQueryForServer(query, c.ID, a.IDStore)
+			if translated.Err != nil || translated.Empty {
 				return nil
 			}
-			query = translated
+			query = translated.Query
 		}
 		payload, err := c.RequestJSON(r.Context(), reqCtx, a.Identity, http.MethodGet, "/"+endpoint, query, nil)
 		if err != nil {

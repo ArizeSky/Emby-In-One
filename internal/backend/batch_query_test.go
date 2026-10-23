@@ -164,9 +164,18 @@ func TestTranslateBatchIDQuery_RejectsOversized(t *testing.T) {
 		ids[i] = fmt.Sprintf("id-%d", i)
 	}
 	values.Set("Ids", strings.Join(ids, ","))
-	_, ok := translateBatchIDQueryForServer(values, "srv-0", store)
-	if ok {
-		t.Error("expected oversized batch to be rejected")
+	result := translateBatchIDQueryForServer(values, "srv-0", store)
+	if result.Err == nil || result.Complete {
+		t.Fatalf("oversized batch result = %#v, want invalid error and incomplete=false", result)
+	}
+}
+
+func TestTranslateBatchIDQuery_RejectsMalformed(t *testing.T) {
+	store, _ := NewIDStore("", nil)
+	defer store.Close()
+	result := translateBatchIDQueryForServer(url.Values{"Ids": {"one,,two"}}, "srv-0", store)
+	if result.Err == nil || result.Complete {
+		t.Fatalf("malformed batch result = %#v, want invalid error", result)
 	}
 }
 
@@ -180,8 +189,101 @@ func TestTranslateBatchIDQuery_AcceptsWithinLimit(t *testing.T) {
 		ids[i] = fmt.Sprintf("id-%d", i)
 	}
 	values.Set("Ids", strings.Join(ids, ","))
-	_, ok := translateBatchIDQueryForServer(values, "srv-0", store)
-	if !ok {
-		t.Error("expected batch within limit to be accepted")
+	result := translateBatchIDQueryForServer(values, "srv-0", store)
+	if result.Err != nil || !result.Complete || result.Empty {
+		t.Fatalf("valid batch result = %#v, want complete non-empty translation", result)
 	}
+}
+
+func TestTranslateBatchIDQuery_NoAuthorizedCopyIsCompleteEmpty(t *testing.T) {
+	store, _ := NewIDStore("", nil)
+	defer store.Close()
+	virtualID := store.GetOrCreateVirtualID("movie-a", "srv-a")
+	result := translateBatchIDQueryForServer(url.Values{"Ids": {virtualID}}, "srv-b", store)
+	if result.Err != nil || !result.Complete || !result.Empty || result.Query != nil {
+		t.Fatalf("unowned ID result = %#v, want Complete empty without error", result)
+	}
+}
+
+func TestItemsBatchNoAuthorizedCopyReturnsCompleteEmpty(t *testing.T) {
+	first, firstQueries := newCatalogOrderUpstream(t, nil)
+	defer first.Close()
+	second, secondQueries := newCatalogOrderUpstream(t, nil)
+	defer second.Close()
+	withTempAppConfig(t, dualUpstreamConfig(first.URL, second.URL), func(app *App, handler http.Handler) {
+		token := loginToken(t, handler, "secret")
+		virtualID := app.IDStore.GetOrCreateVirtualID("orphan-item", "not-configured")
+		rr := doJSONRequest(t, handler, http.MethodGet, "/Items?Ids="+virtualID, nil, token)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+		}
+		if got := itemTotal(t, rr.Body.Bytes()); got != 0 || len(itemNames(t, rr.Body.Bytes())) != 0 {
+			t.Fatalf("unowned batch returned items or nonzero total: %s", rr.Body.String())
+		}
+		if rr.Header().Get("X-EIO-Results-Incomplete") != "" {
+			t.Fatalf("complete empty result was marked incomplete: %s", rr.Header())
+		}
+		if len(firstQueries.snapshot()) != 0 || len(secondQueries.snapshot()) != 0 {
+			t.Fatal("upstream was queried for a complete server-local empty ID set")
+		}
+	})
+}
+
+func TestItemsBatchInvalidInputReturns400(t *testing.T) {
+	upstream, _ := newCatalogOrderUpstream(t, nil)
+	defer upstream.Close()
+	withTempAppConfig(t, singleUpstreamConfig(upstream.URL), func(_ *App, handler http.Handler) {
+		token := loginToken(t, handler, "secret")
+		ids := make([]string, maxBatchIDCount+1)
+		for i := range ids {
+			ids[i] = fmt.Sprintf("id-%d", i)
+		}
+		rr := doJSONRequest(t, handler, http.MethodGet, "/Items?Ids="+strings.Join(ids, ","), nil, token)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("oversized batch status=%d, want 400 body=%s", rr.Code, rr.Body.String())
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload["code"] != "InvalidBatchIDQuery" {
+			t.Fatalf("invalid batch response = %#v", payload)
+		}
+		empty := doJSONRequest(t, handler, http.MethodGet, "/Items?Ids=", nil, token)
+		if empty.Code != http.StatusBadRequest {
+			t.Fatalf("empty ID list status=%d, want 400 body=%s", empty.Code, empty.Body.String())
+		}
+	})
+}
+
+func TestItemsBatchUpstreamFailureMarksIncomplete(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/Users/AuthenticateByName" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"AccessToken": "token", "User": map[string]any{"Id": "user"}})
+			return
+		}
+		if r.Method == http.MethodGet && r.URL.Path == "/Items" {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer upstream.Close()
+	withTempAppConfig(t, singleUpstreamConfig(upstream.URL), func(_ *App, handler http.Handler) {
+		token := loginToken(t, handler, "secret")
+		rr := doJSONRequest(t, handler, http.MethodGet, "/Items?Ids=unknown-item", nil, token)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+		}
+		if rr.Header().Get("X-EIO-Results-Incomplete") != "true" {
+			t.Fatalf("upstream failure missing incomplete header: %s", rr.Header())
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload["EioIncompleteResults"] != true {
+			t.Fatalf("upstream failure body not marked incomplete: %#v", payload)
+		}
+	})
 }

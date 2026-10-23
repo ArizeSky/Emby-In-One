@@ -4,13 +4,30 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 )
 
 func (a *App) writeMergedParentalResponse(w http.ResponseWriter, r *http.Request, results []upstreamItemsResult, incomplete bool) {
 	results = a.parentalVisibleResults(r, results)
-	payload := a.mergedItemsPayload(results, a.clientFacingUserIDFor(r))
+	items := a.mergeRoundRobinItems(results, a.clientFacingUserIDFor(r))
+	if err := validateCatalogSort(r.URL.Query()); err != nil {
+		writeCatalogSortError(w, err)
+		return
+	}
+	if strings.TrimSpace(firstQueryValue(r.URL.Query(), "SortBy", "sortBy")) != "" {
+		if err := sortCatalogItems(items, r.URL.Query()); err != nil {
+			writeCatalogSortError(w, err)
+			return
+		}
+	} else if strings.Contains(strings.ToLower(r.URL.Path), "/resume") {
+		sortResumeItemsByLastPlayed(items)
+	}
+	payload := paginateItems(items, r.URL.Query())
 	if incomplete {
 		markIncompleteResults(w, payload)
+	}
+	if !a.strictSanitizedUserDataItems(w, r, asItems(payload)) {
+		return
 	}
 	a.writeParentalItemsResponse(w, r, payload)
 }

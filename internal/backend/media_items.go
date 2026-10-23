@@ -10,6 +10,8 @@ import (
 	"time"
 )
 
+var errBatchQueryNoItems = errors.New("batch query has no IDs for this upstream")
+
 // maxRatingFor returns the requesting proxy user's parental ceiling.
 // 0 means "no restriction" (also returned for admins and unknown users).
 func (a *App) maxRatingFor(r *http.Request) int {
@@ -59,15 +61,35 @@ func (a *App) parentalAllow(r *http.Request, item map[string]any) bool {
 
 func (a *App) handleItemsCollection(w http.ResponseWriter, r *http.Request) {
 	query := cloneValues(r.URL.Query())
-	// Search queries are aggregated too, so the parental filter applies.
-	// Only opaque pass-through requests fall back.
-	if !hasBatchIDQuery(query) && strings.TrimSpace(query.Get("SearchTerm")) == "" {
+	batchQuery := hasBatchIDQuery(query)
+	searchQuery := strings.TrimSpace(query.Get("SearchTerm")) != ""
+	if !batchQuery && !searchQuery {
 		a.handleFallbackProxy(w, r)
 		return
 	}
-	// The candidate set is the ID list the client sent, so a user-state filter can be
-	// answered exactly here: no scan limit and no upstream paging to undo.
-	filter, localFilter := a.localUserStateIntersect(w, r, query)
+	if batchQuery {
+		if err := validateBatchIDQuery(query); err != nil {
+			invalidBatchIDResponse(w)
+			return
+		}
+	}
+	// A batch query has a closed candidate set. SearchTerm uses the bounded catalog
+	// scanner instead, so the client page is never forwarded to each upstream.
+	var filter userStateFilter
+	var localFilter bool
+	if batchQuery {
+		filter, localFilter = a.localUserStateIntersect(w, r, query)
+	} else {
+		filter, localFilter = a.prepareLocalUserFilter(w, r, query)
+		requestMergedCandidateSet(query)
+	}
+	if !localFilter {
+		if err := validateCatalogSort(r.URL.Query()); err != nil {
+			writeCatalogSortError(w, err)
+			return
+		}
+		ensureCatalogSortFields(query)
+	}
 	reqCtx := requestContextFrom(r.Context())
 	clients := a.allowedClients(reqCtx)
 	if len(clients) == 0 {
@@ -81,65 +103,84 @@ func (a *App) handleItemsCollection(w http.ResponseWriter, r *http.Request) {
 		globalTimeout = 15 * time.Second
 	}
 
-	tasks := make([]upstreamTask, len(clients))
-	for i, client := range clients {
-		c := client
-		tasks[i] = upstreamTask{
-			index: i,
-			fn: func(bgCtx context.Context) upstreamItemsResult {
-				serverQuery, ok := translateBatchIDQueryForServer(query, c.ID, a.IDStore)
-				if !ok {
-					return upstreamItemsResult{Err: errBatchQueryNotTranslatable}
-				}
-				payload, err := c.RequestJSON(bgCtx, reqCtx, a.Identity, http.MethodGet, "/Items", serverQuery, nil)
-				if err != nil {
-					return upstreamItemsResult{Err: err}
-				}
-				return upstreamItemsResult{ServerID: c.ID, Items: asItems(payload), Complete: true}
-			},
+	var collected []upstreamItemsResult
+	var incomplete bool
+	if batchQuery {
+		// Batch IDs are the complete candidate set, but StartIndex/Limit are still
+		// applied once after merging. Do not let an upstream page this set first.
+		scanQuery := cloneValues(query)
+		scanQuery.Set("StartIndex", "0")
+		scanQuery.Set("Limit", strconv.Itoa(maxBatchIDCount))
+		tasks := make([]upstreamTask, len(clients))
+		for i, client := range clients {
+			c := client
+			tasks[i] = upstreamTask{
+				index: i,
+				fn: func(bgCtx context.Context) upstreamItemsResult {
+					translated := translateBatchIDQueryForServer(scanQuery, c.ID, a.IDStore)
+					if translated.Err != nil {
+						return upstreamItemsResult{Err: translated.Err}
+					}
+					if translated.Empty {
+						return upstreamItemsResult{ServerID: c.ID, Complete: true}
+					}
+					payload, err := c.RequestJSON(bgCtx, reqCtx, a.Identity, http.MethodGet, "/Items", translated.Query, nil)
+					if err != nil {
+						return upstreamItemsResult{Err: err}
+					}
+					return upstreamItemsResult{ServerID: c.ID, Items: asItems(payload), Complete: true}
+				},
+			}
 		}
+		var report aggregationReport
+		collected, report = a.aggregateUpstreamsWithReport(r.Context(), aggregationConfig{
+			gracePeriod:   time.Duration(cfg.Timeouts.SearchGracePeriod) * time.Millisecond,
+			globalTimeout: globalTimeout,
+		}, tasks)
+		incomplete = report.Incomplete
+	} else {
+		collected, incomplete = a.fetchItemsAcrossUpstreams(r.Context(), reqCtx, "/Items", query, nil)
 	}
-
-	collected, report := a.aggregateUpstreamsWithReport(r.Context(), aggregationConfig{
-		gracePeriod:   time.Duration(cfg.Timeouts.SearchGracePeriod) * time.Millisecond,
-		globalTimeout: globalTimeout,
-	}, tasks)
 	collected = a.parentalVisibleResults(r, collected)
 	merged := a.mergedItemsPayload(collected, a.clientFacingUserIDFor(r))
 	items := asItems(merged)
 	if !a.parentalResponseReady(w, r, merged) {
 		return
 	}
-	merged["Items"] = toAnySlice(items)
-	merged["TotalRecordCount"] = len(items)
+	incomplete = incomplete || w.Header().Get("X-EIO-Results-Incomplete") == "true"
 	if localFilter {
 		kept, recency := a.filterItemsByLocalUserState(r, items, filter)
 		localItemSort(kept, r.URL.Query(), recency)
 		if !a.strictSanitizedUserDataItems(w, r, kept) {
 			return
 		}
-		payload := map[string]any{
-			"Items":            toAnySlice(kept),
-			"TotalRecordCount": len(kept),
-			"StartIndex":       0,
-		}
-		if report.Incomplete || w.Header().Get("X-EIO-Results-Incomplete") == "true" {
+		payload := paginateItems(kept, r.URL.Query())
+		if incomplete {
 			markIncompleteResults(w, payload)
 		}
 		writeJSON(w, http.StatusOK, payload)
 		return
 	}
+	if err := sortCatalogItems(items, r.URL.Query()); err != nil {
+		writeCatalogSortError(w, err)
+		return
+	}
 	if !a.strictSanitizedUserDataItems(w, r, items) {
 		return
 	}
-	if report.Incomplete {
-		markIncompleteResults(w, merged)
+	payload := paginateItems(items, r.URL.Query())
+	if incomplete {
+		markIncompleteResults(w, payload)
 	}
-	writeJSON(w, http.StatusOK, merged)
+	writeJSON(w, http.StatusOK, payload)
 }
 
 func (a *App) handleUserItems(w http.ResponseWriter, r *http.Request) {
 	query := cloneValues(r.URL.Query())
+	if hasBatchIDQuery(query) && validateBatchIDQuery(query) != nil {
+		invalidBatchIDResponse(w)
+		return
+	}
 	parentID := firstQueryValue(query, "ParentId", "parentId", "parentid")
 	if parentID != "" && parentID != "0" && parentID != "root" {
 		resolved, routeStatus := a.resolveRouteForRequest(requestContextFrom(r.Context()), parentID)
@@ -206,6 +247,13 @@ func (a *App) handleUserItems(w http.ResponseWriter, r *http.Request) {
 	}
 	filter, localFilter := a.prepareLocalUserFilter(w, r, query)
 	if !localFilter {
+		if err := validateCatalogSort(r.URL.Query()); err != nil {
+			writeCatalogSortError(w, err)
+			return
+		}
+		ensureCatalogSortFields(query)
+	}
+	if !localFilter {
 		requestMergedCandidateSet(query)
 	}
 	results, incomplete := a.fetchItemsAcrossUpstreams(r.Context(), requestContextFrom(r.Context()), "/Users/%s/Items", query, nil)
@@ -245,6 +293,10 @@ func (a *App) handleUserItems(w http.ResponseWriter, r *http.Request) {
 		if len(asMaps) >= mergedItemsScanLimit {
 			a.warnTruncatedMerge(len(asMaps))
 		}
+		if err := sortCatalogItems(asMaps, r.URL.Query()); err != nil {
+			writeCatalogSortError(w, err)
+			return
+		}
 		if !a.strictSanitizedUserDataItems(w, r, asMaps) {
 			return
 		}
@@ -256,19 +308,21 @@ func (a *App) handleUserItems(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handleUserItemsLatest(w http.ResponseWriter, r *http.Request) {
 	query := cloneValues(r.URL.Query())
-	parentID := query.Get("ParentId")
+	if err := validateCatalogSort(query); err != nil {
+		writeCatalogSortError(w, err)
+		return
+	}
+	parentID := firstQueryValue(query, "ParentId", "parentId", "parentid")
 	if parentID != "" {
 		resolved, routeStatus := a.resolveRouteForRequest(requestContextFrom(r.Context()), parentID)
-		if routeStatus != 0 {
-			writeJSON(w, http.StatusOK, []any{})
-			return
-		}
-		if resolved == nil {
+		if routeStatus != 0 || resolved == nil {
 			writeJSON(w, http.StatusOK, []any{})
 			return
 		}
 		query.Set("ParentId", resolved.OriginalID)
 		query.Set("UserId", resolved.Client.clientUserID())
+		query.Set("StartIndex", "0")
+		query.Set("Limit", strconv.Itoa(mergedItemsScanLimit))
 		payload, err := resolved.Client.RequestJSON(r.Context(), requestContextFrom(r.Context()), a.Identity, http.MethodGet, "/Users/"+resolved.Client.clientUserID()+"/Items/Latest", query, nil)
 		if err != nil {
 			writeJSON(w, http.StatusBadGateway, map[string]any{"message": err.Error()})
@@ -276,60 +330,63 @@ func (a *App) handleUserItemsLatest(w http.ResponseWriter, r *http.Request) {
 		}
 		items := a.parentalFilterServerItems(r, resolved.Client, asItems(payload))
 		a.rewriteItems(items, resolved.ServerID, a.clientFacingUserIDFor(r))
-		if !a.strictSanitizedUserDataItems(w, r, items) {
+		if err := sortLatestItems(items, r.URL.Query()); err != nil {
+			writeCatalogSortError(w, err)
 			return
 		}
-		if !a.parentalResponseReady(w, r, nil) {
+		if !a.strictSanitizedUserDataItems(w, r, items) || !a.parentalResponseReady(w, r, nil) {
 			return
 		}
-		writeJSON(w, http.StatusOK, items)
+		writeJSON(w, http.StatusOK, pageItemsArray(items, r.URL.Query()))
 		return
 	}
-	reqCtx := requestContextFrom(r.Context())
-	clients := a.allowedClients(reqCtx)
-	cfg := a.ConfigStore.Snapshot()
-	globalTimeout := time.Duration(cfg.Timeouts.Global) * time.Millisecond
-	if globalTimeout <= 0 {
-		globalTimeout = 15 * time.Second
+	if err := validateCatalogSort(query); err != nil {
+		writeCatalogSortError(w, err)
+		return
 	}
-
-	tasks := make([]upstreamTask, len(clients))
-	for i, client := range clients {
-		c := client
-		tasks[i] = upstreamTask{
-			index: i,
-			fn: func(bgCtx context.Context) upstreamItemsResult {
-				instQuery := cloneValues(query)
-				instQuery.Set("UserId", c.clientUserID())
-				payload, err := c.RequestJSON(bgCtx, reqCtx, a.Identity, http.MethodGet, "/Users/"+c.clientUserID()+"/Items/Latest", instQuery, nil)
-				if err != nil {
-					return upstreamItemsResult{Err: err, Complete: false}
-				}
-				return upstreamItemsResult{ServerID: c.ID, Items: asItems(payload), Complete: true}
-			},
-		}
+	ensureCatalogSortFields(query)
+	requestMergedCandidateSet(query)
+	latestGrace := time.Duration(a.ConfigStore.Snapshot().Timeouts.LatestGracePeriod) * time.Millisecond
+	results, incomplete := a.fetchItemsAcrossUpstreamsWithGrace(r.Context(), requestContextFrom(r.Context()), "/Users/%s/Items/Latest", query, nil, &latestGrace)
+	results = a.parentalVisibleResults(r, results)
+	for i := range results {
+		results[i].Items = a.parentalFilterServerItems(r, a.Upstream.ClientByID(results[i].ServerID), results[i].Items)
 	}
-
-	collected, report := a.aggregateUpstreamsWithReport(r.Context(), aggregationConfig{
-		gracePeriod:   time.Duration(cfg.Timeouts.LatestGracePeriod) * time.Millisecond,
-		globalTimeout: globalTimeout,
-	}, tasks)
-	allItems := make([]map[string]any, 0)
-	for _, result := range collected {
-		items := a.parentalFilterServerItems(r, a.Upstream.ClientByID(result.ServerID), result.Items)
-		a.rewriteItems(items, result.ServerID, a.clientFacingUserIDFor(r))
-		allItems = append(allItems, items...)
+	allItems := a.mergeRoundRobinItems(results, a.clientFacingUserIDFor(r))
+	if err := sortLatestItems(allItems, r.URL.Query()); err != nil {
+		writeCatalogSortError(w, err)
+		return
 	}
 	if !a.parentalResponseReady(w, r, nil) {
 		return
 	}
-	if !a.strictSanitizedUserDataItems(w, r, allItems) {
+	paged := pageItemsArray(allItems, r.URL.Query())
+	if !a.strictSanitizedUserDataItems(w, r, asItems(paged)) {
 		return
 	}
-	if report.Incomplete {
+	if incomplete || w.Header().Get("X-EIO-Results-Incomplete") == "true" {
 		markIncompleteResultsHeader(w)
 	}
-	writeJSON(w, http.StatusOK, allItems)
+	writeJSON(w, http.StatusOK, paged)
+}
+
+func sortLatestItems(items []map[string]any, query url.Values) error {
+	if strings.TrimSpace(firstQueryValue(query, "SortBy", "sortBy")) == "" {
+		return sortCatalogItems(items, url.Values{"SortBy": {"DateCreated"}, "SortOrder": {"Descending"}})
+	}
+	return sortCatalogItems(items, query)
+}
+
+func pageItemsArray(items []map[string]any, query url.Values) []any {
+	pageQuery := cloneValues(query)
+	if queryKey(pageQuery, "Limit") == "" {
+		pageQuery.Set("Limit", "20")
+	}
+	page := paginateItems(items, pageQuery)
+	if result, ok := page["Items"].([]any); ok {
+		return result
+	}
+	return []any{}
 }
 
 func (a *App) handleUserItemByID(w http.ResponseWriter, r *http.Request) {
@@ -480,6 +537,10 @@ func (a *App) handleItemThemeMedia(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) fetchItemsAcrossUpstreams(ctx context.Context, reqCtx *RequestContext, pathTemplate string, query url.Values, body any) ([]upstreamItemsResult, bool) {
+	return a.fetchItemsAcrossUpstreamsWithGrace(ctx, reqCtx, pathTemplate, query, body, nil)
+}
+
+func (a *App) fetchItemsAcrossUpstreamsWithGrace(ctx context.Context, reqCtx *RequestContext, pathTemplate string, query url.Values, body any, graceOverride *time.Duration) ([]upstreamItemsResult, bool) {
 	clients := a.allowedClients(reqCtx)
 	if len(clients) == 0 {
 		return nil, false
@@ -505,10 +566,15 @@ func (a *App) fetchItemsAcrossUpstreams(ctx context.Context, reqCtx *RequestCont
 			index: i,
 			fn: func(bgCtx context.Context) upstreamItemsResult {
 				items, complete, truncated, err := a.fetchMergedItemsFromUpstream(bgCtx, reqCtx, c, pathTemplate, query, body, budget)
-				if errors.Is(err, errTaxonomyQueryNotTranslatable) {
-					// The filter names a genre this server cannot translate; skip it
-					// rather than querying the whole library unfiltered. Not a failure.
+				if errors.Is(err, errTaxonomyQueryNotTranslatable) || errors.Is(err, errBatchQueryNoItems) {
+					// A translated filter with no IDs for this upstream is a complete
+					// empty result, not an upstream failure.
 					return upstreamItemsResult{ServerID: c.ID, Complete: true}
+				}
+				if err != nil && len(items) > 0 {
+					// Keep a confirmed prefix if a later scan page failed; the report
+					// still marks this server incomplete.
+					return upstreamItemsResult{ServerID: c.ID, Items: items, Truncated: true}
 				}
 				if err != nil {
 					return upstreamItemsResult{Err: err, Complete: false}
@@ -519,6 +585,9 @@ func (a *App) fetchItemsAcrossUpstreams(ctx context.Context, reqCtx *RequestCont
 	}
 
 	grace := time.Duration(cfg.Timeouts.SearchGracePeriod) * time.Millisecond
+	if graceOverride != nil {
+		grace = *graceOverride
+	}
 	if reqCtx != nil && reqCtx.Parental != nil && reqCtx.Parental.restricted() {
 		grace = 0
 	}
@@ -963,19 +1032,17 @@ func (a *App) fetchMergedItemsFromUpstream(ctx context.Context, reqCtx *RequestC
 
 	buildQuery := func(startIndex, window int) (url.Values, error) {
 		pageQuery := cloneValues(query)
-		// Clients only ever hold EIO's virtual user ID, which no upstream knows.
 		pageQuery.Set("UserId", c.clientUserID())
 		if hasBatchIDQuery(pageQuery) {
-			translated, ok := translateBatchIDQueryForServer(pageQuery, c.ID, a.IDStore)
-			if !ok {
-				return nil, errBatchQueryNotTranslatable
+			translated := translateBatchIDQueryForServer(pageQuery, c.ID, a.IDStore)
+			if translated.Err != nil {
+				return nil, translated.Err
 			}
-			pageQuery = translated
+			if translated.Empty {
+				return nil, errBatchQueryNoItems
+			}
+			pageQuery = translated.Query
 		}
-		// GenreIds drilled from a virtual genre must be translated per server. A
-		// genre that belongs to another server is not a reason to query this one
-		// without the filter (that would return the whole library), so it is skipped
-		// as "not translatable for this server".
 		if genre := firstQueryValue(pageQuery, "GenreIds", "genreIds", "genreids"); genre != "" {
 			translated, ok := a.translateTaxonomyIDs(genre, c.ID)
 			if !ok {
@@ -991,23 +1058,21 @@ func (a *App) fetchMergedItemsFromUpstream(ctx context.Context, reqCtx *RequestC
 	}
 
 	if !c.Config.PagedScan {
-		// The default: one wide request, the way the upstream would be asked if the
-		// proxy were not merging. Paging is opt-in per upstream for servers that
-		// refuse a wide window.
-		directQuery, qErr := buildQuery(0, mergedItemsScanLimit)
-		if qErr != nil {
-			return nil, false, false, qErr
+		directQuery, queryErr := buildQuery(0, mergedItemsScanLimit)
+		if errors.Is(queryErr, errBatchQueryNoItems) || errors.Is(queryErr, errTaxonomyQueryNotTranslatable) {
+			return []map[string]any{}, true, false, nil
+		}
+		if queryErr != nil {
+			return nil, false, false, queryErr
 		}
 		if !budget.tryAcquire() {
 			return nil, false, true, nil
 		}
-		payload, reqErr := c.RequestJSON(ctx, reqCtx, a.Identity, http.MethodGet, path, directQuery, body)
-		if reqErr != nil {
-			return nil, false, true, reqErr
+		payload, requestErr := c.RequestJSON(ctx, reqCtx, a.Identity, http.MethodGet, path, directQuery, body)
+		if requestErr != nil {
+			return nil, false, true, requestErr
 		}
 		items := asItems(payload)
-		// A trusted TotalRecordCount reveals a truncated wide answer: the server
-		// capped the page below the total (plan §6.2 item 6).
 		if total, hasTotal := totalRecordCount(payload); hasTotal && len(items) < total {
 			return items, false, true, nil
 		}
@@ -1020,65 +1085,58 @@ func (a *App) fetchMergedItemsFromUpstream(ctx context.Context, reqCtx *RequestC
 	effectiveCeiling := upstreamPageLimitCeiling
 	offset := 0
 	for len(collected) < mergedItemsScanLimit {
-		window := effectiveCeiling
-		if remaining := mergedItemsScanLimit - len(collected); remaining < window {
-			window = remaining
+		window := min(effectiveCeiling, mergedItemsScanLimit-len(collected))
+		pageQuery, queryErr := buildQuery(offset, window)
+		if errors.Is(queryErr, errBatchQueryNoItems) || errors.Is(queryErr, errTaxonomyQueryNotTranslatable) {
+			return []map[string]any{}, true, false, nil
 		}
-		pageQuery, qErr := buildQuery(offset, window)
-		if qErr != nil {
-			return nil, false, false, qErr
+		if queryErr != nil {
+			return collected, false, true, queryErr
 		}
 		if !budget.tryAcquire() {
-			// Budget exhausted: stop issuing requests and report the tail as
-			// truncated rather than treating unqueried items as absent.
 			return collected, false, true, nil
 		}
-		payload, reqErr := c.RequestJSON(ctx, reqCtx, a.Identity, http.MethodGet, path, pageQuery, body)
-		if reqErr != nil {
-			// A server with a ceiling below the default fails the very first page. One
-			// retry with a smaller window tells "refused because the window was too
-			// wide" apart from a real outage. Only a structured 400 triggers it.
-			if len(collected) == 0 && window > fallbackUpstreamPageLimit && isBadRequestError(reqErr) {
+		payload, requestErr := c.RequestJSON(ctx, reqCtx, a.Identity, http.MethodGet, path, pageQuery, body)
+		if requestErr != nil {
+			if len(collected) == 0 && window > fallbackUpstreamPageLimit && isBadRequestError(requestErr) {
 				if !budget.tryAcquire() {
 					return nil, false, true, nil
 				}
-				retryQuery, rqErr := buildQuery(0, fallbackUpstreamPageLimit)
-				if rqErr != nil {
-					return nil, false, false, rqErr
+				retryQuery, retryQueryErr := buildQuery(0, fallbackUpstreamPageLimit)
+				if retryQueryErr != nil {
+					return nil, false, true, retryQueryErr
 				}
 				retryPayload, retryErr := c.RequestJSON(ctx, reqCtx, a.Identity, http.MethodGet, path, retryQuery, body)
 				if retryErr != nil {
-					return nil, false, true, reqErr
+					return nil, false, true, retryErr
 				}
-				items := asItems(retryPayload)
-				// The smaller window worked: keep it for the following pages instead
-				// of going back to the ceiling and being refused again (plan §6.2).
-				effectiveCeiling = fallbackUpstreamPageLimit
-				if len(items) < fallbackUpstreamPageLimit {
-					return items, true, false, nil
-				}
-				collected = append(collected, items...)
+				page := asItems(retryPayload)
+				collected = append(collected, page...)
 				offset = len(collected)
+				effectiveCeiling = fallbackUpstreamPageLimit
+				if len(page) < fallbackUpstreamPageLimit {
+					if total, hasTotal := totalRecordCount(retryPayload); hasTotal && offset < total {
+						return collected, false, true, nil
+					}
+					return collected, true, false, nil
+				}
 				continue
 			}
-			// Mid-scan failure: do not pretend the partial set is complete.
-			return nil, false, true, reqErr
+			return collected, false, true, requestErr
 		}
 
-		items := asItems(payload)
+		page := asItems(payload)
 		total, hasTotal := totalRecordCount(payload)
-		if len(items) == 0 {
+		if len(page) == 0 {
 			if hasTotal && offset < total {
-				// A known remaining tail was not delivered: mark incomplete.
 				return collected, false, true, nil
 			}
 			break
 		}
-		collected = append(collected, items...)
+		collected = append(collected, page...)
 		offset = len(collected)
-		if len(items) < window {
+		if len(page) < window {
 			if hasTotal && offset < total {
-				// Short page but the upstream still owes rows; keep scanning.
 				continue
 			}
 			break

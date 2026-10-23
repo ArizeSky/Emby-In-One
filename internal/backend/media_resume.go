@@ -1,10 +1,12 @@
 package backend
 
 import (
+	"context"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 )
 
 func (a *App) handleUserItemsResume(w http.ResponseWriter, r *http.Request) {
@@ -15,67 +17,102 @@ func (a *App) handleUserItemsResume(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	query := cloneValues(r.URL.Query())
+	if err := validateCatalogSort(query); err != nil {
+		writeCatalogSortError(w, err)
+		return
+	}
 	parentID := firstQueryValue(query, "ParentId", "parentId", "parentid")
-	if parentID != "" {
-		resolved, routeStatus := a.resolveRouteForRequest(reqCtx, parentID)
-		if routeStatus != 0 {
+	if parentID != "" && parentID != "0" && !strings.EqualFold(parentID, "root") {
+		scope := a.newResumeContainerScope(r, reqCtx, parentID)
+		if scope == nil {
 			writeJSON(w, http.StatusOK, map[string]any{"Items": []any{}, "TotalRecordCount": 0, "StartIndex": 0})
 			return
 		}
-		if !a.requireServerAccess(w, r, resolved) {
-			return
-		}
-		instances := a.collectAllowedInstances(requestContextFrom(r.Context()), resolved)
+		clients := a.allowedClients(reqCtx)
 		originalIDs := map[string]struct{}{}
-		for _, inst := range instances {
-			originalIDs[inst.OriginalID] = struct{}{}
+		for _, originalID := range scope.instances {
+			originalIDs[originalID] = struct{}{}
 		}
-		for _, inst := range instances {
-			instQuery := cloneValues(query)
-			instQuery.Set("ParentId", inst.OriginalID)
-			instQuery.Set("UserId", inst.Client.clientUserID())
-			instQuery.Del("parentId")
-			instQuery.Del("parentid")
-			payload, err := inst.Client.RequestJSON(r.Context(), requestContextFrom(r.Context()), a.Identity, http.MethodGet, "/Users/"+inst.Client.clientUserID()+"/Items/Resume", instQuery, nil)
-			if err != nil {
+		cfg := a.ConfigStore.Snapshot()
+		globalTimeout := time.Duration(cfg.Timeouts.Global) * time.Millisecond
+		if globalTimeout <= 0 {
+			globalTimeout = 15 * time.Second
+		}
+		tasks := make([]upstreamTask, 0, len(scope.instances))
+		for index, client := range clients {
+			c := client
+			originalID, ok := scope.instances[c.ID]
+			if !ok {
 				continue
 			}
-			filtered := filterSeriesItems(asItems(payload), originalIDs)
-			filtered = a.parentalFilterServerItems(r, inst.Client, filtered)
-			if len(filtered) > 0 {
-				a.rewriteItems(filtered, inst.ServerID, a.clientFacingUserIDFor(r))
-				a.writeParentalItemsResponse(w, r, map[string]any{"Items": filtered, "TotalRecordCount": len(filtered), "StartIndex": 0})
-				return
+			tasks = append(tasks, upstreamTask{
+				index: index,
+				fn: func(bgCtx context.Context) upstreamItemsResult {
+					instQuery := cloneValues(query)
+					instQuery.Set("ParentId", originalID)
+					items, complete, truncated, err := a.fetchMergedItemsFromUpstream(bgCtx, reqCtx, c, "/Users/%s/Items/Resume", instQuery, nil, scope.budget)
+					if err != nil && len(items) == 0 {
+						return upstreamItemsResult{Err: err}
+					}
+					if scope.kind == "Series" || scope.kind == "" {
+						items = filterSeriesItems(items, originalIDs)
+					}
+					return upstreamItemsResult{ServerID: c.ID, Items: items, Complete: complete && err == nil, Truncated: truncated || err != nil}
+				},
+			})
+		}
+		grace := time.Duration(cfg.Timeouts.SearchGracePeriod) * time.Millisecond
+		for _, client := range clients {
+			if client.Config.PagedScan {
+				grace = 0
+				break
 			}
 		}
-		a.writeParentalItemsResponse(w, r, map[string]any{"Items": []any{}, "TotalRecordCount": 0, "StartIndex": 0})
+		results, report := a.aggregateUpstreamsWithReport(r.Context(), aggregationConfig{gracePeriod: grace, globalTimeout: globalTimeout}, tasks)
+		a.writeMergedParentalResponse(w, r, results, report.Incomplete)
 		return
 	}
-	results, incomplete := a.fetchItemsAcrossUpstreams(r.Context(), requestContextFrom(r.Context()), "/Users/%s/Items/Resume", query, nil)
+	results, incomplete := a.fetchItemsAcrossUpstreams(r.Context(), reqCtx, "/Users/%s/Items/Resume", query, nil)
 	a.writeMergedParentalResponse(w, r, results, incomplete)
 }
 
-// handleLocalResume serves resume items from local WatchStore for non-admin users.
-// It fetches item metadata from upstream servers to build complete responses.
+// handleLocalResume serves bounded WatchStore candidate pages with enriched metadata.
+// Container scope and client pagination are applied before writing the response.
 func (a *App) handleLocalResume(w http.ResponseWriter, r *http.Request, reqCtx *RequestContext) {
 	query := cloneValues(r.URL.Query())
 	parentID := firstQueryValue(query, "ParentId", "parentId", "parentid")
-	limit := 20
-	if l, ok := queryInt(query, "Limit"); ok && l > 0 {
-		limit = l
+	var scope *resumeContainerScope
+	if parentID != "" && parentID != "0" && !strings.EqualFold(parentID, "root") {
+		scope = a.newResumeContainerScope(r, reqCtx, parentID)
+		if scope == nil {
+			writeJSON(w, http.StatusOK, map[string]any{"Items": []any{}, "TotalRecordCount": 0, "StartIndex": 0})
+			return
+		}
+	}
+	if err := validateCatalogSort(query); err != nil {
+		writeCatalogSortError(w, err)
+		return
 	}
 
-	// Scan the deduped resume list in batches, keeping only candidates that pass
-	// the ParentId filter and still resolve to an enabled, online, permitted
-	// instance. Doing this before the enrich step means a run of recent records
-	// that all live on paused servers no longer hides later playable entries
-	// behind the client's Limit.
+	startIndex := 0
+	if start, ok := queryInt(query, "StartIndex"); ok && start > 0 {
+		startIndex = start
+	}
+	limit := 20
+	if requested, ok := queryInt(query, "Limit"); ok && requested > 0 {
+		limit = requested
+	}
+	pageQuery := cloneValues(r.URL.Query())
+	if _, ok := queryInt(pageQuery, "Limit"); !ok || query.Get("Limit") == "0" {
+		pageQuery.Set("Limit", strconv.Itoa(limit))
+	}
+	desiredEnd := startIndex + limit
 	const batchSize = 100
 	var enriched []map[string]any
-	truncated := false
+	incomplete := false
 	for offset := 0; offset < localFilterScanLimit; offset += batchSize {
 		if r.Context().Err() != nil {
-			truncated = true
+			incomplete = true
 			break
 		}
 		page, err := a.WatchStore.GetResumeItemsPage(reqCtx.ProxyUser.UserID, batchSize, offset)
@@ -91,7 +128,7 @@ func (a *App) handleLocalResume(w http.ResponseWriter, r *http.Request, reqCtx *
 		}
 		var candidates []WatchProgress
 		for i := range page {
-			if parentID != "" && page[i].SeriesVirtualID != parentID {
+			if scope != nil && scope.kind == "Series" && page[i].SeriesVirtualID != parentID {
 				continue
 			}
 			if _, _, ok := a.resolveWatchItemServer(reqCtx, &page[i]); !ok {
@@ -99,28 +136,52 @@ func (a *App) handleLocalResume(w http.ResponseWriter, r *http.Request, reqCtx *
 			}
 			candidates = append(candidates, page[i])
 		}
-		enriched = append(enriched, a.enrichWatchItems(r, reqCtx, candidates)...)
-		if len(enriched) >= limit {
-			enriched = enriched[:limit]
+		batchItems := a.enrichWatchItems(r, reqCtx, candidates)
+		progressByID := make(map[string]WatchProgress, len(candidates))
+		for _, candidate := range candidates {
+			progressByID[candidate.VirtualItemID] = candidate
+		}
+		for _, item := range batchItems {
+			if scope != nil {
+				progress, ok := progressByID[itemID(item)]
+				if !ok {
+					continue
+				}
+				matched, uncertain := a.resumeItemInScope(r, reqCtx, scope, progress, item)
+				if uncertain {
+					incomplete = true
+				}
+				if !matched {
+					continue
+				}
+			}
+			enriched = append(enriched, item)
+		}
+		if desiredEnd > 0 && len(enriched) >= desiredEnd {
+			enriched = enriched[:desiredEnd]
+			if len(page) == batchSize {
+				// A full WatchStore page can have a tail that was not scanned;
+				// report only the confirmed count as a lower bound.
+				incomplete = true
+			}
 			break
 		}
 		if len(page) < batchSize {
 			break
 		}
 		if offset+batchSize >= localFilterScanLimit && len(page) == batchSize {
-			truncated = true
+			incomplete = true
 		}
 	}
-	if truncated && a.Logger != nil {
-		a.Logger.Warnf("local resume scan reached %d records: results may be truncated", localFilterScanLimit)
+	if scope != nil && scope.incomplete {
+		incomplete = true
 	}
-
-	payload := map[string]any{
-		"Items":            toAnySlice(enriched),
-		"TotalRecordCount": len(enriched),
-		"StartIndex":       0,
+	if err := sortCatalogItems(enriched, query); err != nil {
+		writeCatalogSortError(w, err)
+		return
 	}
-	if truncated {
+	payload := paginateItems(enriched, pageQuery)
+	if incomplete {
 		markIncompleteResults(w, payload)
 	}
 	a.writeParentalItemsResponse(w, r, payload)

@@ -8,8 +8,11 @@ import (
 )
 
 func (a *App) handleShowsNextUp(w http.ResponseWriter, r *http.Request) {
+	if err := validateCatalogSort(r.URL.Query()); err != nil {
+		writeCatalogSortError(w, err)
+		return
+	}
 	reqCtx := requestContextFrom(r.Context())
-	// Non-admin users: compute NextUp from local WatchStore
 	if a.WatchStore != nil && reqCtx != nil && reqCtx.ProxyUser != nil && reqCtx.ProxyUser.Role != "admin" {
 		a.handleLocalNextUp(w, r, reqCtx)
 		return
@@ -25,7 +28,7 @@ func (a *App) handleShowsNextUp(w http.ResponseWriter, r *http.Request) {
 		if !a.requireServerAccess(w, r, resolved) {
 			return
 		}
-		instances := a.collectAllowedInstances(requestContextFrom(r.Context()), resolved)
+		instances := a.collectAllowedInstances(reqCtx, resolved)
 		originalIDs := map[string]struct{}{}
 		for _, inst := range instances {
 			originalIDs[inst.OriginalID] = struct{}{}
@@ -33,7 +36,9 @@ func (a *App) handleShowsNextUp(w http.ResponseWriter, r *http.Request) {
 		for _, inst := range instances {
 			instQuery := cloneValues(query)
 			instQuery.Set("SeriesId", inst.OriginalID)
-			payload, err := inst.Client.RequestJSON(r.Context(), requestContextFrom(r.Context()), a.Identity, http.MethodGet, "/Shows/NextUp", instQuery, nil)
+			instQuery.Set("StartIndex", "0")
+			instQuery.Set("Limit", strconv.Itoa(mergedItemsScanLimit))
+			payload, err := inst.Client.RequestJSON(r.Context(), reqCtx, a.Identity, http.MethodGet, "/Shows/NextUp", instQuery, nil)
 			if err != nil {
 				continue
 			}
@@ -41,98 +46,106 @@ func (a *App) handleShowsNextUp(w http.ResponseWriter, r *http.Request) {
 			filtered = a.parentalFilterServerItems(r, inst.Client, filtered)
 			if len(filtered) > 0 {
 				a.rewriteItems(filtered, inst.ServerID, a.clientFacingUserIDFor(r))
-				a.writeParentalItemsResponse(w, r, map[string]any{"Items": filtered, "TotalRecordCount": len(filtered), "StartIndex": 0})
+				if err := sortCatalogItems(filtered, r.URL.Query()); err != nil {
+					writeCatalogSortError(w, err)
+					return
+				}
+				if !a.strictSanitizedUserDataItems(w, r, filtered) {
+					return
+				}
+				a.writeParentalItemsResponse(w, r, paginateItems(filtered, r.URL.Query()))
 				return
 			}
 		}
-		a.writeParentalItemsResponse(w, r, map[string]any{"Items": []any{}, "TotalRecordCount": 0, "StartIndex": 0})
+		a.writeParentalItemsResponse(w, r, paginateItems(nil, r.URL.Query()))
 		return
 	}
-	results, incomplete := a.fetchItemsAcrossUpstreams(r.Context(), requestContextFrom(r.Context()), "/Shows/NextUp", query, nil)
+	results, incomplete := a.fetchItemsAcrossUpstreams(r.Context(), reqCtx, "/Shows/NextUp", query, nil)
 	a.writeMergedParentalResponse(w, r, results, incomplete)
 }
 
 // handleLocalNextUp computes NextUp from local WatchStore for non-admin users.
-// For each series the user has watched, queries upstream for the next unwatched episode.
+// The WatchStore order is retained unless the client requests an explicit catalog sort.
 func (a *App) handleLocalNextUp(w http.ResponseWriter, r *http.Request, reqCtx *RequestContext) {
 	query := cloneValues(r.URL.Query())
+	if err := validateCatalogSort(query); err != nil {
+		writeCatalogSortError(w, err)
+		return
+	}
 	cfg := a.ConfigStore.Snapshot()
-	empty := map[string]any{"Items": []any{}, "TotalRecordCount": 0, "StartIndex": 0}
-
-	// If SeriesId specified, only compute for that series
+	empty := []map[string]any{}
 	seriesID := query.Get("SeriesId")
 	if seriesID != "" {
 		resolved, routeStatus := a.resolveRouteForRequest(reqCtx, seriesID)
 		if routeStatus != 0 {
-			a.writeParentalItemsResponse(w, r, empty)
+			a.writeLocalNextUpPage(w, r, empty, false)
 			return
 		}
 		if !a.requireServerAccess(w, r, resolved) {
 			return
 		}
-		// Get the user's highest played episode for this series
 		seriesProgress, err := a.WatchStore.GetNextUpForSeries(reqCtx.ProxyUser.UserID, seriesID)
 		if err != nil {
-			// Same rule as the userdata overlay: a failed read is not "no record".
 			if a.Logger != nil {
 				a.Logger.Warnf("WatchStore next-up read error: %s", redactURLInError(err))
 			}
-			a.writeParentalItemsResponse(w, r, empty)
+			a.writeLocalNextUpPage(w, r, empty, false)
 			return
 		}
 		if seriesProgress == nil {
-			a.writeParentalItemsResponse(w, r, empty)
+			a.writeLocalNextUpPage(w, r, empty, false)
 			return
 		}
 		nextEp := a.fetchNextEpisode(r, reqCtx, resolved.Client, resolved.OriginalID, resolved.ServerID, seriesProgress)
 		if nextEp == nil {
-			a.writeParentalItemsResponse(w, r, empty)
+			a.writeLocalNextUpPage(w, r, empty, false)
 			return
 		}
 		rewriteResponseIDs(nextEp, resolved.ServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 		if !a.strictSanitizedUserDataItems(w, r, []map[string]any{nextEp}) {
 			return
 		}
-		a.writeParentalItemsResponse(w, r, map[string]any{"Items": []any{nextEp}, "TotalRecordCount": 1, "StartIndex": 0})
+		a.writeLocalNextUpPage(w, r, []map[string]any{nextEp}, false)
 		return
 	}
 
-	// No SeriesId: compute for all series the user is watching
 	seriesList, err := a.WatchStore.GetNextUpSeries(reqCtx.ProxyUser.UserID)
 	if err != nil || len(seriesList) == 0 {
-		a.writeParentalItemsResponse(w, r, empty)
+		a.writeLocalNextUpPage(w, r, empty, false)
 		return
 	}
+	incomplete := false
 	if len(seriesList) > localFilterScanLimit {
 		seriesList = seriesList[:localFilterScanLimit]
-		markIncompleteResultsHeader(w)
+		incomplete = true
 	}
-
-	var nextUpItems []map[string]any
+	startIndex := 0
+	if start, ok := queryInt(query, "StartIndex"); ok && start > 0 {
+		startIndex = start
+	}
 	limit := 20
-	if l, ok := queryInt(query, "Limit"); ok && l > 0 {
-		limit = l
+	if requested, ok := queryInt(query, "Limit"); ok && requested > 0 {
+		limit = requested
 	}
-
-	// nextUpBatch bounds both the concurrency and the over-fetch: series are
-	// fetched in waves of at most this many, in list order, and the wave stops
-	// once the client's Limit is satisfied. The requests used to run strictly
-	// serially, so a user with N in-progress series waited N round trips
-	// before the first item rendered.
+	desiredEnd := startIndex + limit
+	fullOrder := len(splitQueryList(firstQueryValue(query, "SortBy", "sortBy"))) > 0
 	nextUpBatch := 8
-	if limit < nextUpBatch {
+	if !fullOrder && limit < nextUpBatch {
 		nextUpBatch = limit
 	}
-
-	for start := 0; start < len(seriesList) && len(nextUpItems) < limit; start += nextUpBatch {
-		if r.Context().Err() != nil {
-			markIncompleteResultsHeader(w)
+	var nextUpItems []map[string]any
+	for start := 0; start < len(seriesList); start += nextUpBatch {
+		if !fullOrder && desiredEnd > 0 && len(nextUpItems) >= desiredEnd {
+			if start < len(seriesList) {
+				incomplete = true
+			}
 			break
 		}
-		end := start + nextUpBatch
-		if end > len(seriesList) {
-			end = len(seriesList)
+		if r.Context().Err() != nil {
+			incomplete = true
+			break
 		}
+		end := min(start+nextUpBatch, len(seriesList))
 		batch := seriesList[start:end]
 		episodes := make([]map[string]any, len(batch))
 		serverIDs := make([]string, len(batch))
@@ -147,33 +160,44 @@ func (a *App) handleLocalNextUp(w http.ResponseWriter, r *http.Request, reqCtx *
 			}
 			serverIDs[i] = serverID
 			wg.Add(1)
-			go func(i int, client *UpstreamClient, seriesOrigID, serverID string, sp WatchProgress) {
+			go func(i int, client *UpstreamClient, seriesOrigID, serverID string, progress WatchProgress) {
 				defer wg.Done()
-				episodes[i] = a.fetchNextEpisode(r, reqCtx, client, seriesOrigID, serverID, &sp)
+				episodes[i] = a.fetchNextEpisode(r, reqCtx, client, seriesOrigID, serverID, &progress)
 			}(i, client, seriesOrigID, serverID, batch[i])
 		}
 		wg.Wait()
-		// Rewrite and overlay sequentially after the wave: the result order
-		// stays the series order the store returned.
 		for i, nextEp := range episodes {
-			if nextEp == nil || len(nextUpItems) >= limit {
+			if nextEp == nil {
 				continue
 			}
 			rewriteResponseIDs(nextEp, serverIDs[i], a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
-			if id, _ := nextEp["Id"].(string); id != "" {
-				if !a.strictSanitizedUserData(w, r, id, nextEp) {
-					continue
-				}
+			if id := itemID(nextEp); id != "" && !a.strictSanitizedUserData(w, r, id, nextEp) {
+				continue
 			}
 			nextUpItems = append(nextUpItems, nextEp)
 		}
+		if !fullOrder && desiredEnd > 0 && len(nextUpItems) >= desiredEnd && end < len(seriesList) {
+			incomplete = true
+			break
+		}
 	}
+	a.writeLocalNextUpPage(w, r, nextUpItems, incomplete)
+}
 
-	a.writeParentalItemsResponse(w, r, map[string]any{
-		"Items":            toAnySlice(nextUpItems),
-		"TotalRecordCount": len(nextUpItems),
-		"StartIndex":       0,
-	})
+func (a *App) writeLocalNextUpPage(w http.ResponseWriter, r *http.Request, items []map[string]any, incomplete bool) {
+	if err := sortCatalogItems(items, r.URL.Query()); err != nil {
+		writeCatalogSortError(w, err)
+		return
+	}
+	pageQuery := cloneValues(r.URL.Query())
+	if _, ok := queryInt(pageQuery, "Limit"); !ok || pageQuery.Get("Limit") == "0" {
+		pageQuery.Set("Limit", "20")
+	}
+	payload := paginateItems(items, pageQuery)
+	if incomplete {
+		markIncompleteResults(w, payload)
+	}
+	a.writeParentalItemsResponse(w, r, payload)
 }
 
 // resolveSeriesServer returns an online, aggregation-enabled, permitted
