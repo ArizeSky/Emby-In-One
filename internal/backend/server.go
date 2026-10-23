@@ -28,8 +28,12 @@ type App struct {
 	libraryCache    *upstreamLibraryCache
 	PlaybackLimiter *PlaybackLimiter
 	StreamResources *streamResourceStore
-	loginLimiter    loginRateLimiter
-	noticeThrottle  noticeThrottle
+	// sessionEvents tracks which playback session is live for (user, item), so
+	// a late event from a superseded session cannot overwrite newer watch
+	// state. Nil in minimal test apps: all methods are nil-safe.
+	sessionEvents  *sessionEventTracker
+	loginLimiter   loginRateLimiter
+	noticeThrottle noticeThrottle
 	// adminMutationMu serializes every handler that reads, validates and then
 	// persists the config or the UA library, so two admin writes cannot each
 	// base their change on a stale snapshot and overwrite one another.
@@ -126,6 +130,7 @@ func NewApp() (*App, error) {
 		libraryCache:    newUpstreamLibraryCache(),
 		PlaybackLimiter: NewPlaybackLimiter(),
 		StreamResources: newStreamResourceStore(),
+		sessionEvents:   newSessionEventTracker(),
 		uaJobsCtx:       uaJobsCtx,
 		uaJobsCancel:    uaJobsCancel,
 		bgWorkCtx:       bgWorkCtx,

@@ -109,6 +109,12 @@ func (a *App) translateSessionBodyIDs(body map[string]any) (string, bool) {
 // recordSessionToWatchStore writes playback progress to the local WatchStore
 // for non-admin users. virtualItemID is the pre-translation virtual ID.
 // isStopped indicates whether the playback has ended (Stopped event).
+//
+// Field presence governs position updates: a body that does not carry
+// PositionTicks (or carries an invalid one) must not overwrite the stored
+// value, while an explicit 0 is a real position — rewind-to-start and the
+// end-of-playback reset both rely on it. Late events from a superseded
+// session are identified and dropped instead of overwriting newer state.
 func (a *App) recordSessionToWatchStore(r *http.Request, virtualItemID string, body map[string]any, serverID string, isStopped bool) {
 	if a.WatchStore == nil || virtualItemID == "" {
 		return
@@ -117,35 +123,68 @@ func (a *App) recordSessionToWatchStore(r *http.Request, virtualItemID string, b
 	if reqCtx == nil || reqCtx.ProxyUser == nil || reqCtx.ProxyUser.Role == "admin" {
 		return
 	}
-	positionTicks, _ := numericInt64(body["PositionTicks"])
-	runtimeTicks, _ := numericInt64(body["RunTimeTicks"])
+	userID := reqCtx.ProxyUser.UserID
+
+	// Read the existing record first: it is both the "keep known values"
+	// fallback for fields the event does not carry, and the metadata window
+	// for enrichment. A read error is not "no record" — skip the enrichment
+	// decision on failure rather than treating the item as unseen.
+	existing, progressErr := a.WatchStore.GetProgress(userID, virtualItemID)
+	if progressErr != nil && a.Logger != nil {
+		a.Logger.Warnf("WatchStore progress read error: %s", redactURLInError(progressErr))
+	}
+
+	titleID := sessionIdentityID(body)
+	if !a.sessionEvents.AcceptEvent(userID, virtualItemID, titleID) {
+		// A tracked newer session superseded this one: the event is stale,
+		// not data to record.
+		if a.Logger != nil {
+			a.Logger.Debugf("Session event for %s belongs to a superseded session; dropped", virtualItemID)
+		}
+		return
+	}
+
+	positionRaw, hasPositionField := numericInt64(body["PositionTicks"])
+	hasPosition := hasPositionField && positionRaw >= 0
+	runtimeRaw, hasRuntimeField := numericInt64(body["RunTimeTicks"])
+	hasRuntime := hasRuntimeField && runtimeRaw >= 0
 	originalItemID, _ := body["ItemId"].(string)
 
 	p := &WatchProgress{
-		ProxyUserID:    reqCtx.ProxyUser.UserID,
+		ProxyUserID:    userID,
 		VirtualItemID:  virtualItemID,
 		ServerID:       serverID,
 		OriginalItemID: originalItemID,
-		PositionTicks:  positionTicks,
-		RuntimeTicks:   runtimeTicks,
+	}
+	if existing != nil {
+		p.PositionTicks, p.RuntimeTicks = existing.PositionTicks, existing.RuntimeTicks
+		p.ItemType = existing.ItemType
+		if p.ServerID == "" {
+			p.ServerID = existing.ServerID
+		}
+		if p.OriginalItemID == "" {
+			p.OriginalItemID = existing.OriginalItemID
+		}
+	}
+	if hasPosition {
+		p.PositionTicks = positionRaw
+	}
+	if hasRuntime {
+		p.RuntimeTicks = runtimeRaw
 	}
 
-	// Auto-mark played if stopped near end (>= 90% of runtime)
-	if isStopped && runtimeTicks > 0 && positionTicks > 0 {
-		ratio := float64(positionTicks) / float64(runtimeTicks)
+	// Auto-mark played if stopped near end (>= 90% of runtime). The rule only
+	// applies to data the event actually carries either directly or via the
+	// existing record; a stop without any position keeps what is stored.
+	if isStopped && p.RuntimeTicks > 0 && p.PositionTicks > 0 {
+		ratio := float64(p.PositionTicks) / float64(p.RuntimeTicks)
 		if ratio >= 0.90 {
 			p.Played = true
 			p.PositionTicks = 0
 		}
 	}
 
-	// Enrich with item metadata if not already stored
-	// A read error is not "no record": skip the enrichment decision on failure
-	// rather than treating the item as unseen.
-	existing, progressErr := a.WatchStore.GetProgress(reqCtx.ProxyUser.UserID, virtualItemID)
-	if progressErr != nil && a.Logger != nil {
-		a.Logger.Warnf("WatchStore progress read error: %s", redactURLInError(progressErr))
-	}
+	// Enrich with item metadata if not already stored.
 	if existing == nil || existing.ItemType == "" {
 		a.enrichWatchProgressMetadata(r, reqCtx, p, originalItemID, serverID)
 	}
@@ -155,6 +194,20 @@ func (a *App) recordSessionToWatchStore(r *http.Request, virtualItemID string, b
 			a.Logger.Warnf("WatchStore record error: %s", redactURLInError(err))
 		}
 	}
+}
+
+// sessionIdentityID picks the strongest session identity a playback event
+// carries: Emby's SessionId first, then the playback-scoped PlaySessionId.
+// An empty result means the client provides no ordering information, and the
+// event keeps plain receive-order semantics.
+func sessionIdentityID(body map[string]any) string {
+	if id, _ := body["SessionId"].(string); id != "" {
+		return id
+	}
+	if id, _ := body["PlaySessionId"].(string); id != "" {
+		return id
+	}
+	return ""
 }
 
 // enrichWatchProgressMetadata fetches item details from upstream and populates
@@ -382,6 +435,13 @@ func (a *App) handleSessionPlaying(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	a.recordSessionToWatchStore(r, virtualItemID, body, serverID, false)
+	// Register the session identity so later progress/stop events that still
+	// carry an older session are recognised as superseded (S9).
+	if sessionID := sessionIdentityID(body); sessionID != "" {
+		if reqCtx := requestContextFrom(r.Context()); reqCtx != nil && reqCtx.ProxyUser != nil {
+			a.sessionEvents.StartSession(reqCtx.ProxyUser.UserID, virtualItemID, sessionID)
+		}
+	}
 	if a.PlaybackLimiter != nil {
 		if reqCtx := requestContextFrom(r.Context()); reqCtx != nil && reqCtx.ProxyUser != nil && reqCtx.ProxyUser.Role != "admin" {
 			a.PlaybackLimiter.Heartbeat(reqCtx.ProxyUser.UserID, serverID)
