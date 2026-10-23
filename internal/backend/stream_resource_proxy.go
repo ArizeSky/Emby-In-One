@@ -33,13 +33,37 @@ type resourceRewriteContext struct {
 // answers 502) rather than an untouched external link.
 func (a *App) RewriteM3U8ForItemWithResources(content, upstreamBase, proxyToken string, ctx resourceRewriteContext) (string, error) {
 	baseURL, baseErr := url.Parse(upstreamBase)
-	register := func(raw string) (string, error) {
+	lines := strings.Split(content, "\n")
+	type replacement struct{ line, start, end int }
+	var replacements []replacement
+	var entries []streamResourceEntry
+	rolling := false
+	ended := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "#EXT-X-ENDLIST") {
+			ended = true
+		}
+		if strings.HasPrefix(trimmed, "#EXT-X-MEDIA-SEQUENCE:") || strings.HasPrefix(trimmed, "#EXT-X-PART:") {
+			rolling = true
+		}
+		raw, start, end := trimmed, 0, len(line)
+		if strings.HasPrefix(trimmed, "#") {
+			uri, lo, hi, ok := extractQuotedURI(line)
+			if !ok {
+				continue
+			}
+			raw, start, end = uri, lo, hi
+		}
 		resolved, err := url.Parse(strings.TrimSpace(raw))
 		if err != nil {
 			return "", err
 		}
 		if !resolved.IsAbs() {
-			if baseErr != nil || baseURL == nil {
+			if baseErr != nil || baseURL == nil || !baseURL.IsAbs() {
 				return "", errRelativeResourceWithoutBase
 			}
 			resolved = baseURL.ResolveReference(resolved)
@@ -50,49 +74,37 @@ func (a *App) RewriteM3U8ForItemWithResources(content, upstreamBase, proxyToken 
 		if resolved.Host == "" || resolved.User != nil {
 			return "", errUnsupportedResourceURL
 		}
-		opaque, ok := a.StreamResources.put(streamResourceEntry{
-			UserID:        ctx.UserID,
-			VirtualItemID: ctx.VirtualItemID,
-			ServerID:      ctx.ServerID,
-			OriginalID:    ctx.OriginalID,
-			ResourceURL:   resolved.String(),
-		})
-		if !ok {
-			return "", errResourceStoreFull
-		}
-		local := "/Videos/" + ctx.VirtualItemID + "/eio-resource/" + opaque
+		entries = append(entries, streamResourceEntry{UserID: ctx.UserID, VirtualItemID: ctx.VirtualItemID, ServerID: ctx.ServerID, OriginalID: ctx.OriginalID, ResourceURL: resolved.String()})
+		replacements = append(replacements, replacement{i, start, end})
+	}
+	manifestKey := ""
+	if rolling && !ended && baseErr == nil && baseURL != nil {
+		// Signed query tokens may rotate; a playlist's path identifies its window.
+		manifestKey = baseURL.Scheme + "://" + baseURL.Host + baseURL.EscapedPath()
+	}
+	ids, ok := a.StreamResources.registerManifest(entries, manifestKey)
+	if !ok {
+		return "", errResourceStoreFull
+	}
+	for i, edit := range replacements {
+		local := "/Videos/" + ctx.VirtualItemID + "/eio-resource/" + ids[i]
 		if proxyToken != "" {
 			local += "?api_key=" + url.QueryEscape(proxyToken)
 		}
-		return local, nil
-	}
-
-	lines := strings.Split(content, "\n")
-	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			continue
-		}
-		if strings.HasPrefix(trimmed, "#") {
-			// Rewrite the URI="..." attribute of resource-bearing tags
-			// (EXT-X-KEY/SESSION-KEY/MAP/MEDIA/I-FRAME-STREAM-INF/PART/
-			// PRELOAD-HINT/RENDITION-REPORT), leaving other tag data intact.
-			if uri, start, end, ok := extractQuotedURI(line); ok {
-				local, err := register(uri)
-				if err != nil {
-					return "", err
-				}
-				lines[i] = line[:start] + local + line[end:]
-			}
-			continue
-		}
-		local, err := register(trimmed)
-		if err != nil {
-			return "", err
-		}
-		lines[i] = local
+		line := lines[edit.line]
+		lines[edit.line] = line[:edit.start] + local + line[edit.end:]
 	}
 	return strings.Join(lines, "\n"), nil
+}
+
+// A full map is retryable capacity pressure, not an upstream protocol failure.
+func writeStreamResourceRewriteError(w http.ResponseWriter, err error) {
+	if errors.Is(err, errResourceStoreFull) {
+		w.Header().Set("Retry-After", "5")
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"message": "HLS resource capacity exhausted; retry later"})
+		return
+	}
+	writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Failed to rewrite HLS manifest"})
 }
 
 // serveStreamResource serves one rewritten HLS resource for a restricted user. It
@@ -101,7 +113,7 @@ func (a *App) RewriteM3U8ForItemWithResources(content, upstreamBase, proxyToken 
 // expired handle is a 410; a cross-user handle is a 403.
 func (a *App) serveStreamResource(w http.ResponseWriter, r *http.Request, virtualItemID, opaqueID string) {
 	reqCtx := requestContextFrom(r.Context())
-	entry, ok := a.StreamResources.get(opaqueID)
+	entry, ok := a.StreamResources.peek(opaqueID)
 	if !ok {
 		w.WriteHeader(http.StatusGone)
 		return
@@ -126,6 +138,10 @@ func (a *App) serveStreamResource(w http.ResponseWriter, r *http.Request, virtua
 		} else {
 			w.WriteHeader(http.StatusForbidden)
 		}
+		return
+	}
+	if !a.StreamResources.touch(opaqueID) {
+		w.WriteHeader(http.StatusGone)
 		return
 	}
 	resp, err := a.fetchResourceFollowingRedirects(r, client, entry.ResourceURL)
@@ -159,7 +175,7 @@ func (a *App) serveStreamResource(w http.ResponseWriter, r *http.Request, virtua
 			OriginalID:    entry.OriginalID,
 		})
 		if rerr != nil {
-			w.WriteHeader(http.StatusBadGateway)
+			writeStreamResourceRewriteError(w, rerr)
 			return
 		}
 		w.Header().Set("Content-Type", "application/x-mpegURL")

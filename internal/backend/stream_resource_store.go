@@ -6,19 +6,13 @@ import (
 )
 
 const (
-	// maxStreamResourceEntries bounds the server-side opaque resource map. It is a
-	// capacity budget, not a concurrency promise: roughly six 2-hour VOD sessions
-	// at ~2400 resources each fit, and LL-HLS or multi-audio sessions use more.
 	maxStreamResourceEntries = 16384
-	// streamResourceIdleTTL is the idle lease for a resource session. Any authorized
-	// request for a resource in the session renews it, so a VOD's unread tail stays
-	// valid as long as the session keeps playing (plan §8.6.1).
-	streamResourceIdleTTL = 30 * time.Minute
+	streamResourceIdleTTL    = 30 * time.Minute
+	// A resource removed from a rolling playlist remains fetchable while a
+	// lagging LL-HLS client catches up. VOD resources are retained for the session.
+	streamResourceCatchupGrace = 2 * time.Minute
 )
 
-// streamResourceEntry is one server-side record of an external HLS resource that
-// a restricted user may fetch only through this proxy. It stores the URL and its
-// ownership, never video bytes.
 type streamResourceEntry struct {
 	UserID        string
 	VirtualItemID string
@@ -26,72 +20,205 @@ type streamResourceEntry struct {
 	OriginalID    string
 	ResourceURL   string
 	ExpiresAt     time.Time
+	pinned        bool
+	retireAt      time.Time
 }
 
-// streamResourceStore maps random opaque ids to their resource records. Records
-// are bounded and leased; there is no public HMAC/long-token URL (plan §8.6.1).
+type resourceSessionKey struct{ user, item, server, original string }
+
+func (e streamResourceEntry) sessionKey() resourceSessionKey {
+	return resourceSessionKey{e.UserID, e.VirtualItemID, e.ServerID, e.OriginalID}
+}
+
+type resourceSession struct {
+	expires   time.Time
+	handles   map[string]bool
+	byURL     map[string]string
+	manifests map[string]map[string]bool
+}
 type streamResourceStore struct {
-	mu      sync.Mutex
-	entries map[string]*streamResourceEntry
-	max     int
-	now     func() time.Time
+	mu       sync.Mutex
+	entries  map[string]*streamResourceEntry
+	sessions map[resourceSessionKey]*resourceSession
+	max      int
+	now      func() time.Time
 }
 
 func newStreamResourceStore() *streamResourceStore {
-	return &streamResourceStore{
-		entries: map[string]*streamResourceEntry{},
-		max:     maxStreamResourceEntries,
-		now:     time.Now,
-	}
+	return &streamResourceStore{entries: map[string]*streamResourceEntry{}, sessions: map[resourceSessionKey]*resourceSession{}, max: maxStreamResourceEntries, now: time.Now}
 }
-
-// pruneLocked drops idle-expired records. The caller holds s.mu.
+func (s *streamResourceStore) removeLocked(id string) {
+	e := s.entries[id]
+	if e == nil {
+		return
+	}
+	if session := s.sessions[e.sessionKey()]; session != nil {
+		delete(session.handles, id)
+		if session.byURL[e.ResourceURL] == id {
+			delete(session.byURL, e.ResourceURL)
+		}
+	}
+	delete(s.entries, id)
+}
 func (s *streamResourceStore) pruneLocked(now time.Time) {
+	for key, session := range s.sessions {
+		if !now.Before(session.expires) {
+			for id := range session.handles {
+				delete(s.entries, id)
+			}
+			delete(s.sessions, key)
+		}
+	}
 	for id, e := range s.entries {
-		if now.After(e.ExpiresAt) {
-			delete(s.entries, id)
+		if !e.retireAt.IsZero() && !now.Before(e.retireAt) {
+			s.removeLocked(id)
 		}
 	}
 }
 
-// put registers one resource and returns its opaque id. It reports ok=false when
-// the store is at capacity even after pruning idle sessions, so the caller can
-// answer 503 instead of emitting a half manifest.
-func (s *streamResourceStore) put(e streamResourceEntry) (string, bool) {
+// registerAll reserves the entire batch or nothing. Identical URLs within a
+// playback session reuse handles; different users/items/sources never do.
+func (s *streamResourceStore) registerAll(entries []streamResourceEntry) ([]string, bool) {
+	return s.registerManifest(entries, "")
+}
+func (s *streamResourceStore) registerManifest(entries []streamResourceEntry, rollingManifest string) ([]string, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.now()
 	s.pruneLocked(now)
-	if len(s.entries) >= s.max {
+	type resourceKey struct {
+		session resourceSessionKey
+		url     string
+	}
+	pending := map[resourceKey]bool{}
+	needed := 0
+	for _, e := range entries {
+		key := resourceKey{e.sessionKey(), e.ResourceURL}
+		if e.ResourceURL == "" {
+			needed++
+			continue
+		}
+		if session := s.sessions[key.session]; session != nil && session.byURL[key.url] != "" {
+			continue
+		}
+		if !pending[key] {
+			pending[key] = true
+			needed++
+		}
+	}
+	if len(s.entries)+needed > s.max {
+		return nil, false
+	}
+	ids := make([]string, len(entries))
+	current := map[resourceSessionKey]map[string]bool{}
+	for i, e := range entries {
+		key := e.sessionKey()
+		session := s.sessions[key]
+		if session == nil {
+			session = &resourceSession{handles: map[string]bool{}, byURL: map[string]string{}, manifests: map[string]map[string]bool{}}
+			s.sessions[key] = session
+		}
+		id := session.byURL[e.ResourceURL]
+		if e.ResourceURL == "" || id == "" {
+			for {
+				id = randomHex(16)
+				if s.entries[id] == nil {
+					break
+				}
+			}
+			copy := e
+			s.entries[id] = &copy
+			session.handles[id] = true
+			if e.ResourceURL != "" {
+				session.byURL[e.ResourceURL] = id
+			}
+		}
+		entry := s.entries[id]
+		if rollingManifest == "" {
+			entry.pinned = true
+		}
+		entry.retireAt = time.Time{}
+		session.expires = now.Add(streamResourceIdleTTL)
+		entry.ExpiresAt = session.expires
+		ids[i] = id
+		if current[key] == nil {
+			current[key] = map[string]bool{}
+		}
+		current[key][id] = true
+	}
+	if rollingManifest != "" {
+		// Replace only this playlist's window; sibling audio/video playlists retain
+		// their own references. No window changes are committed on capacity failure.
+		for key, members := range current {
+			session := s.sessions[key]
+			old := session.manifests[rollingManifest]
+			session.manifests[rollingManifest] = members
+			for id := range old {
+				e := s.entries[id]
+				if e == nil || e.pinned || members[id] {
+					continue
+				}
+				referenced := false
+				for _, refs := range session.manifests {
+					referenced = referenced || refs[id]
+				}
+				if !referenced {
+					e.retireAt = now.Add(streamResourceCatchupGrace)
+				}
+			}
+		}
+	}
+	return ids, true
+}
+func (s *streamResourceStore) put(e streamResourceEntry) (string, bool) {
+	ids, ok := s.registerAll([]streamResourceEntry{e})
+	if !ok {
 		return "", false
 	}
-	id := randomHex(16)
-	e.ExpiresAt = now.Add(streamResourceIdleTTL)
-	s.entries[id] = &e
-	return id, true
+	return ids[0], true
+}
+func (s *streamResourceStore) lookupLocked(id string, renew bool) (streamResourceEntry, bool) {
+	e := s.entries[id]
+	if e == nil {
+		return streamResourceEntry{}, false
+	}
+	now := s.now()
+	session := s.sessions[e.sessionKey()]
+	if session == nil || !now.Before(session.expires) || (!e.retireAt.IsZero() && !now.Before(e.retireAt)) {
+		s.pruneLocked(now)
+		return streamResourceEntry{}, false
+	}
+	if renew {
+		session.expires = now.Add(streamResourceIdleTTL)
+	}
+	copy := *e
+	copy.ExpiresAt = session.expires
+	return copy, true
 }
 
-// get returns the record for id, renewing its session lease. An unknown or
-// idle-expired handle returns ok=false, which the caller answers with 410.
+// peek never renews a lease: handlers must finish authorization first.
+func (s *streamResourceStore) peek(id string) (streamResourceEntry, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lookupLocked(id, false)
+}
+func (s *streamResourceStore) touch(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.lookupLocked(id, true)
+	return ok
+}
+
+// get is the store-level authorized lookup used by lifecycle tests. HTTP
+// handlers use peek + touch so rejected requests cannot extend any session.
 func (s *streamResourceStore) get(id string) (streamResourceEntry, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	now := s.now()
-	e, ok := s.entries[id]
-	if !ok {
-		return streamResourceEntry{}, false
-	}
-	if now.After(e.ExpiresAt) {
-		delete(s.entries, id)
-		return streamResourceEntry{}, false
-	}
-	e.ExpiresAt = now.Add(streamResourceIdleTTL)
-	return *e, true
+	return s.lookupLocked(id, true)
 }
-
-// size reports the current record count (used by tests).
 func (s *streamResourceStore) size() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.pruneLocked(s.now())
 	return len(s.entries)
 }

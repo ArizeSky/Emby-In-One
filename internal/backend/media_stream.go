@@ -343,7 +343,7 @@ func (a *App) forwardStream(w http.ResponseWriter, r *http.Request, client *Upst
 				if a.Logger != nil {
 					a.Logger.Errorf("Stream resource rewrite failed: itemId=%s: %v", virtualItemID, rerr)
 				}
-				writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Failed to rewrite HLS manifest for restricted playback"})
+				writeStreamResourceRewriteError(w, rerr)
 				return
 			}
 			manifest = rewritten
