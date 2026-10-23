@@ -1,13 +1,14 @@
 # 路由、分级与资源覆盖表
 
-> 更新：2026-10-23；对应 `codex/community-prs-local-review` 本轮 C1–C10 修复后的实现。
+> 更新：2026-10-23；对应 `codex/community-prs-local-review` 的 R1–R9 修复，保留此前 C1–C10 成果。
 > 本表区分实现位置和测试证据，不将“有过滤函数”直接等同于全字段、全客户端已验收。详细命令与边界见 `community-prs-execution-report.md`。
 
 ## 1. 统一语义
 
-- `parentalPolicyFor` 同时读取 ceiling 与 `blockUnratedItems`；非空 CustomRating 覆盖 OfficialRating。
-- 本轮读取确认路径：缺失分级先按服务器批量补查（≤200 ID/批），必要时详情回退；请求级 50 次补查预算与 memo；Season/Episode 同服继承最多 3 层并去环。
-- “无法确认”不当成“允许未分级”：列表丢弃无法安全确认的项；详情/播放/认证图片的实际副本无法确认时失败关闭（502），明确拒绝时 403。
+- `withContext` 读取本次 HTTP 请求的 ceiling 与 `blockUnratedItems` 快照；所有 goroutine/嵌套列表共用一份状态。下个请求重新读取当前策略。非空 CustomRating 覆盖 OfficialRating，显式未知不能被父级覆盖。
+- 区分缺字段、显式未知、确认未分级、查询失败。缺失先按真实服务器批量补查（≤200 ID/批），必要时详情回退；父链按层合批且原始资料按实际 client/ID 在本请求内 memo，同键并发共享读取。50 次补查调用预算同时消耗共享的 100 次目录调用预算；Season/Episode 同服继承最多 3 层并去环。
+- “无法确认”不当成“允许未分级”：无安全结果且存在无法确认时为 502；有安全部分时附不完整头和对象字段；全部明确拒绝为完整空列表。详情/播放/认证图片实际副本无法确认为 502、明确拒绝为 403。确认未分级则按 blockUnratedItems 判断。
+- 列表先登记身份事实，再按实际副本过滤，最后从可见副本选展示资料；过滤不改变上游候选顺序。
 - 所有来源提示都不是权限：仍须符合在线状态、当前聚合开关，以及认证用户的服务器授权。
 - 本地 UserData 仅汇合当前用户的已验证同组别名，不读取其他用户状态；收藏取并集、进度取最近有效正进度。
 
@@ -15,17 +16,18 @@
 
 | 路由 | Handler / 实现位置 | 当前行为与边界 | 本轮或保留的证据 |
 | --- | --- | --- | --- |
-| GET `/Users/{userId}/Items`（根/ParentId） | `handleUserItems` | 单库/根均走逐项分级确认；ParentId/GenreIds 每服翻译；叠加本地别名状态 | `TestFinalReviewParentalReadRoutes` 的稀疏根列表；完整 Go 套件 |
+| GET `/Users/{userId}/Items`（根/ParentId） | `handleUserItems` / `handleRestrictedContainerItems` | 根列表以可见实例合并；无限制单库保留上游分页总数；受限单库扫描候选、过滤后本地分页，截断明确不完整；GenreIds 每服翻译 | 第三轮 Confirmed/CommonParent/AllowedSibling/UnrestrictedPagination/FilterOrder；`TestParentalContainerFiltersBeforePagination` |
 | GET `/Items`（Ids/Search） | `handleItemsCollection` | Ids 每服翻译，结果逐项确认；成功批量任务显式 `Complete:true`；存在部分失败/超时才按报告标记不完整 | `TestFinalReviewCompleteBatchDoesNotClaimIncomplete`、聚合回归 |
 | GET `/Items`（非 Ids/Search） | `handleFallbackProxy` | 不因本轮修改成为新聚合入口；受限内容请求遵守 fallback 白名单 | 既有 fallback 回归 |
-| GET `/Users/{userId}/Items/Latest` | `handleUserItemsLatest` | 单库/合并结果接入读取确认与本地状态叠加 | 完整 Go 套件 |
-| GET `/Search/Hints` | `handleSearchHints` | Hints 缺失分级不能直接放行，进入确认；返回项再叠加本地状态 | `TestFinalReviewParentalReadRoutes/search-hints` |
-| GET `/Shows/{seriesId}/Seasons`、`/Episodes` | `handleShowsSeasons/Episodes` | 返回季/集逐项确认并继承；SeasonId 每服翻译；普通用户叠加本地状态 | 原始 Seasons/Episodes 子用例 |
+| GET `/Users/{userId}/Items/Latest` | `handleUserItemsLatest` | 单库/多库在原始 DTO 上按真实 client 确认后重写 ID、叠加本地状态；数组响应用头传递不完整状态 | 完整 Go 套件 |
+| GET `/Search/Hints` | `handleSearchHints` | 原始 Hints 逐实例确认，再选可见资料；返回项叠加本地状态 | `TestFinalReviewParentalReadRoutes/search-hints` |
+| GET `/Shows/{seriesId}/Seasons`、`/Episodes` | `handleShowsSeasons/Episodes` | 先登记索引身份，再逐实例确认/继承，选择允许资料并记录实际图片来源；SeasonId 每服翻译；叠加本地状态后分页 | 原始 Seasons/Episodes 子用例；完整 Go 套件 |
 | GET `/Users/{userId}/Items/{itemId}`、`/Items/{itemId}` | `handleUserItemByID` / `handleItemByID` | 单副本详情经 `parentalDetailAllowed` 确认；季/集缺失时继承父级；合并详情逐实际副本检查后才贡献字段和 MediaSources | 原始 episode-detail / merged-detail 用例 |
 | GET `/Items/{itemId}/Similar` | `handleItemSimilar` | 对推荐结果逐项确认，不声称预先补查源影片详情；源 route 仍执行服务器授权 | 原始 Similar 子用例 |
 | GET `/Items/{itemId}/ThemeMedia` | `handleItemThemeMedia` | 过滤嵌套 ThemeVideosResult、ThemeSongsResult、SoundtrackSongsResult 等项目 | 原始 ThemeMedia 子用例 |
-| GET `/Users/{userId}/Items/Resume` | `handleUserItemsResume` / 本地 WatchStore 路径 | 保留现有 Resume 扫描、取源、补元数据路径；普通用户来自本地状态；本轮不是将该入口整体重写为 `parentalFilterItems` | 既有 Resume/暂停源/分页回归，包含在完整套件；12 项边界测试不单独覆盖所有 Resume 情形 |
-| GET `/Shows/NextUp` | `handleShowsNextUp` / 本地观看路径 | 保留已有单系列/跨服/本地观看处理；不把本轮读取 helper 的入口清单扩大到未接线位置 | 既有 NextUp 回归，包含在完整套件 |
+| GET `/Users/{userId}/Items/Resume` | `handleLocalResume` / `fetchWatchMetadata` | 本人历史按批扫描，按真实服务器补资料并确认当前分级，过滤后补足 Limit；同号原始 ID 的资料按服务器隔离；失败与扫描截断显式反馈 | 第三轮 LocalWatch/resume；跨 100 条拒绝候选补足、补资料失败 502、同号不同服务器资料隔离；旧暂停源回归 |
+| GET `/Shows/NextUp` | `handleLocalNextUp` / `fetchNextUpSeason` / `firstAllowedNextEpisode` | 普通用户先确定播放游标，再从后续候选确认当前策略，拒绝后继续找允许集；单系列和全系列均接入；目录分页共用预算，跨系列保持有界并发 | 第三轮 LocalWatch/next-up；`TestParentalNextUpRefillsAfterDeniedEpisode`；旧并发/游标回归 |
+| Resume/NextUp 上游回退 | `handleUserItemsResume` / `handleShowsNextUp` / `writeMergedParentalResponse` | 本地 WatchStore 不可用时也确认分级；带 ParentId/SeriesId 的单系列请求按实际来源过滤；无条件的多库请求以可见副本合并；无限制管理员仍保留原首选源行为 | `TestParentalWatchRoutesWithoutLocalStoreStillFilter` 的四个路径；既有跨源回退与首选源回归 |
 | GET/POST `/Items/{itemId}/PlaybackInfo` | `handlePlaybackInfo` | 逐实例分级；显式选定拒绝 403、未确认 502；**先 TryStart 预留，再检查，拒绝或全失败时释放**，不是“检查通过前不占槽” | 既有分级、占槽与选源回归 |
 | GET `/Videos/{itemId}/{rest...}`、`/videos/...` | `handleVideoProxy` / `proxyStream` | 实际选定源分级；未确认 502；检查通过后切换实际播放源；受限用户强制代理；资源 handle 走专用入口 | 原始 stream-inherits、既有选源/跳转回归 |
 | GET `/Audio/{itemId}/{rest...}`、`/audio/...` | `handleAudioProxy` | 沿用实际源解析与播放授权路径 | 既有 Audio/流测试 |
@@ -40,7 +42,8 @@
 | 会话租约 | 键为用户/影片/实际服务器/实际原始影片；30 分钟空闲过期；授权活动续整个会话 | 原始 unread-tail；160 分钟长 VOD 测试 |
 | URL 复用及隔离 | 同会话相同 URL 复用；不同用户/源不共用 handle | 原始 repeated-manifest；16 并发复用；多用户隔离 |
 | 容量 | 总容量 16384；完整 manifest 原子准入；清理过期后仍不足返回 **503 + Retry-After:5**；不产生半份 manifest 或本次部分占位 | 原始 full-resource-map / atomic；6×2400 + 第 7 份拒绝 |
-| 滚动窗口 | MEDIA-SEQUENCE/PART 且非 ENDLIST 的清单使用各自窗口引用；移出资源保留 2 分钟追赶宽限；VOD 资源保留到会话空闲过期 | `TestResourceRollingWindowCatchupAndAtomicValidation` |
+| 滚动窗口 | 首层用跳转前授权请求身份（排除代理认证参数），子清单用绑定资源 handle；默认完整 URL 保留 query，音轨/画质互不退休；移出资源保留 2 分钟，VOD 保留到会话空闲过期 | 第三轮 HLSQueryDistinctWindows；`TestHLSWindowSignedRedirectsRetireOnlyTheirOwnTrack`；旧追赶期回归 |
+| 窗口容量 | 全部会话的窗口记录总数也限制为 16384；资源和窗口在更新前共同检查，拒绝不产生部分状态；会话过期释放窗口额度 | `TestHLSWindowCapacityIsAtomicAndReclaimed` |
 | 未知/过期/跨用户 | 410 / 403；不因失败请求续租 | 生命周期及授权测试 |
 | 重写或上游错误 | 非法 URI 等重写问题 502；容量压力单独按 503；不是所有重写错误都返回 503 | 非法 URI 无占位回归与容量入口测试 |
 | 非受限用户 | 保留原 `RewriteM3U8ForItem` 输出，不额外注册资源表 | 既有 M3U8/流测试 |
@@ -68,4 +71,4 @@
 
 ## 6. 结论边界
 
-本轮 12 项边界回归和前序 22 项审查测试均保留并通过；完整 Go 套件、定向 race、vet、构建及 68 项前端测试通过。这里记录的是受控自动化与静态入口核对，不是全原方案或所有真实播放器行为的完成证书。未执行真实客户端、生产压测、Docker 发布；详细证据和提交列表见执行报告。
+第三轮 10 项原始边界测试、此前 12 项与 22 项均保留；新增请求状态/观看入口/HLS 身份专题测试 11 项。最终实际检查与日志以执行报告为准。这里记录受控自动化与入口接线，原方案跨请求元数据缓存、完整 canonical 建组 API、真实客户端/生产压测和 Docker 发布未据此宣布完成。
