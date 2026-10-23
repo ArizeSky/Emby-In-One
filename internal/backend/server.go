@@ -3,6 +3,7 @@ package backend
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -40,6 +41,17 @@ type App struct {
 	uaJobsCtx    context.Context
 	uaJobsCancel context.CancelFunc
 	uaJobsWG     sync.WaitGroup
+	// bgWork* own the detached aggregation drains: a handler that expired into
+	// the grace period leaves a goroutine that keeps writing ID mappings after
+	// the response is gone. Close cancels them and waits before the SQLite
+	// handle is taken away (S8), so a drain can never write into a closed db.
+	bgWorkCtx    context.Context
+	bgWorkCancel context.CancelFunc
+	bgWorkWG     sync.WaitGroup
+	// evictCancel kills the periodic stream-state/limiter eviction loop from
+	// Run; Close stops it before touching the stores.
+	evictCancel context.CancelFunc
+	evictWG     sync.WaitGroup
 }
 
 func NewApp() (*App, error) {
@@ -96,8 +108,9 @@ func NewApp() (*App, error) {
 	}
 
 	// Created here, after every early return, so no error path can leak it: the
-	// cancel func lives for the whole App lifetime and Close uses it.
+	// cancel funcs live for the whole App lifetime and Close uses them.
 	uaJobsCtx, uaJobsCancel := context.WithCancel(context.Background())
+	bgWorkCtx, bgWorkCancel := context.WithCancel(context.Background())
 
 	return &App{
 		ConfigStore:     configStore,
@@ -115,6 +128,8 @@ func NewApp() (*App, error) {
 		StreamResources: newStreamResourceStore(),
 		uaJobsCtx:       uaJobsCtx,
 		uaJobsCancel:    uaJobsCancel,
+		bgWorkCtx:       bgWorkCtx,
+		bgWorkCancel:    bgWorkCancel,
 	}, nil
 }
 
@@ -137,9 +152,20 @@ func (a *App) Close() error {
 		a.uaJobsCancel()
 		a.uaJobsWG.Wait()
 	}
+	// Stop accepting new background work and wait for the detached drains
+	if a.evictCancel != nil {
+		a.evictCancel()
+	}
+	a.evictWG.Wait()
+	if a.bgWorkCancel != nil {
+		a.bgWorkCancel()
+	}
+	a.bgWorkWG.Wait()
 	if a.Upstream != nil {
 		a.Upstream.stopHealthChecks()
 	}
+	// Stores come off the shared SQLite connection: it is closed under its
+	// exclusive lock (closeSQLite), so no reader or writer can be mid-statement.
 	if a.IDStore != nil {
 		if err := a.IDStore.Close(); err != nil && a.Logger != nil {
 			a.Logger.Warnf("ID store close: %v", err)
@@ -151,11 +177,71 @@ func (a *App) Close() error {
 	return nil
 }
 
+// shutdownDrainTimeout bounds how long the graceful drain waits for in-flight
+// requests before the server is force-closed (S8).
+const shutdownDrainTimeout = 10 * time.Second
+
+// serveHTTPWithShutdown serves until the shutdown signal arrives or the
+// listener fails, and returns only after the drain is complete, so the caller
+// cannot tear down shared stores while handlers are still in flight. When the
+// drain deadline expires, the base context is cancelled and the remaining
+// connections are force-closed; long-lived streaming handlers end with it.
+func serveHTTPWithShutdown(
+	server *http.Server,
+	shutdownCh chan os.Signal,
+	lifecycle chan struct{},
+	baseCancel context.CancelFunc,
+	drainTimeout time.Duration,
+	onShutdownRequest func(),
+	logger *Logger,
+) error {
+	shutdownDone := make(chan struct{})
+	go func() {
+		defer close(shutdownDone)
+		select {
+		case <-shutdownCh:
+		case <-lifecycle:
+		}
+		if logger != nil {
+			logger.Infof("Shutdown signal received, draining connections...")
+		}
+		onShutdownRequest()
+		ctx, cancel := context.WithTimeout(context.Background(), drainTimeout)
+		defer cancel()
+		if err := server.Shutdown(ctx); err != nil {
+			if logger != nil {
+				logger.Warnf("Graceful drain expired (%v), closing remaining connections", err)
+			}
+			if baseCancel != nil {
+				baseCancel()
+			}
+			_ = server.Close()
+		}
+	}()
+	err := server.ListenAndServe()
+	if errors.Is(err, http.ErrServerClosed) {
+		// The Shutdown goroutine signalled the close: Run returns only after
+		// the drain (or the forced close) is finished.
+		<-shutdownDone
+		return nil
+	}
+	// The listener failed before anything was served. Release the waiting
+	// goroutine and let its cleanup finish before reporting the error.
+	close(lifecycle)
+	<-shutdownDone
+	return err
+}
+
 func (a *App) Run() error {
 	cfg := a.ConfigStore.Snapshot()
+	// The base request context: a drain expiry cancels it, ending in-flight
+	// handlers before the shared SQLite handle is taken away (S8).
+	handlerCtx, handlerCancel := context.WithCancel(context.Background())
+	defer handlerCancel()
 	server := &http.Server{
 		Addr:              ":" + intToString(cfg.Server.Port),
 		Handler:           a.Handler(),
+		BaseContext:       func(net.Listener) context.Context { return handlerCtx },
 		ReadHeaderTimeout: 10 * time.Second,
 		// bodyLimitMiddleware caps a request body at 2 MB but not the time it may take to
 		// arrive, and an idle connection used to be held forever. WriteTimeout stays unset
@@ -164,10 +250,12 @@ func (a *App) Run() error {
 		IdleTimeout: 120 * time.Second,
 	}
 
-	// Start periodic stream URL eviction
+	// Start periodic stream URL eviction, tracked on the App so Close stops it.
 	evictCtx, evictCancel := context.WithCancel(context.Background())
-	defer evictCancel()
+	a.evictCancel = evictCancel
+	a.evictWG.Add(1)
 	go func() {
+		defer a.evictWG.Done()
 		ticker := time.NewTicker(30 * time.Minute)
 		defer ticker.Stop()
 		for {
@@ -188,20 +276,11 @@ func (a *App) Run() error {
 	shutdownCh := make(chan os.Signal, 1)
 	signal.Notify(shutdownCh, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(shutdownCh)
-	go func() {
-		<-shutdownCh
-		a.Logger.Infof("Shutdown signal received, draining connections...")
-		evictCancel()
-		a.Upstream.stopHealthChecks()
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = server.Shutdown(ctx)
-	}()
 
 	a.Logger.Infof("Go Emby-in-One listening on port %d", cfg.Server.Port)
-	err := server.ListenAndServe()
-	if errors.Is(err, http.ErrServerClosed) {
-		return nil
-	}
-	return err
+	lifecycle := make(chan struct{})
+	return serveHTTPWithShutdown(server, shutdownCh, lifecycle, handlerCancel, shutdownDrainTimeout, func() {
+		evictCancel()
+		a.Upstream.stopHealthChecks()
+	}, a.Logger)
 }

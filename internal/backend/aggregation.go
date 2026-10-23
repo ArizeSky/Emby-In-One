@@ -138,6 +138,33 @@ func (a *App) drainBackgroundResults(bgCtx context.Context, bgCancel context.Can
 		bgCancel()
 		return
 	}
+	// The drain writes ID mappings to the shared SQLite connection after the
+	// handler that started it is gone: it is app-owned work, so Close cancels
+	// it and waits for it before removing the handle (S8). Its own lifetime
+	// stays bounded by the aggregation deadline.
+	if a.bgWorkCancel != nil {
+		a.bgWorkWG.Add(1)
+		workCtx := a.bgWorkCtx
+		go func() {
+			defer a.bgWorkWG.Done()
+			defer bgCancel()
+			drained := 0
+			for drained < remaining {
+				select {
+				case res := <-ch:
+					drained++
+					if len(res.result.Items) > 0 {
+						a.registerBackgroundIDs(res.result)
+					}
+				case <-bgCtx.Done():
+					return
+				case <-workCtx.Done():
+					return
+				}
+			}
+		}()
+		return
+	}
 	go func() {
 		defer bgCancel()
 		drained := 0

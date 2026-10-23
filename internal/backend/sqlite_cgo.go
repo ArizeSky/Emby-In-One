@@ -64,16 +64,35 @@ func openSQLite(path string) (*sqliteDB, error) {
 	return handle, nil
 }
 
+// errSQLiteClosed is returned by every entry point used after closeSQLite, so
+// late readers/writers fail cleanly instead of dereferencing the closed handle.
+var errSQLiteClosed = errors.New("sqlite: connection is closed")
+
+func (db *sqliteDB) ensureOpen() error {
+	if db == nil {
+		return errors.New("sqlite: nil database handle")
+	}
+	if db.ptr == nil {
+		return errSQLiteClosed
+	}
+	return nil
+}
+
 // withReadLock runs fn while holding the connection's read lock. Use it for
 // SELECT statements and their stepping loops: a read in progress must not
 // interleave with another store's open transaction on this shared connection,
 // or it can observe that transaction's uncommitted rows.
 func (db *sqliteDB) withReadLock(fn func() error) error {
-	if db == nil {
-		return errors.New("sqlite: nil database handle")
+	if err := db.ensureOpen(); err != nil {
+		return err
 	}
 	db.mu.RLock()
 	defer db.mu.RUnlock()
+	if db.ptr == nil {
+		// The close below takes the exclusive lock, so a read that entered
+		// before it still owns the handle; one that starts after sees closed.
+		return errSQLiteClosed
+	}
 	return fn()
 }
 
@@ -81,11 +100,14 @@ func (db *sqliteDB) withReadLock(fn func() error) error {
 // Use it for single write statements so they cannot interleave with another
 // store's open transaction or with a read in progress.
 func (db *sqliteDB) withWriteLock(fn func() error) error {
-	if db == nil {
-		return errors.New("sqlite: nil database handle")
+	if err := db.ensureOpen(); err != nil {
+		return err
 	}
 	db.mu.Lock()
 	defer db.mu.Unlock()
+	if db.ptr == nil {
+		return errSQLiteClosed
+	}
 	return fn()
 }
 
@@ -123,6 +145,15 @@ func closeSQLite(db *sqliteDB) error {
 	if db == nil || db.ptr == nil {
 		return nil
 	}
+	// Close runs under the connection's exclusive lock (sqlite_cgo contract):
+	// no reader or writer can be mid-statement, in-flight reads finish first,
+	// and every later entry returns errSQLiteClosed instead of dereferencing
+	// the closed handle. Callers converge: once ptr is nil, Close is a no-op.
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	if db.ptr == nil {
+		return nil
+	}
 	if rc := C.sqlite3_close(db.ptr); rc != 0 {
 		return errors.New(C.GoString(C.sqlite3_errmsg(db.ptr)))
 	}
@@ -131,6 +162,9 @@ func closeSQLite(db *sqliteDB) error {
 }
 
 func (db *sqliteDB) exec(query string) error {
+	if db == nil || db.ptr == nil {
+		return errSQLiteClosed
+	}
 	cQuery := C.CString(query)
 	defer C.free(unsafe.Pointer(cQuery))
 	var errMsg *C.char
@@ -161,6 +195,9 @@ func (db *sqliteDB) execParams(query string, args ...any) error {
 }
 
 func (db *sqliteDB) prepare(query string) (*sqliteStmt, error) {
+	if db == nil || db.ptr == nil {
+		return nil, errSQLiteClosed
+	}
 	cQuery := C.CString(query)
 	defer C.free(unsafe.Pointer(cQuery))
 	var stmt *C.sqlite3_stmt
