@@ -22,6 +22,8 @@ type RequestContext struct {
 	// Identifiers is the read-only signing/registration view for this request. It
 	// is built once and shared by the identity predicates.
 	Identifiers *IdentifierLookup
+	// Parental is private to this HTTP request and is safe for its goroutines.
+	Parental *parentalReadSession
 }
 
 func (a *App) withContext(next http.HandlerFunc) http.HandlerFunc {
@@ -55,12 +57,19 @@ func (a *App) withContext(next http.HandlerFunc) http.HandlerFunc {
 				}
 			}
 		}
+		maxRating, blockUnrated := 0, false
+		if proxyUser != nil && proxyUser.Role == "user" && a.UserStore != nil {
+			if user := a.UserStore.Get(proxyUser.UserID); user != nil {
+				maxRating, blockUnrated = user.MaxParentalRating, user.BlockUnratedItems
+			}
+		}
 		ctx := context.WithValue(r.Context(), requestContextKey{}, &RequestContext{
 			Headers:           r.Header.Clone(),
 			ProxyToken:        token,
 			ProxyUser:         proxyUser,
 			LegacyProxyUserID: a.Auth.ProxyUserID(),
 			Identifiers:       a.newRequestIdentifierLookup(),
+			Parental:          newParentalReadSession(maxRating, blockUnrated),
 		})
 		next(w, r.WithContext(ctx))
 	}

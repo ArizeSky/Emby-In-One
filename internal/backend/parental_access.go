@@ -103,29 +103,14 @@ func (a *App) inheritParentalScore(r *http.Request, client *UpstreamClient, item
 // deny (confirmed) from a metadata query failure (not confirmed → caller must
 // fail closed, e.g. 502). A request with no restriction short-circuits to allow.
 func (a *App) checkInstanceParentalAccess(r *http.Request, client *UpstreamClient, originalID string) (allowed bool, confirmed bool) {
-	maxR, blockUnrated := a.parentalPolicyFor(r)
-	if maxR <= 0 && !blockUnrated {
+	s := a.parentalSessionFor(r)
+	if !s.restricted() {
 		return true, true
 	}
-	item, err := a.fetchItemForParentalCheck(r, client, originalID)
+	item, err := a.loadParentalMetadata(r, s, client, originalID)
 	if err != nil {
 		return false, false
 	}
-	score, presence := classifyItemRating(item)
-	ok := presence == ratingPresent
-	if presence == ratingMissing && needsRatingInheritance(item) {
-		inherited, inheritedOK, ierr := a.inheritParentalScore(r, client, item)
-		if ierr != nil {
-			return false, false
-		}
-		score, ok = inherited, inheritedOK
-	}
-	if !ok {
-		// Unrated/unknown: allowed only when the user did not ask to block it.
-		return !blockUnrated, true
-	}
-	if maxR > 0 && score > maxR {
-		return false, true
-	}
-	return true, true
+	decision := a.decideConfirmedItem(r, s, client, item)
+	return decision == parentalAllow, decision != parentalUnconfirmed
 }

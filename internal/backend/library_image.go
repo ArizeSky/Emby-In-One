@@ -148,6 +148,7 @@ func (a *App) handleShowsSeasons(w http.ResponseWriter, r *http.Request) {
 	cfg := a.ConfigStore.Snapshot()
 	merged := map[int]*indexedItem{}
 	unknown := []indexedItem{}
+	identities := map[string]string{}
 	for _, inst := range instances {
 		query := cloneValues(r.URL.Query())
 		query.Set("UserId", inst.Client.clientUserID())
@@ -156,6 +157,8 @@ func (a *App) handleShowsSeasons(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Failed to load complete show list; please retry"})
 			return
 		}
+		a.registerShowIdentities(rows, inst.ServerID, false, identities)
+		rows = a.parentalFilterServerItems(r, inst.Client, rows)
 		for _, item := range rows {
 			season := deepCloneMap(item)
 			idx, ok := numericInt(season["IndexNumber"])
@@ -202,6 +205,7 @@ func (a *App) handleShowsSeasons(w http.ResponseWriter, r *http.Request) {
 	for _, idx := range keys {
 		item := merged[idx].Item
 		preservedID, _ := item["Id"].(string)
+		a.recordShowDisplaySource(item, preservedID, merged[idx].ServerID)
 		delete(item, "_originalId")
 		delete(item, "Id")
 		rewriteResponseIDs(item, merged[idx].ServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
@@ -210,19 +214,18 @@ func (a *App) handleShowsSeasons(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, entry := range unknown {
 		preservedID, _ := entry.Item["Id"].(string)
+		a.recordShowDisplaySource(entry.Item, preservedID, entry.ServerID)
 		delete(entry.Item, "_originalId")
 		delete(entry.Item, "Id")
 		rewriteResponseIDs(entry.Item, entry.ServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 		entry.Item["Id"] = preservedID
 		items = append(items, entry.Item)
 	}
-	// Seasons and episodes carry per-user UserData: for a regular user the local
-	// record wins over the shared upstream account's state. The parental filter
-	// runs first: a sparse season/episode DTO is confirmed (with parent-chain
-	// inheritance) instead of being read as unrated (plan §8.3/§8.4).
-	items = a.parentalFilterItems(r, items)
 	a.overlayLocalUserDataItems(r, items)
-	writeJSON(w, http.StatusOK, paginateItems(items, r.URL.Query()))
+	payload := paginateItems(items, r.URL.Query())
+	if a.parentalResponseReady(w, r, payload) {
+		writeJSON(w, http.StatusOK, payload)
+	}
 }
 
 func (a *App) handleShowsEpisodes(w http.ResponseWriter, r *http.Request) {
@@ -238,6 +241,7 @@ func (a *App) handleShowsEpisodes(w http.ResponseWriter, r *http.Request) {
 	cfg := a.ConfigStore.Snapshot()
 	merged := map[string]*indexedItem{}
 	var unkeyed []indexedItem
+	identities := map[string]string{}
 	for _, inst := range instances {
 		query := cloneValues(r.URL.Query())
 		query.Set("UserId", inst.Client.clientUserID())
@@ -266,6 +270,8 @@ func (a *App) handleShowsEpisodes(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Failed to load complete show list; please retry"})
 			return
 		}
+		a.registerShowIdentities(rows, inst.ServerID, true, identities)
+		rows = a.parentalFilterServerItems(r, inst.Client, rows)
 		for _, item := range rows {
 			episode := deepCloneMap(item)
 			seasonNum, okSeason := numericInt(episode["ParentIndexNumber"])
@@ -316,6 +322,7 @@ func (a *App) handleShowsEpisodes(w http.ResponseWriter, r *http.Request) {
 	items := make([]map[string]any, 0, len(entries)+len(unkeyed))
 	for _, entry := range entries {
 		preservedID, _ := entry.Item["Id"].(string)
+		a.recordShowDisplaySource(entry.Item, preservedID, entry.ServerID)
 		delete(entry.Item, "_originalId")
 		delete(entry.Item, "Id")
 		rewriteResponseIDs(entry.Item, entry.ServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
@@ -324,19 +331,18 @@ func (a *App) handleShowsEpisodes(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, entry := range unkeyed {
 		preservedID, _ := entry.Item["Id"].(string)
+		a.recordShowDisplaySource(entry.Item, preservedID, entry.ServerID)
 		delete(entry.Item, "_originalId")
 		delete(entry.Item, "Id")
 		rewriteResponseIDs(entry.Item, entry.ServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 		entry.Item["Id"] = preservedID
 		items = append(items, entry.Item)
 	}
-	// Seasons and episodes carry per-user UserData: for a regular user the local
-	// record wins over the shared upstream account's state. The parental filter
-	// runs first, with parent-chain inheritance for rating-less episode DTOs
-	// (plan §8.3/§8.4).
-	items = a.parentalFilterItems(r, items)
 	a.overlayLocalUserDataItems(r, items)
-	writeJSON(w, http.StatusOK, paginateItems(items, r.URL.Query()))
+	payload := paginateItems(items, r.URL.Query())
+	if a.parentalResponseReady(w, r, payload) {
+		writeJSON(w, http.StatusOK, payload)
+	}
 }
 
 func (a *App) handleSearchHints(w http.ResponseWriter, r *http.Request) {
@@ -368,14 +374,17 @@ func (a *App) handleSearchHints(w http.ResponseWriter, r *http.Request) {
 			collected = append(collected, *result)
 		}
 	}
+	collected = a.parentalVisibleResults(r, collected)
 	merged := a.mergeRoundRobinItems(collected, a.clientFacingUserIDFor(r))
-	merged = a.parentalFilterItems(r, merged)
 
 	a.overlayLocalUserDataItems(r, merged)
-	writeJSON(w, http.StatusOK, map[string]any{
+	payload := map[string]any{
 		"SearchHints":      toAnySlice(merged),
 		"TotalRecordCount": len(merged),
-	})
+	}
+	if a.parentalResponseReady(w, r, payload) {
+		writeJSON(w, http.StatusOK, payload)
+	}
 }
 
 // imageSourceUsable reports whether a recorded display/image source may still

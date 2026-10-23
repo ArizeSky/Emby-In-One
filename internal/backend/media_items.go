@@ -29,6 +29,9 @@ func (a *App) maxRatingFor(r *http.Request) int {
 // parentalPolicyFor returns the requesting user's ceiling and block-unrated flag.
 // Both are zero/false for admins and unknown users (no restriction).
 func (a *App) parentalPolicyFor(r *http.Request) (int, bool) {
+	if rc := requestContextFrom(r.Context()); rc != nil && rc.Parental != nil {
+		return rc.Parental.maxRating, rc.Parental.blockUnrated
+	}
 	if a.UserStore == nil {
 		return 0, false
 	}
@@ -101,9 +104,12 @@ func (a *App) handleItemsCollection(w http.ResponseWriter, r *http.Request) {
 		gracePeriod:   time.Duration(cfg.Timeouts.SearchGracePeriod) * time.Millisecond,
 		globalTimeout: globalTimeout,
 	}, tasks)
+	collected = a.parentalVisibleResults(r, collected)
 	merged := a.mergedItemsPayload(collected, a.clientFacingUserIDFor(r))
 	items := asItems(merged)
-	items = a.parentalFilterItems(r, items)
+	if !a.parentalResponseReady(w, r, merged) {
+		return
+	}
 	merged["Items"] = toAnySlice(items)
 	merged["TotalRecordCount"] = len(items)
 	if localFilter {
@@ -164,14 +170,19 @@ func (a *App) handleUserItems(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadGateway, map[string]any{"message": err.Error()})
 			return
 		}
-		items := a.rewriteItems(asItems(payload), resolved.ServerID, a.clientFacingUserIDFor(r))
+		items := a.parentalFilterServerItems(r, resolved.Client, asItems(payload))
+		a.rewriteItems(items, resolved.ServerID, a.clientFacingUserIDFor(r))
 		// Sparse list DTOs may omit the rating fields entirely; the unified
 		// filter confirms missing ratings (with parent inheritance) instead of
 		// reading "absent" as "unrated" (plan §8.3/§8.4).
-		items = a.parentalFilterItems(r, items)
+		if !a.parentalResponseReady(w, r, payload) {
+			return
+		}
 		if m, ok := payload.(map[string]any); ok {
 			m["Items"] = toAnySlice(items)
-			m["TotalRecordCount"] = len(items)
+			if a.parentalSessionFor(r).restricted() {
+				m["TotalRecordCount"] = len(items)
+			}
 		}
 		if localFilter {
 			kept, recency := a.filterItemsByLocalUserState(r, items, filter)
@@ -196,7 +207,12 @@ func (a *App) handleUserItems(w http.ResponseWriter, r *http.Request) {
 	if hidden := a.hiddenLibrariesFor(requestContextFrom(r.Context())); len(hidden) > 0 {
 		dropHiddenLibraryViews(results, hidden)
 	}
+	results = a.parentalVisibleResults(r, results)
 	merged := a.mergedItemsPayload(results, a.clientFacingUserIDFor(r))
+	if !a.parentalResponseReady(w, r, merged) {
+		return
+	}
+	incomplete = incomplete || w.Header().Get("X-EIO-Results-Incomplete") != ""
 	if items, ok := merged["Items"].([]any); ok {
 		asMaps := make([]map[string]any, 0, len(items))
 		for _, item := range items {
@@ -208,7 +224,6 @@ func (a *App) handleUserItems(w http.ResponseWriter, r *http.Request) {
 		// restricted user must not see an over-ceiling item just because they
 		// browsed the root instead of a library (plan §8.4). Sparse DTOs are
 		// confirmed through the unified filter, not treated as unrated.
-		asMaps = a.parentalFilterItems(r, asMaps)
 		if localFilter {
 			kept, recency := a.filterItemsByLocalUserState(r, asMaps, filter)
 			localItemSort(kept, r.URL.Query(), recency)
@@ -245,10 +260,12 @@ func (a *App) handleUserItemsLatest(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadGateway, map[string]any{"message": err.Error()})
 			return
 		}
-		items := asItems(payload)
+		items := a.parentalFilterServerItems(r, resolved.Client, asItems(payload))
 		a.rewriteItems(items, resolved.ServerID, a.clientFacingUserIDFor(r))
 		a.overlayLocalUserDataItems(r, items)
-		items = a.parentalFilterItems(r, items)
+		if !a.parentalResponseReady(w, r, nil) {
+			return
+		}
 		writeJSON(w, http.StatusOK, items)
 		return
 	}
@@ -272,9 +289,7 @@ func (a *App) handleUserItemsLatest(w http.ResponseWriter, r *http.Request) {
 				if err != nil {
 					return upstreamItemsResult{Err: err, Complete: false}
 				}
-				items := asItems(payload)
-				a.rewriteItems(items, c.ID, a.clientFacingUserIDFor(r))
-				return upstreamItemsResult{ServerID: c.ID, Items: items, Complete: true}
+				return upstreamItemsResult{ServerID: c.ID, Items: asItems(payload), Complete: true}
 			},
 		}
 	}
@@ -285,9 +300,13 @@ func (a *App) handleUserItemsLatest(w http.ResponseWriter, r *http.Request) {
 	}, tasks)
 	allItems := make([]map[string]any, 0)
 	for _, result := range collected {
-		allItems = append(allItems, result.Items...)
+		items := a.parentalFilterServerItems(r, a.Upstream.ClientByID(result.ServerID), result.Items)
+		a.rewriteItems(items, result.ServerID, a.clientFacingUserIDFor(r))
+		allItems = append(allItems, items...)
 	}
-	allItems = a.parentalFilterItems(r, allItems)
+	if !a.parentalResponseReady(w, r, nil) {
+		return
+	}
 	a.overlayLocalUserDataItems(r, allItems)
 	if report.Incomplete {
 		markIncompleteResultsHeader(w)
@@ -379,11 +398,14 @@ func (a *App) handleItemSimilar(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg := a.ConfigStore.Snapshot()
-	rewriteResponseIDs(payload, resolved.ServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 	// The recommendation list is content: filter it through the unified
 	// parental read path before it reaches the client (plan §8.4).
 	if m, ok := payload.(map[string]any); ok {
-		a.parentalFilterPayloadItems(r, m)
+		a.parentalFilterServerPayloadItems(r, resolved.Client, m)
+	}
+	rewriteResponseIDs(payload, resolved.ServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
+	if !a.parentalResponseReady(w, r, payload) {
+		return
 	}
 	a.overlayLocalUserDataItems(r, asItems(payload))
 	writeJSON(w, http.StatusOK, payload)
@@ -410,11 +432,14 @@ func (a *App) handleItemThemeMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg := a.ConfigStore.Snapshot()
-	rewriteResponseIDs(payload, resolved.ServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 	// Theme videos/songs are content items nested under three result keys;
 	// every nested list is filtered before the payload is returned (plan §8.4).
 	if m, ok := payload.(map[string]any); ok {
-		a.parentalFilterPayloadItems(r, m)
+		a.parentalFilterServerPayloadItems(r, resolved.Client, m)
+	}
+	rewriteResponseIDs(payload, resolved.ServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
+	if !a.parentalResponseReady(w, r, payload) {
+		return
 	}
 	writeJSON(w, http.StatusOK, payload)
 }
@@ -434,6 +459,9 @@ func (a *App) fetchItemsAcrossUpstreams(ctx context.Context, reqCtx *RequestCont
 	// page request against every server draws from it, so a large multi-server
 	// library cannot fan out into unbounded upstream traffic.
 	budget := newCatalogRequestBudget()
+	if reqCtx != nil && reqCtx.Parental != nil {
+		budget = reqCtx.Parental.catalog
+	}
 
 	tasks := make([]upstreamTask, len(clients))
 	for i, client := range clients {
@@ -456,6 +484,9 @@ func (a *App) fetchItemsAcrossUpstreams(ctx context.Context, reqCtx *RequestCont
 	}
 
 	grace := time.Duration(cfg.Timeouts.SearchGracePeriod) * time.Millisecond
+	if reqCtx != nil && reqCtx.Parental != nil && reqCtx.Parental.restricted() {
+		grace = 0
+	}
 	// A pagedScan upstream answers in several sequential pages; an early grace
 	// return would hand back only the fast servers' first page and silently drop
 	// the paging server's tail (plan §6.2). Wait for every task (bounded by the
