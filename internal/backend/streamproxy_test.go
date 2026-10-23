@@ -63,3 +63,44 @@ func TestRewriteM3U8ForItemDropsUpstreamPathPrefix(t *testing.T) {
 		t.Fatalf("the upstream deployment prefix survived: %s", output)
 	}
 }
+
+func TestRewriteM3U8QuotedURIAttributesPreserveSyntaxAndCoverage(t *testing.T) {
+	input := strings.Join([]string{
+		"#EXTM3U",
+		`#EXT-X-KEY:METHOD=AES-128,URI="key.bin",IV=0x1234`,
+		`#EXT-X-MAP:URI="init.mp4",BYTERANGE="720@0"`,
+		`#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",URI="audio.m3u8"`,
+		`#EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=128000,URI="iframe.m3u8"`,
+		`#EXT-X-SESSION-DATA:DATA-ID="com.example",URI="session.json"`,
+		`#EXT-X-PART:DURATION=0.5,URI="part.m4s",INDEPENDENT=YES`,
+		`#EXT-X-PRELOAD-HINT:TYPE=PART,URI="next.m4s"`,
+		`#EXT-X-RENDITION-REPORT:URI="rendition.m3u8",LAST-MSN=12`,
+		`#EXT-X-CONTENT-STEERING:SERVER-URI="steering.json",PATHWAY-ID="cdn-a"`,
+	}, "\n")
+	want := strings.Join([]string{
+		"#EXTM3U",
+		`#EXT-X-KEY:METHOD=AES-128,URI="/Videos/virtual-item/key.bin?api_key=proxy-token",IV=0x1234`,
+		`#EXT-X-MAP:URI="/Videos/virtual-item/init.mp4?api_key=proxy-token",BYTERANGE="720@0"`,
+		`#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",URI="/Videos/virtual-item/audio.m3u8?api_key=proxy-token"`,
+		`#EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=128000,URI="/Videos/virtual-item/iframe.m3u8?api_key=proxy-token"`,
+		`#EXT-X-SESSION-DATA:DATA-ID="com.example",URI="/Videos/virtual-item/session.json?api_key=proxy-token"`,
+		`#EXT-X-PART:DURATION=0.5,URI="/Videos/virtual-item/part.m4s?api_key=proxy-token",INDEPENDENT=YES`,
+		`#EXT-X-PRELOAD-HINT:TYPE=PART,URI="/Videos/virtual-item/next.m4s?api_key=proxy-token"`,
+		`#EXT-X-RENDITION-REPORT:URI="/Videos/virtual-item/rendition.m3u8?api_key=proxy-token",LAST-MSN=12`,
+		`#EXT-X-CONTENT-STEERING:SERVER-URI="/Videos/virtual-item/steering.json?api_key=proxy-token",PATHWAY-ID="cdn-a"`,
+	}, "\n")
+	got, err := RewriteM3U8ForItemStrict(input, "https://upstream.example/Videos/123/master.m3u8", "virtual-item", "proxy-token")
+	if err != nil {
+		t.Fatalf("rewrite: %v", err)
+	}
+	if got != want {
+		t.Fatalf("rewritten manifest syntax mismatch\n got: %q\nwant: %q", got, want)
+	}
+}
+
+func TestRewriteM3U8RejectsUnknownURIAttributeTag(t *testing.T) {
+	input := `#EXT-X-UNKNOWN:URI="https://attacker.example/playlist.m3u8"`
+	if _, err := RewriteM3U8ForItemStrict(input, "https://upstream.example/master.m3u8", "item", "token"); err != errUnsupportedHLSURIAttribute {
+		t.Fatalf("unknown URI-bearing tag error = %v, want %v", err, errUnsupportedHLSURIAttribute)
+	}
+}

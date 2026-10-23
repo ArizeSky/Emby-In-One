@@ -138,3 +138,79 @@ func TestResourceConcurrentManifestReuse(t *testing.T) {
 		t.Fatalf("size=%d", a.StreamResources.size())
 	}
 }
+
+func TestResourceRewritePreservesURIAttributeSyntax(t *testing.T) {
+	a := &App{StreamResources: newStreamResourceStore()}
+	manifest := strings.Join([]string{
+		"#EXTM3U",
+		`#EXT-X-KEY:METHOD=AES-128,URI="key.bin",IV=0x1234`,
+		`#EXT-X-MAP:URI="init.mp4",BYTERANGE="720@0"`,
+		`#EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=128000,URI="iframe.m3u8"`,
+		`#EXT-X-SESSION-DATA:DATA-ID="com.example",URI="session.json"`,
+		`#EXT-X-PART:DURATION=0.5,URI="part.m4s",INDEPENDENT=YES`,
+		`#EXT-X-PRELOAD-HINT:TYPE=PART,URI="next.m4s"`,
+		`#EXT-X-RENDITION-REPORT:URI="rendition.m3u8",LAST-MSN=12`,
+		`#EXT-X-CONTENT-STEERING:SERVER-URI="steering.json",PATHWAY-ID="cdn-a"`,
+	}, "\n")
+	got, err := a.RewriteM3U8ForItemWithResources(manifest, "https://cdn.example/Videos/123/master.m3u8", "proxy-token", resourceRewriteContext{
+		UserID: "admin-id", VirtualItemID: "movie", ServerID: "server", OriginalID: "original",
+	})
+	if err != nil {
+		t.Fatalf("rewrite: %v", err)
+	}
+	lines := strings.Split(got, "\n")
+	tests := []struct {
+		line   int
+		prefix string
+		suffix string
+	}{
+		{1, `#EXT-X-KEY:METHOD=AES-128,URI="`, `",IV=0x1234`},
+		{2, `#EXT-X-MAP:URI="`, `",BYTERANGE="720@0"`},
+		{3, `#EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=128000,URI="`, `"`},
+		{4, `#EXT-X-SESSION-DATA:DATA-ID="com.example",URI="`, `"`},
+		{5, `#EXT-X-PART:DURATION=0.5,URI="`, `",INDEPENDENT=YES`},
+		{6, `#EXT-X-PRELOAD-HINT:TYPE=PART,URI="`, `"`},
+		{7, `#EXT-X-RENDITION-REPORT:URI="`, `",LAST-MSN=12`},
+		{8, `#EXT-X-CONTENT-STEERING:SERVER-URI="`, `",PATHWAY-ID="cdn-a"`},
+	}
+	for _, tc := range tests {
+		line := lines[tc.line]
+		attrs, parseErr := extractHLSURIAttributes(line)
+		if parseErr != nil || len(attrs) != 1 {
+			t.Fatalf("line %q parsed as %#v, %v", line, attrs, parseErr)
+		}
+		attr := attrs[0]
+		if line[:attr.valueStart] != tc.prefix || line[attr.valueEnd:] != tc.suffix {
+			t.Fatalf("attribute boundaries damaged: %q", line)
+		}
+		if !strings.HasPrefix(attr.value, "/Videos/movie/eio-resource/") || !strings.HasSuffix(attr.value, "?api_key=proxy-token") {
+			t.Fatalf("URI not rewritten to an authenticated local handle: %q", attr.value)
+		}
+	}
+}
+
+func TestResourceRewriteRejectsUnsupportedURIsAndRequiresStableIdentity(t *testing.T) {
+	a := &App{StreamResources: newStreamResourceStore()}
+	ctx := resourceRewriteContext{UserID: "admin", VirtualItemID: "movie", ServerID: "server", OriginalID: "original"}
+	if _, err := a.RewriteM3U8ForItemWithResources(`#EXT-X-UNKNOWN:URI="https://cdn.example/list.m3u8"`, "https://cdn.example/master.m3u8", "", ctx); err != errUnsupportedHLSURIAttribute {
+		t.Fatalf("unsupported tag error = %v", err)
+	}
+	if _, err := a.RewriteM3U8ForItemWithResources("skd://key", "https://cdn.example/master.m3u8", "", ctx); err != errUnsupportedResourceScheme {
+		t.Fatalf("unsupported scheme error = %v", err)
+	}
+	adminContext := &RequestContext{ProxyUser: &tokenInfo{Role: "admin"}}
+	if got := streamResourceUserID(adminContext); got != "admin" || got != streamResourceUserID(adminContext) {
+		t.Fatalf("admin resource identity = %q, want stable admin identity", got)
+	}
+	if _, err := a.RewriteM3U8ForItemWithResources("segment.ts", "https://cdn.example/master.m3u8", "", resourceRewriteContext{}); err != errMissingResourceIdentity {
+		t.Fatalf("missing identity error = %v", err)
+	}
+}
+
+func TestResourceCapacityErrorIsRetryable(t *testing.T) {
+	w := httptest.NewRecorder()
+	writeStreamResourceRewriteError(w, errResourceStoreFull)
+	if w.Code != 503 || w.Header().Get("Retry-After") != "5" || w.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("capacity response = status %d, headers %#v", w.Code, w.Header())
+	}
+}

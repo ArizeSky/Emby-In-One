@@ -203,7 +203,7 @@ func TestPlaybackInfoAndMasterPlaylistProxy(t *testing.T) {
 			})
 		case r.Method == http.MethodGet && r.URL.Path == "/Videos/episode-1/master.m3u8":
 			w.Header().Set("Content-Type", "application/x-mpegURL")
-			_, _ = w.Write([]byte("#EXTM3U\nsegment1.ts\nhttps://cdn.example/Videos/episode-1/hls1/main/seg.ts?foo=1&api_key=upstream-token\n"))
+			_, _ = fmt.Fprintf(w, "#EXTM3U\nsegment1.ts\nhttp://%s/Videos/episode-1/hls1/main/seg.ts?foo=1&api_key=upstream-token\n", r.Host)
 		case r.Method == http.MethodGet && r.URL.Path == "/Videos/episode-1/segment1.ts":
 			_, _ = w.Write([]byte("segment-one"))
 		case r.Method == http.MethodGet && r.URL.Path == "/Videos/episode-1/hls1/main/seg.ts":
@@ -252,24 +252,27 @@ func TestPlaybackInfoAndMasterPlaylistProxy(t *testing.T) {
 		if strings.Contains(strings.ToLower(body), "localhost") || strings.Contains(body, "127.0.0.1") {
 			t.Fatalf("playlist should not contain a host: %s", body)
 		}
-		if !strings.Contains(body, "/Videos/"+virtualEpisode+"/segment1.ts?api_key="+token) {
-			t.Fatalf("playlist missing rewritten relative segment path: %s", body)
+		segments := strings.Split(body, "\n")
+		if len(segments) < 3 {
+			t.Fatalf("playlist has fewer than two media URIs: %s", body)
 		}
-		// A segment that arrived as an absolute CDN URL must also come back as a
-		// proxy-relative path carrying the proxy token — never the upstream host.
-		if !strings.Contains(body, "/Videos/"+virtualEpisode+"/hls1/main/seg.ts?") || strings.Contains(body, "cdn.example") {
-			t.Fatalf("playlist missing rewritten absolute segment path or still has upstream host: %s", body)
+		segmentOnePath, segmentTwoPath := segments[1], segments[2]
+		for _, segmentPath := range []string{segmentOnePath, segmentTwoPath} {
+			if !strings.HasPrefix(segmentPath, "/Videos/"+virtualEpisode+"/eio-resource/") || !strings.Contains(segmentPath, "?api_key="+token) {
+				t.Fatalf("playlist URI is not a local authenticated resource handle: %q", segmentPath)
+			}
 		}
 		if strings.Contains(body, "api_key=upstream-token") {
 			t.Fatalf("playlist still has upstream token: %s", body)
 		}
 
-		segmentRR := doJSONRequest(t, handler, http.MethodGet, "/Videos/"+virtualEpisode+"/segment1.ts?api_key="+token, nil, "")
-		if segmentRR.Code != http.StatusOK {
-			t.Fatalf("segment status = %d, body=%s", segmentRR.Code, segmentRR.Body.String())
+		segmentOne := doJSONRequest(t, handler, http.MethodGet, segmentOnePath, nil, "")
+		if segmentOne.Code != http.StatusOK || segmentOne.Body.String() != "segment-one" {
+			t.Fatalf("first segment via resource: status=%d body=%q", segmentOne.Code, segmentOne.Body.String())
 		}
-		if segmentRR.Body.String() != "segment-one" {
-			t.Fatalf("unexpected segment body: %q", segmentRR.Body.String())
+		segmentTwo := doJSONRequest(t, handler, http.MethodGet, segmentTwoPath, nil, "")
+		if segmentTwo.Code != http.StatusOK || segmentTwo.Body.String() != "segment-two" {
+			t.Fatalf("absolute CDN segment via resource: status=%d body=%q", segmentTwo.Code, segmentTwo.Body.String())
 		}
 	})
 }

@@ -144,9 +144,20 @@ func TestHLSTimelineProxyResolvesVirtualSessionEndToEnd(t *testing.T) {
 		if rr.Code != 200 {
 			t.Fatalf("manifest status=%d", rr.Code)
 		}
-		rr = doJSONRequest(t, handler, "GET", prefix+"1.mp4?PlaySessionId="+session+"&api_key="+token, nil, "")
+		manifestLines := strings.Split(rr.Body.String(), "\n")
+		segmentPath := manifestLines[4]
+		if !strings.HasPrefix(segmentPath, "/Videos/"+item+"/eio-resource/") {
+			t.Fatalf("authenticated HLS segment did not use a local resource handle: %q", segmentPath)
+		}
+		rr = doJSONRequest(t, handler, "GET", segmentPath, nil, "")
 		if rr.Code != 200 || rr.Body.Len() != len(original) {
 			t.Fatalf("segment status/length=%d/%d", rr.Code, rr.Body.Len())
+		}
+		if got := tfdtValueAt(t, rr.Body.Bytes(), 1); got != 3*12800 {
+			t.Fatalf("64-bit tfdt=%d", got)
+		}
+		if tfdtValueAt(t, original, 1) != 0 {
+			t.Fatal("upstream fixture was mutated")
 		}
 		if got := tfdtValueAt(t, rr.Body.Bytes(), 1); got != 3*12800 {
 			t.Fatalf("64-bit tfdt=%d", got)

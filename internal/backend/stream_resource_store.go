@@ -14,20 +14,21 @@ const (
 )
 
 type streamResourceEntry struct {
-	UserID        string
-	VirtualItemID string
-	ServerID      string
-	OriginalID    string
-	ResourceURL   string
-	ExpiresAt     time.Time
-	pinned        bool
-	retireAt      time.Time
+	UserID          string
+	VirtualItemID   string
+	ServerID        string
+	OriginalID      string
+	ResourceURL     string
+	TimelineSession string
+	ExpiresAt       time.Time
+	pinned          bool
+	retireAt        time.Time
 }
 
-type resourceSessionKey struct{ user, item, server, original string }
+type resourceSessionKey struct{ user, item, server, original, timeline string }
 
 func (e streamResourceEntry) sessionKey() resourceSessionKey {
-	return resourceSessionKey{e.UserID, e.VirtualItemID, e.ServerID, e.OriginalID}
+	return resourceSessionKey{e.UserID, e.VirtualItemID, e.ServerID, e.OriginalID, e.TimelineSession}
 }
 
 type resourceSession struct {

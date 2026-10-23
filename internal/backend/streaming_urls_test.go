@@ -248,16 +248,18 @@ func TestHLSManifestRoutesSegmentsThroughProxyWithStreamingURL(t *testing.T) {
 			t.Fatalf("status = %d, want 200, body=%s", rr.Code, rr.Body.String())
 		}
 		body := rr.Body.String()
-		want := "/Videos/" + virtual + "/segment1.ts?api_key=" + token
-		if !strings.Contains(body, want) {
-			t.Fatalf("manifest missing proxy-relative segment %q: %s", want, body)
+		lines := strings.Split(body, "\n")
+		segmentPath := lines[1]
+		if !strings.HasPrefix(segmentPath, "/Videos/"+virtual+"/eio-resource/") || !strings.Contains(segmentPath, "?api_key="+token) {
+			t.Fatalf("manifest missing authenticated local resource handle: %s", body)
 		}
 		if strings.Contains(body, "127.0.0.1") {
 			t.Fatalf("a host survived into the client-facing manifest: %s", body)
 		}
 
-		// The rewritten segment must actually play through the proxy.
-		segment := httptest.NewRequest(http.MethodGet, want, nil)
+		// The rewritten resource handle must actually relay bytes through the
+		// configured streaming URL.
+		segment := httptest.NewRequest(http.MethodGet, segmentPath, nil)
 		segmentRR := httptest.NewRecorder()
 		handler.ServeHTTP(segmentRR, segment)
 		if segmentRR.Code != http.StatusOK || segmentRR.Body.String() != "segment-body" {

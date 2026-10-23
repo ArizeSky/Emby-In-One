@@ -454,124 +454,147 @@ func (a *App) handleItemImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	imageType := r.PathValue("imageType")
-	imageClient := resolved.Client
-	imageOriginalID := resolved.OriginalID
-	// Route to the display-winning instance recorded by the merge: the merged DTO's
-	// non-Primary image tags belong to that server, not necessarily the IDStore
-	// primary (plan §6.4.2). A matching tag below can still override to a sibling
-	// that owns the exact requested tag. Both hints are re-confirmed against the
-	// live aggregation switch and the user's grants: a paused, offline or
-	// unauthorized source is skipped and the resolved candidate serves the bytes
-	// instead — a historical hint is routing advice, never a permission.
-	if src, ok := a.IDStore.ResolveDisplaySource(r.PathValue("itemId")); ok {
-		if a.imageSourceUsable(reqCtx, authenticated, src.ServerID) {
-			imageClient = a.Upstream.ClientByID(src.ServerID)
-			imageOriginalID = src.OriginalID
-		}
-	}
-	// The merged DTO can advertise a sibling copy's poster tag while keeping its
-	// own virtual id (plan §6.4.1). Fetch the bytes from the server that actually
-	// owns that tag instead of the primary, which 404s (plan §6.4.2). An unusable
-	// hinted source is skipped the same way: the tag routes a fetch, it does not
-	// grant access, so the request falls back to the current candidate instead of
-	// failing or querying a paused node.
-	if tag := r.URL.Query().Get("tag"); tag != "" {
-		if src, ok := a.IDStore.ResolveImageSource(r.PathValue("itemId"), imageType, tag); ok {
-			if a.imageSourceUsable(reqCtx, authenticated, src.ServerID) {
-				imageClient = a.Upstream.ClientByID(src.ServerID)
-				imageOriginalID = src.OriginalID
-			}
-		}
-	}
-	// For an authenticated request, enforce the user's live parental policy on the
-	// actual copy the bytes come from (plan §8.8): a denied copy is 403, an
-	// unconfirmable rating is 502, and neither is cached.
-	if authenticated {
-		allowed, confirmed := a.checkInstanceParentalAccess(r, imageClient, imageOriginalID)
-		if !allowed {
-			w.Header().Set("Cache-Control", "no-store")
-			if !confirmed {
-				w.WriteHeader(http.StatusBadGateway)
-			} else {
-				writeJSON(w, http.StatusForbidden, map[string]any{"message": "Access denied"})
-			}
+	type imageCandidate struct{ serverID, originalID string }
+	var candidates []imageCandidate
+	seen := make(map[string]bool)
+	appendCandidate := func(serverID, originalID string) {
+		if serverID == "" || originalID == "" {
 			return
 		}
-	}
-	imagePath := "/Items/" + imageOriginalID + "/Images/" + imageType
-	if imageIndex := r.PathValue("imageIndex"); imageIndex != "" {
-		imagePath += "/" + imageIndex
-	}
-	imageQuery := cloneValues(r.URL.Query())
-	// Never forward a client credential to the upstream; the auth snapshot adds
-	// the real one. Strip every casing of the token query keys (plan §5.2/§8.8).
-	stripProxyCredentialQuery(imageQuery)
-	resp, err := imageClient.Stream(r.Context(), reqCtx, a.Identity, imagePath, imageQuery)
-	if err != nil {
-		w.Header().Set("Cache-Control", "no-store")
-		w.WriteHeader(http.StatusBadGateway)
-		return
-	}
-	// Images ride the stream request path, which stops at redirects when
-	// directRedirect is enabled so the playback handler can classify each hop.
-	// The image handler has no such contract with the client: a 123-style
-	// upstream answers poster requests with a 302 to the netdisk's image CDN,
-	// and forwarding it while dropping the Location header leaves the client a
-	// broken image. Follow the hops here instead — posters are small, so
-	// relaying them through this proxy is cheap.
-	// followRedirects off keeps the rc3 failure semantics for images too (plan
-	// §7.4): a poster that answers with a redirect is reported as a 502 rather
-	// than being silently followed or handed to the client as a Location-less 3xx.
-	if isRedirectStatus(resp.StatusCode) && !imageClient.Config.FollowRedirects {
-		resp.Body.Close()
-		w.Header().Set("Cache-Control", "no-store")
-		w.WriteHeader(http.StatusBadGateway)
-		return
-	}
-	for hop := 0; isRedirectStatus(resp.StatusCode) && hop < maxStreamRedirectHops; hop++ {
-		location := resp.Header.Get("Location")
-		if location == "" {
-			break
+		key := serverID + "\x00" + originalID
+		if seen[key] {
+			return
 		}
-		var base *url.URL
-		if resp.Request != nil {
-			base = resp.Request.URL
+		seen[key] = true
+		candidates = append(candidates, imageCandidate{serverID: serverID, originalID: originalID})
+	}
+	tag := r.URL.Query().Get("tag")
+	tagOwner := imageCandidate{}
+	hasTagOwner := false
+	if tag != "" {
+		if src, ok := a.IDStore.ResolveImageSource(r.PathValue("itemId"), imageType, tag); ok {
+			tagOwner = imageCandidate{serverID: src.ServerID, originalID: src.OriginalID}
+			hasTagOwner = true
+			appendCandidate(src.ServerID, src.OriginalID)
 		}
-		abs, rerr := resolveRedirectTarget(base, location)
-		if rerr != nil || abs == nil {
-			break
+	}
+	if src, ok := a.IDStore.ResolveDisplaySource(r.PathValue("itemId")); ok {
+		appendCandidate(src.ServerID, src.OriginalID)
+	}
+	appendCandidate(resolved.ServerID, resolved.OriginalID)
+	for _, src := range resolved.OtherInstances {
+		appendCandidate(src.ServerID, src.OriginalID)
+	}
+
+	var resp *http.Response
+	parentalDenied := false
+	for _, candidate := range candidates {
+		if r.Context().Err() != nil {
+			return
 		}
-		followed, ferr := imageClient.fetchRedirectTarget(r.Context(), abs.String(), nil)
-		if ferr != nil {
-			if errors.Is(ferr, context.Canceled) || errors.Is(ferr, context.DeadlineExceeded) {
+		client := a.Upstream.ClientByID(candidate.serverID)
+		if !a.imageSourceUsable(reqCtx, authenticated, candidate.serverID) || client == nil {
+			continue
+		}
+		if authenticated {
+			allowed, confirmed := a.checkInstanceParentalAccess(r, client, candidate.originalID)
+			if r.Context().Err() != nil {
 				return
 			}
+			if !confirmed {
+				w.Header().Set("Cache-Control", "no-store")
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
+			if !allowed {
+				parentalDenied = true
+				continue
+			}
+		}
+		imagePath := "/Items/" + candidate.originalID + "/Images/" + imageType
+		if imageIndex := r.PathValue("imageIndex"); imageIndex != "" {
+			imagePath += "/" + imageIndex
+		}
+		imageQuery := cloneValues(r.URL.Query())
+		stripProxyCredentialQuery(imageQuery)
+		if !hasTagOwner || candidate != tagOwner {
+			// A tag belongs to its recorded source only. Reusing it on another
+			// copy can turn a valid fallback into a stale 404 or validator hit.
+			imageQuery.Del("tag")
+		}
+		var err error
+		resp, err = client.Stream(r.Context(), reqCtx, a.Identity, imagePath, imageQuery)
+		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return
+			}
+			w.Header().Set("Cache-Control", "no-store")
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		if isRedirectStatus(resp.StatusCode) && !client.Config.FollowRedirects {
 			resp.Body.Close()
 			w.Header().Set("Cache-Control", "no-store")
 			w.WriteHeader(http.StatusBadGateway)
 			return
 		}
-		resp.Body.Close()
-		resp = followed
+		for hop := 0; isRedirectStatus(resp.StatusCode) && hop < maxStreamRedirectHops; hop++ {
+			location := resp.Header.Get("Location")
+			if location == "" {
+				break
+			}
+			var base *url.URL
+			if resp.Request != nil {
+				base = resp.Request.URL
+			}
+			abs, rerr := resolveRedirectTarget(base, location)
+			if rerr != nil || abs == nil {
+				break
+			}
+			followed, ferr := client.fetchRedirectTarget(r.Context(), abs.String(), nil)
+			if ferr != nil {
+				resp.Body.Close()
+				if errors.Is(ferr, context.Canceled) || errors.Is(ferr, context.DeadlineExceeded) {
+					return
+				}
+				w.Header().Set("Cache-Control", "no-store")
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
+			resp.Body.Close()
+			resp = followed
+		}
+		if isRedirectStatus(resp.StatusCode) {
+			resp.Body.Close()
+			w.Header().Set("Cache-Control", "no-store")
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		if resp.StatusCode == http.StatusNotFound {
+			resp.Body.Close()
+			resp = nil
+			continue
+		}
+		break
 	}
-	defer resp.Body.Close()
-	// A chain that never resolves to real bytes (missing/invalid Location, hop
-	// limit) must not be handed to the client as a Location-less 3xx.
-	if isRedirectStatus(resp.StatusCode) {
+	if resp == nil {
 		w.Header().Set("Cache-Control", "no-store")
-		w.WriteHeader(http.StatusBadGateway)
+		if parentalDenied {
+			writeJSON(w, http.StatusForbidden, map[string]any{"message": "Access denied"})
+		} else {
+			w.WriteHeader(http.StatusNotFound)
+		}
 		return
 	}
-	// Cache policy (plan §8.8): every error is no-store (never cache a 404 for a
-	// day); an authenticated success is private and re-validated; an anonymous
-	// success is the one public, cacheable case.
+	defer resp.Body.Close()
+	// A 304 is reached only after current source, grant and rating checks.
 	switch {
 	case resp.StatusCode >= 400:
 		w.Header().Set("Cache-Control", "no-store")
 	case authenticated:
 		w.Header().Set("Cache-Control", "private, no-store")
 	default:
-		w.Header().Set("Cache-Control", "public, max-age=86400")
+		w.Header().Set("Cache-Control", "public, max-age=0, must-revalidate")
 	}
 	for _, header := range []string{"Content-Type", "Content-Length", "ETag", "Last-Modified", "Content-Range"} {
 		if value := resp.Header.Get(header); value != "" {

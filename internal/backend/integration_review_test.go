@@ -51,7 +51,7 @@ func TestIntegrationReviewImageAuthAndCacheBoundary(t *testing.T) {
 		}{
 			{"invalid-token", good, "invalid", "no-store", 401},
 			{"authenticated-success", good, token, "private, no-store", 200},
-			{"anonymous-success", good, "", "public, max-age=86400", 200},
+			{"anonymous-success", good, "", "public, max-age=0, must-revalidate", 200},
 			{"anonymous-upstream-404", missing, "", "no-store", 404},
 		} {
 			t.Run(tc.name, func(t *testing.T) {

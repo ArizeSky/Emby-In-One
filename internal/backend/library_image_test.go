@@ -293,3 +293,141 @@ func TestImageProxyFollowsRedirectUnderDirectRedirect(t *testing.T) {
 		}
 	})
 }
+
+func TestImageProxyFallsBackFromTagged404ToDisplaySource(t *testing.T) {
+	var sourceACalls, sourceBCalls atomic.Int32
+	var sourceBTag atomic.Value
+	serverA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/Users/AuthenticateByName" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"AccessToken": "token-a", "User": map[string]any{"Id": "user-a"}})
+			return
+		}
+		if r.URL.Path == "/Items/item-a/Images/Primary" {
+			sourceACalls.Add(1)
+			http.NotFound(w, r)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer serverA.Close()
+	serverB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/Users/AuthenticateByName" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"AccessToken": "token-b", "User": map[string]any{"Id": "user-b"}})
+			return
+		}
+		if r.URL.Path == "/Items/item-b/Images/Primary" {
+			sourceBCalls.Add(1)
+			sourceBTag.Store(r.URL.Query().Get("tag"))
+			w.Header().Set("Content-Type", "image/jpeg")
+			_, _ = w.Write([]byte("image-from-b"))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer serverB.Close()
+
+	withTempAppConfig(t, twoUpstreamConfig(serverA.URL, serverB.URL), func(app *App, handler http.Handler) {
+		token := loginToken(t, handler, "secret")
+		clients := app.Upstream.Clients()
+		virtualID := app.IDStore.GetOrCreateVirtualID("item-a", clients[0].ID)
+		app.IDStore.AssociateAdditionalInstance(virtualID, "item-b", clients[1].ID)
+		app.IDStore.SetImageSource(virtualID, "Primary", "poster-a", clients[0].ID, "item-a")
+		app.IDStore.SetDisplaySource(virtualID, clients[1].ID, "item-b")
+
+		rr := doJSONRequest(t, handler, http.MethodGet, "/Items/"+virtualID+"/Images/Primary?tag=poster-a", nil, token)
+		if rr.Code != http.StatusOK || rr.Body.String() != "image-from-b" {
+			t.Fatalf("fallback response = status %d body %q", rr.Code, rr.Body.String())
+		}
+		if sourceACalls.Load() != 1 || sourceBCalls.Load() != 1 {
+			t.Fatalf("source calls A/B = %d/%d, want 1/1", sourceACalls.Load(), sourceBCalls.Load())
+		}
+		if got, _ := sourceBTag.Load().(string); got != "" {
+			t.Fatalf("stale tag sent to fallback source B: %q", got)
+		}
+		if got := rr.Header().Get("Cache-Control"); got != "private, no-store" {
+			t.Fatalf("authenticated fallback cache policy = %q", got)
+		}
+	})
+}
+
+func TestImageProxyTagTypeMismatchIsNotCachedAndAnonymousRevalidates(t *testing.T) {
+	var fallbackTag atomic.Value
+	serverA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/Users/AuthenticateByName" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"AccessToken": "token-a", "User": map[string]any{"Id": "user-a"}})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer serverA.Close()
+	serverB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/Users/AuthenticateByName" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"AccessToken": "token-b", "User": map[string]any{"Id": "user-b"}})
+			return
+		}
+		if r.URL.Path == "/Items/item-b/Images/Backdrop" {
+			fallbackTag.Store(r.URL.Query().Get("tag"))
+			w.Header().Set("Content-Type", "image/jpeg")
+			_, _ = w.Write([]byte("current-backdrop"))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer serverB.Close()
+
+	withTempAppConfig(t, twoUpstreamConfig(serverA.URL, serverB.URL), func(app *App, handler http.Handler) {
+		clients := app.Upstream.Clients()
+		virtualID := app.IDStore.GetOrCreateVirtualID("item-a", clients[0].ID)
+		app.IDStore.AssociateAdditionalInstance(virtualID, "item-b", clients[1].ID)
+		app.IDStore.SetImageSource(virtualID, "Primary", "poster-a", clients[0].ID, "item-a")
+		app.IDStore.SetDisplaySource(virtualID, clients[1].ID, "item-b")
+
+		rr := doJSONRequest(t, handler, http.MethodGet, "/Items/"+virtualID+"/Images/Backdrop?tag=poster-a", nil, "")
+		if rr.Code != http.StatusOK || rr.Body.String() != "current-backdrop" {
+			t.Fatalf("type-mismatch fallback = status %d body %q", rr.Code, rr.Body.String())
+		}
+		if got, _ := fallbackTag.Load().(string); got != "" {
+			t.Fatalf("type-mismatched tag sent to source B: %q", got)
+		}
+		if got := rr.Header().Get("Cache-Control"); got != "public, max-age=0, must-revalidate" {
+			t.Fatalf("anonymous cache policy = %q", got)
+		}
+	})
+}
+
+func TestImage304RequiresCurrentlyAvailableSource(t *testing.T) {
+	var imageCalls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/Users/AuthenticateByName" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"AccessToken": "up-token", "User": map[string]any{"Id": "up-user"}})
+			return
+		}
+		if strings.Contains(r.URL.Path, "/Images/") {
+			imageCalls.Add(1)
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer upstream.Close()
+
+	withTempAppConfig(t, singleUpstreamConfig(upstream.URL), func(app *App, handler http.Handler) {
+		token := loginToken(t, handler, "secret")
+		serverID := app.Upstream.Clients()[0].ID
+		virtualID := app.IDStore.GetOrCreateVirtualID("item-a", serverID)
+		if err := app.ConfigStore.Mutate(func(cfg *Config) error {
+			for i := range cfg.Upstream {
+				if cfg.Upstream[i].ID == serverID {
+					cfg.Upstream[i].AggregationDisabled = true
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		rr := doJSONRequest(t, handler, http.MethodGet, "/Items/"+virtualID+"/Images/Primary", nil, token)
+		if rr.Code != http.StatusForbidden || rr.Code == http.StatusNotModified || imageCalls.Load() != 0 {
+			t.Fatalf("unavailable source response = status %d calls %d body %q", rr.Code, imageCalls.Load(), rr.Body.String())
+		}
+	})
+}

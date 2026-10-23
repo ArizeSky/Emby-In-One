@@ -1,9 +1,36 @@
 package backend
 
 import (
+	"errors"
 	"net/url"
 	"strings"
 )
+
+var (
+	errUnsupportedHLSURIAttribute = errors.New("unsupported HLS URI attribute")
+	errMalformedHLSAttributes     = errors.New("malformed HLS attribute list")
+)
+
+type hlsURIAttribute struct {
+	name       string
+	value      string
+	valueStart int
+	valueEnd   int
+}
+
+var hlsURIAttributesByTag = map[string]map[string]bool{
+	"EXT-X-KEY":                {"URI": true},
+	"EXT-X-SESSION-KEY":        {"URI": true},
+	"EXT-X-MAP":                {"URI": true},
+	"EXT-X-MEDIA":              {"URI": true},
+	"EXT-X-I-FRAME-STREAM-INF": {"URI": true},
+	"EXT-X-IMAGE-STREAM-INF":   {"URI": true},
+	"EXT-X-SESSION-DATA":       {"URI": true},
+	"EXT-X-PART":               {"URI": true},
+	"EXT-X-PRELOAD-HINT":       {"URI": true},
+	"EXT-X-RENDITION-REPORT":   {"URI": true},
+	"EXT-X-CONTENT-STEERING":   {"SERVER-URI": true},
+}
 
 // streamBusinessPath locates the item's stream root inside a resolved segment
 // path: the first "/Videos/" or "/Audio/" boundary. Everything before it is the
@@ -39,6 +66,16 @@ func streamBusinessPath(p string) (string, bool) {
 // by this proxy; it is passed through with upstream credentials stripped rather
 // than rewritten into a URL that could not work.
 func RewriteM3U8ForItem(content, upstreamBase, proxyItemID, proxyToken string) string {
+	rewritten, err := RewriteM3U8ForItemStrict(content, upstreamBase, proxyItemID, proxyToken)
+	if err != nil {
+		return content
+	}
+	return rewritten
+}
+
+// RewriteM3U8ForItemStrict rewrites proxy-routable references and rejects
+// unknown URI-bearing EXT-X tags instead of silently passing them through.
+func RewriteM3U8ForItemStrict(content, upstreamBase, proxyItemID, proxyToken string) (string, error) {
 	baseURL, baseErr := url.Parse(upstreamBase)
 	rewrite := func(raw string) (string, bool) {
 		resolved, err := url.Parse(raw)
@@ -53,14 +90,9 @@ func RewriteM3U8ForItem(content, upstreamBase, proxyItemID, proxyToken string) s
 			return stripUpstreamCredentials(resolved), true
 		}
 		segments := strings.Split(strings.TrimPrefix(businessPath, "/"), "/")
-		// [Videos|Audio, itemId, rest...] — a path without the rest cannot name a
-		// stream of this item, so it is left alone like any unroutable line.
 		if len(segments) < 3 {
 			return stripUpstreamCredentials(resolved), true
 		}
-		// The stream root is normalised to the capitalised form this proxy's
-		// routes are registered under: an upstream that spells it /videos/
-		// would otherwise hand the client a path only the fallback proxy sees.
 		segments[0] = canonicalStreamRoot(segments[0])
 		segments[1] = proxyItemID
 		params, _ := url.ParseQuery(resolved.RawQuery)
@@ -81,42 +113,118 @@ func RewriteM3U8ForItem(content, upstreamBase, proxyItemID, proxyToken string) s
 		if trimmed == "" {
 			continue
 		}
-		// #EXT-X-MAP:URI="0.mp4" names the fMP4 init segment. It is a comment
-		// line, but its URI must be rewritten exactly like a segment line —
-		// otherwise the player fetches it without the proxy token and the
-		// upstream answers 401 before the first frame can ever decode.
-		if strings.HasPrefix(trimmed, "#EXT-X-MAP:") {
-			if uri, start, end, ok := extractQuotedURI(line); ok {
-				if rewritten, rewritable := rewrite(uri); rewritable {
-					lines[i] = line[:start] + rewritten + line[end:]
+		if strings.HasPrefix(trimmed, "#") {
+			attrs, err := extractHLSURIAttributes(line)
+			if err != nil {
+				return "", err
+			}
+			values := make([]string, len(attrs))
+			for j, attr := range attrs {
+				values[j] = attr.value
+				if rewritten, rewritable := rewrite(attr.value); rewritable {
+					values[j] = rewritten
 				}
 			}
-			continue
-		}
-		if strings.HasPrefix(trimmed, "#") {
+			lines[i] = replaceHLSURIAttributeValues(line, attrs, values)
 			continue
 		}
 		if rewritten, ok := rewrite(trimmed); ok {
 			lines[i] = rewritten
 		}
 	}
-	return strings.Join(lines, "\n")
+	return strings.Join(lines, "\n"), nil
 }
 
-// extractQuotedURI finds the URI="..." attribute of an #EXT-X-MAP line and
-// returns the quoted value plus its byte offsets in the original line, so the
-// attribute can be replaced in place without touching the rest of the tag.
+// extractHLSURIAttributes parses fetchable URI attributes on supported HLS
+// tags. The byte ranges address only each value's contents, excluding quotes.
+func extractHLSURIAttributes(line string) ([]hlsURIAttribute, error) {
+	trimmed := strings.TrimLeft(line, " \t")
+	lineOffset := len(line) - len(trimmed)
+	if !strings.HasPrefix(trimmed, "#EXT-X-") {
+		return nil, nil
+	}
+	colon := strings.IndexByte(trimmed, ':')
+	if colon < 0 {
+		return nil, nil
+	}
+	tag := strings.ToUpper(strings.TrimSpace(trimmed[1:colon]))
+	allowed, supported := hlsURIAttributesByTag[tag]
+	attrs := make([]hlsURIAttribute, 0, 1)
+	pos := lineOffset + colon + 1
+	for pos < len(line) {
+		segmentStart := pos
+		quoted := false
+		for pos < len(line) {
+			switch line[pos] {
+			case '"':
+				quoted = !quoted
+			case ',':
+				if !quoted {
+					goto segmentEnd
+				}
+			}
+			pos++
+		}
+	segmentEnd:
+		segment := line[segmentStart:pos]
+		if strings.Count(segment, "\"")%2 != 0 {
+			return nil, errMalformedHLSAttributes
+		}
+		if eq := strings.IndexByte(segment, '='); eq >= 0 {
+			name := strings.ToUpper(strings.TrimSpace(segment[:eq]))
+			isURI := name == "URI" || name == "SERVER-URI" || name == "URL" || strings.HasSuffix(name, "-URI") || strings.HasSuffix(name, "-URL")
+			if isURI {
+				if !supported || !allowed[name] {
+					return nil, errUnsupportedHLSURIAttribute
+				}
+				valueStart := segmentStart + eq + 1
+				for valueStart < pos && (line[valueStart] == ' ' || line[valueStart] == '\t') {
+					valueStart++
+				}
+				if valueStart >= pos || line[valueStart] != '"' {
+					return nil, errMalformedHLSAttributes
+				}
+				contentStart := valueStart + 1
+				contentEnd := strings.IndexByte(line[contentStart:pos], '"')
+				if contentEnd < 0 || strings.TrimSpace(line[contentStart+contentEnd+1:pos]) != "" {
+					return nil, errMalformedHLSAttributes
+				}
+				attrs = append(attrs, hlsURIAttribute{
+					name:       name,
+					value:      line[contentStart : contentStart+contentEnd],
+					valueStart: contentStart,
+					valueEnd:   contentStart + contentEnd,
+				})
+			}
+		}
+		if pos == len(line) {
+			break
+		}
+		pos++
+	}
+	return attrs, nil
+}
+
+func replaceHLSURIAttributeValues(line string, attrs []hlsURIAttribute, values []string) string {
+	for i := len(attrs) - 1; i >= 0; i-- {
+		line = line[:attrs[i].valueStart] + values[i] + line[attrs[i].valueEnd:]
+	}
+	return line
+}
+
+// extractQuotedURI returns the URI contents and its [start,end) byte range,
+// excluding both quotes so callers preserve the surrounding HLS syntax.
 func extractQuotedURI(line string) (string, int, int, bool) {
-	idx := strings.Index(line, `URI="`)
-	if idx < 0 {
+	attrs, err := extractHLSURIAttributes(line)
+	if err != nil {
 		return "", 0, 0, false
 	}
-	start := idx + len(`URI="`)
-	end := strings.IndexByte(line[start:], '"')
-	if end < 0 {
-		return "", 0, 0, false
+	for _, attr := range attrs {
+		if attr.name == "URI" {
+			return attr.value, attr.valueStart, attr.valueEnd, true
+		}
 	}
-	return line[start : start+end], start, start + end + 1, true
+	return "", 0, 0, false
 }
 
 // canonicalStreamRoot capitalises a manifest's stream root segment ("videos"

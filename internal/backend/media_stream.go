@@ -322,19 +322,17 @@ func (a *App) forwardStream(w http.ResponseWriter, r *http.Request, client *Upst
 			baseURL = prepared
 		}
 		var manifest string
-		if rmax, rblock := a.parentalPolicyFor(r); rmax > 0 || rblock {
-			// A restricted user must fetch every manifest resource through the local
-			// authorized entry, including external URLs (plan §8.6.1).
-			userID := ""
-			if reqCtx != nil && reqCtx.ProxyUser != nil {
-				userID = reqCtx.ProxyUser.UserID
-			}
+		if reqCtx != nil && reqCtx.ProxyUser != nil {
+			// Every authenticated proxied playlist uses bound local resource handles,
+			// not just parental-restricted playlists. Redirect mode still preserves
+			// its existing direct-delivery behavior before this manifest path.
 			rewritten, rerr := a.RewriteM3U8ForItemWithResources(string(body), baseURL, proxyToken, resourceRewriteContext{
-				UserID:        userID,
-				VirtualItemID: virtualItemID,
-				ServerID:      client.ID,
-				OriginalID:    originalID,
-				ManifestKey:   streamManifestWindowKey(upstreamPath, query),
+				UserID:          streamResourceUserID(reqCtx),
+				VirtualItemID:   virtualItemID,
+				ServerID:        client.ID,
+				OriginalID:      originalID,
+				TimelineSession: timelineSession,
+				ManifestKey:     streamManifestWindowKey(upstreamPath, query),
 			})
 			if rerr != nil {
 				if a.Logger != nil {
@@ -345,7 +343,13 @@ func (a *App) forwardStream(w http.ResponseWriter, r *http.Request, client *Upst
 			}
 			manifest = rewritten
 		} else {
-			manifest = RewriteM3U8ForItem(string(body), baseURL, virtualItemID, proxyToken)
+			var rerr error
+			manifest, rerr = RewriteM3U8ForItemStrict(string(body), baseURL, virtualItemID, proxyToken)
+			if rerr != nil {
+				w.Header().Set("Cache-Control", "no-store")
+				writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Failed to rewrite HLS manifest"})
+				return
+			}
 		}
 		// Remember where each media segment starts so proxied segments can have
 		// their fMP4 timeline restored to the playlist position (see

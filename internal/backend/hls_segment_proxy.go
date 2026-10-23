@@ -18,11 +18,15 @@ const (
 
 // Buffer only eligible VOD segments. Oversized segments keep streaming, and a
 // failed read must not be sent as a successful truncated 200 response.
-func rewriteHLSSegmentBody(r *http.Request, resp *http.Response, session, rest string) ([]byte, bool, error) {
+func rewriteHLSSegmentBody(r *http.Request, resp *http.Response, session, rest string, resourcePath ...string) ([]byte, bool, error) {
 	if r.Method != http.MethodGet || resp.StatusCode != http.StatusOK || r.Header.Get("Range") != "" || resp.Header.Get("Content-Encoding") != "" {
 		return nil, false, nil
 	}
-	lower := strings.ToLower(rest)
+	extensionPath := rest
+	if len(resourcePath) > 0 && resourcePath[0] != "" {
+		extensionPath = resourcePath[0]
+	}
+	lower := strings.ToLower(extensionPath)
 	if !strings.HasSuffix(lower, ".mp4") && !strings.HasSuffix(lower, ".m4s") {
 		return nil, false, nil
 	}

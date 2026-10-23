@@ -14,28 +14,43 @@ var (
 	errUnsupportedResourceScheme   = errors.New("unsupported resource scheme")
 	errUnsupportedResourceURL      = errors.New("unsupported resource URL")
 	errResourceStoreFull           = errors.New("stream resource store is full")
+	errMissingResourceIdentity     = errors.New("missing stream resource identity")
 )
+
+func streamResourceUserID(reqCtx *RequestContext) string {
+	if reqCtx == nil || reqCtx.ProxyUser == nil {
+		return ""
+	}
+	if reqCtx.ProxyUser.UserID != "" {
+		return reqCtx.ProxyUser.UserID
+	}
+	if reqCtx.ProxyUser.Role == "admin" {
+		return "admin"
+	}
+	return ""
+}
 
 // resourceRewriteContext identifies the item a manifest belongs to so every
 // rewritten resource can be re-authorized per request (plan §8.6.1).
 type resourceRewriteContext struct {
-	UserID        string
-	VirtualItemID string
-	ServerID      string
-	OriginalID    string
+	UserID          string
+	VirtualItemID   string
+	ServerID        string
+	OriginalID      string
+	TimelineSession string
 	// ManifestKey identifies the authorized fetch before any redirect. Resource
 	// resolution still uses the final URL; rotating CDN signatures do not move
 	// a stable origin request or resource handle to a different playlist window.
 	ManifestKey string
 }
 
-// RewriteM3U8ForItemWithResources rewrites every fetchable URI in a manifest to a
-// local eio-resource handle for a restricted user. Unlike RewriteM3U8ForItem it
-// also rewrites external and unrecognised URLs, because a restricted user must
-// never receive a direct external URL that could bypass the proxy. A URI that
-// cannot be resolved to an absolute http(s) URL is a hard error (the caller
-// answers 502) rather than an untouched external link.
+// RewriteM3U8ForItemWithResources rewrites fetchable manifest URIs to local
+// handles for an authenticated request. Unsupported URI-bearing tags and
+// non-http(s) resources fail closed instead of reaching the player directly.
 func (a *App) RewriteM3U8ForItemWithResources(content, upstreamBase, proxyToken string, ctx resourceRewriteContext) (string, error) {
+	if strings.TrimSpace(ctx.UserID) == "" {
+		return "", errMissingResourceIdentity
+	}
 	baseURL, baseErr := url.Parse(upstreamBase)
 	lines := strings.Split(content, "\n")
 	type replacement struct{ line, start, end int }
@@ -51,35 +66,58 @@ func (a *App) RewriteM3U8ForItemWithResources(content, upstreamBase, proxyToken 
 		if strings.HasPrefix(trimmed, "#EXT-X-ENDLIST") {
 			ended = true
 		}
-		if strings.HasPrefix(trimmed, "#EXT-X-MEDIA-SEQUENCE:") || strings.HasPrefix(trimmed, "#EXT-X-PART:") {
+		if strings.HasPrefix(trimmed, "#EXT-X-MEDIA-SEQUENCE:") || strings.HasPrefix(trimmed, "#EXT-X-PART:") || strings.HasPrefix(trimmed, "#EXT-X-PRELOAD-HINT:") || strings.HasPrefix(trimmed, "#EXT-X-RENDITION-REPORT:") {
 			rolling = true
 		}
-		raw, start, end := trimmed, 0, len(line)
+		var attrs []hlsURIAttribute
 		if strings.HasPrefix(trimmed, "#") {
-			uri, lo, hi, ok := extractQuotedURI(line)
-			if !ok {
+			var err error
+			attrs, err = extractHLSURIAttributes(line)
+			if err != nil {
+				return "", err
+			}
+			if len(attrs) == 0 {
 				continue
 			}
-			raw, start, end = uri, lo, hi
 		}
-		resolved, err := url.Parse(strings.TrimSpace(raw))
-		if err != nil {
+		resolveAndRecord := func(raw string, start, end int) error {
+			resolved, err := url.Parse(strings.TrimSpace(raw))
+			if err != nil {
+				return err
+			}
+			if !resolved.IsAbs() {
+				if baseErr != nil || baseURL == nil || !baseURL.IsAbs() {
+					return errRelativeResourceWithoutBase
+				}
+				resolved = baseURL.ResolveReference(resolved)
+			}
+			if !strings.EqualFold(resolved.Scheme, "http") && !strings.EqualFold(resolved.Scheme, "https") {
+				return errUnsupportedResourceScheme
+			}
+			if resolved.Host == "" || resolved.User != nil {
+				return errUnsupportedResourceURL
+			}
+			entries = append(entries, streamResourceEntry{
+				UserID: ctx.UserID, VirtualItemID: ctx.VirtualItemID, ServerID: ctx.ServerID,
+				OriginalID: ctx.OriginalID, ResourceURL: resolved.String(), TimelineSession: ctx.TimelineSession,
+			})
+			replacements = append(replacements, replacement{i, start, end})
+			return nil
+		}
+		if len(attrs) > 0 {
+			for _, attr := range attrs {
+				if err := resolveAndRecord(attr.value, attr.valueStart, attr.valueEnd); err != nil {
+					return "", err
+				}
+			}
+			continue
+		}
+		leading := len(line) - len(strings.TrimLeft(line, " \t\r"))
+		start := leading
+		end := len(strings.TrimRight(line, " \t\r"))
+		if err := resolveAndRecord(trimmed, start, end); err != nil {
 			return "", err
 		}
-		if !resolved.IsAbs() {
-			if baseErr != nil || baseURL == nil || !baseURL.IsAbs() {
-				return "", errRelativeResourceWithoutBase
-			}
-			resolved = baseURL.ResolveReference(resolved)
-		}
-		if resolved.Scheme != "http" && resolved.Scheme != "https" {
-			return "", errUnsupportedResourceScheme
-		}
-		if resolved.Host == "" || resolved.User != nil {
-			return "", errUnsupportedResourceURL
-		}
-		entries = append(entries, streamResourceEntry{UserID: ctx.UserID, VirtualItemID: ctx.VirtualItemID, ServerID: ctx.ServerID, OriginalID: ctx.OriginalID, ResourceURL: resolved.String()})
-		replacements = append(replacements, replacement{i, start, end})
 	}
 	manifestKey := ""
 	if rolling && !ended {
@@ -87,8 +125,6 @@ func (a *App) RewriteM3U8ForItemWithResources(content, upstreamBase, proxyToken 
 		if manifestKey == "" && baseErr == nil && baseURL != nil {
 			identity := *baseURL
 			identity.Fragment = ""
-			// Query parameters can select audio tracks and renditions. Keep their
-			// semantics when no stable pre-redirect identity was supplied.
 			manifestKey = "url:" + identity.String()
 		}
 	}
@@ -96,7 +132,8 @@ func (a *App) RewriteM3U8ForItemWithResources(content, upstreamBase, proxyToken 
 	if !ok {
 		return "", errResourceStoreFull
 	}
-	for i, edit := range replacements {
+	for i := len(replacements) - 1; i >= 0; i-- {
+		edit := replacements[i]
 		local := "/Videos/" + ctx.VirtualItemID + "/eio-resource/" + ids[i]
 		if proxyToken != "" {
 			local += "?api_key=" + url.QueryEscape(proxyToken)
@@ -109,6 +146,7 @@ func (a *App) RewriteM3U8ForItemWithResources(content, upstreamBase, proxyToken 
 
 // A full map is retryable capacity pressure, not an upstream protocol failure.
 func writeStreamResourceRewriteError(w http.ResponseWriter, err error) {
+	w.Header().Set("Cache-Control", "no-store")
 	if errors.Is(err, errResourceStoreFull) {
 		w.Header().Set("Retry-After", "5")
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"message": "HLS resource capacity exhausted; retry later"})
@@ -117,10 +155,8 @@ func writeStreamResourceRewriteError(w http.ResponseWriter, err error) {
 	writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Failed to rewrite HLS manifest"})
 }
 
-// serveStreamResource serves one rewritten HLS resource for a restricted user. It
-// re-checks the bound user, the live server grant and the actual instance rating
-// on every request (plan §8.6.1), then relays the bytes. An unknown or idle-
-// expired handle is a 410; a cross-user handle is a 403.
+// serveStreamResource re-checks the bound user, live server grant and actual
+// instance rating for every authenticated resource request.
 func (a *App) serveStreamResource(w http.ResponseWriter, r *http.Request, virtualItemID, opaqueID string) {
 	reqCtx := requestContextFrom(r.Context())
 	entry, ok := a.StreamResources.peek(opaqueID)
@@ -128,7 +164,7 @@ func (a *App) serveStreamResource(w http.ResponseWriter, r *http.Request, virtua
 		w.WriteHeader(http.StatusGone)
 		return
 	}
-	if reqCtx == nil || reqCtx.ProxyUser == nil || reqCtx.ProxyUser.UserID != entry.UserID || entry.VirtualItemID != virtualItemID {
+	if streamResourceUserID(reqCtx) == "" || streamResourceUserID(reqCtx) != entry.UserID || entry.VirtualItemID != virtualItemID {
 		w.WriteHeader(http.StatusForbidden)
 		return
 	}
@@ -174,35 +210,46 @@ func (a *App) serveStreamResource(w http.ResponseWriter, r *http.Request, virtua
 		if resp.Request != nil && resp.Request.URL != nil {
 			base = resp.Request.URL.String()
 		}
-		token := ""
-		if reqCtx != nil {
-			token = reqCtx.ProxyToken
-		}
-		rewritten, rerr := a.RewriteM3U8ForItemWithResources(string(body), base, token, resourceRewriteContext{
-			UserID:        entry.UserID,
-			VirtualItemID: entry.VirtualItemID,
-			ServerID:      entry.ServerID,
-			OriginalID:    entry.OriginalID,
-			ManifestKey:   "resource:" + opaqueID,
+		rewritten, rerr := a.RewriteM3U8ForItemWithResources(string(body), base, reqCtx.ProxyToken, resourceRewriteContext{
+			UserID:          entry.UserID,
+			VirtualItemID:   entry.VirtualItemID,
+			ServerID:        entry.ServerID,
+			OriginalID:      entry.OriginalID,
+			TimelineSession: entry.TimelineSession,
+			ManifestKey:     "resource:" + opaqueID,
 		})
 		if rerr != nil {
 			writeStreamResourceRewriteError(w, rerr)
 			return
 		}
+		storeHLSSegmentPositions(entry.TimelineSession, "", rewritten)
 		w.Header().Set("Content-Type", "application/x-mpegURL")
 		w.WriteHeader(resp.StatusCode)
 		_, _ = io.WriteString(w, rewritten)
 		return
 	}
+	resourceURL, _ := url.Parse(entry.ResourceURL)
+	originalPath := ""
+	if resourceURL != nil {
+		originalPath = resourceURL.Path
+	}
+	body, rewritten, readErr := rewriteHLSSegmentBody(r, resp, entry.TimelineSession, "eio-resource/"+opaqueID, originalPath)
+	if readErr != nil {
+		w.WriteHeader(http.StatusBadGateway)
+		return
+	}
 	copyStreamResponseHeaders(w, resp)
+	if rewritten {
+		w.WriteHeader(resp.StatusCode)
+		_, _ = w.Write(body)
+		return
+	}
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, resp.Body)
 }
 
-// fetchResourceFollowingRedirects fetches a resource URL, following up to
-// maxStreamRedirectHops hops and attaching the upstream credential only on
-// same-origin hops (fetchRedirectTarget handles that). Range and conditional
-// headers from the client are preserved.
+// fetchResourceFollowingRedirects follows bounded redirects and only attaches
+// upstream credentials on same-origin hops. Range headers are preserved.
 func (a *App) fetchResourceFollowingRedirects(r *http.Request, client *UpstreamClient, rawURL string) (*http.Response, error) {
 	headers := streamRequestHeaders(r)
 	resp, err := client.fetchRedirectTarget(r.Context(), rawURL, headers)
