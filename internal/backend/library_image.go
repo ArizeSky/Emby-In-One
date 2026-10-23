@@ -377,6 +377,25 @@ func (a *App) handleSearchHints(w http.ResponseWriter, r *http.Request) {
 		"TotalRecordCount": len(merged),
 	})
 }
+// imageSourceUsable reports whether a recorded display/image source may still
+// serve bytes for this request: the client must exist and be online, the server
+// must currently participate in aggregation (a node paused by an administrator
+// is never queried, not even anonymously), and an authenticated request must
+// hold a server grant for it. Anonymous image requests keep their deliberate
+// public reachability (plan §8.8) but still respect the aggregation switch.
+func (a *App) imageSourceUsable(reqCtx *RequestContext, authenticated bool, serverID string) bool {
+	client := a.Upstream.ClientByID(serverID)
+	if client == nil || !client.IsOnline() {
+		return false
+	}
+	if !a.isServerAggregationEnabled(serverID) {
+		return false
+	}
+	if authenticated && !a.isServerAllowed(reqCtx, serverID) {
+		return false
+	}
+	return true
+}
 
 func (a *App) handleItemImage(w http.ResponseWriter, r *http.Request) {
 	reqCtx := requestContextFrom(r.Context())
@@ -410,27 +429,26 @@ func (a *App) handleItemImage(w http.ResponseWriter, r *http.Request) {
 	// Route to the display-winning instance recorded by the merge: the merged DTO's
 	// non-Primary image tags belong to that server, not necessarily the IDStore
 	// primary (plan §6.4.2). A matching tag below can still override to a sibling
-	// that owns the exact requested tag.
+	// that owns the exact requested tag. Both hints are re-confirmed against the
+	// live aggregation switch and the user's grants: a paused, offline or
+	// unauthorized source is skipped and the resolved candidate serves the bytes
+	// instead — a historical hint is routing advice, never a permission.
 	if src, ok := a.IDStore.ResolveDisplaySource(r.PathValue("itemId")); ok {
-		if srcClient := a.Upstream.ClientByID(src.ServerID); srcClient != nil && srcClient.IsOnline() {
-			if !authenticated || a.isServerAllowed(reqCtx, src.ServerID) {
-				imageClient = srcClient
-				imageOriginalID = src.OriginalID
-			}
+		if a.imageSourceUsable(reqCtx, authenticated, src.ServerID) {
+			imageClient = a.Upstream.ClientByID(src.ServerID)
+			imageOriginalID = src.OriginalID
 		}
 	}
 	// The merged DTO can advertise a sibling copy's poster tag while keeping its
 	// own virtual id (plan §6.4.1). Fetch the bytes from the server that actually
-	// owns that tag instead of the primary, which 404s (plan §6.4.2).
+	// owns that tag instead of the primary, which 404s (plan §6.4.2). An unusable
+	// hinted source is skipped the same way: the tag routes a fetch, it does not
+	// grant access, so the request falls back to the current candidate instead of
+	// failing or querying a paused node.
 	if tag := r.URL.Query().Get("tag"); tag != "" {
 		if src, ok := a.IDStore.ResolveImageSource(r.PathValue("itemId"), imageType, tag); ok {
-			if srcClient := a.Upstream.ClientByID(src.ServerID); srcClient != nil && srcClient.IsOnline() {
-				if authenticated && !a.isServerAllowed(reqCtx, src.ServerID) {
-					w.Header().Set("Cache-Control", "no-store")
-					writeJSON(w, http.StatusForbidden, map[string]any{"message": "Access denied"})
-					return
-				}
-				imageClient = srcClient
+			if a.imageSourceUsable(reqCtx, authenticated, src.ServerID) {
+				imageClient = a.Upstream.ClientByID(src.ServerID)
 				imageOriginalID = src.OriginalID
 			}
 		}

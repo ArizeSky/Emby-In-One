@@ -779,9 +779,16 @@ func (a *App) mergeRoundRobinItems(results []upstreamItemsResult, clientUserID s
 	// Record each group's display-winning instance so the image handler can route
 	// the group's non-Primary image types (Backdrop/Logo/Thumb) to the server that
 	// actually owns those tags, instead of the IDStore primary that may not
-	// (plan §6.4.2).
+	// (plan §6.4.2). Every non-Primary tag the displayed DTO advertises is also
+	// recorded per-tag: a later merge can change the display winner while clients
+	// still hold this DTO's tags, and those tags must keep routing to the instance
+	// that owns the bytes. Primary is skipped here because the poster carryover
+	// above already records its exact owner.
 	for _, entry := range entries {
 		a.IDStore.SetDisplaySource(entry.virtualID, entry.serverID, entry.originalID)
+		if entry.mergedIndex >= 0 && entry.mergedIndex < len(merged) {
+			recordImageSourceTags(a.IDStore, entry.virtualID, entry.serverID, entry.originalID, merged[entry.mergedIndex])
+		}
 	}
 
 	return merged
@@ -826,6 +833,32 @@ func copyPrimaryImageFields(dst, src map[string]any) {
 	dstTags["Primary"] = primary
 	if ar, ok := src["PrimaryImageAspectRatio"]; ok {
 		dst["PrimaryImageAspectRatio"] = ar
+	}
+}
+
+// recordImageSourceTags records per-tag ownership for every non-Primary image
+// the displayed DTO advertises (plan §6.4.2). The Primary tag is managed
+// explicitly by the poster carryover, which knows the exact owning instance, so
+// it is skipped here. Backdrop tags arrive as an array and are recorded
+// individually so an indexed request with a tag still routes to the owner.
+func recordImageSourceTags(store *IDStore, virtualID, serverID, originalID string, item map[string]any) {
+	if tags, ok := item["ImageTags"].(map[string]any); ok {
+		for imageType, raw := range tags {
+			tag, _ := raw.(string)
+			if imageType == "" || imageType == "Primary" || tag == "" {
+				continue
+			}
+			store.SetImageSource(virtualID, imageType, tag, serverID, originalID)
+		}
+	}
+	if backdrops, ok := item["BackdropImageTags"].([]any); ok {
+		for _, raw := range backdrops {
+			tag, _ := raw.(string)
+			if tag == "" {
+				continue
+			}
+			store.SetImageSource(virtualID, "Backdrop", tag, serverID, originalID)
+		}
 	}
 }
 
