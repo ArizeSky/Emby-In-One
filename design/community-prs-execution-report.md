@@ -1,127 +1,133 @@
 # 五个社区 PR 本地整合执行报告
 
-> 对应 `design/community-prs-code-execution-plan.md` 与审查文档 `design/community-prs-integration-review.md`。
-> 本报告如实区分**已完成并实测通过**与**仍待实现**，不夸大完成度。
-> 当前进度：计划 §3–§9 的硬化项**已全部实现**，审查迁移的 22 个顶层验收用例与新增硬化用例全部通过；全量 `go test`（含 `-race`）、`go build/vet/gofmt`、`npm test`、`npm run build:panel`、`git diff --check` 均通过。改动已提交并推送到 Gitea（origin）。详见第 3、5 节。
+> 更新：2026-10-23。本文替代此前“计划 §3–§9 全部完成”的过度结论。
+> 当前可重复的结论：完成评审 C1–C10 对应的缺陷修复，原始 12 项边界回归已正式入库并全部通过；前序 22 项审查测试包含在完整 Go 套件中且保持通过。**不据此宣称所有真实客户端、生产容量或原方案全部条款均已验收。**
 
-## 1. 执行环境与输入
+## 1. 工作树与来源
 
-| 项 | 值 |
+| 项目 | 当前状态 |
 | --- | --- |
-| 执行目录（worktree） | `D:\UserData\Desktop\Emby-In-One-pr-integration` |
-| 分支 | `codex/community-prs-local-review`（自基线新建，未提交） |
-| 基线 HEAD | `752253a07759511c4f0960086331c585cb596bda` |
-| 原目录 | `D:\UserData\Desktop\Emby-In-One-main`，无跟踪文件改动 |
-| Go 工具链 | go1.26.1 windows/amd64；gcc mingw64；Node/npm 可用 |
-| 验证日志 | `…\scratch\…\phase1-logs\`、`…\phase-final\`（各命令 `.log` + `.exit`） |
+| 执行 worktree | `D:\UserData\Desktop\Emby-In-One-pr-integration` |
+| 分支 | `codex/community-prs-local-review` |
+| 本轮修复起点 | `1f5ad4d`；保留前序提交历史，不改写 |
+| 前序整合基线 | `752253a07759511c4f0960086331c585cb596bda` |
+| 唯一推送远程 | `origin`：`https://gitea.wmr.ovh/MineNine/Emby-In-One.git` |
+| 原工作树 | `D:\UserData\Desktop\Emby-In-One-main`；本轮未改动其文件，保留已有 `AGENT.md` 等本地内容 |
+| 评审输入 | 原工作树 `design/community-prs-completion-review.md`（C1–C10）、执行方案与前序整合审查 |
+| 工具链 | Go `E:\Program Files\Go\bin\go.exe`；race 使用 `C:\Program Files\mingw64\bin` 的 GCC；Node/npm |
 
-五份 PR 固定 SHA 与来源同前：`#22 204f6a12`、`#20 f921abd5`、`#24 35160bc2`、`#18 0f801d1b`、`#23 bc892893`（按补丁应用，顺序 22→20→24→18→23）。
+五份社区 PR 固定输入仍为 `#22 204f6a12`、`#20 f921abd5`、`#24 35160bc2`、`#18 0f801d1b`、`#23 bc892893`，前序按 22→20→24→18→23 融入 rc3。此次没有重新套补丁或回滚用户改动。
 
-## 2. 补丁应用与冲突解决
+## 2. 本轮缺陷、实现和证据
 
-冲突一律按“保留 rc3 架构、逐项融入新能力”解决（`auth_context.go` 保留 `LiveGrants`；`handlers_admin.go` 合并 UA+聚合+新开关；`upstream.go` 去重 helper；`tailwind.css` 由 `build:panel` 重生成）。详见前序版本，结论不变。
+### C6/C7：跳转凭据的 origin 信任与并发认证
 
-## 3. 已完成的硬化与修复（含审查回归）
+- `canonicalURLOrigin` / `selfOrigins` 按 scheme、host、有效端口确认配置过的 origin；仅主机相同不构成凭据授权。
+- `fetchRedirectTarget` 使用同一互斥锁保护的 `authSnapshot()`，不再直接读取并发更新的 token。
+- 图片、流、HLS 资源调用该跳转取回函数。用于地址泄漏/relay 分类的主机比较与用于凭据授权的 origin 比较保持独立。
+- `TestFinalReviewRedirectRejectsUnconfiguredPlaintext` 通过；`TestFinalReviewRedirectConcurrentAuth` 已实际以 `-race` 运行通过。
 
-### 3.1 审查回归用例迁入（全部转绿）
+### C1：稀疏 DTO 分级确认与读取入口
 
-`internal/backend/{pr_review,pr23_review,pr18_review,integration_review}_test.go` 迁入整合树；`tests/admin-panel.test.cjs` 增「打开→保存已有服务器保持多个播放地址」往返用例。审查列出的 22 个顶层用例（含子用例）**全部通过**。
+- 新增 `parental_read.go`，区分“有可识别分级”“未返回分级字段”“非空但未知分级”。CustomRating 继续覆盖 OfficialRating。
+- 缺失分级先按服务器批量补查（每批 ≤200 ID），必要时单项详情回退；一次请求共享 50 次补查预算与 memo。Season/Episode 沿同服父链最多 3 层继承，并去环。
+- 未确认成功的项目不作为未分级放行；非空未知分级按 `blockUnratedItems` 决定。
+- 接入用户列表（单库/根）、集合、Latest、SearchHints、Similar、ThemeMedia 嵌套结果、Seasons、Episodes，以及普通详情的缺失分级确认。
+- `TestFinalReviewParentalReadRoutes` 及其子用例通过。Similar 对**返回的推荐项**逐项过滤；没有新增“源影片详情查不到就拒绝整份推荐”的假定。
 
-### 3.2 基础回归与 #22/#20/#24
+### C2：合并详情先审查实际副本
 
-- **R1**：`public/admin.js:editServer` 拼接改真实换行，多播放地址往返不再被拼成一个地址。
-- **#20**：登录格式（JSON/表单/别名/错误/Web 管理员）行为保留，用例通过。
-- **#22 / §3**：新增 `media_playback.go:resolveMediaSourceInPathForServer`；`media_stream.go:proxyStream` 改为**先解析真实目标服再重写**路径；跨源不可归属的 MediaSourceId 在改槽前返回 400。
-- **#24 / §5.1–5.4**：`outbound_credentials.go` 统一凭据键分类（`api_key/apikey/x-emby-token`），`stripAPIKeyVariants` 复用；`media_playback.go` 响应 URL 清理复用同一 helper；`media_items.go` 根范围与单库 `GenreIds` 每服翻译；`media_prefixes.go` 每服 `ParentId` 翻译、父容器非本服跳过、受限用户返回 `[]`。
+- `handleMergedItemDetail` 在每个实例贡献元数据或 MediaSources 前执行 `checkInstanceParentalAccess`。
+- 被拒副本不进入合并；无法确认的副本不进入合并且体现在 `EioIncompleteSources`。
+- 全部明确拒绝返回 403；无安全结果且有未确认返回 502。展示 base 使用稳定的 `isBetterMetadata`，不再依赖网络返回顺序。
+- `TestFinalReviewMergedDetailMustDropDeniedSource` 通过，允许的 PG 详情不会带出受禁的 R 副本。
 
-### 3.3 §6.4 元数据与海报（用户重点决定）
+### C5：图片提示不再绕过暂停聚合
 
-- `isBetterMetadata` 删除「有 Primary 海报优先」层级，恢复四级规则（priorityMetadata → 中文 Overview → 更长 Overview → 配置顺序）。
-- `mergeRoundRobinItems` 增补图：base 缺 Primary 时从同组允许副本**只补 Primary 图片字段**（`copyPrimaryImageFields`），不改变标题/简介/ProviderIds/分级/播放目标；记录来源到 `IDStore.SetImageSource`。
-- `handleItemImage` 按 `tag` 经 `IDStore.ResolveImageSource` 路由到**真正拥有该图的服务器/原始 item**（§6.4.2），A 资料+B 海报时实际请求 B 返回真实字节。
-- 相应把旧测试 `TestIsBetterMetadataPrefersPrimaryImage` 更正为 `TestIsBetterMetadataIgnoresPrimaryImage`（旧断言编码的是被否决的规则）。
+- `imageSourceUsable` 对 DisplaySource 与 tag 来源统一复核在线状态、当前聚合开关；认证请求另复核服务器授权。
+- 历史提示不可用时保留当前可用候选，不能据提示访问已暂停的服务器。匿名图片仍公开可达，但同样遵守聚合开关。
+- 展示 DTO 的非 Primary `ImageTags` 及 `BackdropImageTags` 建立逐 tag 归属，以免后续展示胜者变化后只剩一个“最近展示源”。Primary 补图仍保留其准确实际来源，不被展示源覆盖。
+- `TestFinalReviewPausedImageSourceNeverFetched` 的匿名/认证请求均不访问暂停源；原跨源海报实际字节、授权和缓存回归保持通过。
 
-### 3.4 §6.3 去重
+### C8：已公开旧 ID 的观看状态兼容
 
-- TMDB 键改为类型化 `tmdb:<Type>:<id>`，Movie 123 与 Series 123 分开。
-- 事实与展示分离：任意副本的已知 TMDB/年份都累加进组事实（`accumulateFacts` 逻辑内联），未知首项不再桥接两个冲突 TMDB。
+- `IDStore.AliasVirtualIDs` 只沿已验证的 `(originalID, serverID)` 共享关系连接旧公开 ID，不因不同服务器恰好使用相同原始字符串而合并。
+- `localWatchState` 汇合当前用户的别名记录：收藏与已播放标志取并集；进度取 LastPlayed 最近且 PositionTicks>0 的记录，单纯收藏记录不覆盖有效进度。没有本地记录时仍清除共享上游账户的 UserData。
+- 本地收藏/已播放/续播筛选使用同组汇合状态，避免 canonical DTO 在筛选阶段被误滤掉。
+- 添加/移除收藏仍在上游成功后才进行本地双写；`SetFavoriteAliases` 在一个 SQLite 写事务中更新全部同组 ID，避免取消收藏后旧别名又把收藏补回来。
+- 没有删除或批量迁移旧观看记录；别名由持久化的 primary/additional-instance 映射恢复。
+- `TestFinalReviewKnownGroupKeepsWatchAliases`、`TestIdentityAliasesMergeProgressAndFavoriteRemoval`、`TestIdentityAliasesSurviveRestart`、`TestIdentityAliasFavoriteTransactionRollback` 通过；回滚测试通过触发器故意使第二个别名写入失败，确认没有部分清除。
+- 本轮不声称重写了整个 IDStore 的 canonical 建组/持久化 API；验证范围是已有组关系下的公开 ID 兼容、状态合并和收藏事务。
 
-### 3.5 §6.2 分页与宽恕期
+### C3/C4：HLS 会话租约、资源容量与滚动窗口
 
-- `fetchMergedItemsFromUpstream`：400 降级到 100 后**保持有效窗口 100**，后续页不再回到 200；短页/空页终止。
-- `fetchItemsAcrossUpstreams`：任一参与上游 `pagedScan` 时**禁用 grace**，等待全部任务（受 globalTimeout 约束），慢分页服不再被快服 grace 丢弃。
+- 会话键为用户、虚拟影片、实际服务器、实际原始影片的四元组；同会话同 URL 复用 opaque handle，不同用户不复用。
+- `peek` 不续租；HTTP 资源请求通过用户/影片绑定、当前服务器授权/聚合开关及实际副本分级检查后才 `touch`。续租作用于整个会话，VOD 未读尾部不再按单个 handle 的初始时间过期。
+- manifest 全部 URI 先解析、校验，再在同一锁内计算完整资源需求并原子注册；容量不足不提交本次新 handle 或窗口更新。
+- 首层及子 manifest 的容量失败均返回 **503 + `Retry-After: 5`**；非法 URI 等重写错误保持 502；未知/过期 handle 为 410，跨用户为 403。
+- 有界总容量 16384、会话空闲 TTL 30 分钟。识别带 MEDIA-SEQUENCE/PART 且无 ENDLIST 的滚动清单；滑出窗口资源保留 **2 分钟追赶宽限**，之后可清理。不同音视频清单保留各自窗口引用；VOD 资源保留到会话空闲过期。
+- 受限用户资源走本地授权入口；非受限用户保持原 `RewriteM3U8ForItem`，不额外占用这份资源表。
+- 四个原始 HLS 边界用例通过；新增验收覆盖 6×2400 资源用户隔离、第 7 份原子拒绝、160 分钟持续活动后 VOD 尾部仍可读、空闲用户清理、拒绝请求不续租、滚动追赶期、非法 URI 无占位泄漏、16 并发相同清单复用 handle。
 
-### 3.6 §8 分级（数据层 + 各入口）
+### C9/C10：收集器截止时间与完整性标记
 
-- **§8.3**：`itemAllowedByPolicy` 让非空 `CustomRating` 覆盖 `OfficialRating`；未分级项在 `blockUnrated` 时拦截。
-- **§8.2 数据层**：`users` 增 `block_unrated_items` 列（建表 + 幂等迁移）；`User.BlockUnratedItems`；`UserStore.SetParentalPolicy(id,maxRating,blockUnrated)` 单语句原子写两列；管理 API 创建/更新/列表回传 `blockUnratedItems`（更新时按现有值合并，省略不改）。
-- **§8.4–8.6 入口**：`handleUserItems`（单库/根）、`handleItemsCollection`、`Latest`、`Resume`、`handleItemByID`、`handleUserItemByID`、`handleMergedItemDetail` 全部按 `parentalPolicyFor`（ceiling + blockUnrated）过滤/拦截；`proxyStream` 在**实际选定源**上做分级检查、查询失败 502 不放行、分级通过后才切换播放槽；跨源选定受限副本 403。
+- 聚合收集循环自身监听 `bgCtx.Done()`，不依赖所有任务及时响应取消；超时时按尚未收到的任务数记录 TimedOut/Incomplete，保留截止前取得的结果。
+- 结果返回前按任务的配置 index 稳定排序，防止网络快慢改变去重的首次公开 ID 选择。
+- 成功的 `/Items?Ids=...` 批量响应显式设 `Complete: true`，不再因为结构体零值错误输出不完整标记。
+- 原始两个用例和 `TestAggregationDeadlinePreservesCompletedResults` / `TestAggregationConfigOrderIndependentOfArrival` 通过。无法响应 context 的任意函数本身不能被 Go 强制杀死；这里验收的是**收集器及时返回**，不是声称能消灭任意任务 goroutine。
 
-### 3.7 §7 跳转
+## 3. PlaybackInfo 的准确占槽说明
 
-- `fetchRedirectTarget` 对**同源**跳转携带该上游自己的凭据（`X-Emby-Token`），外部 CDN 目标不带；`handleItemImage` 跳转链 5 跳/缺 Location 归为 502 + `no-store`。
+此前路由表“检查通过前不占槽”的说法不符合实际代码。当前 `handlePlaybackInfo`：
 
-### 3.8 §8.8 图片边界
+1. 完成目标/服务器身份校验后，先调用 `PlaybackLimiter.TryStart` 预留名额。
+2. 对候选实际副本检查分级，并构建允许的 MediaSources。
+3. 显式选源被拒/未确认时调用 `releaseSlot`；最终没有成功结果时也通过 `Stop` 释放预留。
 
-- 无效 token→401、认证成功→`private,no-store`、匿名成功→`public,max-age=86400`、**所有错误（含匿名上游 404）→`no-store`**；出站剥离凭据键。
+这是**先预留、失败释放**，不是“分级检查后才 TryStart”。本轮修正文档，不把已有释放逻辑描述为不存在，也没有宣称改变该顺序。
 
-### 3.9 §8.9 面板
+## 4. 自动化验收（最终代码 `0df3b72`）
 
-- 分级下拉补齐 10 个档位（含 3/4：TV-Y7 / TV-Y7-FV），新增「拦截未分级内容」复选框；`admin.js` 打开/编辑/保存均接线 `blockUnratedItems`。
+原始 12 项测试原样从临时评审文件迁入 `internal/backend/final_review_test.go`，今后运行仓库测试即可，不依赖 overlay。前序四个 review 测试文件共 22 个顶层用例保留；新增专题测试与旧套件一同运行。
 
-## 4. 验证（本机实测，退出码独立记录）
-
-日志目录 `…\scratch\…\phase-final\`（`<name>.log` + `<name>.exit`）。
-
-| 命令 | 退出码 |
+| 本轮实际命令/检查 | 结果 |
 | --- | --- |
-| `go build ./...` | 0 |
-| `go vet ./...` | 0 |
-| `gofmt -l cmd internal` | 0（空） |
-| `go test ./internal/backend -count=1` | 0（全绿，含 22 审查用例 + 新增策略用例） |
-| `go test ./cmd/... -count=1` | 0 |
-| `go test -race -p 1 -parallel 2 ./... -count=1` | 0（cmd 12.9s、backend 1190.3s，无 data race） |
-| `npm test` | 0（68/68） |
-| `npm run build:panel` | 0 |
-| `git diff --check` / `git diff --cached --check` | 0 |
-| 冲突标记扫描 | 无 |
+| `go test -p 1 -parallel 2 ./... -count=1 -timeout 15m` | 通过；最终 cmd 0.590s、backend 58.909s |
+| `go test ./internal/backend -run '^TestFinalReview' -v -count=1` | 12/12 顶层用例通过（含读取路由子用例） |
+| `go test -race -p 1 -parallel 2 ./internal/backend -run 'TestFinalReview\|TestResource\|TestIdentityAliases\|TestIdentityAliasFavorite\|TestAggregation\|Test.*Filter' -count=1 -timeout 10m` | 通过；最终 104.823s，无 race 报告 |
+| `go vet ./...` | 通过 |
+| `go build -o <scratch>/emby-in-one-verification.exe ./cmd/emby-in-one` | 通过；二进制仅放 scratch |
+| `gofmt -l cmd internal` | 空输出 |
+| `npm test` | 68/68 通过；本轮未改前端代码 |
+| `git diff --check` | 通过 |
+| 一次只读定向复核 | 未发现具体在范围内的新增缺陷；复核者未运行命令，实际执行结果由主会话验证 |
 
-## 5. 本轮新增实现（原“待办”已落地）
+本轮**未重新运行全仓库 `-race` 或 `npm run build:panel`**；旧版本报告中的相关历史结果不作为当前提交的验收证据。
 
-以下原第 5 节列出的深层项已在本轮全部实现，并附单元测试（`internal/backend/hardening_test.go`）：
+日志位于本会话 scratch `C:\Users\Administrator\.pi-desktop\scratch\d29264d2-7cc7-465f-acf9-bae6091da5e0`：`final-go-test.log`、`final-go-race.log`、`final-go-vet.log`、`final-go-build.log`、`final-npm-test.log`。scratch 属于会话临时资料，不作为仓库持久附件。
 
-- **§8.2 原子 Create/Update**：新增 `UserStore.CreateWithPolicy` / `UpdateWithPolicy`，把用户名/密码/启用/服务器授权与 `max_parental_rating`、`block_unrated_items` 放进**同一个 `withWriteTx`**，写成功后一次性更新内存；`Create`/`Update` 保留为委托包装。合法档位固定 `{0,1,3,4,5,7,8,9,10,15}`，非法值（如 6/13）在任何写入前被拒绝。管理 API 创建/更新改用新方法。
-- **§8.3 父级继承**：新增 `parental_access.go`：`itemRatingState`（CustomRating 覆盖 OfficialRating）、`nextParentID`（SeasonId→ParentId→SeriesId，visited 去环）、`inheritParentalScore`（同服、最多 3 层、父项查询失败即查询失败不放行）。`checkInstanceParentalAccess` 统一“允许/拒绝/未确认”三态。
-- **§8.4 PlaybackInfo 逐实例分级**：`handlePlaybackInfo` 对每个候选实例做分级检查；显式选定被拒实例→403（不被 A 成功掩盖）、无法确认→502；未显式选源只返回允许实例；全部被明确拒绝→403。
-- **§6.4 非 Primary 图片类型路由**：`IDStore.SetDisplaySource/ResolveDisplaySource` 记录每个虚拟项展示胜者；`handleItemImage` 默认从展示胜者取 Backdrop/Logo/Thumb，`tag` 命中时再覆盖到拥有该 tag 的副本；认证图片请求对实际副本做实时分级检查。
-- **§7 全矩阵**：`forwardStream` 按 `FollowRedirects×DirectRedirect×受限` 表处理；受限用户**强制代理**（`proxyStream` 绕过 redirect 模式，绝不向客户端发 Location）；`directRedirect` 下内部跳转需 `followRedirects` 否则 502、安全外部跳转才透传；图片 walker 遵守 `followRedirects`。
-- **§6.2 结构化错误/报告/预算/不完整标记**：`outbound_errors.go` 新增 `upstreamResponseError{StatusCode}`（`errors.As` 判定，消息不含 URL/token）；`upstreamItemsResult` 增 `Complete/Truncated`；`aggregateUpstreamsWithReport` 产出 `aggregationReport{Expected,Received,Failed,TimedOut,GraceExpired,Truncated,Incomplete}`；`fetchMergedItemsFromUpstream` 读取可信 `TotalRecordCount`、按原始行推进 offset、区分 400 与其它错误、遵守 100 次/请求预算（`catalogRequestBudget`）；目录响应附 `EioIncompleteResults` 对象键与 `X-EIO-Results-Incomplete` 头。
-- **§8.7 fallback 路由分类**：新增 `parental_routes.go`：受限用户仅放行显式控制端点（System/Ping、Sessions 播放/进度/停止、Capabilities、Users 配置/策略/UserData/FavoriteItems、DisplayPreferences 等），其余（含 GET /Sessions、裸 item、未知二进制）返回 403 `ContentRouteNotSupportedWithParentalControl`；分类对大小写与 `/emby` 前缀不敏感。
-- **§8.6.1 HLS 外部资源本地代理**：新增 `stream_resource_store.go`（有界 16384、30 分钟会话租约、opaque 随机 id、容量满返回失败）与 `stream_resource_proxy.go`（`RewriteM3U8ForItemWithResources` 重写所有 `URI="..."` 与分片行到 `/Videos/<vid>/eio-resource/<opaque>`，含 EXT-X-KEY/SESSION-KEY/MAP/MEDIA/I-FRAME-STREAM-INF/PART/PRELOAD-HINT/RENDITION-REPORT；`serveStreamResource` 逐请求复核用户/服务器授权/实际实例分级，未知或过期 410、跨用户 403、子 manifest 递归重写、同源跳转携带上游凭据）。受限用户 manifest 走新入口，普通用户保持原 `RewriteM3U8ForItem`。
-- **§8.9 部分结果 UI**：`public/web/app.js` 的 `api()` 对 `EioIncompleteResults` 弹一次轻量“部分结果”提示（15s 去抖），403/502 无上游消息时给本地明确文案；管理面板分级下拉 10 档 + “拦截未分级内容”复选框已接线。
+## 5. 分步提交与推送
 
-## 6. 验证（本机实测，退出码独立记录）
+每个可独立验证的步骤先测试，再提交并推送 `origin/codex/community-prs-local-review`，无 force-push、无历史改写、未推送 GitHub：
 
-| 命令 | 结果 |
+| 提交 | 步骤 |
 | --- | --- |
-| `go build ./...` | 0 |
-| `go vet ./...` | 0 |
-| `gofmt -l cmd internal` | 空 |
-| `go test ./internal/backend ./cmd/... -count=1` | 0（含 22 审查用例 + 新增硬化用例） |
-| `go test -race -p 1 -parallel 2 ./...` | 0（前序实测，无 data race） |
-| `npm test` | 68/68 |
-| `npm run build:panel` | 0 |
-| `git diff --check` | 0 |
+| `f6d989b` | C6/C7：origin 信任与认证快照 |
+| `dac9d92` | C1：读取分级确认 |
+| `247fda3` | C2：合并详情逐副本授权 |
+| `469898a` | C5：图片来源实时聚合检查与 tag 归属 |
+| `e5797d6` | C8：别名状态与收藏事务 |
+| `2c88276` | C3/C4：会话租约、原子资源准入与追赶期 |
+| `9fce0da` | C9/C10：聚合截止时间、顺序与 Complete |
+| `cb36d7e` | 12 项原始边界测试正式入库 |
+| `0df3b72` | 别名收藏筛选、重启/事务回滚验收、格式规范化 |
 
-## 7. 未验证 / 边界声明
+WireGuard 出站期间遇到 DNS 解析失败时使用有上限间隔的退避重试；例如 C8 推送第 5 次成功，C9/C10 第 2 次成功。规范已写入根目录 `AGENTS.md`。
 
-- 未执行真实 Android TV / montage / 网盘 / 真实 HLS 客户端验收；未联网访问真实 Emby/TMDB。
-- Docker 工作流仅静态核对，未运行、未发布镜像。
-- §8.6.1 容量为**估算预算**（约 6 份 2h/2400 资源会话），未做长 VOD/LL-HLS/多用户压力实测；LL-HLS 滚动窗口仅按会话空闲租约近似，未实现显式“追赶期 2 分钟”回收。
-- 未推送 `github` 远程；仅推送到 `origin`（Gitea）。
+## 6. 验收边界与交接
 
-## 8. 交接状态
-
-- 分支 `codex/community-prs-local-review`，基于 `752253a`；改动已提交并推送到 `origin`（Gitea）。
-- 新增文件：`internal/backend/{catalog_scan,parental_access,parental_routes,stream_resource_store,stream_resource_proxy,hardening_test}.go` 及前序新增文件。
-- 前序“仍待办”项在本轮全部落地；如后续发现真实客户端边界问题，按 §8.6.1 的压力实测与 LL-HLS 滚动窗口细化。
+- 本轮 C1–C10 的 12 项可重复缺陷验收均已转绿，无已知阻塞这些验收的问题。
+- 未运行真实 Android TV、montage、网盘或真实 HLS 播放器，也未使用真实 Emby/TMDB 做外部验收。
+- HLS 长 VOD、滚动窗口和多用户容量为假时钟/受控 HTTP 的自动化验收，不是生产负载压测；尚未覆盖所有 HLS 变体及真实客户端长时追赶行为。
+- 未构建/运行 Docker 或发布镜像；未向 GitHub 镜像推送。
+- 完整路由入口说明见 `community-prs-route-coverage.md`；未逐项验证的原方案范围不能仅因当前测试转绿而宣布全部完成。
