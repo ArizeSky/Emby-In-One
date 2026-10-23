@@ -338,6 +338,7 @@ func (a *App) forwardStream(w http.ResponseWriter, r *http.Request, client *Upst
 				VirtualItemID: virtualItemID,
 				ServerID:      client.ID,
 				OriginalID:    originalID,
+				ManifestKey:   streamManifestWindowKey(upstreamPath, query),
 			})
 			if rerr != nil {
 				if a.Logger != nil {

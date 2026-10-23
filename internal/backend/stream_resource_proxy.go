@@ -23,6 +23,10 @@ type resourceRewriteContext struct {
 	VirtualItemID string
 	ServerID      string
 	OriginalID    string
+	// ManifestKey identifies the authorized fetch before any redirect. Resource
+	// resolution still uses the final URL; rotating CDN signatures do not move
+	// a stable origin request or resource handle to a different playlist window.
+	ManifestKey string
 }
 
 // RewriteM3U8ForItemWithResources rewrites every fetchable URI in a manifest to a
@@ -78,9 +82,15 @@ func (a *App) RewriteM3U8ForItemWithResources(content, upstreamBase, proxyToken 
 		replacements = append(replacements, replacement{i, start, end})
 	}
 	manifestKey := ""
-	if rolling && !ended && baseErr == nil && baseURL != nil {
-		// Signed query tokens may rotate; a playlist's path identifies its window.
-		manifestKey = baseURL.Scheme + "://" + baseURL.Host + baseURL.EscapedPath()
+	if rolling && !ended {
+		manifestKey = ctx.ManifestKey
+		if manifestKey == "" && baseErr == nil && baseURL != nil {
+			identity := *baseURL
+			identity.Fragment = ""
+			// Query parameters can select audio tracks and renditions. Keep their
+			// semantics when no stable pre-redirect identity was supplied.
+			manifestKey = "url:" + identity.String()
+		}
 	}
 	ids, ok := a.StreamResources.registerManifest(entries, manifestKey)
 	if !ok {
@@ -173,6 +183,7 @@ func (a *App) serveStreamResource(w http.ResponseWriter, r *http.Request, virtua
 			VirtualItemID: entry.VirtualItemID,
 			ServerID:      entry.ServerID,
 			OriginalID:    entry.OriginalID,
+			ManifestKey:   "resource:" + opaqueID,
 		})
 		if rerr != nil {
 			writeStreamResourceRewriteError(w, rerr)

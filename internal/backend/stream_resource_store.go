@@ -37,11 +37,12 @@ type resourceSession struct {
 	manifests map[string]map[string]bool
 }
 type streamResourceStore struct {
-	mu       sync.Mutex
-	entries  map[string]*streamResourceEntry
-	sessions map[resourceSessionKey]*resourceSession
-	max      int
-	now      func() time.Time
+	mu            sync.Mutex
+	entries       map[string]*streamResourceEntry
+	sessions      map[resourceSessionKey]*resourceSession
+	manifestCount int
+	max           int
+	now           func() time.Time
 }
 
 func newStreamResourceStore() *streamResourceStore {
@@ -66,6 +67,7 @@ func (s *streamResourceStore) pruneLocked(now time.Time) {
 			for id := range session.handles {
 				delete(s.entries, id)
 			}
+			s.manifestCount -= len(session.manifests)
 			delete(s.sessions, key)
 		}
 	}
@@ -108,6 +110,20 @@ func (s *streamResourceStore) registerManifest(entries []streamResourceEntry, ro
 	}
 	if len(s.entries)+needed > s.max {
 		return nil, false
+	}
+	// Distinct query variants may reuse the same resource URL. Bound window
+	// records too, before mutating either the handles or the existing windows.
+	if rollingManifest != "" {
+		newWindows := map[resourceSessionKey]bool{}
+		for _, entry := range entries {
+			key := entry.sessionKey()
+			if session := s.sessions[key]; session == nil || session.manifests[rollingManifest] == nil {
+				newWindows[key] = true
+			}
+		}
+		if s.manifestCount+len(newWindows) > s.max {
+			return nil, false
+		}
 	}
 	ids := make([]string, len(entries))
 	current := map[resourceSessionKey]map[string]bool{}
@@ -152,6 +168,9 @@ func (s *streamResourceStore) registerManifest(entries []streamResourceEntry, ro
 		for key, members := range current {
 			session := s.sessions[key]
 			old := session.manifests[rollingManifest]
+			if old == nil {
+				s.manifestCount++
+			}
 			session.manifests[rollingManifest] = members
 			for id := range old {
 				e := s.entries[id]
