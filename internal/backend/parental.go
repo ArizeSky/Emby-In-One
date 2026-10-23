@@ -19,6 +19,19 @@ var parentalRatingScores = map[string]int{
 	"AO":    15, "RP": 15, "UR": 15, "X": 15, "XXX": 15,
 }
 
+// ratingAliases covers the spellings sources emit for ratings the score table
+// already knows; only concrete same-system equivalences map here. Cross-regime
+// values (FSK, age-strings of unverified origin) stay unrecognised, and digits
+// are never extracted from arbitrary strings to manufacture a score.
+var ratingAliases = map[string]string{
+	"PG13":        "PG-13",
+	"PG 13":       "PG-13",
+	"RATED R":     "R",
+	"RATED PG":    "PG",
+	"RATED PG-13": "PG-13",
+	"RATED G":     "G",
+}
+
 // ratingScore resolves an OfficialRating string to its parental score.
 // Unknown or empty ratings return ok=false.
 func ratingScore(rating string) (int, bool) {
@@ -26,10 +39,19 @@ func ratingScore(rating string) (int, bool) {
 	if r == "" {
 		return 0, false
 	}
+	if mapped, ok := ratingAliases[r]; ok {
+		r = mapped
+	}
 	if score, ok := parentalRatingScores[r]; ok {
 		return score, true
 	}
-	// Some sources emit "R (17+)" style strings; match the leading token.
+	// Some sources emit "Rated R" / "R (17+)" style strings; match a leading
+	// "Rated " prefix or the leading token.
+	if prefix, found := strings.CutPrefix(r, "RATED "); found {
+		if score, ok := parentalRatingScores[strings.TrimSpace(prefix)]; ok {
+			return score, true
+		}
+	}
 	if i := strings.IndexAny(r, " ("); i > 0 {
 		if score, ok := parentalRatingScores[strings.TrimSpace(r[:i])]; ok {
 			return score, true
@@ -39,22 +61,18 @@ func ratingScore(rating string) (int, bool) {
 }
 
 // itemAllowedByPolicy reports whether an item passes the user's parental policy.
-// maxRating <= 0 means no ceiling; blockUnrated hides items with no recognisable
-// rating (plan §8.3). A non-empty CustomRating overrides OfficialRating.
+// maxRating <= 0 means no ceiling; blockUnrated hides items confirmed to carry
+// no rating (plan §8.3). A non-empty CustomRating overrides OfficialRating, and
+// an unrecognisable override never inherits the OfficialRating's lower score:
+// every configured policy refuses it (the per-request path answers the same way
+// in decideRating); this synchronous form has no lookup budget, so a missing
+// value keeps the unrated convention.
 func itemAllowedByPolicy(item map[string]any, maxRating int, blockUnrated bool) bool {
-	rating, _ := item["CustomRating"].(string)
-	if strings.TrimSpace(rating) == "" {
-		rating, _ = item["OfficialRating"].(string)
-	}
-	score, ok := ratingScore(rating)
-	if !ok {
-		// Unrated/unknown: blocked only when the user asked to block unrated items.
+	score, presence := classifyItemRating(item)
+	if presence == ratingMissing {
 		return !blockUnrated
 	}
-	if maxRating > 0 && score > maxRating {
-		return false
-	}
-	return true
+	return decideRating(score, presence, maxRating, blockUnrated) == parentalAllow
 }
 
 // itemAllowedByRating is the rating-only form (blockUnrated = false), kept for

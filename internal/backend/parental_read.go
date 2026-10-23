@@ -47,11 +47,22 @@ func decideRating(score int, presence ratingPresence, maxRating int, blockUnrate
 			return parentalDeny
 		}
 		return parentalAllow
-	case ratingUnrecognized, ratingUnrated:
-		if !blockUnrated {
-			return parentalAllow
+	case ratingUnrecognized:
+		// A value the policy table cannot interpret must not be re-read as a
+		// lower OfficialRating: the whole point of an override value is that
+		// the local system does not know how strict it is. Any configured
+		// policy refuses it; only a no-policy user passes.
+		if maxRating > 0 || blockUnrated {
+			return parentalDeny
 		}
-		return parentalDeny
+		return parentalAllow
+	case ratingUnrated:
+		// A complete lookup confirmed that the item carries no rating: only a
+		// block-unrated policy hides it, a mere ceiling does not.
+		if blockUnrated {
+			return parentalDeny
+		}
+		return parentalAllow
 	default:
 		return parentalUnconfirmed
 	}
