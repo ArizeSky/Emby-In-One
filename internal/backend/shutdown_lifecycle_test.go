@@ -28,6 +28,22 @@ func reservePort(t *testing.T) string {
 	return addr
 }
 
+// waitForServerReady poll-dials until the listener accepts connections.
+// serveHTTPWithShutdown binds asynchronously in its own goroutine, so a client
+// request issued immediately after spawning it can race the bind and fail with
+// connection refused (observed on Linux CI; Windows scheduling hid the race).
+func waitForServerReady(t *testing.T, addr string) {
+	t.Helper()
+	waitForCondition(t, 2*time.Second, func() bool {
+		conn, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
+		if err != nil {
+			return false
+		}
+		_ = conn.Close()
+		return true
+	}, "server listener ready at "+addr)
+}
+
 // TestServeWithShutdownWaitsForDrain verifies the returning of server-serve:
 // the caller is blocked until active handlers complete, and they are not
 // cancelled by a drain that had time to finish.
@@ -57,6 +73,7 @@ func TestServeWithShutdownWaitsForDrain(t *testing.T) {
 		serveDone <- serveHTTPWithShutdown(srv, shutdownCh, make(chan struct{}), baseCancel, shutdownDrainTimeout, func() {}, nil)
 	}()
 	started := time.Now()
+	waitForServerReady(t, addr)
 	resp, err := (&http.Client{Timeout: 10 * time.Second}).Get("http://" + addr + "/streaming")
 	if err != nil {
 		t.Fatalf("client request: %v", err)
@@ -112,6 +129,7 @@ func TestServeWithShutdownForceClosesOnDrainTimeout(t *testing.T) {
 	go func() {
 		serveDone <- serveHTTPWithShutdown(srv, shutdownCh, make(chan struct{}), baseCancel, 150*time.Millisecond, func() {}, nil)
 	}()
+	waitForServerReady(t, addr)
 	go func() {
 		_, _ = (&http.Client{Timeout: 10 * time.Second}).Get("http://" + addr + "/streaming")
 	}()
