@@ -24,6 +24,12 @@ func requestWebPath(t *testing.T, handler http.Handler, path string) *httptest.R
 // attributes and an in-DOM Vue template compiled with new Function()) is what
 // justifies script-src's 'unsafe-eval' without 'unsafe-inline' and style-src's
 // 'unsafe-inline', so those two asymmetries are asserted explicitly.
+//
+// The blob: grants are pinned to the vendored player's actual needs:
+// libmedia's Blob-URL workers (worker-src), its AudioWorklet module
+// registered from a Blob URL (script-src) and MSE playback via
+// URL.createObjectURL(MediaSource) (media-src). blob: URLs are same-origin by
+// construction, so they never name a third-party source.
 func TestWebPlayerSecurityHeaders(t *testing.T) {
 	withEmbeddedPanel(t, func(handler http.Handler) {
 		rr := requestWebPath(t, handler, "/web/")
@@ -58,7 +64,7 @@ func TestWebPlayerSecurityHeaders(t *testing.T) {
 
 		scriptSrc := directives["script-src"]
 		if !strings.Contains(scriptSrc, "'unsafe-eval'") {
-			t.Fatalf("script-src = %q, want 'unsafe-eval' retained for the Vue in-DOM template", scriptSrc)
+			t.Fatalf("script-src = %q, want 'unsafe-eval' retained for the Vue in-DOM template and wasm compilation", scriptSrc)
 		}
 		if strings.Contains(scriptSrc, "'unsafe-inline'") {
 			t.Fatalf("script-src = %q, want no inline script allowance", scriptSrc)
@@ -66,12 +72,17 @@ func TestWebPlayerSecurityHeaders(t *testing.T) {
 		if got := directives["style-src"]; !strings.Contains(got, "'unsafe-inline'") {
 			t.Fatalf("style-src = %q, want 'unsafe-inline' for the client's style= attributes", got)
 		}
+		if !strings.Contains(scriptSrc, "blob:") {
+			// libmedia registers its AudioWorklet module from a Blob URL, and
+			// worklet module loads are governed by script-src.
+			t.Fatalf("script-src = %q, want blob: for the AudioWorklet module", scriptSrc)
+		}
 		for name, want := range map[string]string{
 			"default-src":     "'self'",
 			"font-src":        "'self'",
-			"media-src":       "'self'",
+			"media-src":       "'self' blob:",
 			"connect-src":     "'self'",
-			"worker-src":      "'self'",
+			"worker-src":      "'self' blob:",
 			"object-src":      "'none'",
 			"base-uri":        "'none'",
 			"form-action":     "'self'",

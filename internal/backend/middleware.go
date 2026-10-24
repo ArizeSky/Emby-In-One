@@ -250,25 +250,39 @@ func applyAdminSecurityHeaders(w http.ResponseWriter) {
 
 // webPlayerCSP names the web player's resources and nothing else. Everything
 // the client loads is same-origin (Vue/lucide under /web/vendor, the wasm
-// decoders under /web/vendor/web/libmedia and the media itself via the proxy's
-// /Videos, /Audio and image routes), so no third-party origin is permitted and
-// an injected script has neither an external source nor an external sink.
+// decoders under /web/vendor/web/libmedia/wasm and the media itself via the
+// proxy's /Videos, /Audio and image routes), so no third-party origin is
+// permitted and an injected script has neither an external source nor an
+// external sink.
 //
-// 'unsafe-eval' stays: the client mounts an in-DOM template and
-// vue.global.prod.js compiles it with new Function() at runtime, exactly like
-// the admin panel.
+// The blob: grants are each pinned to a concrete use in the vendored player,
+// not blanket trust — blob: URLs are same-origin by construction, so they
+// cannot name a third-party source:
+//   - worker-src blob:  libmedia builds its worker and thread-pool scripts
+//     as Blob URLs (new Worker(URL.createObjectURL(...))); JASSUB's worker
+//     comes from a same-origin /web/vendor/web/jassub-worker.js URL ('self').
+//   - script-src blob:  libmedia registers its AudioWorklet module from a
+//     Blob URL (audioWorklet.addModule); worklet module loads are governed
+//     by script-src, not worker-src.
+//   - media-src blob:   MSE playback assigns video.src =
+//     URL.createObjectURL(MediaSource); the native path uses same-origin
+//     proxy URLs ('self').
+//
+// 'unsafe-eval' stays for two reasons: the client mounts an in-DOM template
+// and vue.global.prod.js compiles it with new Function() at runtime, and the
+// wasm decoders compile via WebAssembly.compile/compileStreaming.
 //
 // 'unsafe-inline' is required for style-src only: the client markup uses
-// style="..." attributes for its layout. script-src keeps 'self' — the client
-// has no inline script and no on*= handler.
+// style="..." attributes for its layout. script-src keeps no
+// 'unsafe-inline' — the client has no inline script and no on*= handler.
 const webPlayerCSP = "default-src 'self'; " +
-	"script-src 'self' 'unsafe-eval'; " +
+	"script-src 'self' 'unsafe-eval' blob:; " +
 	"style-src 'self' 'unsafe-inline'; " +
 	"font-src 'self'; " +
 	"img-src 'self' data:; " +
-	"media-src 'self'; " +
+	"media-src 'self' blob:; " +
 	"connect-src 'self'; " +
-	"worker-src 'self'; " +
+	"worker-src 'self' blob:; " +
 	"object-src 'none'; " +
 	"base-uri 'none'; " +
 	"form-action 'self'; " +
