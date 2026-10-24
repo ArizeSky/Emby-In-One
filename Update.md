@@ -2,28 +2,42 @@
 
 ## V1.4.4-rc3
 
-发布日期：2026-10-19
+发布日期：2026-10-24
 
-> V1.4.4-rc3 是 V1.4.4-rc2 之后的预发布，聚焦**代码审查修复与工程门禁**：修复授权快照过期、令牌撤销持久化失败、跨主机重定向转发上游凭据三项安全/权限问题，修复 Series 播放乱序与静态资源陈旧缓存两项前端/资源问题，修正安装脚本完整性校验 fail-open，并补齐 `gofmt` 与前端测试的 CI 门禁。本版还新增 **UA 管理与服务器绑定**（`spoofClient: resident`），支持最近采集、常驻身份与多服务器共用固定身份（详见下方新功能章节）；并新增**上游聚合开关**与**根页面双入口**（`/web/` 与 `/admin/`）。本次社区贡献整合还加入**用户内容分级限制、按节点配置的播放 302 直通与分页扫描、跨服海报补全及客户端兼容支持**。**对外接口与配置保持兼容，无需手动迁移。**
+> V1.4.4-rc3 是 V1.4.4-rc2 之后的预发布，聚焦**代码审查修复与工程门禁**：修复授权快照过期、令牌撤销持久化失败、跨主机重定向转发上游凭据三项安全/权限问题，修复 Series 播放乱序与静态资源陈旧缓存两项前端/资源问题，修正安装脚本完整性校验 fail-open，并补齐 `gofmt` 与前端测试的 CI 门禁。随后的一轮全项目静态审查又修复了登录限速绕过、跨服副本选路越权、UserData 隐私泄露、HLS 清单语法损坏、播放进度误清零、跨服误合并等 rc2 及更早已存在的问题。本版还新增 **UA 管理与服务器绑定**（`spoofClient: resident`），支持最近采集、常驻身份与多服务器共用固定身份（详见下方新功能章节）；并新增**上游聚合开关**与**根页面双入口**（`/web/` 与 `/admin/`）。本次社区贡献整合还加入**用户内容分级限制、按节点配置的播放 302 直通与分页扫描、跨服海报补全及客户端兼容支持**。**对外接口与配置保持兼容，无需手动迁移。**
 
 ### 安全与权限修复
 
 - **授权快照过期**（`auth_context.go` / `user_store.go`）：用户令牌在登录时快照 `AllowedServers` 且令牌永不过期，此前每请求只复查账号是否启用，收窄用户服务器权限对已签发令牌不生效。现 `withContext` 每请求经新增的 `UserStore.LiveGrants` 实时刷新授权集，收窄/放宽在下一次请求即生效；禁用/删除账号仍直接拒绝。新增 `auth_live_grants_test.go` 覆盖。
 - **令牌撤销持久化失败被静默忽略**（`auth_manager.go`）：`RevokeToken`、`RevokeAllTokens`、`RevokeTokensByUserID` 此前用 `_ = m.save()` 丢弃写盘错误，撤销可能“报告成功”却在重启后复活。现记录错误并把受影响令牌回滚回内存，保持内存与 `tokens.json` 一致。
 - **跨主机重定向转发上游凭据**（`upstream.go` / `upstream_outbound.go`）：跟随重定向时 net/http 只在跨主机时剥离 `Authorization`/`Cookie`，而本代理把上游凭据放在自定义头 `X-Emby-Token`/`X-Emby-Authorization` 与 `api_key` 查询里，会被原样转发到跳转目标主机。现 `redirectPolicy` 始终安装 `CheckRedirect`，保留 10 跳上限，并在主机或协议变化时剥离上述凭据。
+- **登录限速可被成功登录清零**（`login_limiter.go` / `handlers_user.go`）：同一 IP 交错「失败→任意账号成功」即可无限绕过 5 次/15 分钟的登录限速。现成功登录不再清零该 IP 的失败预算，失败计数只随既有到期规则恢复；正常登录不受影响。
+- **跨服副本选路忽略用户授权**（新增 `route_access.go`；`media_items.go`、`media_playback.go`、`library_image.go` 等内容出口）：用户被收窄到服务器 A 时，若条目在服务器 B 也有副本，详情、播放、续播、图片等出口仍可能路由到 B。现所有内容出口按每次请求的实际授权枚举并选择可用副本：未知 ID 404、已知但无授权副本 403、授权副本全部离线 503；显式 `MediaSourceId`、播放会话与资源句柄绑定其所属服务器，不允许时直接拒绝，不改投其他服务器。
+- **UserData 泄露共享账号观看状态**（新增 `response_privacy.go`、`userdata_overlay.go`；`fallback_proxy.go`、`session_userdata.go`、`item_detail.go` 等）：聚合与 fallback 响应原样携带共享上游账号的播放进度、收藏等 UserData 字段；本地覆盖只改写个别字段，本地记录缺席或读取失败时保留共享值。现普通用户响应中的所有 UserData 块（含数组、嵌套条目、独立 DTO）一律先移除共享字段、再按请求者本人记录重建；本地记录缺席返回干净默认状态，读取失败返回 502；fallback 的用户态响应改 `Cache-Control: private, no-store`，不再照搬上游缓存头。
 
 ### 前端与静态资源修复
 
 - **Series 播放乱序覆盖**（`public/web/app.js`）：`playItem` 解析剧集存在 `await`，慢的 NextUp 可能在后一次点击之后才返回并覆盖新选择。现加每次调用序号，被更新请求取代的解析结果直接丢弃。
 - **静态资源陈旧缓存**（`handlers_web.go` / `admin_validation.go` / `web.html`）：`/web`、`/admin` 静态资源此前只有 `Last-Modified` 而无 `Cache-Control`，浏览器启发式缓存可能升级后仍跑旧 `admin.js`/`app.js`。现两个文件服务统一返回 `Cache-Control: no-cache`（未变更时走 304 重验证），并把 `web.html` 资源版本参数统一到 `v1.4.4-rc3`。
+- **/web 播放器安全响应头**（`middleware.go`）：`/web` 此前没有 CSP、nosniff 与帧策略。现返回 `X-Content-Type-Options: nosniff`、`X-Frame-Options: SAMEORIGIN` 与播放器专用 CSP（无第三方源；`script-src 'self' 'unsafe-eval' blob:`、`worker-src`/`media-src 'self' blob:`，blob: 授权逐项对应 vendored 播放器的 Blob worker、AudioWorklet 模块与 MSE 媒体源）。
 
 ### 管理端修复
 
 - **上游节点排序/删除不再触发全量重新登录**（`handlers_admin.go`）：`handleAdminUpstreamReorder` / `handleAdminUpstreamDelete` 此前走 `commitConfig`（`commitConfigFull(…, true)`，`Reload` + `LoginAll`），仅调整顺序或删除一个节点也会让全部上游重新登录、短暂打断在线会话；现改走 `commitConfigSettingsOnly`，只重建连接池、沿用既有凭据，不再触发全量重登。
+- **管理面板请求错误与设置原子校验**（`public/admin.js` / `admin_validation.go` / `handlers_admin.go`）：任何空响应体都被当作成功，列表请求失败被伪装成空列表，设置保存可能先落盘一部分再拒绝。现非 2xx 一律报错（含无法解析 JSON 的响应），设置加载失败时不可保存并保留已知数据；超时设置出现非整数、溢出、0 或负数时整体返回 400，不部分写入。
+
+### 数据一致性与稳定性修复
+
+- **HLS 清单重写吞掉右引号**（`streamproxy.go`）：`URI="..."` 的重写区间包含右引号，改写后的清单行语法损坏，严格解析的播放器会播放失败。现重写保留引号与后续属性，URI 属性识别改为有边界匹配。
+- **播放事件缺字段清零已存进度**（新增 `watch_event.go`；`session_userdata.go`）：进度上报缺少 `PositionTicks` 时，已存播放位置被 0 覆盖；被取代会话的迟到事件也能覆盖新状态。现缺字段保留已存值（显式 0 仍是合法位置），进度、已看、收藏分开更新，被取代会话的迟到事件不再生效。
+- **跨服去重键不含媒体类型、删除上游丢失幸存副本**（`idstore.go` / `media_items.go`）：Movie 与 Series 拥有相同 TMDB ID 时会被误合并；删除一台上游时，其余服务器上的幸存副本连同虚拟 ID、alias 与观看记录一起消失。现去重键全部携带媒体类型，强 ID 冲突不合并，无强 ID 时要求同名且年份一致等可信条件；删除上游在同一数据库事务内把幸存副本提升为新主，保留虚拟 ID、alias 与历史记录。
+- **续播按库/系列过滤**（新增 `resume_scope.go`）：`ParentId` 指向库、文件夹或季时，此前续播列表无法按容器过滤（库 ID 解析不到条目虚拟 ID 时直接返回空）。现按请求者实际可访问副本的系列/季/库归属过滤，分页在过滤后进行。
+- **停服顺序**（`server.go` / `aggregation.go` / `sqlite_cgo.go`）：收到停服信号后只等 HTTP 排水就关闭 SQLite，后台扫描、清理任务可能仍在写库。现按「停止新工作→排水 HTTP→结束后台任务→关闭数据库」顺序关停，SQLite 关闭在独占锁下进行，关闭后的读写返回明确错误。
 
 ### 安装脚本
 
 - **完整性校验 fail-open**（`release-install.sh` / `install.sh`）：`release-install.sh` 在缺失 `.sha256` 时静默放行，现对应当发布校验和的版本改为**中止**（`≤ V1.4.3` 仍跳过）；`install.sh` 远程源码此前 `curl | tar` 无校验，现下载到文件后要求 `SOURCE_SHA256`（或显式 `ALLOW_UNVERIFIED_SOURCE=true`）才解压，`REPO_URL` 可用 `EIO_SOURCE_URL` 覆盖。
+- **CLI 更新链路校验闭环**（`emby-in-one-cli.sh` / `install.sh` / `release-install.sh`）：`verify_download` 在缺校验文件或多文件校验不匹配时回退「任意首行」，更新流程会自动执行 raw.githubusercontent 上的安装脚本，Docker 升级会覆盖用户改过的 Dockerfile/compose。现校验失败一律中止（仅 V1.4.3 及更早不带 `.sha256` 的 Release 保留兼容放行）；Release 资产先校验后执行，不再自动执行 raw 脚本；Docker 升级保留用户 Dockerfile/compose，新模板写入 `Dockerfile.release` 供比对；新增 Docker 源 GPG 指纹独立校验（apt/yum 两路）与 compose 二进制「临时文件→同源 sha256→同目录原子替换」。
 
 ### 工程与 CI
 
@@ -35,6 +49,7 @@
 ### 验证
 
 - `go build -p 1 ./...`、`go vet -p 1 ./...` 通过；`go test -race -p 1 -parallel 2 -timeout 20m ./...` 通过（无数据竞争）；`node --test tests/*.test.cjs` 55/55；`bash -n` 三个脚本通过。
+- 第二轮全项目静态审查修复后复验：`gofmt -l internal` 干净；`go vet ./...`、`go build ./...` 通过；`go test ./internal/backend -count=1` 全量通过；S8 关停生命周期等并发用例通过 `-race`；`npm test` 97 项（94 通过、0 失败、3 项需 bash 的脚本检查在无 bash 环境跳过）。
 
 ### 新功能：UA 管理与服务器绑定（`spoofClient: resident`）
 
