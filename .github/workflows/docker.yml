@@ -7,9 +7,21 @@ name: Docker image
 # 自动发布触发方式、latest 策略与凭据权限留待后续提交/PR 时讨论决定。
 # 镜像 tag：latest（默认分支最新）+ 短 commit sha（方便回滚定位）。
 # 多架构 amd64+arm64，用 GHA 缓存加速后续构建。
+#
+# 版本注入：镜像内二进制的 -X main.Version（容器 --version 与管理面板
+# /admin/api/status 显示同一值）按以下优先级取值：
+#   1) 手动运行时填写的 version 输入（如 v1.4.4-rc3，原样使用）；
+#   2) 在 tag 上运行时取该 tag，V 前缀归一为小写 v（与 release 资产命名一致）；
+#   3) git describe --tags --always（如 v1.4.4-rc3-2-g1a2b3c4，V 前缀同样归一）；
+#   4) 都取不到时回退 dev。
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: '镜像内二进制版本号（如 v1.4.4-rc3）；留空则自动取运行所在 tag 或 git describe'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -25,6 +37,28 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # git describe 需要完整历史与 tag（fetch-depth: 0 默认不取 tag）
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Derive image version
+        id: ver
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [ -n "$INPUT_VERSION" ]; then
+            v="$INPUT_VERSION"
+          elif [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            v="v${GITHUB_REF_NAME#V}"
+          else
+            v=$(git describe --tags --always 2>/dev/null || echo dev)
+            case "$v" in
+              V*) v="v${v#V}" ;;
+            esac
+          fi
+          echo "version=${v}" >> "$GITHUB_OUTPUT"
+          echo "Image binary version: ${v}"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -56,5 +90,7 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.ver.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
