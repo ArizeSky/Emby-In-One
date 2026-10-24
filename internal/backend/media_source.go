@@ -28,7 +28,7 @@ func annotateItemSources(payload any, client *UpstreamClient) {
 func (a *App) selectedPlaybackSource(w http.ResponseWriter, r *http.Request, resolved *routeResolution, body map[string]any, query url.Values) (*routeResolution, bool) {
 	id, _ := body["MediaSourceId"].(string)
 	if id == "" {
-		id = query.Get("MediaSourceId")
+		id = queryValue(query, "MediaSourceId")
 	}
 	source := a.IDStore.ResolveVirtualID(id)
 	if source == nil {
@@ -51,8 +51,8 @@ func (a *App) selectedPlaybackSource(w http.ResponseWriter, r *http.Request, res
 	if _, exists := body["MediaSourceId"]; exists {
 		body["MediaSourceId"] = source.OriginalID
 	}
-	if query.Get("MediaSourceId") != "" {
-		query.Set("MediaSourceId", source.OriginalID)
+	if queryValue(query, "MediaSourceId") != "" {
+		setQueryValue(query, "MediaSourceId", source.OriginalID)
 	}
 	return &routeResolution{OriginalID: itemID, ServerID: source.ServerID, Client: client}, true
 }

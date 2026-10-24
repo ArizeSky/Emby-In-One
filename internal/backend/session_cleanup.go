@@ -17,7 +17,7 @@ func (a *App) handleUserPlayingItemCleanup(w http.ResponseWriter, r *http.Reques
 	targetServer := resolved.ServerID
 	originalItemID := resolved.OriginalID
 	query := cloneValues(r.URL.Query())
-	if ms := query.Get("MediaSourceId"); ms != "" {
+	if ms := queryValue(query, "MediaSourceId"); ms != "" {
 		if source := a.IDStore.ResolveVirtualID(ms); source != nil {
 			mapped, ok := translateVirtualIDForServer(itemID, source.ServerID, a.IDStore)
 			if !ok {
@@ -27,7 +27,7 @@ func (a *App) handleUserPlayingItemCleanup(w http.ResponseWriter, r *http.Reques
 			}
 			targetServer = source.ServerID
 			originalItemID = mapped
-			query.Set("MediaSourceId", source.OriginalID)
+			setQueryValue(query, "MediaSourceId", source.OriginalID)
 		}
 	}
 	// Pure authorization: aggregation is deliberately not checked here.

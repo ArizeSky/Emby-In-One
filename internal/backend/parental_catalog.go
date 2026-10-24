@@ -36,7 +36,7 @@ func (a *App) handleRestrictedContainerItems(w http.ResponseWriter, r *http.Requ
 	requestMergedCandidateSet(query)
 	// The shared scanner performs the one translation from the original virtual IDs.
 	if genre := firstQueryValue(r.URL.Query(), "GenreIds", "genreIds", "genreids"); genre != "" {
-		query.Set("GenreIds", genre)
+		setQueryValue(query, "GenreIds", genre)
 	}
 	s := a.parentalSessionFor(r)
 	rows, complete, truncated, err := a.fetchMergedItemsFromUpstream(r.Context(), requestContextFrom(r.Context()), resolved.Client, "/Users/%s/Items", query, nil, s.catalog)
@@ -50,6 +50,12 @@ func (a *App) handleRestrictedContainerItems(w http.ResponseWriter, r *http.Requ
 		var recency map[string]int64
 		items, recency = a.filterItemsByLocalUserState(r, items, filter)
 		localItemSort(items, r.URL.Query(), recency)
+	}
+	if catalogHasRandomSort(r.URL.Query()) {
+		if err := sortCatalogItems(items, r.URL.Query()); err != nil {
+			writeCatalogSortError(w, err)
+			return
+		}
 	}
 	if !a.strictSanitizedUserDataItems(w, r, items) {
 		return

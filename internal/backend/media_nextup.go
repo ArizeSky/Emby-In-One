@@ -35,9 +35,9 @@ func (a *App) handleShowsNextUp(w http.ResponseWriter, r *http.Request) {
 		}
 		for _, inst := range instances {
 			instQuery := cloneValues(query)
-			instQuery.Set("SeriesId", inst.OriginalID)
-			instQuery.Set("StartIndex", "0")
-			instQuery.Set("Limit", strconv.Itoa(mergedItemsScanLimit))
+			setQueryValue(instQuery, "SeriesId", inst.OriginalID)
+			setQueryValue(instQuery, "StartIndex", "0")
+			setQueryValue(instQuery, "Limit", strconv.Itoa(mergedItemsScanLimit))
 			payload, err := inst.Client.RequestJSON(r.Context(), reqCtx, a.Identity, http.MethodGet, "/Shows/NextUp", instQuery, nil)
 			if err != nil {
 				continue
@@ -190,8 +190,8 @@ func (a *App) writeLocalNextUpPage(w http.ResponseWriter, r *http.Request, items
 		return
 	}
 	pageQuery := cloneValues(r.URL.Query())
-	if _, ok := queryInt(pageQuery, "Limit"); !ok || pageQuery.Get("Limit") == "0" {
-		pageQuery.Set("Limit", "20")
+	if _, ok := queryInt(pageQuery, "Limit"); !ok || queryValue(pageQuery, "Limit") == "0" {
+		setQueryValue(pageQuery, "Limit", "20")
 	}
 	payload := paginateItems(items, pageQuery)
 	if incomplete {

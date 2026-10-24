@@ -273,9 +273,9 @@ func numericInt64(v any) (int64, bool) {
 }
 
 func (a *App) translateMediaSourceQuery(values url.Values) {
-	if mediaSourceID := values.Get("MediaSourceId"); mediaSourceID != "" {
+	if mediaSourceID := queryValue(values, "MediaSourceId"); mediaSourceID != "" {
 		if resolved := a.IDStore.ResolveVirtualID(mediaSourceID); resolved != nil {
-			values.Set("MediaSourceId", resolved.OriginalID)
+			setQueryValue(values, "MediaSourceId", resolved.OriginalID)
 		}
 	}
 }

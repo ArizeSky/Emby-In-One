@@ -7,6 +7,8 @@ package backend
 import (
 	"errors"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 )
 
@@ -153,3 +155,42 @@ func lastPlayedUTC(millis int64) time.Time {
 // embyDateTimeLayout is the DateTime form Emby serialises: ISO with a
 // fixed-width fraction and a Z offset.
 const embyDateTimeLayout = "2006-01-02T15:04:05.0000000Z07:00"
+
+// privacyPlaybackMediaSources differs deliberately from detail privacy: playback
+// needs the rewritten local URLs, but never an upstream file path or an URL that
+// failed rewriting. A URL is retained only within this item's proxy stream routes.
+func privacyPlaybackMediaSources(r *http.Request, sources []map[string]any, virtualItemID string) []map[string]any {
+	if !isUserRestricted(r) {
+		return sources
+	}
+	for _, source := range sources {
+		delete(source, "Path")
+		for _, key := range []string{"DirectStreamUrl", "TranscodingUrl"} {
+			if raw, ok := source[key].(string); !ok || !isLocalPlaybackURL(raw, virtualItemID) {
+				delete(source, key)
+			}
+		}
+		for _, stream := range asItems(map[string]any{"Items": source["MediaStreams"]}) {
+			if raw, ok := stream["DeliveryUrl"].(string); !ok || !isLocalPlaybackURL(raw, virtualItemID) {
+				delete(stream, "DeliveryUrl")
+			}
+		}
+	}
+	return sources
+}
+
+func isLocalPlaybackURL(raw, virtualItemID string) bool {
+	parsed, err := url.Parse(raw)
+	if err != nil || virtualItemID == "" || parsed.IsAbs() || parsed.Host != "" || parsed.User != nil || parsed.Fragment != "" || strings.ContainsAny(parsed.Path, "\\") {
+		return false
+	}
+	if !strings.HasPrefix(parsed.Path, "/Videos/"+virtualItemID+"/") && !strings.HasPrefix(parsed.Path, "/Audio/"+virtualItemID+"/") {
+		return false
+	}
+	for _, segment := range strings.Split(parsed.Path, "/") {
+		if segment == "." || segment == ".." {
+			return false
+		}
+	}
+	return true
+}

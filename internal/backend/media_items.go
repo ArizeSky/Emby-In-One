@@ -61,9 +61,15 @@ func (a *App) parentalAllow(r *http.Request, item map[string]any) bool {
 
 func (a *App) handleItemsCollection(w http.ResponseWriter, r *http.Request) {
 	query := cloneValues(r.URL.Query())
+	if catalogHasRandomSort(query) {
+		if err := validateCatalogSort(query); err != nil {
+			writeCatalogSortError(w, err)
+			return
+		}
+	}
 	batchQuery := hasBatchIDQuery(query)
-	searchQuery := strings.TrimSpace(query.Get("SearchTerm")) != ""
-	if !batchQuery && !searchQuery {
+	searchQuery := strings.TrimSpace(queryValue(query, "SearchTerm")) != ""
+	if !batchQuery && !searchQuery && !catalogHasRandomSort(query) {
 		a.handleFallbackProxy(w, r)
 		return
 	}
@@ -109,8 +115,9 @@ func (a *App) handleItemsCollection(w http.ResponseWriter, r *http.Request) {
 		// Batch IDs are the complete candidate set, but StartIndex/Limit are still
 		// applied once after merging. Do not let an upstream page this set first.
 		scanQuery := cloneValues(query)
-		scanQuery.Set("StartIndex", "0")
-		scanQuery.Set("Limit", strconv.Itoa(maxBatchIDCount))
+		prepareUpstreamCatalogRandom(scanQuery)
+		setQueryValue(scanQuery, "StartIndex", "0")
+		setQueryValue(scanQuery, "Limit", strconv.Itoa(maxBatchIDCount))
 		tasks := make([]upstreamTask, len(clients))
 		for i, client := range clients {
 			c := client
@@ -177,6 +184,12 @@ func (a *App) handleItemsCollection(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handleUserItems(w http.ResponseWriter, r *http.Request) {
 	query := cloneValues(r.URL.Query())
+	if catalogHasRandomSort(query) {
+		if err := validateCatalogSort(query); err != nil {
+			writeCatalogSortError(w, err)
+			return
+		}
+	}
 	if hasBatchIDQuery(query) && validateBatchIDQuery(query) != nil {
 		invalidBatchIDResponse(w)
 		return
@@ -188,7 +201,7 @@ func (a *App) handleUserItems(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, map[string]any{"Items": []any{}, "TotalRecordCount": 0, "StartIndex": 0})
 			return
 		}
-		query.Set("ParentId", resolved.OriginalID)
+		setQueryValue(query, "ParentId", resolved.OriginalID)
 		query.Del("parentId")
 		query.Del("parentid")
 		// Drilling into a genre sends GenreIds=<virtual genre id>. The upstream has
@@ -196,7 +209,7 @@ func (a *App) handleUserItems(w http.ResponseWriter, r *http.Request) {
 		// library, so every genre looked identical. Translate it per upstream and
 		// answer empty when the id belongs to a different server.
 		if translated, ok := a.translateTaxonomyIDs(firstQueryValue(query, "GenreIds", "genreIds", "genreids"), resolved.ServerID); ok {
-			query.Set("GenreIds", translated)
+			setQueryValue(query, "GenreIds", translated)
 			query.Del("genreIds")
 			query.Del("genreids")
 		} else if firstQueryValue(query, "GenreIds", "genreIds", "genreids") != "" {
@@ -207,7 +220,7 @@ func (a *App) handleUserItems(w http.ResponseWriter, r *http.Request) {
 		// scopes the query to the requested container, but it no longer decides which
 		// of that container's items the user sees.
 		filter, localFilter := a.prepareLocalUserFilter(w, r, query)
-		if a.parentalSessionFor(r).restricted() {
+		if a.parentalSessionFor(r).restricted() || catalogHasRandomSort(r.URL.Query()) {
 			a.handleRestrictedContainerItems(w, r, resolved, query, filter, localFilter)
 			return
 		}
@@ -319,10 +332,11 @@ func (a *App) handleUserItemsLatest(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, []any{})
 			return
 		}
-		query.Set("ParentId", resolved.OriginalID)
-		query.Set("UserId", resolved.Client.clientUserID())
-		query.Set("StartIndex", "0")
-		query.Set("Limit", strconv.Itoa(mergedItemsScanLimit))
+		setQueryValue(query, "ParentId", resolved.OriginalID)
+		setQueryValue(query, "UserId", resolved.Client.clientUserID())
+		setQueryValue(query, "StartIndex", "0")
+		setQueryValue(query, "Limit", strconv.Itoa(mergedItemsScanLimit))
+		prepareUpstreamCatalogRandom(query)
 		payload, err := resolved.Client.RequestJSON(r.Context(), requestContextFrom(r.Context()), a.Identity, http.MethodGet, "/Users/"+resolved.Client.clientUserID()+"/Items/Latest", query, nil)
 		if err != nil {
 			writeJSON(w, http.StatusBadGateway, map[string]any{"message": err.Error()})
@@ -380,7 +394,7 @@ func sortLatestItems(items []map[string]any, query url.Values) error {
 func pageItemsArray(items []map[string]any, query url.Values) []any {
 	pageQuery := cloneValues(query)
 	if queryKey(pageQuery, "Limit") == "" {
-		pageQuery.Set("Limit", "20")
+		setQueryValue(pageQuery, "Limit", "20")
 	}
 	page := paginateItems(items, pageQuery)
 	if result, ok := page["Items"].([]any); ok {
@@ -402,7 +416,7 @@ func (a *App) handleUserItemByID(w http.ResponseWriter, r *http.Request) {
 	instances := a.collectAllowedInstances(reqCtx, resolved)
 	if len(instances) <= 1 {
 		query := cloneValues(r.URL.Query())
-		query.Set("UserId", resolved.Client.clientUserID())
+		setQueryValue(query, "UserId", resolved.Client.clientUserID())
 		payload, err := resolved.Client.RequestJSON(r.Context(), requestContextFrom(r.Context()), a.Identity, http.MethodGet, "/Users/"+resolved.Client.clientUserID()+"/Items/"+resolved.OriginalID, query, nil)
 		if err != nil {
 			writeJSON(w, http.StatusBadGateway, map[string]any{"message": err.Error()})
@@ -477,7 +491,7 @@ func (a *App) handleItemSimilar(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	query := cloneValues(r.URL.Query())
-	query.Set("UserId", resolved.Client.clientUserID())
+	setQueryValue(query, "UserId", resolved.Client.clientUserID())
 	payload, err := resolved.Client.RequestJSON(r.Context(), requestContextFrom(r.Context()), a.Identity, http.MethodGet, "/Items/"+resolved.OriginalID+"/Similar", query, nil)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"message": err.Error()})
@@ -517,7 +531,7 @@ func (a *App) handleItemThemeMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	query := cloneValues(r.URL.Query())
-	query.Set("UserId", resolved.Client.clientUserID())
+	setQueryValue(query, "UserId", resolved.Client.clientUserID())
 	payload, err := resolved.Client.RequestJSON(r.Context(), requestContextFrom(r.Context()), a.Identity, http.MethodGet, "/Items/"+resolved.OriginalID+"/ThemeMedia", query, nil)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"message": err.Error()})
@@ -1117,7 +1131,8 @@ func (a *App) fetchMergedItemsFromUpstream(ctx context.Context, reqCtx *RequestC
 
 	buildQuery := func(startIndex, window int) (url.Values, error) {
 		pageQuery := cloneValues(query)
-		pageQuery.Set("UserId", c.clientUserID())
+		prepareUpstreamCatalogRandom(pageQuery)
+		setQueryValue(pageQuery, "UserId", c.clientUserID())
 		if hasBatchIDQuery(pageQuery) {
 			translated := translateBatchIDQueryForServer(pageQuery, c.ID, a.IDStore)
 			if translated.Err != nil {
@@ -1133,12 +1148,12 @@ func (a *App) fetchMergedItemsFromUpstream(ctx context.Context, reqCtx *RequestC
 			if !ok {
 				return nil, errTaxonomyQueryNotTranslatable
 			}
-			pageQuery.Set("GenreIds", translated)
+			setQueryValue(pageQuery, "GenreIds", translated)
 			pageQuery.Del("genreIds")
 			pageQuery.Del("genreids")
 		}
-		pageQuery.Set("StartIndex", strconv.Itoa(startIndex))
-		pageQuery.Set("Limit", strconv.Itoa(window))
+		setQueryValue(pageQuery, "StartIndex", strconv.Itoa(startIndex))
+		setQueryValue(pageQuery, "Limit", strconv.Itoa(window))
 		return pageQuery, nil
 	}
 
@@ -1242,8 +1257,8 @@ func (a *App) fetchMergedItemsFromUpstream(ctx context.Context, reqCtx *RequestC
 // is only a default for the shared query: fetchMergedItemsFromUpstream decides the
 // per-request window itself, per upstream.
 func requestMergedCandidateSet(query url.Values) {
-	query.Set("StartIndex", "0")
-	query.Set("Limit", strconv.Itoa(mergedItemsScanLimit))
+	setQueryValue(query, "StartIndex", "0")
+	setQueryValue(query, "Limit", strconv.Itoa(mergedItemsScanLimit))
 }
 
 // warnTruncatedMerge reports that the merged candidate set hit the scan cap, so the
@@ -1259,7 +1274,7 @@ func (a *App) warnTruncatedMerge(count int) {
 func paginateItems(merged []map[string]any, query url.Values) map[string]any {
 	totalCount := len(merged)
 	startIndex := 0
-	if s := query.Get("StartIndex"); s != "" {
+	if s := queryValue(query, "StartIndex"); s != "" {
 		if v, err := strconv.Atoi(s); err == nil && v >= 0 {
 			startIndex = v
 		}
@@ -1268,7 +1283,7 @@ func paginateItems(merged []map[string]any, query url.Values) map[string]any {
 		startIndex = len(merged)
 	}
 	merged = merged[startIndex:]
-	if lim := query.Get("Limit"); lim != "" {
+	if lim := queryValue(query, "Limit"); lim != "" {
 		if v, err := strconv.Atoi(lim); err == nil && v >= 0 && v < len(merged) {
 			merged = merged[:v]
 		}
@@ -1282,7 +1297,7 @@ func paginateItems(merged []map[string]any, query url.Values) map[string]any {
 
 func firstQueryValue(values url.Values, keys ...string) string {
 	for _, key := range keys {
-		if value := values.Get(key); value != "" {
+		if value := queryValue(values, key); value != "" {
 			return value
 		}
 	}

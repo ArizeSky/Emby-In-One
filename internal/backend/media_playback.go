@@ -65,7 +65,7 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 	maxR, blockUnrated := a.parentalPolicyFor(r)
 	restricted := maxR > 0 || blockUnrated
 	_, hasBodySelection := body["MediaSourceId"]
-	explicitSelected := hasBodySelection || query.Get("MediaSourceId") != ""
+	explicitSelected := hasBodySelection || queryValue(query, "MediaSourceId") != ""
 	selectedServerID := resolved.ServerID
 	anyDenied := false
 	anyUnconfirmed := false
@@ -104,7 +104,7 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 		// ID made the upstream look up a user that does not exist there and answer 500
 		// (NullReferenceException), which surfaced as a 502 to the client.
 		instQuery := cloneValues(query)
-		instQuery.Set("UserId", inst.Client.clientUserID())
+		setQueryValue(instQuery, "UserId", inst.Client.clientUserID())
 		instBody := deepCloneMap(body)
 		instBody["UserId"] = inst.Client.clientUserID()
 		payload, err := inst.Client.RequestJSON(r.Context(), requestContextFrom(r.Context()), a.Identity, r.Method, "/Items/"+inst.OriginalID+"/PlaybackInfo", instQuery, instBody)
@@ -156,6 +156,7 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 				mediaSource["DirectStreamUrl"] = "/Videos/" + r.PathValue("itemId") + "/stream." + container + "?" + proxyURL.Encode()
 			}
 			if transcodingURL, ok := mediaSource["TranscodingUrl"].(string); ok && transcodingURL != "" {
+				delete(mediaSource, "TranscodingUrl")
 				parsed, err := url.Parse(transcodingURL)
 				if err == nil {
 					if parsed.Scheme == "" {
@@ -172,10 +173,10 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 					queryValues := parsed.Query()
 					stripProxyCredentialQuery(queryValues)
 					if originalMSID != "" {
-						queryValues.Set("MediaSourceId", virtualMSID)
+						setQueryValue(queryValues, "MediaSourceId", virtualMSID)
 					}
 					if reqCtx := requestContextFrom(r.Context()); reqCtx != nil && reqCtx.ProxyToken != "" {
-						queryValues.Set("api_key", reqCtx.ProxyToken)
+						setQueryValue(queryValues, "api_key", reqCtx.ProxyToken)
 					}
 					mediaSource["TranscodingUrl"] = proxyPath + "?" + queryValues.Encode()
 				}
@@ -202,9 +203,13 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 								queryValues := parsed.Query()
 								stripProxyCredentialQuery(queryValues)
 								if reqCtx != nil && reqCtx.ProxyToken != "" {
-									queryValues.Set("api_key", reqCtx.ProxyToken)
+									setQueryValue(queryValues, "api_key", reqCtx.ProxyToken)
 								}
 								parsed.RawQuery = queryValues.Encode()
+								// Subtitles are served by this proxy, never by an upstream host.
+								parsed.Scheme, parsed.Host, parsed.User = "", "", nil
+								parsed.Path = replacePathItemID(parsed.Path, "videos", r.PathValue("itemId"), r.PathValue("itemId"))
+								parsed.Path = replacePathItemID(parsed.Path, "audio", r.PathValue("itemId"), r.PathValue("itemId"))
 								deliveryURL = parsed.String()
 							}
 							stream["DeliveryUrl"] = deliveryURL
@@ -247,7 +252,7 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 	delete(base, "MediaSources")
 	rewriteResponseIDs(base, baseServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 	base["MediaSources"] = make([]any, 0, len(allMediaSources))
-	for _, mediaSource := range privacyDetailMediaSources(r, allMediaSources) {
+	for _, mediaSource := range privacyPlaybackMediaSources(r, allMediaSources, r.PathValue("itemId")) {
 		base["MediaSources"] = append(base["MediaSources"].([]any), mediaSource)
 	}
 	writeJSON(w, http.StatusOK, base)
@@ -260,7 +265,7 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 // stream routes are registered as /Videos/ and /Audio/ — a lowercase root would
 // fall through to the fallback proxy and fail to resolve.
 func replacePathItemID(path, root, fromID, toID string) string {
-	if fromID == "" || toID == "" || fromID == toID {
+	if fromID == "" || toID == "" {
 		return path
 	}
 	root = strings.ToLower(root)

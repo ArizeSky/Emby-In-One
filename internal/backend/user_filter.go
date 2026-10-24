@@ -159,8 +159,8 @@ func (a *App) prepareLocalUserFilter(w http.ResponseWriter, r *http.Request, val
 	}
 	f.stripFrom(values)
 	// What comes back is a candidate set, not the answer.
-	values.Set("StartIndex", "0")
-	values.Set("Limit", strconv.Itoa(localFilterScanLimit))
+	setQueryValue(values, "StartIndex", "0")
+	setQueryValue(values, "Limit", strconv.Itoa(localFilterScanLimit))
 	ensureSortFields(values)
 	return f, true
 }
@@ -317,14 +317,19 @@ func (a *App) filterItemsByLocalUserState(r *http.Request, items []map[string]an
 // Only a few keys exist in the local records; any other key degrades to the user's
 // own last-played order, which is also the tiebreaker for the keys that are known.
 func localItemSort(items []map[string]any, query url.Values, recency map[string]int64) {
-	order := strings.TrimSpace(query.Get("SortOrder"))
+	if catalogHasRandomSort(query) {
+		// Random is a catalog order, not a fallback to per-user recency.
+		_ = sortCatalogItems(items, query)
+		return
+	}
+	order := strings.TrimSpace(queryValue(query, "SortOrder"))
 	// Absent SortOrder means most-recently-touched first, the only sensible default
 	// for a list the user asked to see by their own state.
 	ascending := strings.EqualFold(order, "Ascending")
 	sortItemsByRecency(items, recency, ascending)
 
 	primary := ""
-	if keys := splitQueryList(query.Get("SortBy")); len(keys) > 0 {
+	if keys := splitQueryList(queryValue(query, "SortBy")); len(keys) > 0 {
 		primary = keys[0]
 	}
 	less, supported := localItemLess(primary, strings.EqualFold(order, "Descending"))
@@ -420,12 +425,18 @@ func ensureSortFields(values url.Values) {
 
 // queryKey returns the spelling a parameter actually uses, or "" when absent.
 func queryKey(values url.Values, name string) string {
+	// Prefer the canonical spelling, then a deterministic spelling when a
+	// malformed client sends multiple case variants. Never depend on map order.
+	if _, ok := values[name]; ok {
+		return name
+	}
+	selected := ""
 	for key := range values {
-		if strings.EqualFold(key, name) {
-			return key
+		if strings.EqualFold(key, name) && (selected == "" || key < selected) {
+			selected = key
 		}
 	}
-	return ""
+	return selected
 }
 
 func splitQueryList(raw string) []string {

@@ -1,6 +1,9 @@
 package backend
 
 import (
+	"bytes"
+	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"net/http"
@@ -9,6 +12,20 @@ import (
 	"strings"
 	"time"
 )
+
+var catalogRandomProcessSeed = newCatalogRandomProcessSeed()
+
+func newCatalogRandomProcessSeed() string {
+	var seed [32]byte
+	if _, err := rand.Read(seed[:]); err == nil {
+		return string(seed[:])
+	}
+	return fmt.Sprintf("%d", time.Now().UnixNano())
+}
+
+func catalogRandomScore(seed, id string) [32]byte {
+	return sha256.Sum256([]byte(seed + "\x00" + id))
+}
 
 type catalogSortField struct {
 	name       string
@@ -42,7 +59,7 @@ func catalogSortFields(query url.Values) ([]catalogSortField, error) {
 	for i, key := range keys {
 		normalized := strings.ToLower(strings.TrimSpace(key))
 		switch normalized {
-		case "name", "sortname", "productionyear", "year", "datecreated", "communityrating", "seriessortname":
+		case "name", "sortname", "productionyear", "year", "datecreated", "communityrating", "seriessortname", "random":
 		default:
 			return nil, unsupportedCatalogSortKeyError{key: key}
 		}
@@ -65,17 +82,33 @@ func validateCatalogSort(query url.Values) error {
 	return err
 }
 
-// sortCatalogItems sorts a merged candidate set globally. The virtual ID is an
-// ascending, direction-independent final key so equal metadata is stable across
-// requests and upstream arrival order.
+// sortCatalogItems globally orders the merged, filtered, deduplicated candidate
+// set. Random uses an ID-derived pseudorandom key, so paging and upstream arrival
+// order do not affect the result. RandomSeed opts into a reproducible sequence;
+// without it, the process-random seed keeps a sequence stable for this process.
 func sortCatalogItems(items []map[string]any, query url.Values) error {
 	fields, err := catalogSortFields(query)
 	if err != nil || len(fields) == 0 {
 		return err
 	}
+	seed := catalogRandomProcessSeed
+	if key := queryKey(query, "RandomSeed"); key != "" && len(query[key]) > 0 {
+		seed = query[key][0]
+	}
 	sort.SliceStable(items, func(i, j int) bool {
 		for _, field := range fields {
-			cmp := compareCatalogField(items[i], items[j], field.name)
+			var cmp int
+			if field.name == "random" {
+				left, right := catalogRandomScore(seed, itemID(items[i])), catalogRandomScore(seed, itemID(items[j]))
+				switch {
+				case bytes.Compare(left[:], right[:]) < 0:
+					cmp = -1
+				case bytes.Compare(left[:], right[:]) > 0:
+					cmp = 1
+				}
+			} else {
+				cmp = compareCatalogField(items[i], items[j], field.name)
+			}
 			if cmp == 0 {
 				continue
 			}
@@ -113,6 +146,8 @@ func compareCatalogField(left, right map[string]any, key string) int {
 		return compareCatalogNumber(itemNumber(left, "CommunityRating"), itemNumber(right, "CommunityRating"))
 	case "datecreated":
 		return compareCatalogDates(itemText(left, "DateCreated"), itemText(right, "DateCreated"))
+	case "random":
+		return compareCatalogText(itemID(left), itemID(right))
 	default:
 		return 0
 	}

@@ -78,10 +78,10 @@ func (a *App) proxyStream(w http.ResponseWriter, r *http.Request, route streamRo
 	// This only records a source-selection hint. The actual path rewrite is
 	// deferred until the real target server and its original item id are known,
 	// so a cross-source MediaSourceId is rewritten for the server that serves it.
-	if slash := strings.IndexByte(rest, '/'); slash > 0 && query.Get("MediaSourceId") == "" {
+	if slash := strings.IndexByte(rest, '/'); slash > 0 && queryValue(query, "MediaSourceId") == "" {
 		if tail := rest[slash:]; strings.HasPrefix(tail, "/Subtitles/") || strings.HasPrefix(tail, "/Attachments/") {
 			if a.IDStore.ResolveVirtualID(rest[:slash]) != nil {
-				query.Set("MediaSourceId", rest[:slash])
+				setQueryValue(query, "MediaSourceId", rest[:slash])
 			}
 		}
 	}
@@ -149,7 +149,7 @@ func (a *App) proxyStream(w http.ResponseWriter, r *http.Request, route streamRo
 func (a *App) forwardStream(w http.ResponseWriter, r *http.Request, client *UpstreamClient, upstreamPath string, query url.Values, rest, virtualItemID, originalID string) {
 	reqCtx := requestContextFrom(r.Context())
 	timelineSession := ""
-	if session := query.Get("PlaySessionId"); session != "" {
+	if session := queryValue(query, "PlaySessionId"); session != "" {
 		timelineSession = client.ID + "\x00" + virtualItemID + "\x00" + session
 	}
 	if a.Logger != nil {
@@ -385,9 +385,9 @@ func (a *App) forwardStream(w http.ResponseWriter, r *http.Request, client *Upst
 // A MediaSourceId that lives on another upstream switches the target, subject to the
 // same server permission and concurrency rules as the primary instance.
 func (a *App) resolveStreamTarget(w http.ResponseWriter, r *http.Request, resolved *routeResolution, virtualItemID string, query url.Values) (*UpstreamClient, string, bool) {
-	virtualMediaSourceID := query.Get("MediaSourceId")
+	virtualMediaSourceID := queryValue(query, "MediaSourceId")
 	if virtualMediaSourceID == "" {
-		if playSessionID := query.Get("PlaySessionId"); playSessionID != "" {
+		if playSessionID := queryValue(query, "PlaySessionId"); playSessionID != "" {
 			playSession := a.IDStore.ResolveVirtualID(playSessionID)
 			if playSession != nil {
 				if !a.canUseAggregatedServer(requestContextFrom(r.Context()), playSession.ServerID) {
@@ -427,7 +427,7 @@ func (a *App) resolveStreamTarget(w http.ResponseWriter, r *http.Request, resolv
 		a.writeRouteAccessError(w, http.StatusServiceUnavailable)
 		return nil, "", false
 	}
-	query.Set("MediaSourceId", mediaSource.OriginalID)
+	setQueryValue(query, "MediaSourceId", mediaSource.OriginalID)
 	if mediaSource.ServerID == resolved.ServerID {
 		return target, resolved.OriginalID, true
 	}
@@ -494,7 +494,7 @@ func (a *App) streamPlaybackMode(client *UpstreamClient) string {
 // resolvePlaySessionID rewrites a virtual PlaySessionId in place and reports the
 // upstream server that owns it.
 func (a *App) resolvePlaySessionID(query url.Values) (string, bool) {
-	playSessionID := query.Get("PlaySessionId")
+	playSessionID := queryValue(query, "PlaySessionId")
 	if playSessionID == "" {
 		return "", false
 	}
@@ -502,7 +502,7 @@ func (a *App) resolvePlaySessionID(query url.Values) (string, bool) {
 	if resolved == nil {
 		return "", false
 	}
-	query.Set("PlaySessionId", resolved.OriginalID)
+	setQueryValue(query, "PlaySessionId", resolved.OriginalID)
 	return resolved.ServerID, true
 }
 

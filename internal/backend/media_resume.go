@@ -49,7 +49,7 @@ func (a *App) handleUserItemsResume(w http.ResponseWriter, r *http.Request) {
 				index: index,
 				fn: func(bgCtx context.Context) upstreamItemsResult {
 					instQuery := cloneValues(query)
-					instQuery.Set("ParentId", originalID)
+					setQueryValue(instQuery, "ParentId", originalID)
 					items, complete, truncated, err := a.fetchMergedItemsFromUpstream(bgCtx, reqCtx, c, "/Users/%s/Items/Resume", instQuery, nil, scope.budget)
 					if err != nil && len(items) == 0 {
 						return upstreamItemsResult{Err: err}
@@ -103,8 +103,8 @@ func (a *App) handleLocalResume(w http.ResponseWriter, r *http.Request, reqCtx *
 		limit = requested
 	}
 	pageQuery := cloneValues(r.URL.Query())
-	if _, ok := queryInt(pageQuery, "Limit"); !ok || query.Get("Limit") == "0" {
-		pageQuery.Set("Limit", strconv.Itoa(limit))
+	if _, ok := queryInt(pageQuery, "Limit"); !ok || queryValue(query, "Limit") == "0" {
+		setQueryValue(pageQuery, "Limit", strconv.Itoa(limit))
 	}
 	desiredEnd := startIndex + limit
 	const batchSize = 100
@@ -275,7 +275,7 @@ func joinComma(ss []string) string {
 
 // queryInt extracts an integer from a url.Values query parameter.
 func queryInt(values url.Values, key string) (int, bool) {
-	s := strings.TrimSpace(values.Get(key))
+	s := strings.TrimSpace(queryValue(values, key))
 	if s == "" {
 		return 0, false
 	}

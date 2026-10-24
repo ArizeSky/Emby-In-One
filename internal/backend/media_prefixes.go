@@ -33,7 +33,7 @@ func (a *App) handleItemsPrefixes(w http.ResponseWriter, r *http.Request) {
 				// the virtual parent id would be meaningless.
 				continue
 			}
-			serverQuery.Set("ParentId", translated)
+			setQueryValue(serverQuery, "ParentId", translated)
 			serverQuery.Del("parentId")
 			serverQuery.Del("parentid")
 		}

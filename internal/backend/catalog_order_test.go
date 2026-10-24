@@ -183,7 +183,7 @@ func TestLatestAggregatesDeduplicatesSortsAndPaginates(t *testing.T) {
 func TestCatalogSortRejectsUnknownKeyWith400(t *testing.T) {
 	withTempApp(t, func(_ *App, handler http.Handler) {
 		token := loginToken(t, handler, "secret")
-		rr := doJSONRequest(t, handler, http.MethodGet, "/Items?SearchTerm=movie&SortBy=Random&Limit=2", nil, token)
+		rr := doJSONRequest(t, handler, http.MethodGet, "/Items?SearchTerm=movie&SortBy=DefinitelyUnknown&Limit=2", nil, token)
 		if rr.Code != http.StatusBadRequest {
 			t.Fatalf("status = %d, want 400: %s", rr.Code, rr.Body.String())
 		}
@@ -191,7 +191,7 @@ func TestCatalogSortRejectsUnknownKeyWith400(t *testing.T) {
 		if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
 			t.Fatal(err)
 		}
-		if payload["code"] != "UnsupportedSortKey" || payload["key"] != "Random" {
+		if payload["code"] != "UnsupportedSortKey" || payload["key"] != "DefinitelyUnknown" {
 			t.Fatalf("unsupported sort response = %#v", payload)
 		}
 	})

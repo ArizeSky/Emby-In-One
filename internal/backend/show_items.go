@@ -12,13 +12,13 @@ import (
 // short copy on one server hides later episodes available on another server.
 func (a *App) fetchShowItems(ctx context.Context, reqCtx *RequestContext, inst seriesInstance, path string, query url.Values) ([]map[string]any, error) {
 	query = cloneValues(query)
-	query.Set("Limit", "200")
-	query.Set("EnableTotalRecordCount", "true")
+	setQueryValue(query, "Limit", "200")
+	setQueryValue(query, "EnableTotalRecordCount", "true")
 	query.Del("StartIndex")
 	items := []map[string]any{}
 	seen := map[string]bool{}
 	for offset := 0; ; {
-		query.Set("StartIndex", strconv.Itoa(offset))
+		setQueryValue(query, "StartIndex", strconv.Itoa(offset))
 		if reqCtx != nil && reqCtx.Parental != nil && reqCtx.Parental.restricted() && !reqCtx.Parental.catalog.tryAcquire() {
 			return nil, errParentalBudgetExhausted
 		}
