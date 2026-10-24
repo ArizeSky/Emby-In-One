@@ -144,6 +144,13 @@ version_lt() {
   return 1
 }
 
+# ── 版本比较：$1 ≤ $2 ──
+# 与 version_lt 同样的归一化规则；相等返回 0。用于校验和兼容窗口判断。
+version_le() {
+  if [[ "$1" == "$2" ]]; then return 0; fi
+  version_lt "$1" "$2"
+}
+
 reset_password_via_cli() {
   local new_password="$1"
   # 密码经 stdin 传给内置 CLI（`--reset-password -`），不进进程列表、不进 shell 历史。
@@ -295,15 +302,20 @@ do_update() {
     echo ""
     local tmp_script="" installer=""
     tmp_script="/tmp/emby-in-one-release-install-$$.sh"
-    # 优先取目标版本自带的安装脚本（与要安装的版本配套、包含该版本的修复），
-    # 其次取目标 tag 的仓库快照；磁盘上的旧副本仅作离线兜底。
-    # 版本号显式传参，安装脚本不再自行二次解析。
-    if curl -fsSL --max-time 30 -o "${tmp_script}" \
-        "https://github.com/${GITHUB_REPO}/releases/download/${target}/release-install.sh" \
-      || curl -fsSL --max-time 30 -o "${tmp_script}" \
-        "https://raw.githubusercontent.com/${GITHUB_REPO}/${target}/release-install.sh"; then
+    # 只执行经过校验的安装脚本：
+    #   - Release 资产（与目标版本配套）走 verify_download，校验通过才执行；
+    #   - raw.githubusercontent / 分支快照没有校验和，绝不自动执行；
+    #   - 磁盘上已安装的旧副本（安装时经校验落盘）仅作离线兜底。
+    # 版本号显式传参，安装脚本不自行二次解析。
+    local installer_url="https://github.com/${GITHUB_REPO}/releases/download/${target}/release-install.sh"
+    if curl -fsSL --max-time 30 -o "${tmp_script}" "${installer_url}"; then
+      if ! verify_download "${tmp_script}" "${installer_url}"; then
+        rm -f "${tmp_script}"
+        echo -e "${RED}✘ 安装脚本完整性校验未通过，已中止更新（不执行未校验脚本）${NC}"
+        return 1
+      fi
       installer="${tmp_script}"
-      echo -e "  ${DIM}已获取 ${target} 的安装脚本${NC}"
+      echo -e "  ${DIM}已获取并校验 ${target} 的安装脚本${NC}"
     elif [[ -f "${PROJECT_DIR}/release-install.sh" ]]; then
       installer="${PROJECT_DIR}/release-install.sh"
       echo -e "  ${DIM}网络获取失败，使用已安装的 ${installer}${NC}"
@@ -396,32 +408,47 @@ download_and_install() {
 }
 
 # ── 下载产物的 sha256 校验 ──
-# 返回 0: 校验通过，或该 Release 未提供 .sha256（已告警，兼容旧版本）
-# 返回 1: 校验失败/校验和文件无法识别，调用方必须中止安装
+# 校验和与资产同源（来自同一 Release 的 .sha256），能检出传输损坏与篡改；
+# 官方源被攻破时它不构成第二道防线，不做超出这一点的承诺。
+#
+# fail closed，任何一步失败都必须中止安装：
+#   - 系统缺少 sha256sum
+#   - 校验和文件缺失或无法下载
+#   - 校验和文件里没有与资产名对应的条目 / 格式无法识别
+#     （绝不退回"任意首行"，多文件 Release 里校验错文件等于没校验）
+#   - 哈希不匹配
+# 唯一例外：V1.4.3 及更早的 Release 未附带 .sha256 产物，无从校验，
+# 告警后放行（与 release-install.sh 的 SKIP_SHA256 兼容窗口一致）。
 verify_download() {
   local file="$1" url="$2"
   if ! command -v sha256sum &>/dev/null; then
-    echo -e "${YELLOW}  ⚠ 系统缺少 sha256sum，已跳过完整性校验${NC}"
-    return 0
+    echo -e "${RED}✘ 系统缺少 sha256sum，无法校验下载内容，已中止安装${NC}"
+    return 1
   fi
   local asset_name="${url##*/}"
+  # V1.4.3 及更早的 Release 未附带校验和产物；仅对确实带有 .sha256 的
+  # 新版本强制校验。tag 从下载地址解析，避免调用方各自传参。
+  if [[ "$url" == *"/releases/download/"* ]]; then
+    local release_tag="${url#*/releases/download/}"
+    release_tag="${release_tag%%/*}"
+    if [[ -n "$release_tag" ]] && version_le "$release_tag" "V1.4.3"; then
+      echo -e "${YELLOW}  ⚠ 目标版本 ${release_tag} 未附带校验和产物，跳过完整性校验${NC}"
+      return 0
+    fi
+  fi
   local sha_file="${file}.sha256" expected actual
   if ! curl -fsSL --max-time 30 -o "${sha_file}" "${url}.sha256" 2>/dev/null; then
     rm -f "${sha_file}"
-    echo -e "${YELLOW}  ⚠ 该 Release 未提供 ${asset_name}.sha256，已跳过完整性校验${NC}"
-    return 0
+    echo -e "${RED}✘ 未找到校验和文件: ${url}.sha256，无校验不安装，已中止${NC}"
+    return 1
   fi
-  # 优先取文件名匹配的那一行，兼容"单文件"和"多文件合并"两种校验和格式
   expected=$(awk -v want="${asset_name}" '
     { name=$2; sub(/^\*/, "", name); sub(/^\.\//, "", name) }
     name == want { print $1; exit }
   ' "${sha_file}" | grep -oE '^[0-9a-fA-F]{64}$' | head -1)
-  if [[ -z "$expected" ]]; then
-    expected=$(awk '{print $1}' "${sha_file}" | grep -oE '^[0-9a-fA-F]{64}$' | head -1)
-  fi
   rm -f "${sha_file}"
   if [[ -z "$expected" ]]; then
-    echo -e "${RED}✘ 校验和文件格式无法识别: ${url}.sha256${NC}"
+    echo -e "${RED}✘ 校验和文件中未找到 ${asset_name} 的条目，或格式无法识别: ${url}.sha256${NC}"
     return 1
   fi
   actual=$(sha256sum "${file}" | awk '{print $1}')
@@ -498,11 +525,14 @@ download_and_install_docker() {
     fi
   done
 
-  # 使用源码包中的 Dockerfile，或生成默认的
+  # 生成新模板（源码包自带 Dockerfile 优先），先落在临时目录再决定去处：
+  # 升级时不动用户现有的 Dockerfile，新模板放独立文件供比对；
+  # 全新安装（磁盘上本来没有）才自动创建。
+  local dockerfile_tpl="${tmp_dir}/Dockerfile.new"
   if [[ -f "${src_dir}/Dockerfile" ]]; then
-    cp -f "${src_dir}/Dockerfile" "${PROJECT_DIR}/Dockerfile"
+    cp -f "${src_dir}/Dockerfile" "${dockerfile_tpl}"
   else
-    cat > "${PROJECT_DIR}/Dockerfile" <<'DEOF'
+    cat > "${dockerfile_tpl}" <<'DEOF'
 FROM golang:1.23-bookworm AS builder
 ARG VERSION=dev
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential ca-certificates && rm -rf /var/lib/apt/lists/*
@@ -529,15 +559,23 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
 CMD ["./emby-in-one"]
 DEOF
   fi
+  if [[ ! -f "${PROJECT_DIR}/Dockerfile" ]]; then
+    cp -f "${dockerfile_tpl}" "${PROJECT_DIR}/Dockerfile"
+  else
+    cp -f "${dockerfile_tpl}" "${PROJECT_DIR}/Dockerfile.release"
+    echo -e "  ${DIM}已有 Dockerfile 保持不变；新版本模板已写入 Dockerfile.release 供比对${NC}"
+  fi
 
-  # 生成 docker-compose.yml（注入目标版本号）
-  cat > "${PROJECT_DIR}/docker-compose.yml" <<EOF
+  # 生成 docker-compose.yml 模板（注入目标版本号，统一使用解析后的 release_tag）。
+  # 与 Dockerfile 相同：已有配置不自动覆盖，仅提供独立比对文件。
+  local compose_tpl="${tmp_dir}/docker-compose.yml.new"
+  cat > "${compose_tpl}" <<EOF
 services:
   emby-in-one:
     build:
       context: .
       args:
-        VERSION: ${version_tag}
+        VERSION: ${release_tag}
     container_name: emby-in-one
     # 容器以 uid 1000 运行，挂载目录需先 chown 1000:1000
     user: "1000:1000"
@@ -555,6 +593,12 @@ services:
         max-size: "10m"
         max-file: "3"
 EOF
+  if [[ ! -f "${PROJECT_DIR}/docker-compose.yml" ]]; then
+    cp -f "${compose_tpl}" "${PROJECT_DIR}/docker-compose.yml"
+  else
+    cp -f "${compose_tpl}" "${PROJECT_DIR}/docker-compose.yml.release"
+    echo -e "  ${DIM}已有 docker-compose.yml 保持不变；新模板已写入 docker-compose.yml.release 供比对${NC}"
+  fi
 
   rm -rf "${tmp_dir}"
 
@@ -636,7 +680,9 @@ download_and_install_binary() {
   # 留着旧副本会让新 CSP 拦掉旧页面的内联样式与 CDN 引用，表现为白屏。
   if [[ -d "${PROJECT_DIR}/public" ]]; then
     for asset in admin.html admin.js; do
-      local asset_url="https://github.com/${GITHUB_REPO}/releases/download/${version_tag}/${asset}"
+      # 面板资产与二进制同属一个 Release，统一使用解析后的大写 V release_tag
+      # （version_tag 可能是小写 v，拼错 tag 会 404 并落不到校验那一步）
+      local asset_url="https://github.com/${GITHUB_REPO}/releases/download/${release_tag}/${asset}"
       local asset_tmp="${PROJECT_DIR}/public/${asset}.tmp.$$"
       if curl -fsSL --max-time 30 -o "${asset_tmp}" "${asset_url}" 2>/dev/null; then
         if ! verify_download "${asset_tmp}" "${asset_url}"; then

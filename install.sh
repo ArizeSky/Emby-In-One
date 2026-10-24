@@ -111,8 +111,23 @@ _install_docker_aliyun() {
     apt-get update -qq
     apt-get install -y -qq ca-certificates curl gnupg lsb-release
     install -m 0755 -d /etc/apt/keyrings
-    curl -fsSL https://mirrors.aliyun.com/docker-ce/linux/debian/gpg \
-      | gpg --dearmor -o /etc/apt/keyrings/docker.gpg 2>/dev/null
+    # 包源 key 指纹独立确认: 先下载 key、校验指纹，再导入 keyring。
+    # 指纹为 Docker 官方公布的 9DC8 5822 9FC7 DD38 854A E2D8 8D81 803C 0EBF CD88，
+    # 镜像源分发的也是同一把 key；不匹配即中止，被替换的源 key 无法静默生效。
+    local key_tmp key_fpr
+    key_tmp=$(mktemp)
+    if ! curl -fsSL --max-time 30 https://mirrors.aliyun.com/docker-ce/linux/debian/gpg -o "${key_tmp}"; then
+      rm -f "${key_tmp}"
+      return 1
+    fi
+    key_fpr=$(gpg --show-keys --with-colons "${key_tmp}" 2>/dev/null | awk -F: '$1=="fpr" {print $10; exit}')
+    if [[ "${key_fpr}" != "9DC858229FC7DD38854AE2D88D81803C0EBFCD88" ]]; then
+      rm -f "${key_tmp}"
+      warn "Docker 仓库 GPG key 指纹不匹配 (实际: ${key_fpr:-未解析})，已中止镜像源安装"
+      return 1
+    fi
+    gpg --dearmor < "${key_tmp}" > /etc/apt/keyrings/docker.gpg
+    rm -f "${key_tmp}"
     chmod a+r /etc/apt/keyrings/docker.gpg
     # 兼容 Debian 和 Ubuntu
     local distro
@@ -128,6 +143,22 @@ $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list
     apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-compose-plugin
   elif [[ "$pkg_mgr" == "yum" || "$pkg_mgr" == "dnf" ]]; then
     "$pkg_mgr" install -y yum-utils 2>/dev/null || true
+    # 同 apt 路径: 先独立校验 key 指纹再启用仓库。repo 文件里的 gpgkey 与
+    # 仓库本身同源，不能作为唯一校验渠道。
+    local key_tmp key_fpr
+    key_tmp=$(mktemp)
+    if ! curl -fsSL --max-time 30 https://mirrors.aliyun.com/docker-ce/linux/centos/gpg -o "${key_tmp}"; then
+      rm -f "${key_tmp}"
+      return 1
+    fi
+    key_fpr=$(gpg --show-keys --with-colons "${key_tmp}" 2>/dev/null | awk -F: '$1=="fpr" {print $10; exit}')
+    if [[ "${key_fpr}" != "9DC858229FC7DD38854AE2D88D81803C0EBFCD88" ]]; then
+      rm -f "${key_tmp}"
+      warn "Docker 仓库 GPG key 指纹不匹配 (实际: ${key_fpr:-未解析})，已中止镜像源安装"
+      return 1
+    fi
+    rpm --import "${key_tmp}"
+    rm -f "${key_tmp}"
     "$pkg_mgr"-config-manager --add-repo \
       https://mirrors.aliyun.com/docker-ce/linux/centos/docker-ce.repo 2>/dev/null || true
     "$pkg_mgr" install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
@@ -172,8 +203,42 @@ else
     if [[ -z "$COMPOSE_VERSION" ]]; then
       error "无法获取 Docker Compose 版本号，请检查网络连接后重试（或手动安装 docker-compose）"
     fi
-    curl -fsSL "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" \
-      -o /usr/local/bin/docker-compose
+    # 临时文件 → 校验同源 .sha256 → 原子安装。compose 官方 Release 为每个
+    # 二进制附带同名 .sha256；哈希与资产同源，能检出传输损坏与篡改，
+    # 不代表官方源被攻破时仍安全。校验不过不落盘生效。
+    if ! command -v sha256sum &>/dev/null; then
+      error "系统缺少 sha256sum，无法校验 Docker Compose 二进制，已中止安装"
+    fi
+    COMPOSE_ASSET="docker-compose-$(uname -s)-$(uname -m)"
+    COMPOSE_URL="https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/${COMPOSE_ASSET}"
+    # 临时文件放在目标同目录: mv 在同一文件系统上是原子重命名，
+    # 不会在 /usr/local/bin 留下写了一半的可执行文件
+    COMPOSE_TMP="/usr/local/bin/docker-compose.download.$$"
+    if ! curl -fsSL --max-time 180 -o "${COMPOSE_TMP}" "${COMPOSE_URL}"; then
+      rm -f "${COMPOSE_TMP}"
+      error "下载 Docker Compose 二进制失败: ${COMPOSE_URL}"
+    fi
+    COMPOSE_SHA_TMP="${COMPOSE_TMP}.sha256"
+    if ! curl -fsSL --max-time 30 -o "${COMPOSE_SHA_TMP}" "${COMPOSE_URL}.sha256"; then
+      rm -f "${COMPOSE_TMP}" "${COMPOSE_SHA_TMP}"
+      error "未找到 Docker Compose 校验和文件: ${COMPOSE_URL}.sha256，无校验不安装"
+    fi
+    # 校验和条目必须与本资产名对应，不退回任意首行
+    COMPOSE_EXPECTED=$(awk -v want="${COMPOSE_ASSET}" '
+      { name=$2; sub(/^\*/, "", name); sub(/^\.\//, "", name) }
+      name == want { print $1; exit }
+    ' "${COMPOSE_SHA_TMP}" | grep -oE '^[0-9a-fA-F]{64}$' | head -1)
+    rm -f "${COMPOSE_SHA_TMP}"
+    if [[ -z "${COMPOSE_EXPECTED}" ]]; then
+      rm -f "${COMPOSE_TMP}"
+      error "Docker Compose 校验和文件格式无法识别（未找到 ${COMPOSE_ASSET} 的条目）"
+    fi
+    COMPOSE_ACTUAL=$(sha256sum "${COMPOSE_TMP}" | awk '{print $1}')
+    if [[ "${COMPOSE_EXPECTED,,}" != "${COMPOSE_ACTUAL,,}" ]]; then
+      rm -f "${COMPOSE_TMP}"
+      error "Docker Compose 校验失败！期望 ${COMPOSE_EXPECTED}，实际 ${COMPOSE_ACTUAL}"
+    fi
+    mv -f "${COMPOSE_TMP}" /usr/local/bin/docker-compose
     chmod +x /usr/local/bin/docker-compose
   fi
   info "Docker Compose 安装完成"
@@ -198,8 +263,9 @@ copy_item() {
   fi
 }
 
-write_runtime_dockerfile() {
-  cat > "${PROJECT_DIR}/Dockerfile" <<'EOF'
+write_runtime_dockerfile_to() {
+  local dest="$1"
+  cat > "${dest}" <<'EOF'
 FROM golang:1.23-bookworm AS builder
 ARG VERSION=dev
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential ca-certificates && rm -rf /var/lib/apt/lists/*
@@ -228,8 +294,9 @@ EOF
 }
 
 write_runtime_compose() {
-  cat > "${PROJECT_DIR}/docker-compose.yml" <<'EOF'
-services:
+write_runtime_compose_to() {
+  local dest="$1"
+  cat > "${dest}" <<'EOF'
   emby-in-one:
     build:
       context: .
@@ -266,8 +333,20 @@ copy_distribution_layout() {
     copy_item "${base}/${item}" "${PROJECT_DIR}/"
   done
   write_runtime_dockerfile
-  write_runtime_compose
-  return 0
+  # 已有 Dockerfile/docker-compose.yml 不自动覆盖（用户可能改过端口/挂载/构建
+  # 参数），新模板放独立 .release 文件供比对；全新安装才自动创建。
+  if [[ -f "${PROJECT_DIR}/Dockerfile" ]]; then
+    write_runtime_dockerfile_to "${PROJECT_DIR}/Dockerfile.release"
+    warn "已有 Dockerfile 保持不变，新模板已写入 ${PROJECT_DIR}/Dockerfile.release 供比对"
+  else
+    write_runtime_dockerfile_to "${PROJECT_DIR}/Dockerfile"
+  fi
+  if [[ -f "${PROJECT_DIR}/docker-compose.yml" ]]; then
+    write_runtime_compose_to "${PROJECT_DIR}/docker-compose.yml.release"
+    warn "已有 docker-compose.yml 保持不变，新模板已写入 ${PROJECT_DIR}/docker-compose.yml.release 供比对"
+  else
+    write_runtime_compose_to "${PROJECT_DIR}/docker-compose.yml"
+  fi
 }
 
 copy_project_files_from() {

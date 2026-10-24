@@ -171,6 +171,9 @@ func (a *App) corsMiddleware(next http.Handler) http.Handler {
 		if isAdminPath(r.URL.Path) {
 			applyAdminSecurityHeaders(w)
 		}
+		if isWebPath(r.URL.Path) {
+			applyWebSecurityHeaders(w)
+		}
 		if isAdminAPIPath(r.URL.Path) {
 			if origin := r.Header.Get("Origin"); origin != "" && sameOrigin(origin, adminRequestOrigin(r)) {
 				w.Header().Set("Access-Control-Allow-Origin", origin)
@@ -243,6 +246,46 @@ func applyAdminSecurityHeaders(w http.ResponseWriter) {
 	// X-XSS-Protection is deliberately not set: browsers have removed the filter,
 	// and the legacy Safari auditor it enabled introduced bypasses of its own.
 	w.Header().Set("Content-Security-Policy", adminPanelCSP)
+}
+
+// webPlayerCSP names the web player's resources and nothing else. Everything
+// the client loads is same-origin (Vue/lucide under /web/vendor, the wasm
+// decoders under /web/vendor/web/libmedia and the media itself via the proxy's
+// /Videos, /Audio and image routes), so no third-party origin is permitted and
+// an injected script has neither an external source nor an external sink.
+//
+// 'unsafe-eval' stays: the client mounts an in-DOM template and
+// vue.global.prod.js compiles it with new Function() at runtime, exactly like
+// the admin panel.
+//
+// 'unsafe-inline' is required for style-src only: the client markup uses
+// style="..." attributes for its layout. script-src keeps 'self' — the client
+// has no inline script and no on*= handler.
+const webPlayerCSP = "default-src 'self'; " +
+	"script-src 'self' 'unsafe-eval'; " +
+	"style-src 'self' 'unsafe-inline'; " +
+	"font-src 'self'; " +
+	"img-src 'self' data:; " +
+	"media-src 'self'; " +
+	"connect-src 'self'; " +
+	"worker-src 'self'; " +
+	"object-src 'none'; " +
+	"base-uri 'none'; " +
+	"form-action 'self'; " +
+	"frame-ancestors 'self'"
+
+// applyWebSecurityHeaders carries the player document/assets' own hardening
+// (S10): nosniff, a same-origin frame policy and the player CSP listed above.
+// Unlike the admin panel this does not declare the cross-origin isolation
+// headers — /web handles those itself in webCrossOriginIsolation.
+func applyWebSecurityHeaders(w http.ResponseWriter) {
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Frame-Options", "SAMEORIGIN")
+	w.Header().Set("Content-Security-Policy", webPlayerCSP)
+}
+
+func isWebPath(path string) bool {
+	return path == "/web" || strings.HasPrefix(path, "/web/")
 }
 
 // requestOrigin reports the scheme and host the request arrived on. Forwarded

@@ -102,17 +102,15 @@ verify_sha256() {
     error "未找到校验和文件: ${url}.sha256\n  该 Release 未附带校验和产物，无法确认下载内容是否被篡改，已中止安装。\n  确认信任该来源后可设置 SKIP_SHA256=true 重新运行。"
   fi
   local expected actual
-  # 优先取文件名匹配的那一行，兼容"单文件"和"多文件合并"两种校验和格式
+  # 多文件合并的校验和必须包含与本资产名对应的条目；找不到就判定该文件
+  # 无效并中止，绝不退回"任意首行"（同一 Release 里校验错文件等于没校验）。
   expected=$(awk -v want="${asset_name}" '
     { name=$2; sub(/^\*/, "", name); sub(/^\.\//, "", name) }
     name == want { print $1; exit }
   ' "${sha_file}" | grep -oE '^[0-9a-fA-F]{64}$' | head -1)
-  if [[ -z "$expected" ]]; then
-    expected=$(awk '{print $1}' "${sha_file}" | grep -oE '^[0-9a-fA-F]{64}$' | head -1)
-  fi
   rm -f "${sha_file}"
   if [[ -z "$expected" ]]; then
-    error "校验和文件格式无法识别: ${url}.sha256\n  已中止安装。"
+    error "校验和文件中未找到 ${asset_name} 的条目，或格式无法识别: ${url}.sha256\n  已中止安装。"
   fi
   actual=$(sha256sum "${file}" | awk '{print $1}')
   if [[ "${expected,,}" != "${actual,,}" ]]; then
