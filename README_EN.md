@@ -968,7 +968,6 @@ Emby-In-One/
 │   ├── make-web-fixtures.py        #   ffmpeg synthetic sample generation (samples stay out of releases)
 │   └── *.test.cjs                  #   data / ui / player / player-ui / subtitles / mse-seek /
 │                                   #   mse-duration / seek-queue / session / admin-panel
-├── design/web-ui/                  # /web UI redesign docs (visual proposals, reviews, execution spec)
 ├── assets/panel.css                # Tailwind input (holds the panel styles moved out of admin.html)
 ├── tailwind.config.js              # Tailwind content config (run npm run build:panel after editing admin.html/admin.js)
 ├── package.json                    # Root package.json keeps only the build:panel script (Node deps moved to legacy/)

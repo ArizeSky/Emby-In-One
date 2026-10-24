@@ -972,7 +972,6 @@ Emby-In-One/
 │   ├── make-web-fixtures.py        #   ffmpeg 合成样本生成（样本不入发行资源）
 │   └── *.test.cjs                  #   data / ui / player / player-ui / subtitles / mse-seek /
 │                                   #   mse-duration / seek-queue / session / admin-panel
-├── design/web-ui/                  # /web 界面重设计文档（视觉稿、评审记录、执行规格）
 ├── assets/panel.css                # Tailwind 输入文件（含从 admin.html 迁出的面板自定义样式）
 ├── tailwind.config.js              # Tailwind 扫描配置（改动 admin.html/admin.js 后跑 npm run build:panel）
 ├── package.json                    # 根 package.json 仅保留 build:panel 一个脚本（Node 依赖已移至 legacy/）
