@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -110,22 +112,17 @@ func writeResetConfig(t *testing.T, dir string, port int) {
 // skip entirely: a running instance keeps the tokens in memory and writes the whole file
 // back on its next login or logout, restoring everything the reset just cleared.
 func TestResetPasswordRefusesWhileServerIsRunning(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	defer listener.Close()
-	port := listener.Addr().(*net.TCPAddr).Port
-	go func() {
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				return
-			}
-			_, _ = conn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}"))
-			_ = conn.Close()
-		}
-	}()
+	// A real HTTP server rather than a raw listener that answers before reading
+	// the request: closing a socket with the unread request still buffered makes
+	// Linux send RST instead of FIN, so the CLI probe fails with connection
+	// reset and wrongly concludes nothing is listening. httptest reads the
+	// request properly, matching how a live service answers.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("{}"))
+	}))
+	defer ts.Close()
+	port := ts.Listener.Addr().(*net.TCPAddr).Port
 
 	dir := t.TempDir()
 	writeResetConfig(t, dir, port)

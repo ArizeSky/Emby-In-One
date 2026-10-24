@@ -293,7 +293,6 @@ CMD ["./emby-in-one"]
 EOF
 }
 
-write_runtime_compose() {
 write_runtime_compose_to() {
   local dest="$1"
   cat > "${dest}" <<'EOF'
