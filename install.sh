@@ -296,7 +296,11 @@ if [[ "$MODE" == source ]]; then ARGS+=(--source-dir "$SCRIPT_DIR"); fi
 bash "$SCRIPT_DIR/eio-docker.sh" --project-dir "$PROJECT_DIR" install "${ARGS[@]}"
 # Keep manager and template beside the deployed CLI, not in an untrusted image URL.
 for f in eio-docker.sh docker-compose.image.yml emby-in-one-cli.sh; do
-  [[ "$SCRIPT_DIR/$f" == "$PROJECT_DIR/$f" ]] || cp "$SCRIPT_DIR/$f" "$PROJECT_DIR/$f"
+  if [[ "$SCRIPT_DIR/$f" != "$PROJECT_DIR/$f" ]]; then
+    if [[ "$f" == docker-compose.image.yml && -f "$PROJECT_DIR/$f" ]]; then
+      cmp -s "$SCRIPT_DIR/$f" "$PROJECT_DIR/$f" || cp "$SCRIPT_DIR/$f" "$PROJECT_DIR/$f.release"
+    else cp "$SCRIPT_DIR/$f" "$PROJECT_DIR/$f"; fi
+  fi
 done
 if [[ "${EIO_INSTALL_CLI:-true}" == true ]]; then
   install -m 755 "$PROJECT_DIR/emby-in-one-cli.sh" /usr/local/bin/emby-in-one

@@ -113,7 +113,7 @@ check_writers(){
     [[ "$(systemctl show -p WorkingDirectory --value emby-in-one.service)" != "$PROJECT_DIR" ]] || fail 'systemd instance writes this deployment'
   fi
   [[ ! -L "$PROJECT_DIR/config/config.yaml" ]] || fail 'symlink config file unsupported'
-  ids=$(docker ps -q) || fail 'cannot verify running container writers'
+  ids=$(docker ps --no-trunc -q) || fail 'cannot verify running container writers'
   while read -r id; do
     [[ -n "$id" && "$id" != "$allowed" ]] || continue
     docker inspect "$id" | python3 -c 'import json,sys,os;x=json.load(sys.stdin)[0];p=sys.argv[1];targets=[p+"/config",p+"/data"];assert all(not z.get("RW",False) or not any(os.path.commonpath([os.path.realpath(z["Source"]),t]) in [os.path.realpath(z["Source"]),t] for t in targets) for z in x["Mounts"] if z.get("Type")=="bind"),"another container writes overlapping data"' "$PROJECT_DIR" || fail 'cannot exclude another writer to deployment data'

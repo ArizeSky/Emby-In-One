@@ -21,6 +21,7 @@ printf '%s\n' "$*" >> "$EIO_COMMAND_LOG"
 case "${EIO_FAULT:-}" in
   pull|permission|network) if [[ "$1" == pull ]]; then echo "injected ${EIO_FAULT} failure" >&2; exit 91; fi;;
   stop) if [[ " $* " == *' stop '* ]]; then exit 92; fi;;
+  build) if [[ "$1" == build ]]; then exit 97; fi;;
   rollback) if [[ " $* " == *' up '* ]]; then n=$(cat "$EIO_FAULT_COUNT" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > "$EIO_FAULT_COUNT"; if ((n>1)); then exit 93; fi; fi;;
 esac
 if [[ "${EIO_TEST_ROUTE:-}" == image && "$1" == build ]]; then echo 'image route attempted a build' >&2; exit 94; fi
@@ -127,12 +128,25 @@ PY
 else
   if manager update --image example.invalid/app:never > "$work/source-refused.log" 2>&1; then exit 1; fi
   [[ "$(getstate mode)" == source ]]
-  printf 'source_install=real-build-on-github\nlogin=pass\npassword_reset=pass\npersistence=pass\nimage_fallback=refused\n' > "$out/source-summary.txt"
+  if EIO_FAULT=build manager update --source-dir "$source" > "$work/build-failure.log" 2>&1; then exit 1; fi
+  [[ "$(getstate image_id)" == "$old_id" ]]
+  curl -fsS --max-time 3 "http://127.0.0.1:$port/System/Info/Public" >/dev/null
+  manager update --source-dir "$source" --version test-source-acceptance > "$work/source-update.log" 2>&1
+  [[ "$(getstate image_id)" != "$old_id" ]]
+  auth
+  printf 'source_install=real-build-on-github\nsource_update=real-build-on-github\nbuild_failure=old-preserved\nlogin=pass\npassword_reset=pass\npersistence=pass\nimage_fallback=refused\n' > "$out/source-summary.txt"
 fi
 # Reinstall respects custom Compose: refusal, not overwrite.
 printf '\n# operator customization\n' >> "$project/.eio-compose.yml"
 before=$(sha256sum "$project/.eio-compose.yml" | awk '{print $1}')
-# Config data must never be overwritten by a new incompatible mode request.
+# Normal reinstall must preserve operator customization as well as config/data.
+if [[ "$route" == image ]]; then
+  EIO_INSTALL_CLI=false bash "$ROOT/install.sh" --project-dir "$project" --mode image --image "$upgrade" > "$work/reinstall.log" 2>&1
+else
+  EIO_INSTALL_CLI=false bash "$source/install.sh" --project-dir "$project" --mode source > "$work/reinstall.log" 2>&1
+fi
+auth
+# An incompatible mode request is refused too.
 if manager install --mode invalid > "$work/reinstall-refused.log" 2>&1; then exit 1; fi
 [[ "$(sha256sum "$project/.eio-compose.yml" | awk '{print $1}')" == "$before" ]]
 printf 'custom_files=retained\n' >> "$out/$route-summary.txt"
