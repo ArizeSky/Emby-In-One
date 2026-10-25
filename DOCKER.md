@@ -10,20 +10,20 @@
 | --- | --- | --- | --- |
 | 预构建镜像 | `docker-compose.image.yml`，只有 `image:` | 修改固定镜像引用，`pull` + `up -d --no-build` | 对应镜像确已发布；无需在服务器安装 Go/C 编译链 |
 | 本地源码构建 | 仓库 `docker-compose.yml`，包含 `build:` | 校验并更新源码，重新构建，再 `up -d` | 定制代码，或目标版本暂无可用镜像 |
-| 源码安装脚本 / SSH 菜单 | `sudo bash install.sh` / `sudo emby-in-one` | 当前下载 Release 的 Docker **源码包**并本地重建 | 既有脚本托管的 Docker 部署 |
+| 托管安装 / SSH 菜单 | `install.sh --mode source` 或 `--mode image --image REF` | 保持原部署模式；镜像锁定 digest，源码显式构建 | 新版完整发行目录；旧自定义部署先核对迁移 |
 | Release 二进制 | `release-install.sh` + systemd | 下载对应架构二进制 | 不使用容器；见 README |
 
 `Emby-In-One-docker-v*.tar.gz` 是源码包，不是镜像，不能 `docker load`。GitHub 自动生成的 `Source code` 压缩包、上述源码附件、GHCR 镜像也是三种不同产物。
 
-**当前 SSH 菜单不能识别“拉镜像更新”这条路线。** 它固定使用 `/opt/emby-in-one/docker-compose.yml` 并执行源码重建，不支持本文的 `-f docker-compose.image.yml --env-file .env.image`。镜像部署请直接使用本文 Compose 命令，不要用菜单更新或卸载，也不要在同一目录运行 `install.sh`。不要在同一份数据上同时启动 systemd 和 Docker 两个实例。
+**新版托管部署区分 source 与 image。** 使用 `.eio-deployment.json` 和 `.eio-compose.yml` 记录项目，不执行状态文件。独立手工 Compose 部署不会被静默接管；可显式 `adopt` 纳入启停/日志管理，但旧自定义部署的自动升级被拒绝，须审阅迁移。不要让 systemd 与容器同时写同一份数据。旧 rc3 附件不含本次修复。
 
 ## 2. 镜像、标签与版本
 
 - 官方构建目标地址：`ghcr.io/arizesky/emby-in-one`，当前工作流构建 `linux/amd64` 和 `linux/arm64`。不等于 Release 的六架构支持；ARMv7/MIPS/RISC-V 请使用对应二进制或自行构建验证。
-- Docker 工作流**仅手动触发**。当前自动生成的镜像标签只有短提交 SHA，以及在默认分支运行时的 `latest`；**没有自动生成 `v1.4.4-rc3` 等版本标签**。
-- 手动输入 `version=v1.4.4-rc3` 只影响镜像内程序的版本字符串，不创建 `:v1.4.4-rc3` 标签，也不证明构建来源正确。
-- 使用维护者实际公布、已验证的标签或 digest。最可复现的引用是多架构索引 `ghcr.io/arizesky/emby-in-one@sha256:…`；标签包括 SHA 标签也可能被覆盖。
-- `latest` 目前只是“默认分支最近一次手动构建”，**不能当作稳定版承诺**。不建议生产自动追踪 `latest` 或用自动更新工具无人值守升级。
+- Docker 工作流仅手动触发，默认 **validate**；正式发布必须指定准确 tag 和完整预期 SHA。程序版本由 tag 推导，不能任意覆盖。
+- 构建与验收无包写权限；独立发布任务接收已验收附件，构建候选多架构 digest 后提升版本标签。已存在版本标签不能被不同 digest 覆盖。
+- 不再因为默认分支构建自动写 `latest`。只有明确确认且对应当前已公开正式稳定 Release 才允许提升；候选版永不提升 latest。
+- 本轮源码与私有 CI 验收不是公共 GHCR 发布承诺；仍须确认实际可拉取的标签、平台和摘要，不猜 `:v1.4.4-rc3` 是否存在。
 - digest、镜像 ID、源码提交 SHA、Release 附件 SHA-256 不是同一个值。短 SHA 标签可定位源码，digest 才固定镜像字节；CPU 架构选择由多架构索引处理。
 
 在 Docker/Buildx 已安装的机器上，替换下面的 `IMAGE_REFERENCE` 为真实引用，再确认清单：
@@ -38,6 +38,32 @@ docker buildx imagetools inspect "$IMAGE_REFERENCE"
 ## 3. 首次使用预构建镜像
 
 以下为 Linux + Docker Engine + Compose v2 操作；在新目录进行，避免覆盖现有部署。命令涉及属主与受保护目录时使用 root 或 sudo。macOS/Windows Docker Desktop 主要用于开发测试，宿主权限和网络行为需单独验证。
+
+### 3.0 推荐：新版托管安装（完整可信发行目录）
+
+需要 Linux root、Docker/Compose、Python 3、curl、flock 和 tar；安装器可沿用原 Docker/Compose 安装步骤，其余缺少的工具会明确报错。先核对源码或发行包校验和。本机不希望编译时选择 image：
+
+```bash
+# 必须替换为维护者实际发布并核验过的引用，不是可直接使用的占位镜像。
+sudo bash install.sh --mode image --image ghcr.io/arizesky/emby-in-one@sha256:REPLACE_WITH_PUBLISHED_INDEX_DIGEST
+# 源码路线会在运行此命令的主机编译，普通源码默认标识为 dev。
+sudo bash install.sh --mode source
+```
+
+没有 `--mode` 时保留 source 默认路线。镜像拉取失败绝不转为源码构建。首次随机密码只保存在部署目录的 root-only `.eio-initial-password`，不输出到日志。默认监听 `127.0.0.1:8096`；可显式指定 `--port` / `--bind`，不要意外公开管理入口。新状态必须与实际 Compose/容器交叉匹配。
+
+```bash
+sudo bash /opt/emby-in-one/eio-docker.sh status
+sudo bash /opt/emby-in-one/eio-docker.sh update --image ghcr.io/arizesky/emby-in-one@sha256:REPLACE_WITH_PUBLISHED_INDEX_DIGEST
+sudo env EIO_PROJECT_DIR=/opt/emby-in-one emby-in-one
+# 自定义目录也可显式传给 manager：--project-dir /opt/eio-test
+```
+
+source 更新用 `update --source-dir <已核验源码目录>`，不能传 `--image`。默认稳定更新要求目标版本确有对应镜像/已校验源码包；缺失则保留现状，不追 latest、不猜版本。旧无校验源码包可能不支持此新管理路径。测试/未知版本不参与自动稳定降级，须指定明确目标。
+
+更新先准备目标、停服确认，再备份 config、完整 data（含存在的 WAL/SHM）、部署配置和旧镜像身份。目标有限时健康、实际版本/镜像/UID/挂载验收失败时，恢复**配套旧数据快照和旧镜像**；失败现场保存在 `.eio-recovery-*`。恢复也失败明确返回非零，不无限重试。自动更新只支持工具管理的标准两份挂载，不支持外部数据库/共享目录/未知写入者。备份时间点后的失败阶段新增写入不保证保留；不承诺零停机或数据库跨版本兼容。
+
+密码重置由 manager 从 stdin 读取并确认停服；完成后恢复原先运行状态。不要用 `--force` 绕过保护。卸载只移除本项目服务，保留 config/data、备份和镜像；备份含敏感信息，不上传 Issue。下面 3.1 起仍是**不由 manager 托管的手工 Compose**路线，二者不要混用。
 
 ### 3.1 准备持久化目录和配置
 

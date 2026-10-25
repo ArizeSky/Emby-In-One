@@ -115,7 +115,7 @@ cd Emby-In-One
 sudo bash install.sh
 ```
 
-脚本会以 root 权限安装所需 Docker/Compose、生成随机管理员密码、在 `/opt/emby-in-one` 本地构建并启动服务，**不是从 GHCR 拉取预构建镜像**。先审阅源码与脚本，记录检出的提交；`main` 不代表稳定版，Compose 的默认版本字符串也不证明源码版本。后续通过 `sudo emby-in-one` 管理此脚本托管的部署。
+新版完整发行目录的安装器显式支持 `--mode source`（默认，本地编译）和 `--mode image --image <已发布引用>`（只拉取并锁定 digest），默认回环监听。凭据写入 root-only 文件，不打印到日志。后续 SSH 菜单保持该路线并进行有限时健康验收；见 [Docker 指南](DOCKER.md)。旧 rc3 附件不含这些修改。
 
 > **远程源码安装的完整性校验**：当本地没有项目文件、脚本改为从远程下载源码时，必须提供 `SOURCE_SHA256=<tarball 的 sha256>` 才会继续，未提供会中止安装。确实要接受未校验源码时，显式设置 `ALLOW_UNVERIFIED_SOURCE=true`。默认 `REPO_URL` 指向 `main` 分支，可用 `EIO_SOURCE_URL` 覆盖为固定 tag 或镜像地址。
 
@@ -125,7 +125,7 @@ sudo bash install.sh
 
 - **预构建镜像（无需本机编译）**：使用独立的 [`docker-compose.image.yml`](docker-compose.image.yml)，显式配置已发布的 image tag 或 digest，再 `pull` / `up -d --no-build`。该模板不含 `build:`，默认只绑定宿主回环地址。完整的配置初始化、UID 1000 权限、`.env.image` 和联网步骤见 [Docker 指南](DOCKER.md)。
 - **本地源码构建**：仓库 [`docker-compose.yml`](docker-compose.yml) 仍是构建型模板，需完整源码（含 `third_party/`、`public/`）；按实际源码身份传 `--build-arg VERSION=...`，再启动。详见 [本地构建](DOCKER.md#6-本地构建保留但不要冒充拉镜像)。
-- **不要混用**：当前 SSH 菜单的 Docker 更新是 Release 源码重建，不是镜像拉取；不支持镜像型模板及 `.env.image`。镜像部署按指南直接用 Compose 运维，升级先备份，回滚同时考虑数据库兼容性。
+- **不要混用**：新版托管安装的菜单支持 source/image；手工 `.env.image` 和自定义 Compose 不会自动转换，需显式核对接管。只在同一管理上下文操作，更新失败恢复配套旧数据和镜像；详见 Docker 指南。
 - 当前 GHCR 工作流支持 `linux/amd64`、`linux/arm64`，仅手动发布；`version` 输入不自动创建同名镜像标签。没有对应镜像时选二进制或本地构建，不猜测 `latest`。
 
 ### 方式四：Go 源码直接运行（适合开发者）
@@ -604,7 +604,7 @@ emby-in-one --reset-password <new-password|-> [--force]
   - `--force` 跳过该探测；仅在明确知道自己在做什么时使用
   - 重置时 `tokens.json` 以**原子写**方式清空（保留 `_proxyUserId`），不会再出现文件写坏导致服务起不来的情况；**所有已签发的代理 Token 随之失效**，客户端需要重新登录
 
-  > **为什么运行中必须拒绝**：运行中的实例把 token 存在内存里，会在下一次登录或登出时把整个 `tokens.json` 写回去——刚清掉的令牌会被原样恢复，重置等于没做。所以 CLI 宁可报错也不静默「重置失败」。Docker 部署请用 SSH 菜单，或按菜单失败时打印的命令手动执行（`docker compose ... run --rm -T emby-in-one /app/emby-in-one --reset-password - --force`）。
+  > 运行中的实例会重写内存 token，故必须确认停服后再重置。Docker 托管部署使用菜单或 manager 的 `reset-password`（密码经 stdin）；不要用 force 绕过保护。
 
 - **`data/tokens.json` 权限更严格**：Unix/Linux 上按 `0600` 写入
 - **`config.yaml` 安全写入**：原子替换方式保存 + `0600` 权限，减少配置损坏风险并防止其他用户读取密码
@@ -735,7 +735,7 @@ emby-in-one
 - 查看日志
 - 卸载服务（支持保留配置和数据）
 
-> SSH 菜单检测脚本托管的 Binary / Docker 部署并分发命令，固定使用 `/opt/emby-in-one` 的布局。Docker 更新采用源码重建流程，**不支持预构建镜像部署、独立 Compose 文件或 `.env.image`**；镜像部署的更新、备份、回滚和卸载请按 [Docker 指南](DOCKER.md) 操作。菜单没有单独的「查看版本」选项——当前版本号直接显示在菜单标题栏上（形如 `Emby In One 管理菜单 v1.4.4`）。
+> 新版 Docker 菜单通过 `.eio-deployment.json` 识别 source/image 并读取真实运行版本。`EIO_PROJECT_DIR` 可选择目录；未知/自定义部署不自动升级。Binary/systemd 路线仍独立。详见 [Docker 指南](DOCKER.md)。
 
 ---
 

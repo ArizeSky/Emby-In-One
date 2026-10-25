@@ -133,6 +133,7 @@ jobs:
             -o "dist/Emby-In-One-docker-${VERSION}.tar.gz" HEAD \
             cmd internal third_party public go.mod \
             Dockerfile .dockerignore docker-compose.yml \
+            install.sh eio-docker.sh docker-compose.image.yml DOCKER.md DOCKER_EN.md RELEASING.md \
             emby-in-one-cli.sh \
             README.md README_EN.md Update.md LICENSE
 

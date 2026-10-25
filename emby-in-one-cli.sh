@@ -4,7 +4,7 @@
 # ║   Emby In One 管理菜单 V1.4.4-rc3    ║
 # ╚══════════════════════════════════════╝
 
-PROJECT_DIR="/opt/emby-in-one"
+PROJECT_DIR="${EIO_PROJECT_DIR:-/opt/emby-in-one}"
 VERSION="1.4.4-rc3"
 SERVICE_NAME="emby-in-one"
 GITHUB_REPO="ArizeSky/Emby-In-One"
@@ -41,6 +41,18 @@ detect_deploy_mode() {
 }
 
 DEPLOY_MODE=$(detect_deploy_mode)
+
+# Docker lifecycle is centralized. Binary/systemd mode keeps this standalone CLI.
+if [[ "$DEPLOY_MODE" == docker ]]; then
+  CLI_DIR="$(cd "$(dirname "$0")" && pwd)"
+  MANAGER="$PROJECT_DIR/eio-docker.sh"
+  [[ -f "$MANAGER" ]] || MANAGER="$CLI_DIR/eio-docker.sh"
+  if [[ ! -f "$MANAGER" ]]; then
+    echo 'Docker manager not installed. Use a verified new deployment bundle; existing files are unchanged.' >&2
+    exit 1
+  fi
+  exec bash "$MANAGER" --project-dir "$PROJECT_DIR" "${@:-menu}"
+fi
 
 # ── 检测 compose 命令 ──
 compose_cmd() {

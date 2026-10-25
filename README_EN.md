@@ -115,7 +115,7 @@ cd Emby-In-One
 sudo bash install.sh
 ```
 
-The root-level script installs Docker/Compose as needed, generates an admin password, and builds/starts the application locally in `/opt/emby-in-one`; **it does not pull a GHCR application image**. Review the source/script and record the checkout. main is not a stable-release channel, and the default build version does not establish source identity. Use `sudo emby-in-one` only for this script-managed deployment.
+The new complete deployment bundle supports `--mode source` (default, local compilation) and `--mode image --image <published-reference>` (pull only, digest-pinned). New installs bind loopback; initial credentials are saved in a root-only file. The SSH menu preserves the route and checks health. See [Docker guide](DOCKER_EN.md); existing rc3 assets do not include these changes.
 
 > Remote source installation requires a matching `SOURCE_SHA256` before extraction. `EIO_SOURCE_URL` selects the archive; `ALLOW_UNVERIFIED_SOURCE=true` explicitly bypasses verification and is not recommended.
 
@@ -125,7 +125,7 @@ The root-level script installs Docker/Compose as needed, generates an admin pass
 
 - **Published image (no local compilation):** use [`docker-compose.image.yml`](docker-compose.image.yml), explicitly select a published tag/digest, then `pull` / `up -d --no-build`. This template has no `build:` and defaults to host-loopback binding. Follow [the Docker guide](DOCKER_EN.md) for initial config, UID 1000 permissions, `.env.image`, network exposure and acceptance checks.
 - **Local source build:** [`docker-compose.yml`](docker-compose.yml) remains a build template. Supply the full source, including `third_party/` and `public/`, and a `--build-arg VERSION=...` matching the actual source identity. See [local builds](DOCKER_EN.md#6-local-source-builds-and-the-installer).
-- **Do not mix update mechanisms:** the current SSH Docker updater rebuilds Release source; it does not support image-pull deployments or `.env.image`. Use Compose directly for that route; back up before upgrading and account for database compatibility during rollback.
+- **Do not mix managers:** new managed installs support source/image; custom Compose and `.env.image` projects are not silently converted. Use one deployment context and paired data/image recovery; see the Docker guide.
 - The manual GHCR workflow targets linux/amd64 and linux/arm64. Its version input does not create a matching image tag. If unavailable, choose binaries or a local build instead of guessing latest.
 
 ### Method 4: Direct Go Source Run (For Developers)
@@ -602,7 +602,7 @@ emby-in-one --reset-password <new-password|-> [--force]
   - `--force` skips that probe; use it only when you are sure you need it
   - The reset clears `tokens.json` with an **atomic write** (keeping `_proxyUserId`), so a truncated file can no longer stop the service from booting; **every issued proxy token is invalidated** and clients must sign in again
 
-  > **Why a running instance must be refused**: a live instance keeps the tokens in memory and writes the whole `tokens.json` back on its next login or logout — restoring every token this command just cleared, making the reset a no-op. The CLI therefore errors out rather than silently "resetting" nothing. For Docker deployments use the SSH menu, or run the command it prints on failure (`docker compose ... run --rm -T emby-in-one /app/emby-in-one --reset-password - --force`).
+  > A running instance can rewrite tokens from memory: verify stop before resetting. Managed Docker deployments use menu/manager `reset-password` with stdin; do not bypass the guard with force.
 
 - **Stricter `data/tokens.json` permissions**: Written with `0600` permissions on Unix/Linux
 - **Secure `config.yaml` writes**: Atomic replacement + `0600` permissions, reducing corruption risk and preventing other users from reading passwords
@@ -733,7 +733,7 @@ Available commands:
 - View logs
 - Uninstall service (supports preserving config and data)
 
-> The SSH menu manages the fixed `/opt/emby-in-one` layout for script-managed Binary / Docker deployments. Docker updates rebuild source; **image-pull deployments, separate Compose files and `.env.image` are not supported**. Use [the Docker guide](DOCKER_EN.md) for their updates, backups, rollback and removal. There is no separate "check version" entry — the current version is shown directly in the menu title bar (e.g. `Emby In One 管理菜单 v1.4.4`).
+> New Docker menus identify source/image through `.eio-deployment.json` and read the actual runtime version. `EIO_PROJECT_DIR` selects the project; unknown/custom deployments cannot auto-upgrade. Binary/systemd management remains independent. See [Docker guide](DOCKER_EN.md).
 
 ---
 

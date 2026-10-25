@@ -4,6 +4,25 @@
 
 This guide separates current behavior from operating conventions. A GitHub Release does **not** mean a matching GHCR image exists. Verify availability, platforms and digest separately. Parental controls in rc3 still need testing and adjustment, particularly for large libraries, upstream rate limits and client compatibility; see [the changelog](Update.md).
 
+## Managed installation and current release protection
+
+The new complete trusted bundle supports `install.sh --mode source|image`. No mode still means source. Image mode requires `--image <published-tag-or-digest>`, pins the resolved digest, and never falls back to a source build. Source builds default to `dev` unless an exact trusted Git release identity is verified. Existing rc3 assets do not contain this manager.
+
+```bash
+# Replace the placeholder with an actually published, verified digest.
+sudo bash install.sh --mode image --image ghcr.io/arizesky/emby-in-one@sha256:REPLACE_WITH_PUBLISHED_INDEX_DIGEST
+sudo bash /opt/emby-in-one/eio-docker.sh status
+sudo bash /opt/emby-in-one/eio-docker.sh update --image ghcr.io/arizesky/emby-in-one@sha256:REPLACE_WITH_PUBLISHED_INDEX_DIGEST
+```
+
+Requires Linux root, Docker/Compose, Python 3, curl, flock and tar. New installs bind loopback by default and use UID 1000. The random initial password is written only to root-only `.eio-initial-password`. State is non-executable JSON, cross-checked with Compose and the actual container; all lifecycle commands use a project/file/service context, not a fixed container name. `--project-dir` supports isolated deployments. The binary/systemd CLI remains independent.
+
+The SSH menu supports new managed source/image deployments. A hand-written Compose project is not silently adopted: explicit `adopt --compose-file <absolute-path>` allows lifecycle operations for a recognized standard project, but automatic legacy/custom migration is refused. Do not mix manager and manual Compose operations or share writable config/data with another instance. Source updates accept a verified `--source-dir`, never an image; image updates only pull. Stable updates require the exact stable Release image/source asset to exist and pass verification; no latest fallback or silent downgrade.
+
+Updates prefetch/build before stopping, verify stop, snapshot complete config/data (including existing WAL/SHM), then validate health plus actual version/image/UID/mounts. Failure restores the paired old data/config snapshot and image, retaining failed-stage evidence in `.eio-recovery-*`. A failed rollback returns nonzero and retains evidence. Only managed standard mounts qualify; external databases/shared writers/custom layouts require manual work. Post-backup failed-stage writes may be lost; this is not zero-downtime or a cross-version database compatibility guarantee. Password reset uses stdin, verified stop and prior-running-state restoration, never automatic force. Uninstall retains data/backups/images.
+
+The Docker workflow is manual-only and defaults to validation. Publication requires an exact tag/full SHA, immutable version tags and a separate package-write job; branches do not auto-write latest. Explicit latest promotion requires the exact current published stable Release, never a prerelease. Private CI/local-registry acceptance is not evidence that any public GHCR version exists. The manual sections below describe unmanaged Compose; use them only for that route.
+
 ## 1. Choose one deployment route
 
 | Route | Entry point | Updates |
@@ -15,15 +34,12 @@ This guide separates current behavior from operating conventions. A GitHub Relea
 
 `Emby-In-One-docker-v*.tar.gz` is source, not a `docker load` image. GitHub's automatically generated Source code archives, the project's Docker source asset, and GHCR images are different artifacts.
 
-**The current SSH menu does not manage image-pull deployments.** It uses `/opt/emby-in-one/docker-compose.yml` and a source-rebuild updater; it does not support this guide's explicit Compose file/environment file. Do not use its update/uninstall options or run `install.sh` in an image-managed directory. Never run two EIO instances (including systemd + Docker) against the same writable data.
 
 ## 2. Image names, versions and platforms
 
 - Official workflow destination: `ghcr.io/arizesky/emby-in-one`. Builds target `linux/amd64` and `linux/arm64`, not the six architectures supplied as Release binaries. ARMv7/MIPS/RISC-V users need a matching binary or a separately verified local build.
-- The Docker workflow is manual-only. It generates short commit SHA tags, plus `latest` when dispatched on the default branch. **Version tags such as `:v1.4.4-rc3` are not automatically created.**
 - Its `version` input changes the embedded application version, not image tags, and does not prove the selected source matches that version.
 - Use a reference actually published and verified by maintainers, preferably the multi-platform index digest: `ghcr.io/arizesky/emby-in-one@sha256:…`. All tags, even SHA-looking tags, can be overwritten.
-- Under the current workflow, `latest` means the last manual build on the default branch, **not a stable-release guarantee**. Avoid unattended updates and production tracking of latest.
 - An image ID, index digest, source commit SHA and Release asset checksum are different identifiers. Record them separately. Base images/packages/toolchains are not fully pinned, so rebuilding the same source does not promise byte-for-byte reproduction.
 
 After installing Docker/Buildx, replace the placeholder and inspect the published manifest:

@@ -21,3 +21,6 @@ backups
 *.tar
 *.tar.gz
 *.zip
+
+# Managed state, initial credentials and stopped-data recovery snapshots.
+.eio-*
