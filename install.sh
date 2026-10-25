@@ -296,6 +296,7 @@ EOF
 write_runtime_compose_to() {
   local dest="$1"
   cat > "${dest}" <<'EOF'
+services:
   emby-in-one:
     build:
       context: .
@@ -331,7 +332,6 @@ copy_distribution_layout() {
   for item in cmd internal third_party public go.mod README.md README_EN.md Update.md emby-in-one-cli.sh .dockerignore LICENSE; do
     copy_item "${base}/${item}" "${PROJECT_DIR}/"
   done
-  write_runtime_dockerfile
   # 已有 Dockerfile/docker-compose.yml 不自动覆盖（用户可能改过端口/挂载/构建
   # 参数），新模板放独立 .release 文件供比对；全新安装才自动创建。
   if [[ -f "${PROJECT_DIR}/Dockerfile" ]]; then

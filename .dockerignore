@@ -10,3 +10,14 @@ log
 *.md
 Dockerfile
 docker-compose.yml
+# Local deployment environment and backup files must not enter the build context.
+.env
+.env.*
+backups
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.tar
+*.tar.gz
+*.zip
