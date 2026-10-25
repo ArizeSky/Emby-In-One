@@ -99,6 +99,7 @@ chown 1000:1000 "$project/data/mappings.db"
 manager start
 if [[ "$route" == image ]]; then
   for fault in pull permission network stop backup; do
+    printf 'Checking injected fault: %s\n' "$fault"
     if EIO_FAULT="$fault" manager update --image "$upgrade" > "$work/failure-$fault.log" 2>&1; then echo "fault $fault unexpectedly passed" >&2; exit 1; fi
     [[ "$(getstate image_id)" == "$old_id" ]]
     curl -fsS --max-time 3 "http://127.0.0.1:$port/System/Info/Public" >/dev/null

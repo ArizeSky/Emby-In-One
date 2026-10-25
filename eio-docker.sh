@@ -243,7 +243,9 @@ apply(){
     if is_running "$old_id"; then OLD_RUNNING=true; fi
     stop_checked || fail 'old service did not stop; backup/switch refused'
     if ! backup; then
-      [[ "$OLD_RUNNING" != true ]] || dc start "$SERVICE" >/dev/null || fail 'backup failed and old service could not restart'
+      if [[ "$OLD_RUNNING" == true ]]; then
+        dc start "$SERVICE" >/dev/null && health || fail 'backup failed and old service did not recover health'
+      fi
       fail 'backup failed; target not applied'
     fi
     SWITCHING=true
