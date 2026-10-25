@@ -29,7 +29,7 @@ The Docker workflow is manual-only and defaults to validation. Publication requi
 | --- | --- | --- |
 | Published image | `docker-compose.image.yml`, `image:` only | Pin a new reference, then `pull` + `up -d --no-build` |
 | Local source build | Repository `docker-compose.yml`, with `build:` | Verify/update source, build locally, recreate container |
-| Source installer / SSH menu | `sudo bash install.sh` / `sudo emby-in-one` | Downloads a Release Docker **source archive**, then rebuilds locally |
+| Managed installer / SSH menu | `install.sh --mode source` or `--mode image --image REF` | Preserves source/image mode; bounded health and paired recovery |
 | Release binary | `release-install.sh` + systemd | No container; see README |
 
 `Emby-In-One-docker-v*.tar.gz` is source, not a `docker load` image. GitHub's automatically generated Source code archives, the project's Docker source asset, and GHCR images are different artifacts.
@@ -38,7 +38,7 @@ The Docker workflow is manual-only and defaults to validation. Publication requi
 ## 2. Image names, versions and platforms
 
 - Official workflow destination: `ghcr.io/arizesky/emby-in-one`. Builds target `linux/amd64` and `linux/arm64`, not the six architectures supplied as Release binaries. ARMv7/MIPS/RISC-V users need a matching binary or a separately verified local build.
-- Its `version` input changes the embedded application version, not image tags, and does not prove the selected source matches that version.
+- Version is derived from the exact release tag and verified full SHA; arbitrary version overrides are not supported. Validation does not publish.
 - Use a reference actually published and verified by maintainers, preferably the multi-platform index digest: `ghcr.io/arizesky/emby-in-one@sha256:…`. All tags, even SHA-looking tags, can be overwritten.
 - An image ID, index digest, source commit SHA and Release asset checksum are different identifiers. Record them separately. Base images/packages/toolchains are not fully pinned, so rebuilding the same source does not promise byte-for-byte reproduction.
 
@@ -204,9 +204,9 @@ docker compose up -d --no-build
 docker compose exec -T emby-in-one /app/emby-in-one --version
 ```
 
-A release-tag checkout can use its matching lowercase-v version explicitly. The current build Compose template contains a static default VERSION; switching source does not update it. Record local modifications instead of labeling arbitrary source as an official release.
+A release-tag checkout can use its matching lowercase-v version explicitly. The build Compose template uses `${EIO_VERSION:-dev}`; an unverified checkout must not inherit an old release identity. Record local modifications instead of labeling arbitrary source as an official release.
 
-The SSH Docker updater downloads and verifies the Release Docker source archive, then rebuilds. Existing Dockerfile/Compose files remain unchanged; new templates are saved as `.release` files. Compare templates and **check `build.args.VERSION` before upgrading**. Preserving the file may also preserve an outdated version string. This is not image-pull updating and does not implement a complete source/data transactional rollback or health acceptance gate. Default menu updates target the latest stable GitHub Release; prereleases require explicit selection.
+The new manager keeps the selected source/image route, prefetches before stop, snapshots stopped data, and validates health/identity before success. Legacy custom templates are preserved and automatic migration is refused. Manual source Compose still needs explicit source/version review; the manager does not silently rewrite it. See the managed-installation section above.
 
 `install.sh` runs as Linux root and may install Docker/Compose, write `/opt/emby-in-one` and install the management command. Review a fixed source before running it. Remote source downloads require a matching `SOURCE_SHA256`; do not default to `ALLOW_UNVERIFIED_SOURCE=true`. Installer fixes described here apply to current main, not old tags or already-published archives. Prefer the explicit local-build route when validating an older release.
 

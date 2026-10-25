@@ -39,6 +39,9 @@ while (($#)); do
 done
 [[ -n "$ACTION" ]] || { usage; exit 2; }
 [[ "$EUID" == 0 ]] || fail 'root required for protected configuration and backups'
+# Capture sensitive stdin before Compose preflight can touch the inherited stream.
+PASSWORD_INPUT=''
+if [[ "$ACTION" == reset-password || "$ACTION" == change-username ]]; then PASSWORD_INPUT=$(cat); fi
 for tool in docker python3 curl flock tar sha256sum; do command -v "$tool" >/dev/null || fail "$tool is required"; done
 [[ "$PROJECT_DIR" == /* && "$PROJECT_DIR" != / && "$PROJECT_DIR" != *$'\n'* ]] || fail 'unsafe project directory'
 mkdir -p "$PROJECT_DIR"
@@ -113,9 +116,7 @@ check_writers(){
   ids=$(docker ps -q) || fail 'cannot verify running container writers'
   while read -r id; do
     [[ -n "$id" && "$id" != "$allowed" ]] || continue
-    while read -r source; do
-      [[ "$source" != "$PROJECT_DIR/config" && "$source" != "$PROJECT_DIR/data" ]] || fail 'another running container writes this deployment'
-    done < <(docker inspect -f '{{range .Mounts}}{{println .Source}}{{end}}' "$id")
+    docker inspect "$id" | python3 -c 'import json,sys,os;x=json.load(sys.stdin)[0];p=sys.argv[1];targets=[p+"/config",p+"/data"];assert all(not z.get("RW",False) or not any(os.path.commonpath([os.path.realpath(z["Source"]),t]) in [os.path.realpath(z["Source"]),t] for t in targets) for z in x["Mounts"] if z.get("Type")=="bind"),"another container writes overlapping data"' "$PROJECT_DIR" || fail 'cannot exclude another writer to deployment data'
   done <<< "$ids"
 }
 stop_checked(){ local id; id=$(cid); [[ -n "$id" ]] || return 0; dc stop -t 60 "$SERVICE" >/dev/null || return 1; ! is_running "$id"; }
@@ -267,12 +268,20 @@ apply(){
 }
 reset_password(){
   local pw old=false id rc=0
-  pw=$(cat); [[ -n "$pw" ]] || fail 'password must be supplied via stdin'
+  pw=$PASSWORD_INPUT; unset PASSWORD_INPUT; [[ -n "$pw" ]] || fail 'password must be supplied via stdin'
   id=$(cid); check_writers "$id"
   if is_running "$id"; then old=true; fi
   stop_checked || fail 'service still running; refusing password reset'
-  printf '%s' "$pw" | dc run --rm --no-deps -T --pull never "$SERVICE" /app/emby-in-one --reset-password - >/dev/null || rc=$?
+  local diagnostic="$PROJECT_DIR/.eio-password-diagnostic.$$"
+  printf '%s' "$pw" | dc run --rm --no-deps -T --pull never "$SERVICE" /app/emby-in-one --reset-password - >"$diagnostic" 2>&1 || rc=$?
   unset pw
+  if ((rc!=0)); then
+    printf 'eio-docker: password reset CLI exit=%s\n' "$rc" >&2
+    if grep -qi 'unknown.*flag' "$diagnostic"; then printf 'eio-docker: reset diagnostic=unsupported-compose-option\n' >&2; fi
+    if grep -qi 'still running' "$diagnostic"; then printf 'eio-docker: reset diagnostic=service-stop-guard\n' >&2; fi
+    if grep -qi 'permission denied' "$diagnostic"; then printf 'eio-docker: reset diagnostic=permission-denied\n' >&2; fi
+    if grep -qi 'password.*empty' "$diagnostic"; then printf 'eio-docker: reset diagnostic=empty-stdin\n' >&2; fi
+  else rm -f "$diagnostic"; fi
   if [[ "$old" == true ]]; then dc start "$SERVICE" >/dev/null && health || fail 'password operation ended but service recovery failed'; fi
   ((rc==0)) || fail 'password reset failed'
   printf 'Password reset completed; prior running state preserved.\n'
@@ -315,13 +324,23 @@ case "$ACTION" in
     [[ -n "$old" && "$old" != *$'\n'* ]] || fail 'adopt needs exactly one existing service container'
     IMAGE=$(docker inspect -f '{{.Config.Image}}' "$old"); IMAGE_ID=$(docker inspect -f '{{.Image}}' "$old"); VERSION=$(docker exec "$old" /app/emby-in-one --version); INPUT=$IMAGE
     validate_context; state_write; printf 'Legacy deployment adopted for lifecycle only; updates require reviewed migration.\n';;
-  status) require_state; dc ps --all "$SERVICE"; printf 'mode=%s version=%s image=%s recovery=%s\n' "$MODE" "$VERSION" "$IMAGE" "$RECOVERY";;
+  status)
+    require_state; dc ps --all "$SERVICE"; id=$(cid)
+    if [[ -n "$id" ]]; then
+      [[ "$(docker inspect -f '{{.Image}}' "$id")" == "$IMAGE_ID" ]] || fail 'running/container image differs from managed state'
+      if is_running "$id"; then
+        actual=$(docker exec "$id" /app/emby-in-one --version)
+        [[ "$actual" == "$VERSION" ]] || fail 'runtime version differs from state'
+        printf 'runtime_version=%s\n' "$actual"
+      fi
+    fi
+    printf 'mode=%s recorded_version=%s image=%s recovery=%s\n' "$MODE" "$VERSION" "$IMAGE" "$RECOVERY";;
   start|restart) require_state; check_writers "$(cid)"; if [[ "$ACTION" == restart ]]; then stop_checked || fail 'stop failed'; fi; dc up -d --no-build --pull never "$SERVICE" >/dev/null; health || fail 'service did not become healthy';;
   stop) require_state; stop_checked || fail 'service did not stop';;
   logs) require_state; dc logs --tail 100 "$SERVICE";;
   reset-password) require_state; reset_password;;
   change-username)
-    require_state; username=$(cat); [[ "$username" =~ ^[A-Za-z0-9_-]+$ ]] || fail 'invalid username'
+    require_state; username=$PASSWORD_INPUT; unset PASSWORD_INPUT; [[ "$username" =~ ^[A-Za-z0-9_-]+$ ]] || fail 'invalid username'
     id=$(cid); running=false; if is_running "$id"; then running=true; fi
     check_writers "$id"; stop_checked || fail 'stop failed; username unchanged'
     awk -v val="$username" '/^  username:/{print "  username: " val; next}1' "$PROJECT_DIR/config/config.yaml" > "$PROJECT_DIR/config/config.yaml.tmp"

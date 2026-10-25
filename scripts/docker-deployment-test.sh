@@ -42,7 +42,14 @@ cleanup(){
   printf 'route=%s\nexit=%s\nprotected_evidence=%s\n' "$route" "$rc" "$work" >> "$out/$route-summary.txt"
 }
 trap cleanup EXIT
-trap 'printf "Integration failed at line %s; protected evidence: %s\n" "$LINENO" "$work" >&2' ERR
+diagnose(){
+  printf 'Integration failed at line %s; protected evidence: %s\n' "$1" "$work" >&2
+  # Manager messages contain only fixed categories, not supplied credentials.
+  for log in "$work/install.log" "$work/reset.log" "$work/update.log" "$work/bad.log"; do
+    [[ ! -f "$log" ]] || grep -E '^eio-docker:|^ROLLBACK FAILED' "$log" >&2 || true
+  done
+}
+trap 'diagnose "$LINENO"' ERR
 if [[ "$route" == image ]]; then
   EIO_INSTALL_CLI=false bash "$ROOT/install.sh" --project-dir "$project" --mode image --image "$base" --project-name "$name" --port "$port" > "$work/install.log" 2>&1
 else

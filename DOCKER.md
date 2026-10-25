@@ -206,7 +206,7 @@ dc up -d --no-build
 
 ### 5.3 回滚
 
-Compose 没有本项目专用的自动回滚。新镜像启动失败时先保存脱敏日志，再停服务，将 `EIO_IMAGE` 改回旧 digest，或本机保留的 `emby-in-one-rollback:<备份时间>`，用 `dc up -d --no-build` 恢复（本地回滚标签不需要 pull）。
+手工 Compose 路线（不经过新版 manager）没有本项目专用的自动回滚。新镜像启动失败时先保存脱敏日志，再停服务，将 `EIO_IMAGE` 改回旧 digest，或本机保留的 `emby-in-one-rollback:<备份时间>`，用 `dc up -d --no-build` 恢复（本地回滚标签不需要 pull）。
 
 **应用回滚不等于数据回滚。** 不承诺旧程序兼容新数据库；有迁移或兼容性不明时，将当前失败状态另存后，从升级前的配套备份恢复配置、数据和部署文件，再启动旧镜像。先停止所有实例，在隔离目录核验备份；不要把旧数据解压覆盖到仍在运行的新版本中，也不要混用两个时间点的 config/data。
 
@@ -225,9 +225,9 @@ docker compose up -d --no-build
 docker compose exec -T emby-in-one /app/emby-in-one --version
 ```
 
-正式 tag 构建可显式传入匹配的小写 `v` 版本。当前模板内 VERSION 为静态默认值；更新源码不会自动改它。开发构建应记录是否有未提交修改，base image、apt 包和工具链也未锁定到 digest，因此相同源码重建不保证字节一致。
+正式 tag 构建可显式传入匹配的小写 `v` 版本。当前模板以 `${EIO_VERSION:-dev}` 注入构建版本；未经核验的源码不继承旧发布版本。开发构建应记录是否有未提交修改，base image、apt 包和工具链也未锁定到 digest，因此相同源码重建不保证字节一致。
 
-SSH 菜单的 Docker 更新下载并校验 `Emby-In-One-docker-v*.tar.gz`，保留现有 Dockerfile/Compose，新模板写入 `.release` 文件。**升级前必须人工对比模板、检查 `build.args.VERSION`**；旧文件保留意味着版本字段也可能保留旧值。该流程不是镜像拉取更新，也不提供完整的源码/数据事务回滚或应用健康验收。菜单默认选最新稳定 Release，预发布要手动指定，不能当成 latest GHCR 标签。
+新版 manager 保持原 source/image 路线，目标准备好后才停服，保存配套数据快照并验收健康和身份；失败按第 3.0 节恢复。旧自定义模板保留且不自动迁移。手工源码 Compose 仍须人工核对源码/版本，不会被管理器悄悄重写；不能把任何本地版本字符串当作 GHCR 标签存在的证据。
 
 `install.sh` 是 Linux root 级源码安装入口，可能安装 Docker/Compose、写 `/opt/emby-in-one` 和管理命令。请审阅固定来源后运行；从远程取源码时必须提供匹配 tarball 的 `SOURCE_SHA256`，不建议使用 `ALLOW_UNVERIFIED_SOURCE=true`。本文所述脚本修正以当前 main 为准，旧 tag/已发布压缩包不会自动更新。自建生产镜像优先按上述手动构建步骤验证，不要把运行安装脚本当作无副作用的检查。
 

@@ -30,6 +30,7 @@ fi
 
 # ── 检测部署方式：binary（systemd）或 docker ──
 detect_deploy_mode() {
+  if [[ -f "${PROJECT_DIR}/.eio-deployment.json" ]]; then echo "docker"; return; fi
   # 注意: systemctl list-unit-files <unit> 在没有匹配项时同样返回 0，
   # 必须自己匹配输出，否则没有 systemd 服务的 Docker 部署会被误判为 binary。
   if [[ -x "${PROJECT_DIR}/emby-in-one" ]] \
