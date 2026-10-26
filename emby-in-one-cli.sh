@@ -4,7 +4,7 @@
 # ║   Emby In One 管理菜单 V1.4.4-rc3    ║
 # ╚══════════════════════════════════════╝
 
-PROJECT_DIR="/opt/emby-in-one"
+PROJECT_DIR="${EIO_PROJECT_DIR:-/opt/emby-in-one}"
 VERSION="1.4.4-rc3"
 SERVICE_NAME="emby-in-one"
 GITHUB_REPO="ArizeSky/Emby-In-One"
@@ -30,6 +30,7 @@ fi
 
 # ── 检测部署方式：binary（systemd）或 docker ──
 detect_deploy_mode() {
+  if [[ -f "${PROJECT_DIR}/.eio-deployment.json" ]]; then echo "docker"; return; fi
   # 注意: systemctl list-unit-files <unit> 在没有匹配项时同样返回 0，
   # 必须自己匹配输出，否则没有 systemd 服务的 Docker 部署会被误判为 binary。
   if [[ -x "${PROJECT_DIR}/emby-in-one" ]] \
@@ -41,6 +42,18 @@ detect_deploy_mode() {
 }
 
 DEPLOY_MODE=$(detect_deploy_mode)
+
+# Docker lifecycle is centralized. Binary/systemd mode keeps this standalone CLI.
+if [[ "$DEPLOY_MODE" == docker ]]; then
+  CLI_DIR="$(cd "$(dirname "$0")" && pwd)"
+  MANAGER="$PROJECT_DIR/eio-docker.sh"
+  [[ -f "$MANAGER" ]] || MANAGER="$CLI_DIR/eio-docker.sh"
+  if [[ ! -f "$MANAGER" ]]; then
+    echo 'Docker manager not installed. Use a verified new deployment bundle; existing files are unchanged.' >&2
+    exit 1
+  fi
+  exec bash "$MANAGER" --project-dir "$PROJECT_DIR" "${@:-menu}"
+fi
 
 # ── 检测 compose 命令 ──
 compose_cmd() {

@@ -10,3 +10,27 @@ log
 *.md
 Dockerfile
 docker-compose.yml
+# Local deployment environment and backup files must not enter the build context.
+.env
+.env.*
+backups
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.tar
+*.tar.gz
+*.zip
+
+# Managed state, initial credentials and stopped-data recovery snapshots.
+.eio-*
+
+# Local engineering notes, isolated CI metadata and credentials.
+design
+AGENTS.md
+.pi
+.ci-private
+.ci-source
+UPSTREAM_COMMIT
+SOURCE_MANIFEST.json
+*.credential.xml

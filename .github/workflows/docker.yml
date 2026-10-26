@@ -1,96 +1,199 @@
 name: Docker image
 
-# 构建并推送多架构镜像到 GHCR。镜像地址跟随仓库本身
-# （ghcr.io/<owner>/<repo>，metadata-action 自动转小写）：
-# 在哪个仓库跑就推哪个仓库的命名空间，fork 与上游互不干扰。
-# 本分支整合阶段仅保留手动触发（workflow_dispatch）；不随 push 自动发布。
-# 自动发布触发方式、latest 策略与凭据权限留待后续提交/PR 时讨论决定。
-# 镜像 tag：latest（默认分支最新）+ 短 commit sha（方便回滚定位）。
-# 多架构 amd64+arm64，用 GHA 缓存加速后续构建。
-#
-# 版本注入：镜像内二进制的 -X main.Version（容器 --version 与管理面板
-# /admin/api/status 显示同一值）按以下优先级取值：
-#   1) 手动运行时填写的 version 输入（如 v1.4.4-rc3，原样使用）；
-#   2) 在 tag 上运行时取该 tag，V 前缀归一为小写 v（与 release 资产命名一致）；
-#   3) git describe --tags --always（如 v1.4.4-rc3-2-g1a2b3c4，V 前缀同样归一）；
-#   4) 都取不到时回退 dev。
-
+# Manual only. Run this trusted workflow from the default branch, select source
+# using release_tag + expected_sha, never by an arbitrary version override.
 on:
   workflow_dispatch:
     inputs:
-      version:
-        description: '镜像内二进制版本号（如 v1.4.4-rc3）；留空则自动取运行所在 tag 或 git describe'
-        required: false
+      mode:
+        type: choice
+        options: [validate, publish]
+        default: validate
+        required: true
+      release_tag:
+        description: 'Exact existing V/v SemVer tag; blank allowed only for development validation'
         default: ''
+      expected_sha:
+        description: 'Expected full 40-character source commit SHA'
+        required: true
+      promote_latest:
+        description: 'Explicitly promote current published stable Release to latest (never rc)'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
-  packages: write
 
 concurrency:
-  group: docker-${{ github.ref }}
+  group: docker-release-promotion
   cancel-in-progress: false
 
 jobs:
-  build:
-    name: Build and push image
-    runs-on: ubuntu-latest
+  identity:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.identity.outputs.version }}
+      sha: ${{ steps.identity.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
         with:
-          # git describe 需要完整历史与 tag（fetch-depth: 0 默认不取 tag）
+          persist-credentials: false
           fetch-depth: 0
-          fetch-tags: true
-
-      - name: Derive image version
-        id: ver
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify trusted workflow, exact source and version
+        id: identity
         env:
-          INPUT_VERSION: ${{ inputs.version }}
+          MODE: ${{ inputs.mode }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          CONFIRM_LATEST: ${{ inputs.promote_latest }}
         run: |
-          if [ -n "$INPUT_VERSION" ]; then
-            v="$INPUT_VERSION"
-          elif [ "$GITHUB_REF_TYPE" = "tag" ]; then
-            v="v${GITHUB_REF_NAME#V}"
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/heads/$DEFAULT_BRANCH"
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-fA-F]{40}$ ]]
+          if [ -n "$RELEASE_TAG" ]; then
+            export RESOLVED_SHA
+            RESOLVED_SHA=$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")
+            node scripts/docker-release-policy.cjs identity > "$RUNNER_TEMP/identity.json"
+            version=$(jq -r .version "$RUNNER_TEMP/identity.json")
+            sha=$(jq -r .sha "$RUNNER_TEMP/identity.json")
           else
-            v=$(git describe --tags --always 2>/dev/null || echo dev)
-            case "$v" in
-              V*) v="v${v#V}" ;;
-            esac
+            test "$MODE" = validate
+            test "$CONFIRM_LATEST" != true
+            sha=$(git rev-parse --verify "$EXPECTED_SHA^{commit}")
+            test "${sha,,}" = "${EXPECTED_SHA,,}"
+            version="dev-${sha:0:12}"
           fi
-          echo "version=${v}" >> "$GITHUB_OUTPUT"
-          echo "Image binary version: ${v}"
+          printf 'version=%s\nsha=%s\n' "$version" "$sha" >> "$GITHUB_OUTPUT"
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+  build:
+    needs: identity
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: policy
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          path: source
+          ref: ${{ needs.identity.outputs.sha }}
+          persist-credentials: false
+      - name: Build trusted recipe against exact source (no registry credentials)
+        env:
+          VERSION: ${{ needs.identity.outputs.version }}
+          REVISION: ${{ needs.identity.outputs.sha }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          test "$(git -C source rev-parse HEAD)" = "$REVISION"
+          mkdir -p dist
+          docker build -f policy/Dockerfile --build-arg "VERSION=$VERSION" --build-arg "REVISION=$REVISION" --label "org.opencontainers.image.build-recipe=$GITHUB_SHA" -t "eio-validated:$ARCH" source
+          bash policy/scripts/docker-image-smoke.sh "eio-validated:$ARCH" "$VERSION" "$REVISION"
+          docker save "eio-validated:$ARCH" | gzip -1 > "dist/image-$ARCH.tar.gz"
+          (cd dist && sha256sum "image-$ARCH.tar.gz" > "image-$ARCH.tar.gz.sha256")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: validated-${{ matrix.arch }}
+          path: dist/
+          retention-days: 1
+          if-no-files-found: error
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
+  publish:
+    if: inputs.mode == 'publish' && inputs.release_tag != ''
+    needs: [identity, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: validated-*
+          path: images
+          merge-multiple: true
+      - name: Recheck identity and latest policy before registry writes
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          RELEASE_VERSION: ${{ needs.identity.outputs.version }}
+          CONFIRM_LATEST: ${{ inputs.promote_latest }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          export RESOLVED_SHA
+          RESOLVED_SHA=$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")
+          node scripts/docker-release-policy.cjs identity
+          if [ "$CONFIRM_LATEST" = true ]; then
+            release=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")
+            current=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)
+            export RELEASE_JSON
+            RELEASE_JSON=$(jq --arg current "$current" '. + {isCurrentStable: (.tag_name == $current)}' <<< "$release")
+            node scripts/docker-release-policy.cjs latest
+          fi
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository }}
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=sha,prefix=,format=short
-
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            VERSION=${{ steps.ver.outputs.version }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          password: ${{ github.token }}
+      - name: Push validated candidate and promote same digest (no rebuild)
+        env:
+          VERSION: ${{ needs.identity.outputs.version }}
+          REVISION: ${{ needs.identity.outputs.sha }}
+          CONFIRM_LATEST: ${{ inputs.promote_latest }}
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_PASSWORD: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          repo="ghcr.io/${GITHUB_REPOSITORY,,}"
+          candidate="candidate-${REVISION}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          for arch in amd64 arm64; do
+            (cd images && sha256sum -c "image-$arch.tar.gz.sha256")
+            gzip -dc "images/image-$arch.tar.gz" | docker load
+            test "$(docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' "eio-validated:$arch")" = "$REVISION"
+            docker tag "eio-validated:$arch" "$repo:$candidate-$arch"
+            docker push "$repo:$candidate-$arch"
+          done
+          docker buildx imagetools create --tag "$repo:$candidate" "$repo:$candidate-amd64" "$repo:$candidate-arm64"
+          digest=$(node scripts/docker-release-policy.cjs inspect "$repo:$candidate")
+          test "$digest" != absent
+          docker buildx imagetools inspect "$repo@$digest" --raw > "$RUNNER_TEMP/index.json"
+          jq -e '[.manifests[].platform | select(.os == "linux") | .architecture] | sort == ["amd64","arm64"]' "$RUNNER_TEMP/index.json"
+          existing=$(node scripts/docker-release-policy.cjs inspect "$repo:$VERSION")
+          decision=$(node scripts/docker-release-policy.cjs immutable "$existing" "$digest")
+          if [ "$decision" = create ]; then docker buildx imagetools create --tag "$repo:$VERSION" "$repo@$digest"; fi
+          test "$(node scripts/docker-release-policy.cjs inspect "$repo:$VERSION")" = "$digest"
+          if [ "$CONFIRM_LATEST" = true ]; then
+            # Revalidate stable Release immediately before moving latest.
+            tag="$RELEASE_TAG"
+            export RELEASE_JSON RELEASE_VERSION="$VERSION"
+            current=$(GH_TOKEN="$REGISTRY_PASSWORD" gh api "repos/$GITHUB_REPOSITORY/releases/latest")
+            RELEASE_JSON=$(jq --arg tag "$tag" '. + {isCurrentStable: (.tag_name == $tag)}' <<< "$current")
+            node scripts/docker-release-policy.cjs latest
+            docker buildx imagetools create --tag "$repo:latest" "$repo@$digest"
+            test "$(node scripts/docker-release-policy.cjs inspect "$repo:latest")" = "$digest"
+          fi
+          printf 'source=%s\nimage=%s@%s\nversion=%s\n' "$REVISION" "$repo" "$digest" "$VERSION" >> "$GITHUB_STEP_SUMMARY"

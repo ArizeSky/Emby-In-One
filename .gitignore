@@ -40,3 +40,17 @@ coverage.out
 
 # ---- Local smoke-test helpers (contain server credentials) ----
 .smoke/
+
+# ---- Local engineering notes and isolated test infrastructure ----
+/design/
+/AGENTS.md
+/.pi/
+/.ci-private/
+/.ci-source/
+/UPSTREAM_COMMIT
+/SOURCE_MANIFEST.json
+
+# ---- Managed deployment state, recovery snapshots and credentials ----
+.eio-*
+/backups/
+*.credential.xml

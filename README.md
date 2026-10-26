@@ -9,7 +9,7 @@
 [![GitHub Release](https://img.shields.io/github/v/release/ArizeSky/Emby-In-One?color=green)](https://github.com/ArizeSky/Emby-In-One/releases)
 [![GitHub Stars](https://img.shields.io/github/stars/ArizeSky/Emby-In-One?style=social)](https://github.com/ArizeSky/Emby-In-One)
 
-[更新日志](Update.md) | [English README](README_EN.md) | [安全策略](SECURITY.md) | [更新计划](Update%20Plan.md) | [V1.2.1 旧版文档](README_V1.2.1.md) | [GitHub](https://github.com/ArizeSky/Emby-In-One)
+[Docker 部署与运维](DOCKER.md) | [发布规范](RELEASING.md) | [更新日志](Update.md) | [English README](README_EN.md) | [安全策略](SECURITY.md) | [更新计划](Update%20Plan.md) | [V1.2.1 旧版文档](README_V1.2.1.md) | [GitHub](https://github.com/ArizeSky/Emby-In-One)
 
 基于Go语言实现的多台 Emby 服务器聚合代理，将多个上游 Emby 服务器的媒体库合并为一个统一入口，支持任何标准 Emby 客户端访问。支持多用户管理、独立观看历史、UA伪装、并发播放数限制和角色权限隔离。
 
@@ -85,7 +85,7 @@ V1.4.4-rc2 重做为桌面界面：分栏登录、216 px 桌面侧栏（首页 /
 
 > **旧版 Node.js 部署说明**：如果您希望部署基于 Node.js 的 V1.2.1 稳定版，请前往本仓库的 [Releases 页面](https://github.com/ArizeSky/Emby-In-One/releases) 下载 V1.2.1 的 Source code 源码压缩包，解压后同样运行 `bash install.sh` 即可。 仓库中的 `legacy/` 目录保留了 V1.2.1 的 Node.js 源码，**仅供对照参考**（Go 版的 ID 虚拟化以它为蓝本），它不参与 Go 版的构建、镜像或安装流程，详见 `legacy/README.md`。
 
-本项目优先推荐在 Linux 服务器直接使用 Release 二进制部署 V1.4.4-rc3（无需本地编译；预发布测试版，正式版发布前供尝鲜验证）；Docker 方式适合希望自行构建镜像的场景。
+Linux 可选 Release 二进制（systemd）或 Docker。Docker 有两条不同路线：**拉取已发布的预构建镜像**，或**本地源码构建**。默认安装脚本选择最新稳定 Release；V1.4.4-rc3 是需显式选择的预发布。Release 与镜像独立发布，不能仅凭 Release 存在就假定同名镜像可拉取。详见 [Docker 部署与运维](DOCKER.md) 和 [发布规范](RELEASING.md)。
 
 ### 方式一：Release 二进制一键安装（首推）
 
@@ -112,10 +112,10 @@ sudo bash release-install.sh V1.4.4-rc3
 ```bash
 git clone https://github.com/ArizeSky/Emby-In-One.git
 cd Emby-In-One
-bash install.sh
+sudo bash install.sh
 ```
 
-脚本将为您自动安装 Docker 环境、分配随机管理员密码、构建 Go 版镜像并启动服务。后续如需管理，通过 SSH 输入 `emby-in-one` 即可呼出管理菜单。
+新版完整发行目录的安装器显式支持 `--mode source`（默认，本地编译）和 `--mode image --image <已发布引用>`（只拉取并锁定 digest），默认回环监听。凭据写入 root-only 文件，不打印到日志。后续 SSH 菜单保持该路线并进行有限时健康验收；见 [Docker 指南](DOCKER.md)。旧 rc3 附件不含这些修改。
 
 > **远程源码安装的完整性校验**：当本地没有项目文件、脚本改为从远程下载源码时，必须提供 `SOURCE_SHA256=<tarball 的 sha256>` 才会继续，未提供会中止安装。确实要接受未校验源码时，显式设置 `ALLOW_UNVERIFIED_SOURCE=true`。默认 `REPO_URL` 指向 `main` 分支，可用 `EIO_SOURCE_URL` 覆盖为固定 tag 或镜像地址。
 
@@ -123,49 +123,17 @@ bash install.sh
 
 ### 方式三：手动 Docker Compose 部署
 
-1. 创建项目目录并交给容器运行用户（容器以 uid 1000 运行，挂载目录不可写会导致启动时无法写入 `tokens.json` / `mappings.db` 而失败）：
-```bash
-mkdir -p /opt/emby-in-one/{config,data}
-chown -R 1000:1000 /opt/emby-in-one/config /opt/emby-in-one/data
-cd /opt/emby-in-one
-```
-2. 拷贝本仓库下的所有核心文件（包括 `go.mod`, `cmd/`, `internal/`, `public/`, `Dockerfile`, `docker-compose.yml` 等）至该目录。
-3. 创建初始配置文件 `config/config.yaml`：
-```yaml
-server:
-  port: 8096
-  name: "Emby-In-One"
-  # trustProxy: true        # 部署在反向代理（Nginx/Caddy 等）后面时设为 true
-
-admin:
-  username: "admin"
-  password: "your-strong-password" # 首次启动后自动加密存储
-
-playback:
-  mode: "proxy"
-
-timeouts:
-  api: 30000
-  global: 15000
-  login: 30000
-  healthCheck: 30000
-  healthInterval: 60000
-
-proxies: []
-upstream: []
-```
-4. 构建并启动：
-```bash
-docker compose build
-docker compose up -d
-```
+- **预构建镜像（无需本机编译）**：使用独立的 [`docker-compose.image.yml`](docker-compose.image.yml)，显式配置已发布的 image tag 或 digest，再 `pull` / `up -d --no-build`。该模板不含 `build:`，默认只绑定宿主回环地址。完整的配置初始化、UID 1000 权限、`.env.image` 和联网步骤见 [Docker 指南](DOCKER.md)。
+- **本地源码构建**：仓库 [`docker-compose.yml`](docker-compose.yml) 仍是构建型模板，需完整源码（含 `third_party/`、`public/`）；按实际源码身份传 `--build-arg VERSION=...`，再启动。详见 [本地构建](DOCKER.md#6-本地构建保留但不要冒充拉镜像)。
+- **不要混用**：新版托管安装的菜单支持 source/image；手工 `.env.image` 和自定义 Compose 不会自动转换，需显式核对接管。只在同一管理上下文操作，更新失败恢复配套旧数据和镜像；详见 Docker 指南。
+- 当前 GHCR 工作流支持 `linux/amd64`、`linux/arm64`，仅手动发布；`version` 输入不自动创建同名镜像标签。没有对应镜像时选二进制或本地构建，不猜测 `latest`。
 
 ### 方式四：Go 源码直接运行（适合开发者）
 
 环境要求：Go 1.23+ 且具备 C 编译链（Debian/Ubuntu 运行 `apt install build-essential`）。
 ```bash
 mkdir -p config data
-# 按方式三的说明在 config 文件夹下创建 config.yaml
+# 按 Docker 指南的配置示例在 config 文件夹下创建 config.yaml
 go test ./...
 go run ./cmd/emby-in-one
 ```
@@ -292,7 +260,8 @@ sudo nginx -t && sudo systemctl reload nginx
 - 无需 Go 编译环境，直接运行预编译二进制
 
 **Docker 部署：**
-- Docker 20.10+，Docker Compose v2
+- Docker 20.10+，Docker Compose v2；预构建镜像目前面向 linux/amd64、linux/arm64
+- 拉镜像无需 Go/C 编译环境；本地构建需额外 CPU/内存及基础镜像、软件源网络，不与运行时资源需求混为一谈
 - Linux：Debian 11/12/13、Ubuntu 22/24（推荐），其他发行版需自行验证
 - Windows / macOS 也可运行（开发测试用）
 
@@ -635,7 +604,7 @@ emby-in-one --reset-password <new-password|-> [--force]
   - `--force` 跳过该探测；仅在明确知道自己在做什么时使用
   - 重置时 `tokens.json` 以**原子写**方式清空（保留 `_proxyUserId`），不会再出现文件写坏导致服务起不来的情况；**所有已签发的代理 Token 随之失效**，客户端需要重新登录
 
-  > **为什么运行中必须拒绝**：运行中的实例把 token 存在内存里，会在下一次登录或登出时把整个 `tokens.json` 写回去——刚清掉的令牌会被原样恢复，重置等于没做。所以 CLI 宁可报错也不静默「重置失败」。Docker 部署请用 SSH 菜单，或按菜单失败时打印的命令手动执行（`docker compose ... run --rm -T emby-in-one /app/emby-in-one --reset-password - --force`）。
+  > 运行中的实例会重写内存 token，故必须确认停服后再重置。Docker 托管部署使用菜单或 manager 的 `reset-password`（密码经 stdin）；不要用 force 绕过保护。
 
 - **`data/tokens.json` 权限更严格**：Unix/Linux 上按 `0600` 写入
 - **`config.yaml` 安全写入**：原子替换方式保存 + `0600` 权限，减少配置损坏风险并防止其他用户读取密码
@@ -766,7 +735,7 @@ emby-in-one
 - 查看日志
 - 卸载服务（支持保留配置和数据）
 
-> SSH 菜单自动检测当前部署方式（Binary / Docker），所有操作自动分发到 systemd 或 Docker Compose 对应命令。Docker 模式下更新采用源码重建流程。菜单没有单独的「查看版本」选项——当前版本号直接显示在菜单标题栏上（形如 `Emby In One 管理菜单 v1.4.4`）。
+> 新版 Docker 菜单通过 `.eio-deployment.json` 识别 source/image 并读取真实运行版本。`EIO_PROJECT_DIR` 可选择目录；未知/自定义部署不自动升级。Binary/systemd 路线仍独立。详见 [Docker 指南](DOCKER.md)。
 
 ---
 
@@ -974,9 +943,12 @@ Emby-In-One/
 │                                   #   mse-duration / seek-queue / session / admin-panel
 ├── assets/panel.css                # Tailwind 输入文件（含从 admin.html 迁出的面板自定义样式）
 ├── tailwind.config.js              # Tailwind 扫描配置（改动 admin.html/admin.js 后跑 npm run build:panel）
-├── package.json                    # 根 package.json 仅保留 build:panel 一个脚本（Node 依赖已移至 legacy/）
+├── package.json                    # 根 package.json 提供 build:panel / test 脚本（Node 依赖已移至 legacy/）
 ├── Dockerfile                      # Go 环境容器构建
-├── docker-compose.yml
+├── docker-compose.yml              # 本地源码构建
+├── docker-compose.image.yml        # 预构建镜像部署（显式 image/digest）
+├── DOCKER.md / DOCKER_EN.md         # Docker 部署、升级、备份与回滚
+├── RELEASING.md                    # 公开发布规范与当前流水线边界
 ├── install.sh                      # 源码仓库一键部署脚本（Docker）
 ├── release-install.sh              # Release 二进制一键部署脚本（systemd）
 ├── emby-in-one-cli.sh              # SSH 终端管理面板脚本

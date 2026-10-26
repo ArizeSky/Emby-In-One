@@ -1,97 +1,26 @@
 #!/usr/bin/env bash
-# pipefail: 远程源码下载与校验任一环节失败都必须以非零码退出，
-# 不能只由后续命令（如 tar）的退出码决定。
-set -e
-set -o pipefail
-
-# ╔════════════════════════════════════════════════════╗
-# ║       Emby In One 一键安装脚本                      ║
-# ╚════════════════════════════════════════════════════╝
-
-PROJECT_DIR="/opt/emby-in-one"
-# 远程安装时使用的 tarball 地址（可用 EIO_SOURCE_URL 覆盖）
-REPO_URL="${EIO_SOURCE_URL:-https://github.com/ArizeSky/Emby-In-One/archive/refs/heads/main.tar.gz}"
-
-# ── 颜色 ──
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-BOLD='\033[1m'
-NC='\033[0m'
-
-info()  { echo -e "${GREEN}[信息]${NC} $*"; }
-warn()  { echo -e "${YELLOW}[警告]${NC} $*"; }
-error() { echo -e "${RED}[错误]${NC} $*"; exit 1; }
-
-# ── compose 命令分发 ──
-# 插件语法（docker compose）优先，只有 standalone docker-compose 二进制时兜底。
-# 本脚本自己的 Compose 兜底安装路径装的就是 standalone 二进制，
-# 后续若无条件用插件语法，在那类机器上必然失败回滚。
-compose_cmd() {
-  if docker compose version &>/dev/null; then
-    docker compose "$@"
-  elif command -v docker-compose &>/dev/null; then
-    docker-compose "$@"
-  else
-    echo -e "${RED}[错误] 未找到 Docker Compose${NC}"
-    return 1
-  fi
-}
-
-is_hashed_password() {
-  [[ "$1" =~ ^[0-9a-fA-F]{32}:[0-9a-fA-F]{128}$ ]]
-}
-
-format_admin_password() {
-  local value="$1"
-  if is_hashed_password "$value"; then
-    echo "已加密存储（当前密码无法直接显示，请通过 SSH 菜单重置）"
-  else
-    echo "$value"
-  fi
-}
-
-# ── 回滚机制 ──
-_ROLLBACK_NEEDED=false
-# 安装前目录是否已存在: 已存在说明是升级/重装，回滚时绝不能整目录删除，
-# 否则用户的 config/ data/（上游账号、令牌、观看历史）会一起没掉。
-_DIR_PREEXISTED=false
-# 本次是否真的把容器拉起来过，只有拉起来过才需要 down
-_CONTAINERS_STARTED=false
-
-cleanup() {
-  local exit_code=$?
-  if [[ "$_ROLLBACK_NEEDED" != true || $exit_code -eq 0 ]]; then
-    return
-  fi
-  warn "安装失败，正在回滚..."
-  cd / 2>/dev/null || true
-  if [[ "$_CONTAINERS_STARTED" == true && -f "${PROJECT_DIR}/docker-compose.yml" ]]; then
-    compose_cmd -f "${PROJECT_DIR}/docker-compose.yml" down --remove-orphans 2>/dev/null || true
-  fi
-  if [[ "$_DIR_PREEXISTED" == false ]]; then
-    rm -rf "${PROJECT_DIR}"
-    echo -e "${RED}[错误]${NC} 安装已回滚，残留文件已清理。请查看上方错误信息后重试。"
-  else
-    echo -e "${RED}[错误]${NC} 安装已回滚。请查看上方错误信息后重试。"
-    warn "${PROJECT_DIR} 在安装前已存在，原有 config/ data/ log/ 等用户数据全部保留"
-  fi
-}
-
-trap cleanup EXIT
-
-# ── 1. 检测操作系统 ──
-if [[ "$(uname -s)" != "Linux" ]]; then
-  error "本脚本仅支持 Linux 系统"
-fi
-
-if [[ "$EUID" -ne 0 ]]; then
-  error "请使用 root 权限运行此脚本 (sudo bash install.sh)"
-fi
-
-info "检测到 Linux 系统，开始安装..."
-
+set -euo pipefail
+umask 077
+PROJECT_DIR="${EIO_PROJECT_DIR:-/opt/emby-in-one}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+MODE=source
+ARGS=()
+while (($#)); do
+  case "$1" in
+    --mode) [[ $# -ge 2 ]] || exit 2; MODE=$2; ARGS+=("$1" "$2"); shift 2;;
+    --project-dir) [[ $# -ge 2 ]] || exit 2; PROJECT_DIR=$2; shift 2;;
+    --help|-h) printf 'Usage: bash install.sh [--mode source|image] [--image REF] [--project-dir DIR] [--port PORT]\n'; exit 0;;
+    *) ARGS+=("$1"); shift;;
+  esac
+done
+[[ "$MODE" == source || "$MODE" == image ]] || { echo 'Invalid deployment mode' >&2; exit 2; }
+[[ "$EUID" == 0 && "$(uname -s)" == Linux ]] || { echo 'Linux root required' >&2; exit 1; }
+RED='' GREEN='' YELLOW='' CYAN='' BOLD='' NC=''
+info(){ printf '%s\n' "$*"; }
+warn(){ printf '%s\n' "$*" >&2; }
+error(){ printf '%s\n' "$*" >&2; exit 1; }
+printf 'Deployment route: docker-%s (no automatic fallback)\n' "$MODE"
+compose_cmd(){ if docker compose version >/dev/null 2>&1; then docker compose "$@"; elif command -v docker-compose >/dev/null; then docker-compose "$@"; else error 'Compose missing'; fi; }
 # ── 2. 检测并安装 Docker ──
 _install_docker_aliyun() {
   local pkg_mgr
@@ -244,17 +173,8 @@ else
   info "Docker Compose 安装完成"
 fi
 
-# ── 4. 创建项目目录 ──
-info "创建项目目录: ${PROJECT_DIR}"
-if [[ -d "${PROJECT_DIR}" ]]; then
-  _DIR_PREEXISTED=true
-fi
-mkdir -p "${PROJECT_DIR}"
-_ROLLBACK_NEEDED=true
 
-# ── 5. 复制/下载项目文件 ──
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-
+# Backward-compatible distribution template helpers.
 copy_item() {
   local src="$1"
   local dst="$2"
@@ -296,11 +216,12 @@ EOF
 write_runtime_compose_to() {
   local dest="$1"
   cat > "${dest}" <<'EOF'
+services:
   emby-in-one:
     build:
       context: .
       args:
-        VERSION: v1.4.4-rc3
+        VERSION: ${EIO_VERSION:-dev}
     container_name: emby-in-one
     # 容器以 uid 1000 运行，挂载目录需先 chown 1000:1000（install.sh 已处理）
     user: "1000:1000"
@@ -331,7 +252,6 @@ copy_distribution_layout() {
   for item in cmd internal third_party public go.mod README.md README_EN.md Update.md emby-in-one-cli.sh .dockerignore LICENSE; do
     copy_item "${base}/${item}" "${PROJECT_DIR}/"
   done
-  write_runtime_dockerfile
   # 已有 Dockerfile/docker-compose.yml 不自动覆盖（用户可能改过端口/挂载/构建
   # 参数），新模板放独立 .release 文件供比对；全新安装才自动创建。
   if [[ -f "${PROJECT_DIR}/Dockerfile" ]]; then
@@ -348,171 +268,41 @@ copy_distribution_layout() {
   fi
 }
 
-copy_project_files_from() {
-  local base="$1"
-  if copy_distribution_layout "$base"; then
-    return 0
-  fi
-  if [[ -d "${base}/Emby-In-One-Go" ]] && copy_distribution_layout "${base}/Emby-In-One-Go"; then
-    return 0
-  fi
-  return 1
-}
 
-if copy_project_files_from "${SCRIPT_DIR}"; then
-  :
-else
-  if [[ "$REPO_URL" == *"<owner>"* ]]; then
-    error "未找到本地项目文件，且 REPO_URL 尚未配置，无法远程安装"
-  fi
-  info "未找到本地项目文件，从远程下载..."
-  TMP_DIR=$(mktemp -d)
-  SRC_TARBALL="${TMP_DIR}/source.tar.gz"
-  info "正在下载源码: ${REPO_URL}"
-  if ! curl -fsSL --max-time 180 -o "${SRC_TARBALL}" "${REPO_URL}"; then
-    rm -rf "${TMP_DIR}"
-    error "下载源码失败: ${REPO_URL}"
-  fi
-  # Integrity gate: verify the tarball before extracting it. The default URL is
-  # a mutable branch (main), which is not reproducible, so an operator-supplied
-  # digest is required to pin the exact bytes; skipping the check has to be an
-  # explicit, logged choice rather than the silent default it used to be.
+TEMP_SOURCE=''
+cleanup(){ [[ -z "$TEMP_SOURCE" ]] || rm -rf "$TEMP_SOURCE"; }
+trap cleanup EXIT
+if [[ "$MODE" == source && ! -f "$SCRIPT_DIR/go.mod" ]]; then
+  TEMP_SOURCE=$(mktemp -d)
+  url="${EIO_SOURCE_URL:-https://github.com/ArizeSky/Emby-In-One/archive/refs/heads/main.tar.gz}"
+  curl -fsSL --max-time 180 "$url" -o "$TEMP_SOURCE/source.tar.gz"
   if [[ -n "${SOURCE_SHA256:-}" ]]; then
-    actual_sha=$(sha256sum "${SRC_TARBALL}" | awk '{print $1}')
-    if [[ "${actual_sha,,}" != "${SOURCE_SHA256,,}" ]]; then
-      rm -rf "${TMP_DIR}"
-      error "源码校验失败：期望 ${SOURCE_SHA256}，实际 ${actual_sha}\n  已中止安装。"
-    fi
-    info "源码完整性校验通过"
-  elif [[ "${ALLOW_UNVERIFIED_SOURCE:-false}" == true ]]; then
-    warn "未设置 SOURCE_SHA256，已按 ALLOW_UNVERIFIED_SOURCE=true 跳过源码校验（不推荐）"
-  else
-    rm -rf "${TMP_DIR}"
-    error "远程源码安装需要完整性校验，但未设置 SOURCE_SHA256。\n  请设置 SOURCE_SHA256=<该 tarball 的 sha256> 后重试，\n  或设置 ALLOW_UNVERIFIED_SOURCE=true 明确接受未校验源码（不推荐）。"
+    [[ "$(sha256sum "$TEMP_SOURCE/source.tar.gz" | awk '{print $1}')" == "${SOURCE_SHA256,,}" ]] || error 'Source checksum mismatch'
+  elif [[ "${ALLOW_UNVERIFIED_SOURCE:-false}" == true ]]; then warn 'Explicit unverified-source override enabled'
+  else error 'SOURCE_SHA256 required for remote source'; fi
+  python3 - "$TEMP_SOURCE" <<'PYCODE'
+import sys,tarfile,pathlib
+p=pathlib.Path(sys.argv[1])
+with tarfile.open(p/'source.tar.gz') as t:
+ for m in t.getmembers():
+  assert not m.issym() and not m.islnk() and not m.name.startswith('/') and '..' not in pathlib.PurePosixPath(m.name).parts,'unsafe source archive'
+ t.extractall(p/'source',filter='data')
+PYCODE
+  SCRIPT_DIR=$(find "$TEMP_SOURCE/source" -name go.mod -print -quit); SCRIPT_DIR=${SCRIPT_DIR%/go.mod}
+fi
+[[ -f "$SCRIPT_DIR/eio-docker.sh" && -f "$SCRIPT_DIR/docker-compose.image.yml" ]] || error 'Complete trusted new deployment bundle required (manager absent in older release assets)'
+if [[ "$MODE" == source ]]; then ARGS+=(--source-dir "$SCRIPT_DIR"); fi
+[[ " ${ARGS[*]} " == *' --mode '* ]] || ARGS+=(--mode "$MODE")
+bash "$SCRIPT_DIR/eio-docker.sh" --project-dir "$PROJECT_DIR" install "${ARGS[@]}"
+# Keep manager and template beside the deployed CLI, not in an untrusted image URL.
+for f in eio-docker.sh docker-compose.image.yml emby-in-one-cli.sh; do
+  if [[ "$SCRIPT_DIR/$f" != "$PROJECT_DIR/$f" ]]; then
+    if [[ "$f" == docker-compose.image.yml && -f "$PROJECT_DIR/$f" ]]; then
+      cmp -s "$SCRIPT_DIR/$f" "$PROJECT_DIR/$f" || cp "$SCRIPT_DIR/$f" "$PROJECT_DIR/$f.release"
+    else cp "$SCRIPT_DIR/$f" "$PROJECT_DIR/$f"; fi
   fi
-  if ! tar -xzf "${SRC_TARBALL}" -C "${TMP_DIR}" --strip-components=1; then
-    rm -rf "${TMP_DIR}"
-    error "解压源码失败"
-  fi
-  if ! copy_project_files_from "${TMP_DIR}"; then
-    rm -rf "${TMP_DIR}"
-    error "下载内容中未找到可部署的 Go 项目文件"
-  fi
-  rm -rf "${TMP_DIR}"
+done
+if [[ "${EIO_INSTALL_CLI:-true}" == true ]]; then
+  install -m 755 "$PROJECT_DIR/emby-in-one-cli.sh" /usr/local/bin/emby-in-one
 fi
-# ── 6. 创建数据目录 ──
-mkdir -p "${PROJECT_DIR}/config"
-mkdir -p "${PROJECT_DIR}/data"
-
-# ── 7. 生成配置文件 ──
-if [[ ! -f "${PROJECT_DIR}/config/config.yaml" ]]; then
-  info "生成默认配置文件..."
-  ADMIN_USER="admin"
-  # 注意: 不要写成 `tr ... | head -c 16` — 开启 pipefail 后 tr 会因 SIGPIPE(141) 让脚本退出。
-  # 这里由 head 先取定长字节（正常结束），tr 读完全部输入，cut 再截前 16 位。
-  ADMIN_PASS=$(head -c 4096 /dev/urandom | tr -dc 'A-Za-z0-9' | cut -c1-16)
-  cat > "${PROJECT_DIR}/config/config.yaml" <<EOF
-server:
-  port: 8096
-  name: "Emby-In-One"
-
-admin:
-  username: "${ADMIN_USER}"
-  password: "${ADMIN_PASS}"
-
-playback:
-  mode: "proxy"
-
-timeouts:
-  api: 30000
-  global: 15000
-  login: 30000
-  healthCheck: 30000
-  healthInterval: 60000
-
-proxies: []
-
-upstream: []
-EOF
-else
-  info "配置文件已存在，跳过生成"
-  ADMIN_USER=$(grep '  username:' "${PROJECT_DIR}/config/config.yaml" | head -1 | sed "s/^  username:[[:space:]]*//" | sed "s/^'//;s/'$//;s/^\"//;s/\"$//")
-  ADMIN_PASS=$(grep '  password:' "${PROJECT_DIR}/config/config.yaml" | head -1 | sed "s/^  password:[[:space:]]*//" | sed "s/^'//;s/'$//;s/^\"//;s/\"$//")
-fi
-
-ADMIN_PASS_DISPLAY=$(format_admin_password "$ADMIN_PASS")
-
-# ── 8. 设置权限 ──
-find "${PROJECT_DIR}" -type d -exec chmod 755 {} +
-# data/ 存放 tokens、捕获的客户端头、密码哈希和每用户状态，
-# 文件权限由服务自己写为 0600，不要覆盖。
-find "${PROJECT_DIR}" -path "${PROJECT_DIR}/data" -prune -o -type f -exec chmod 644 {} +
-chmod 600 "${PROJECT_DIR}/config/config.yaml" 2>/dev/null || true
-# 容器以非 root (uid 1000) 运行，bind mount 的 config/ data/ 必须归 1000 所有，
-# 否则服务写不了 config.yaml 与映射数据库。
-chown -R 1000:1000 "${PROJECT_DIR}/config" "${PROJECT_DIR}/data" 2>/dev/null || {
-  warn "无法把 config/ data/ 属主改为 1000:1000，容器内服务可能无法写入，请手动执行:"
-  warn "  chown -R 1000:1000 ${PROJECT_DIR}/config ${PROJECT_DIR}/data"
-}
-
-# ── 9. 启动容器 ──
-info "构建并启动容器..."
-cd "${PROJECT_DIR}"
-compose_cmd build --quiet
-compose_cmd up -d
-_CONTAINERS_STARTED=true
-
-# 以非 root 运行时权限不对会让容器立刻退出，这里明确提示而不是假报成功
-sleep 2
-CONTAINER_STATE=$(docker inspect --format '{{.State.Status}}' emby-in-one 2>/dev/null || echo "")
-if [[ "$CONTAINER_STATE" != "running" ]]; then
-  warn "容器当前状态: ${CONTAINER_STATE:-未知}，请检查日志: docker compose -f ${PROJECT_DIR}/docker-compose.yml logs"
-fi
-
-# 安装成功，禁用回滚
-_ROLLBACK_NEEDED=false
-
-# ── 10. 打印凭据 ──
-# 取本机出口地址（不查询第三方 ip.sb，避免把服务器 IP 泄露给外部服务）
-# pipefail 下 `ip`/`grep` 失败会让管道非零并触发 set -e，这里必须兜住。
-SERVER_IP=""
-if command -v ip &>/dev/null; then
-  SERVER_IP=$(ip route get 1.1.1.1 2>/dev/null | grep -oE 'src [0-9.]+' | awk '{print $2}' | head -1 || true)
-fi
-if [[ -z "$SERVER_IP" ]]; then
-  SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || true)
-fi
-SERVER_IP=${SERVER_IP:-'<服务器IP>'}
-echo ""
-echo -e "${BOLD}╔══════════════════════════════════════════════════════╗${NC}"
-echo -e "${BOLD}║         ${GREEN}Emby In One 安装完成！${NC}${BOLD}                        ║${NC}"
-echo -e "${BOLD}╠══════════════════════════════════════════════════════╣${NC}"
-echo -e "${BOLD}║${NC}                                                      ${BOLD}║${NC}"
-echo -e "${BOLD}║${NC}  管理员用户名: ${CYAN}${ADMIN_USER}${NC}"
-echo -e "${BOLD}║${NC}  管理员密码:   ${CYAN}${ADMIN_PASS_DISPLAY}${NC}"
-echo -e "${BOLD}║${NC}                                                      ${BOLD}║${NC}"
-echo -e "${BOLD}║${NC}  访问地址:     ${CYAN}http://${SERVER_IP}:8096${NC}"
-echo -e "${BOLD}║${NC}  管理面板:     ${CYAN}http://${SERVER_IP}:8096/admin${NC}"
-echo -e "${BOLD}║${NC}                                                      ${BOLD}║${NC}"
-echo -e "${BOLD}║${NC}  ${YELLOW}请妥善保管以上凭据！${NC}                                ${BOLD}║${NC}"
-echo -e "${BOLD}╚══════════════════════════════════════════════════════╝${NC}"
-if is_hashed_password "$ADMIN_PASS"; then
-  echo -e "${YELLOW}提示：当前配置中的管理员密码已加密存储，无法直接查看。如需重置，请使用 SSH 菜单 emby-in-one。${NC}"
-fi
-if [[ "$SERVER_IP" =~ ^(10\.|127\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.) ]]; then
-  echo -e "${YELLOW}提示：检测到内网地址（NAT / 端口映射环境），请以实际公网地址访问。${NC}"
-fi
-echo ""
-
-# ── 11. 安装 CLI 管理脚本 ──
-if [[ -e "${SCRIPT_DIR}/emby-in-one-cli.sh" ]]; then
-  cp "${SCRIPT_DIR}/emby-in-one-cli.sh" /usr/local/bin/emby-in-one
-  chmod +x /usr/local/bin/emby-in-one
-  info "SSH 管理脚本已安装，输入 ${CYAN}emby-in-one${NC} 即可使用管理菜单"
-elif [[ -e "${PROJECT_DIR}/emby-in-one-cli.sh" ]]; then
-  cp "${PROJECT_DIR}/emby-in-one-cli.sh" /usr/local/bin/emby-in-one
-  chmod +x /usr/local/bin/emby-in-one
-  info "SSH 管理脚本已安装，输入 ${CYAN}emby-in-one${NC} 即可使用管理菜单"
-fi
-
-info "安装完成！"
+printf 'Verified installation. New generated credentials, if any: %s/.eio-initial-password (root-only).\n' "$PROJECT_DIR"

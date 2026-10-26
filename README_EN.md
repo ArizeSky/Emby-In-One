@@ -9,7 +9,7 @@
 [![GitHub Release](https://img.shields.io/github/v/release/ArizeSky/Emby-In-One?color=green)](https://github.com/ArizeSky/Emby-In-One/releases)
 [![GitHub Stars](https://img.shields.io/github/stars/ArizeSky/Emby-In-One?style=social)](https://github.com/ArizeSky/Emby-In-One)
 
-[Changelog](Update.md) | [中文文档](README.md) | [Security Policy](SECURITY.md) | [Update Plan](Update%20Plan.md) | [V1.2.1 Legacy Docs](README_V1.2.1.md) | [GitHub](https://github.com/ArizeSky/Emby-In-One)
+[Docker operations](DOCKER_EN.md) | [Release policy](RELEASING.md) | [Changelog](Update.md) | [中文文档](README.md) | [Security Policy](SECURITY.md) | [Update Plan](Update%20Plan.md) | [V1.2.1 Legacy Docs](README_V1.2.1.md) | [GitHub](https://github.com/ArizeSky/Emby-In-One)
 
 Based on Go language, it implements a multi-server Emby aggregation proxy — merges media libraries from multiple upstream Emby servers into a single unified endpoint accessible by any standard Emby client. Supports multi-user management, independent watch history, UA spoofing, concurrent playback limits, and role-based access control.
 
@@ -85,7 +85,7 @@ Development checks: `node --test tests/web-data.test.cjs tests/web-ui.test.cjs t
 
 > **Notice for Legacy Node.js Deployment**: If you wish to deploy the V1.2.1 stable Node.js version, please navigate to the [Releases page](https://github.com/ArizeSky/Emby-In-One/releases) of this repository, download the V1.2.1 Source code archive, extract it, and run `bash install.sh`. The `legacy/` directory in this repository keeps the V1.2.1 Node.js source **for reference only** (the Go ID virtualization was written against it); it takes part in no build, image or install of the Go version — see `legacy/README.md`.
 
-This project primarily recommends using Release binaries for V1.4.4-rc3 deployment directly on Linux servers (no local Go build required; this is a pre-release for early testing); Docker deployment is suitable for scenarios where you want to build the image yourself.
+On Linux, choose a Release binary (systemd) or Docker. Docker supports two distinct routes: **pulling a published image** or **building from source locally**. The installer defaults to the latest stable Release; V1.4.4-rc3 is an explicitly selected prerelease. Releases and images are published independently: a Release does not guarantee a matching image exists. See [Docker operations](DOCKER_EN.md) and [release policy](RELEASING.md).
 
 ### Method 1: Release Binary One-Click Install (Primary Recommendation)
 
@@ -112,58 +112,28 @@ This script will automatically:
 ```bash
 git clone https://github.com/ArizeSky/Emby-In-One.git
 cd Emby-In-One
-bash install.sh
+sudo bash install.sh
 ```
 
-The script will automatically install the Docker environment, assign a random admin password, build the Go version image, and start the service. To manage your server later, type `emby-in-one` via SSH to call up the management menu.
+The new complete deployment bundle supports `--mode source` (default, local compilation) and `--mode image --image <published-reference>` (pull only, digest-pinned). New installs bind loopback; initial credentials are saved in a root-only file. The SSH menu preserves the route and checks health. See [Docker guide](DOCKER_EN.md); existing rc3 assets do not include these changes.
+
+> Remote source installation requires a matching `SOURCE_SHA256` before extraction. `EIO_SOURCE_URL` selects the archive; `ALLOW_UNVERIFIED_SOURCE=true` explicitly bypasses verification and is not recommended.
 
 > **Note**: The source-repo install script copies `cmd/`, `internal/`, `third_party/`, and `public/` into the builder stage for Go compilation. If you customize the `Dockerfile` or copy files manually, make sure the `public/` directory is also present in the build context, otherwise the build may fail with `package emby-in-one/public is not in std`.
 
 ### Method 3: Manual Docker Compose Deployment
 
-1. Create project directories and hand them to the container user (the container runs as uid 1000; unwritable mounts make startup fail when the server cannot write `tokens.json` / `mappings.db`):
-```bash
-mkdir -p /opt/emby-in-one/{config,data}
-chown -R 1000:1000 /opt/emby-in-one/config /opt/emby-in-one/data
-cd /opt/emby-in-one
-```
-2. Copy all core files from this repository (including `go.mod`, `cmd/`, `internal/`, `public/`, `Dockerfile`, `docker-compose.yml`, etc.) to this directory.
-3. Create the initial configuration `config/config.yaml`:
-```yaml
-server:
-  port: 8096
-  name: "Emby-In-One"
-  # trustProxy: true        # Set to true when deployed behind a reverse proxy (Nginx/Caddy etc.)
-
-admin:
-  username: "admin"
-  password: "your-strong-password" # Automatically encrypted after first boot
-
-playback:
-  mode: "proxy"
-
-timeouts:
-  api: 30000
-  global: 15000
-  login: 30000
-  healthCheck: 30000
-  healthInterval: 60000
-
-proxies: []
-upstream: []
-```
-4. Build and start:
-```bash
-docker compose build
-docker compose up -d
-```
+- **Published image (no local compilation):** use [`docker-compose.image.yml`](docker-compose.image.yml), explicitly select a published tag/digest, then `pull` / `up -d --no-build`. This template has no `build:` and defaults to host-loopback binding. Follow [the Docker guide](DOCKER_EN.md) for initial config, UID 1000 permissions, `.env.image`, network exposure and acceptance checks.
+- **Local source build:** [`docker-compose.yml`](docker-compose.yml) remains a build template. Supply the full source, including `third_party/` and `public/`, and a `--build-arg VERSION=...` matching the actual source identity. See [local builds](DOCKER_EN.md#6-local-source-builds-and-the-installer).
+- **Do not mix managers:** new managed installs support source/image; custom Compose and `.env.image` projects are not silently converted. Use one deployment context and paired data/image recovery; see the Docker guide.
+- The manual GHCR workflow targets linux/amd64 and linux/arm64. Its version input does not create a matching image tag. If unavailable, choose binaries or a local build instead of guessing latest.
 
 ### Method 4: Direct Go Source Run (For Developers)
 
 Requirements: Go 1.23+ and a C toolchain (Debian/Ubuntu run `apt install build-essential`).
 ```bash
 mkdir -p config data
-# Create config.yaml in the config folder as instructed in Method 3
+# Create config/config.yaml using the configuration example in the Docker guide
 go test ./...
 go run ./cmd/emby-in-one
 ```
@@ -290,7 +260,8 @@ Then visit `https://media.example.com/web` (Web client) and `https://media.examp
 - No Go compilation environment needed, directly run pre-compiled binaries
 
 **Docker Deployment:**
-- Docker 20.10+, Docker Compose v2
+- Docker 20.10+, Docker Compose v2; published images target linux/amd64 and linux/arm64
+- Pulling needs no Go/C toolchain; local builds need extra CPU/RAM and access to base images/package repositories, separate from runtime requirements
 - Linux: Debian 11/12/13, Ubuntu 22/24 (recommended), other distros need self-verification
 - Windows / macOS can also run (for dev and testing)
 
@@ -631,7 +602,7 @@ emby-in-one --reset-password <new-password|-> [--force]
   - `--force` skips that probe; use it only when you are sure you need it
   - The reset clears `tokens.json` with an **atomic write** (keeping `_proxyUserId`), so a truncated file can no longer stop the service from booting; **every issued proxy token is invalidated** and clients must sign in again
 
-  > **Why a running instance must be refused**: a live instance keeps the tokens in memory and writes the whole `tokens.json` back on its next login or logout — restoring every token this command just cleared, making the reset a no-op. The CLI therefore errors out rather than silently "resetting" nothing. For Docker deployments use the SSH menu, or run the command it prints on failure (`docker compose ... run --rm -T emby-in-one /app/emby-in-one --reset-password - --force`).
+  > A running instance can rewrite tokens from memory: verify stop before resetting. Managed Docker deployments use menu/manager `reset-password` with stdin; do not bypass the guard with force.
 
 - **Stricter `data/tokens.json` permissions**: Written with `0600` permissions on Unix/Linux
 - **Secure `config.yaml` writes**: Atomic replacement + `0600` permissions, reducing corruption risk and preventing other users from reading passwords
@@ -762,7 +733,7 @@ Available commands:
 - View logs
 - Uninstall service (supports preserving config and data)
 
-> The SSH menu auto-detects the current deployment method (Binary / Docker), dispatching all operations to the corresponding systemd or Docker Compose commands. Docker mode updates use a source-rebuild workflow. There is no separate "check version" entry — the current version is shown directly in the menu title bar (e.g. `Emby In One 管理菜单 v1.4.4`).
+> New Docker menus identify source/image through `.eio-deployment.json` and read the actual runtime version. `EIO_PROJECT_DIR` selects the project; unknown/custom deployments cannot auto-upgrade. Binary/systemd management remains independent. See [Docker guide](DOCKER_EN.md).
 
 ---
 
@@ -970,9 +941,12 @@ Emby-In-One/
 │                                   #   mse-duration / seek-queue / session / admin-panel
 ├── assets/panel.css                # Tailwind input (holds the panel styles moved out of admin.html)
 ├── tailwind.config.js              # Tailwind content config (run npm run build:panel after editing admin.html/admin.js)
-├── package.json                    # Root package.json keeps only the build:panel script (Node deps moved to legacy/)
+├── package.json                    # Root package.json provides build:panel / test scripts (Node deps moved to legacy/)
 ├── Dockerfile                      # Go runtime container build
-├── docker-compose.yml
+├── docker-compose.yml              # Local source build
+├── docker-compose.image.yml        # Published-image deployment (explicit image/digest)
+├── DOCKER.md / DOCKER_EN.md         # Docker deployment, upgrades, backups and rollback
+├── RELEASING.md                    # Public release policy and workflow limitations
 ├── install.sh                      # Source repo one-click deploy script (Docker)
 ├── release-install.sh              # Release binary one-click deploy script (systemd)
 ├── emby-in-one-cli.sh              # SSH terminal management menu script

@@ -24,10 +24,8 @@ concurrency:
   group: release-${{ github.ref_name }}
   cancel-in-progress: false
 
-# 本工作流只在 GitHub 的 ArizeSky/Emby-In-One 上执行：
-# 仓库会镜像到 Gitea（MineNine/Emby-In-One），若 Gitea Actions 已启用，
-# 同步过去的 V 开头 tag 也会触发本文件——两个 job 的 if 守卫会让它
-# 在 Gitea 上直接跳过，发布只在 GitHub 进行。
+# 仅指定的 GitHub 发布仓库执行这些 job，避免镜像仓库或 fork
+# 在同步版本 tag 时重复发布；实际执行范围由各 job 的 if 守卫决定。
 jobs:
   build:
     name: Build release assets
@@ -133,6 +131,7 @@ jobs:
             -o "dist/Emby-In-One-docker-${VERSION}.tar.gz" HEAD \
             cmd internal third_party public go.mod \
             Dockerfile .dockerignore docker-compose.yml \
+            install.sh eio-docker.sh docker-compose.image.yml DOCKER.md DOCKER_EN.md RELEASING.md \
             emby-in-one-cli.sh \
             README.md README_EN.md Update.md LICENSE
 
