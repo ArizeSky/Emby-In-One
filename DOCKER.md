@@ -19,21 +19,21 @@
 
 ## 2. 镜像、标签与版本
 
-- 官方构建目标地址：`ghcr.io/arizesky/emby-in-one`，当前工作流构建 `linux/amd64` 和 `linux/arm64`。不等于 Release 的六架构支持；ARMv7/MIPS/RISC-V 请使用对应二进制或自行构建验证。
+- 官方镜像地址：`ghcr.io/arizesky/emby-in-one`。当前已公开发布 `v1.4.4-rc3`，可匿名拉取，支持 `linux/amd64` 和 `linux/arm64`，Docker 自动选择架构；这不等于 Release 二进制的六架构支持。ARMv7/MIPS/RISC-V 请使用对应二进制或自行构建验证。
 - Docker 工作流仅手动触发，默认 **validate**；正式发布必须指定准确 tag 和完整预期 SHA。程序版本由 tag 推导，不能任意覆盖。
 - 构建与验收无包写权限；独立发布任务接收已验收附件，构建候选多架构 digest 后提升版本标签。已存在版本标签不能被不同 digest 覆盖。
 - 不再因为默认分支构建自动写 `latest`。只有明确确认且对应当前已公开正式稳定 Release 才允许提升；候选版永不提升 latest。
-- 构建和测试成功不代表镜像已经公开发布；仍须确认实际可拉取的标签、平台和摘要，不猜 `:v1.4.4-rc3` 是否存在。
+- 当前未提供 `latest` 标签。安装时使用 `v1.4.4-rc3` 或下方固定摘要；其他版本须单独确认是否已发布，不因 Release 或构建成功而假定镜像存在。
 - digest、镜像 ID、源码提交 SHA、Release 附件 SHA-256 不是同一个值。短 SHA 标签可定位源码，digest 才固定镜像字节；CPU 架构选择由多架构索引处理。
 
-在 Docker/Buildx 已安装的机器上，替换下面的 `IMAGE_REFERENCE` 为真实引用，再确认清单：
+当前 rc3 的多架构索引 digest 为 `sha256:2e9a60aea67a4716b1ec4ba10a2eaf3978acab9b66a038c8aa7b46343e047f0c`。在已安装 Docker/Buildx 的机器上检查：
 
 ```bash
-IMAGE_REFERENCE='ghcr.io/arizesky/emby-in-one@sha256:REPLACE_WITH_PUBLISHED_INDEX_DIGEST'
+IMAGE_REFERENCE='ghcr.io/arizesky/emby-in-one@sha256:2e9a60aea67a4716b1ec4ba10a2eaf3978acab9b66a038c8aa7b46343e047f0c'
 docker buildx imagetools inspect "$IMAGE_REFERENCE"
 ```
 
-这不是可原样使用的 digest。找不到版本时先核对 Release 的镜像说明、Actions 运行及 GHCR 包页面，不要猜标签。匿名 `pull` 要求包设为 public；403/denied 可能是私有包或权限问题，不一定是网络问题。私有包用最小 `read:packages` 权限通过 `docker login ghcr.io --password-stdin` 登录，勿将令牌写进 Compose、镜像或 Git。
+本文镜像示例固定为这个已发布的 rc3 索引，不是平台专属 manifest；更换版本时需核对目标版本的摘要。rc3 无需登录 GHCR；403/denied 可能是包权限问题，不一定是网络问题。若使用其他私有包，应以最小 `read:packages` 权限通过 `docker login ghcr.io --password-stdin` 登录，勿将令牌写进 Compose、镜像或 Git。
 
 ## 3. 首次使用预构建镜像
 
@@ -41,25 +41,24 @@ docker buildx imagetools inspect "$IMAGE_REFERENCE"
 
 ### 3.0 推荐：新版托管安装（完整可信发行目录）
 
-需要 Linux root、Docker/Compose、Python 3、curl、flock 和 tar；安装器可沿用原 Docker/Compose 安装步骤，其余缺少的工具会明确报错。先核对源码或发行包校验和。本机不希望编译时选择 image：
+需要 Linux root、Docker/Compose、Python 3、curl、flock 和 tar；安装器可沿用原 Docker/Compose 安装步骤，其余缺少的工具会明确报错。使用当前主分支的安装工具，明确选择 image 模式，无需本机编译；旧 rc3 Release 源码附件不含新版 manager。
 
 ```bash
-# 必须替换为维护者实际发布并核验过的引用，不是可直接使用的占位镜像。
-sudo bash install.sh --mode image --image ghcr.io/arizesky/emby-in-one@sha256:REPLACE_WITH_PUBLISHED_INDEX_DIGEST
-# 源码路线会在运行此命令的主机编译，普通源码默认标识为 dev。
-sudo bash install.sh --mode source
+git clone https://github.com/ArizeSky/Emby-In-One.git
+cd Emby-In-One
+sudo bash install.sh --mode image --image ghcr.io/arizesky/emby-in-one@sha256:2e9a60aea67a4716b1ec4ba10a2eaf3978acab9b66a038c8aa7b46343e047f0c
 ```
 
 没有 `--mode` 时保留 source 默认路线。镜像拉取失败绝不转为源码构建。首次随机密码只保存在部署目录的 root-only `.eio-initial-password`，不输出到日志。默认监听 `127.0.0.1:8096`；可显式指定 `--port` / `--bind`，不要意外公开管理入口。新状态必须与实际 Compose/容器交叉匹配。
 
 ```bash
 sudo bash /opt/emby-in-one/eio-docker.sh status
-sudo bash /opt/emby-in-one/eio-docker.sh update --image ghcr.io/arizesky/emby-in-one@sha256:REPLACE_WITH_PUBLISHED_INDEX_DIGEST
+sudo bash /opt/emby-in-one/eio-docker.sh update --image ghcr.io/arizesky/emby-in-one@sha256:2e9a60aea67a4716b1ec4ba10a2eaf3978acab9b66a038c8aa7b46343e047f0c
 sudo env EIO_PROJECT_DIR=/opt/emby-in-one emby-in-one
 # 自定义目录也可显式传给 manager：--project-dir /opt/eio-test
 ```
 
-source 更新用 `update --source-dir <已核验源码目录>`，不能传 `--image`。默认稳定更新要求目标版本确有对应镜像/已校验源码包；缺失则保留现状，不追 latest、不猜版本。旧无校验源码包可能不支持此新管理路径。测试/未知版本不参与自动稳定降级，须指定明确目标。
+上面的 update 展示显式镜像更新用法；更新到其他版本时替换为其已发布摘要。source 更新用 `update --source-dir <已核验源码目录>`，不能传 `--image`。默认稳定更新要求目标版本确有对应镜像/已校验源码包；缺失则保留现状，不追 latest、不猜版本。旧无校验源码包可能不支持此新管理路径。测试/未知版本不参与自动稳定降级，须指定明确目标。
 
 更新先准备目标、停服确认，再备份 config、完整 data（含存在的 WAL/SHM）、部署配置和旧镜像身份。目标有限时健康、实际版本/镜像/UID/挂载验收失败时，恢复**配套旧数据快照和旧镜像**；失败现场保存在 `.eio-recovery-*`。恢复也失败明确返回非零，不无限重试。自动更新只支持工具管理的标准两份挂载，不支持外部数据库/共享目录/未知写入者。备份时间点后的失败阶段新增写入不保证保留；不承诺零停机或数据库跨版本兼容。
 
@@ -102,10 +101,10 @@ sudo chmod 600 config/config.yaml
 
 ### 3.2 固定镜像引用并启动
 
-创建 `.env.image`，替换 digest 后再运行：
+创建 `.env.image`（以下固定到当前已发布的 rc3），再运行：
 
 ```dotenv
-EIO_IMAGE=ghcr.io/arizesky/emby-in-one@sha256:REPLACE_WITH_PUBLISHED_INDEX_DIGEST
+EIO_IMAGE=ghcr.io/arizesky/emby-in-one@sha256:2e9a60aea67a4716b1ec4ba10a2eaf3978acab9b66a038c8aa7b46343e047f0c
 EIO_BIND_ADDRESS=127.0.0.1
 EIO_HTTP_PORT=8096
 ```

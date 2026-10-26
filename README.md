@@ -1,6 +1,6 @@
 # Emby-In-One
 
-> **Version: V1.4.4-rc3 (Pre-release)**
+> **当前候选版：V1.4.4-rc3（Pre-release） · 当前稳定版：V1.4.3**
 
 [![License: GPL v3](https://img.shields.io/github/license/ArizeSky/Emby-In-One?color=blue)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.23+-00ADD8?logo=go&logoColor=white)](https://go.dev/)
@@ -17,7 +17,6 @@
 
 - [预览](#预览)
 - [功能概览](#功能概览)
-- [内置 Web 客户端](#内置-web-客户端)
 - [快速安装](#快速安装)
 - [反向代理 (Nginx)](#反向代理-nginx)
 - [系统要求](#系统要求)
@@ -62,85 +61,117 @@
 - **Token 管理与会话稳定** — 代理 Token 永不过期（仅在登出、改密或手动撤销时移除），防止长时间空闲设备频繁 401；上游 Token 过期时通过 30 秒防抖的异步重登录自动恢复；管理员改密后自动撤销所有已签发 Token。
  - **Passthrough 延迟登录** — passthrough 模式的上游（无论密码还是 API Key）在没有已捕获的真实客户端身份前一律不登录、不发请求；等待管理员用真实客户端登录一次后自动完成认证，避免在上游 Emby 产生虚假设备记录。
 - **全面管控与运维** — 内置现代化 SSH CLI 菜单和 Web 管理面板；配备持久化日志和 SQLite ID 映射。SSH 菜单自动检测 Binary/Docker 部署模式，所有操作自动分发到 systemd 或 Docker Compose 对应命令。
-
-## 内置 Web 客户端
-
-访问服务的 `/web/`，使用管理员创建的普通用户登录。管理员账号用于 `/admin/`，不能登录 Web 客户端。媒体库、搜索、剧集分季和多版本片源均使用用户自己的权限及观看进度。
-
-根路径 `/` 是一个入口页：提供「Web 客户端」（`/web/`）与「管理面板」（`/admin/`）两个入口按钮，按用途选择；该页为纯静态 HTML/CSS，不含 token、不自动登录，也不需要额外构建资源。
-
-V1.4.4-rc2 重做为桌面界面：分栏登录、216 px 桌面侧栏（首页 / 收藏 / 搜索）、首页 Hero 与“继续观看 · 全部”、媒体库网格/列表切换与分页、详情分季与版本卡、搜索分组与最近搜索。首页新增一条有界 Resume 请求，其余交互不改变后端端点与鉴权。
-
-影片及单集详情可以预选版本、音轨和字幕，版本名称包含来源服务器。播放器控制层支持自动隐藏、画面单击/双击、键盘快捷键（Space/K、←/→、↑/↓、M、F、C、Esc）、进度预览气泡、音量与全屏；启动/运行失败显示可重试错误卡，429 单独表达，切源/切轨期间控件整体锁定并保留进度。
-
-播放器优先请求原始媒体：H.264/AAC MP4 使用原生 video，MKV、HEVC 等使用 libmedia 1.3.1 流式解封装，优先交给浏览器 MSE/WebCodecs 解码。本地 WASM 解码器按需加载。直链失败或 20 秒内未开始播放时，尝试上游提供的 H.264/AAC HLS；兼容播放请求限制为最大 1920×1080。非 MSE 的更高分辨率视频需要硬件解码，避免持续进行 4K WASM 软解。
-
-内嵌文本/ASS 由 libmedia 渲染；原生播放或 HLS 的外部 ASS 使用 JASSUB/libass，并按需加载本地中文字体。SRT/VTT 支持文本覆盖层；PGS 通过上游导出的 SUP 字幕显示，包含分片、清屏、跳转和尺寸适配。字幕能否导出、HLS 能否生成，取决于上游能力和访问权限。复杂 ASS 排版及实际 4K 硬解仍需用目标设备和片源验收。
-
-开发验证：`node --test tests/web-data.test.cjs tests/web-ui.test.cjs tests/web-player.test.cjs tests/web-player-ui.test.cjs tests/web-subtitles.test.cjs tests/web-mse-seek.test.cjs tests/web-mse-duration.test.cjs tests/web-seek-queue.test.cjs tests/web-session.test.cjs tests/admin-panel.test.cjs`（10 个文件 67 项）；`tests/make-web-fixtures.py` 可用本地 ffmpeg 生成 8 秒、320×180 的合成样本。将样本放在临时目录，避免加入发行资源。
+- **内置 Web 客户端** — 无需另装客户端，即可在浏览器中浏览媒体库、搜索、收藏和继续观看；支持剧集分季、多版本片源及独立观看进度，按普通用户的权限访问内容。
+- **浏览器播放与字幕** — 支持版本、音轨和字幕选择，提供进度拖动、键盘快捷键、音量与全屏控制；支持常见文本字幕、ASS 和 PGS，并可在原始媒体播放失败时尝试上游 HLS。实际兼容性取决于浏览器、设备及上游能力。
 
 ---
 
 ## 快速安装
 
-> **旧版 Node.js 部署说明**：如果您希望部署基于 Node.js 的 V1.2.1 稳定版，请前往本仓库的 [Releases 页面](https://github.com/ArizeSky/Emby-In-One/releases) 下载 V1.2.1 的 Source code 源码压缩包，解压后同样运行 `bash install.sh` 即可。 仓库中的 `legacy/` 目录保留了 V1.2.1 的 Node.js 源码，**仅供对照参考**（Go 版的 ID 虚拟化以它为蓝本），它不参与 Go 版的构建、镜像或安装流程，详见 `legacy/README.md`。
+以下方式任选一种；已有部署请先核对目录和端口，不要让两个实例共用可写配置或数据。
 
-Linux 可选 Release 二进制（systemd）或 Docker。Docker 有两条不同路线：**拉取已发布的预构建镜像**，或**本地源码构建**。默认安装脚本选择最新稳定 Release；V1.4.4-rc3 是需显式选择的预发布。Release 与镜像独立发布，不能仅凭 Release 存在就假定同名镜像可拉取。详见 [Docker 部署与运维](DOCKER.md) 和 [发布规范](RELEASING.md)。
+| 安装方式 | 适用场景 | 是否需要本机编译 |
+| --- | --- | --- |
+| **方式一：Release 二进制（首推）** | 常规 Linux 部署，使用 systemd 管理 | 否 |
+| **方式二：Docker 预构建镜像** | 希望使用容器部署和管理 | 否 |
+| **方式三：Docker 源码构建** | 修改源码或自行构建镜像 | 是 |
+| **方式四：Go 源码运行** | 开发与调试 | 是 |
+
+> **版本选择：**当前稳定版为 **V1.4.3**，当前候选版为 **V1.4.4-rc3**。二进制安装默认选择最新稳定 Release；候选版需要显式指定。rc3 的年龄分级功能仍需更多测试，相关限制见[更新日志](Update.md)。Release 与镜像独立发布，不保证每个 Release 都有同名镜像。
 
 ### 方式一：Release 二进制一键安装（首推）
+
+自动下载适合当前 CPU 架构的预编译二进制，无需安装 Go 编译环境。
 
 ```bash
 curl -fsSL -o release-install.sh https://raw.githubusercontent.com/ArizeSky/Emby-In-One/main/release-install.sh
 sudo bash release-install.sh
 ```
 
-可选：指定版本安装。
+如需体验当前候选版：
 
 ```bash
 sudo bash release-install.sh V1.4.4-rc3
 ```
 
-该脚本会自动完成：
-- 按 CPU 架构下载对应 Release 二进制（无需本地编译 Go）
-- 初始化 `/opt/emby-in-one/{config,data,log}` 并首次生成随机管理员密码
-- 拉取 `admin.html`、`admin.js` 与 `emby-in-one-cli.sh` 配套资源（二进制已内嵌完整管理面板，含 `public/vendor/` 下的前端依赖；磁盘上缺哪个文件就自动回退到内嵌副本，因此外部文件只是可选覆盖）
-- 安装并启动 `systemd` 服务（`emby-in-one`），支持开机自启
-- 若检测到旧版本，自动备份并执行可回滚升级
+安装脚本会初始化 `/opt/emby-in-one/{config,data,log}`、生成随机管理员密码，并安装 systemd 服务。安装完成后，按终端提示保存初始密码并访问管理面板；后续可运行 `emby-in-one` 打开 SSH 管理菜单。
 
-### 方式二：源码仓库一键安装脚本（推荐开发者/希望本地构建镜像）
+> 历史 V1.4.3 官方二进制的 `--version` 显示为 `dev`，不代表安装了开发分支。
+
+### 方式二：Docker 预构建镜像（无需本机编译）
+
+当前已发布 **`ghcr.io/arizesky/emby-in-one:v1.4.4-rc3`**，支持 **linux/amd64、linux/arm64**，Docker 会自动选择对应架构。
+
+获取当前仓库中的安装工具，然后明确选择镜像安装模式：
 
 ```bash
 git clone https://github.com/ArizeSky/Emby-In-One.git
 cd Emby-In-One
-sudo bash install.sh
+
+sudo bash install.sh \
+  --mode image \
+  --image ghcr.io/arizesky/emby-in-one:v1.4.4-rc3
 ```
 
-新版完整发行目录的安装器显式支持 `--mode source`（默认，本地编译）和 `--mode image --image <已发布引用>`（只拉取并锁定 digest），默认回环监听。凭据写入 root-only 文件，不打印到日志。后续 SSH 菜单保持该路线并进行有限时健康验收；见 [Docker 指南](DOCKER.md)。旧 rc3 附件不含这些修改。
+此方式只拉取预构建镜像，**不会编译项目源码**；安装器会将所选镜像解析并锁定为 digest，后续更新也保持镜像部署路线。
 
-> **远程源码安装的完整性校验**：当本地没有项目文件、脚本改为从远程下载源码时，必须提供 `SOURCE_SHA256=<tarball 的 sha256>` 才会继续，未提供会中止安装。确实要接受未校验源码时，显式设置 `ALLOW_UNVERIFIED_SOURCE=true`。默认 `REPO_URL` 指向 `main` 分支，可用 `EIO_SOURCE_URL` 覆盖为固定 tag 或镜像地址。
+- 默认部署目录：`/opt/emby-in-one`
+- 默认监听地址：`127.0.0.1:8096`，不直接暴露公网
+- 管理员用户名：`admin`
+- 首次随机密码：保存在部署目录的 `.eio-initial-password`，仅 root 可读，不输出到安装日志
 
-> **说明**：源码仓库安装脚本在 builder 阶段会同时复制 `cmd/`、`internal/`、`third_party/` 和 `public/` 参与 Go 编译。若您自行定制 `Dockerfile` 或手动复制文件，请确保 `public/` 目录也被包含在构建上下文中，否则会在构建时出现 `package emby-in-one/public is not in std` 错误。
+查看首次密码和服务状态：
 
-### 方式三：手动 Docker Compose 部署
+```bash
+sudo cat /opt/emby-in-one/.eio-initial-password
+sudo bash /opt/emby-in-one/eio-docker.sh status
+```
 
-- **预构建镜像（无需本机编译）**：使用独立的 [`docker-compose.image.yml`](docker-compose.image.yml)，显式配置已发布的 image tag 或 digest，再 `pull` / `up -d --no-build`。该模板不含 `build:`，默认只绑定宿主回环地址。完整的配置初始化、UID 1000 权限、`.env.image` 和联网步骤见 [Docker 指南](DOCKER.md)。
-- **本地源码构建**：仓库 [`docker-compose.yml`](docker-compose.yml) 仍是构建型模板，需完整源码（含 `third_party/`、`public/`）；按实际源码身份传 `--build-arg VERSION=...`，再启动。详见 [本地构建](DOCKER.md#6-本地构建保留但不要冒充拉镜像)。
-- **不要混用**：新版托管安装的菜单支持 source/image；手工 `.env.image` 和自定义 Compose 不会自动转换，需显式核对接管。只在同一管理上下文操作，更新失败恢复配套旧数据和镜像；详见 Docker 指南。
-- 当前 GHCR 工作流支持 `linux/amd64`、`linux/arm64`，仅手动发布；`version` 输入不自动创建同名镜像标签。没有对应镜像时选二进制或本地构建，不猜测 `latest`。
+> 请使用当前主分支的安装工具；旧 rc3 Release 源码附件不包含新版 Docker 安装与管理改动。当前没有提供 `latest` 标签，请明确指定版本。手动 Compose、固定 digest、更新与恢复操作见 [Docker 部署与运维](DOCKER.md)。
 
-### 方式四：Go 源码直接运行（适合开发者）
+### 方式三：Docker 源码构建（适合开发者）
 
-环境要求：Go 1.23+ 且具备 C 编译链（Debian/Ubuntu 运行 `apt install build-essential`）。
+需要修改代码或自行构建镜像时，使用完整项目源码：
+
+```bash
+git clone https://github.com/ArizeSky/Emby-In-One.git
+cd Emby-In-One
+
+sudo bash install.sh --mode source
+```
+
+此方式会在本机编译，需预留构建资源并能访问基础镜像及依赖软件源。普通源码构建默认标识为 `dev`，不代表某个正式 Release。
+
+> 仅希望运行项目、无需修改源码的用户，优先选择方式一或方式二。手动构建与 Compose 配置见 [Docker 部署与运维](DOCKER.md)。
+
+### 方式四：Go 源码运行（适合开发者）
+
+需要 Go 1.23+ 和 C 编译链，SQLite 使用 CGO（Debian/Ubuntu 可运行 `sudo apt install build-essential` 安装 C 编译链）。
+
 ```bash
 mkdir -p config data
-# 按 Docker 指南的配置示例在 config 文件夹下创建 config.yaml
+# 按下方「配置文件说明」创建 config/config.yaml
 go test ./...
 go run ./cmd/emby-in-one
 ```
 
-**默认访问地址**：
-- Emby 客户端连接地址：`http://服务器IP:8096`
-- 管理面板：`http://服务器IP:8096/admin`
+### 安装后的访问方式
+
+- **管理面板：**`/admin/`，使用管理员账号。
+- **Web 客户端（当前候选版）：**`/web/`，使用管理员创建的普通用户；管理员账号不能登录 Web 客户端。
+- **Emby 客户端：**填写实际对外提供服务的地址。
+
+Docker 托管安装默认仅监听本机。远程初次访问可建立 SSH 隧道，在自己的电脑执行：
+
+```bash
+ssh -L 18096:127.0.0.1:8096 用户名@服务器IP
+```
+
+然后打开 `http://127.0.0.1:18096/admin/`。二进制部署默认监听 `8096`，也可通过 SSH 隧道访问。
+
+长期使用建议通过 [HTTPS 反向代理](#反向代理-nginx)提供访问。Docker 需要直接监听其他网卡时，可显式指定 `--bind`，并自行配置访问控制；不要将管理入口无保护地暴露公网。
+
+> 旧版 Node.js V1.2.1 的安装与使用见 [旧版文档](README_V1.2.1.md)；仓库 `legacy/` 仅供参考，不参与 Go 版构建或安装。
 
 ---
 

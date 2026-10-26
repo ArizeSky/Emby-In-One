@@ -6,18 +6,19 @@ This guide separates current behavior from operating conventions. A GitHub Relea
 
 ## Managed installation and current release protection
 
-The new complete trusted bundle supports `install.sh --mode source|image`. No mode still means source. Image mode requires `--image <published-tag-or-digest>`, pins the resolved digest, and never falls back to a source build. Source builds default to `dev` unless an exact trusted Git release identity is verified. Existing rc3 assets do not contain this manager.
+The current main branch supports `install.sh --mode source|image`; existing rc3 Release source assets do not contain the new manager. No mode still means source. Image mode requires `--image <published-tag-or-digest>`, pins the resolved digest, and never falls back to a source build. Source builds default to `dev` unless an exact trusted Git release identity is verified. For the published rc3 image, obtain the current tools and select image mode:
 
 ```bash
-# Replace the placeholder with an actually published, verified digest.
-sudo bash install.sh --mode image --image ghcr.io/arizesky/emby-in-one@sha256:REPLACE_WITH_PUBLISHED_INDEX_DIGEST
+git clone https://github.com/ArizeSky/Emby-In-One.git
+cd Emby-In-One
+sudo bash install.sh --mode image --image ghcr.io/arizesky/emby-in-one@sha256:2e9a60aea67a4716b1ec4ba10a2eaf3978acab9b66a038c8aa7b46343e047f0c
 sudo bash /opt/emby-in-one/eio-docker.sh status
-sudo bash /opt/emby-in-one/eio-docker.sh update --image ghcr.io/arizesky/emby-in-one@sha256:REPLACE_WITH_PUBLISHED_INDEX_DIGEST
+sudo bash /opt/emby-in-one/eio-docker.sh update --image ghcr.io/arizesky/emby-in-one@sha256:2e9a60aea67a4716b1ec4ba10a2eaf3978acab9b66a038c8aa7b46343e047f0c
 ```
 
 Requires Linux root, Docker/Compose, Python 3, curl, flock and tar. New installs bind loopback by default and use UID 1000. The random initial password is written only to root-only `.eio-initial-password`. State is non-executable JSON, cross-checked with Compose and the actual container; all lifecycle commands use a project/file/service context, not a fixed container name. `--project-dir` supports isolated deployments. The binary/systemd CLI remains independent.
 
-The SSH menu supports new managed source/image deployments. A hand-written Compose project is not silently adopted: explicit `adopt --compose-file <absolute-path>` allows lifecycle operations for a recognized standard project, but automatic legacy/custom migration is refused. Do not mix manager and manual Compose operations or share writable config/data with another instance. Source updates accept a verified `--source-dir`, never an image; image updates only pull. Stable updates require the exact stable Release image/source asset to exist and pass verification; no latest fallback or silent downgrade.
+The update command above illustrates explicit image updates; replace its reference with the published digest of the intended version when upgrading. The SSH menu supports new managed source/image deployments. A hand-written Compose project is not silently adopted: explicit `adopt --compose-file <absolute-path>` allows lifecycle operations for a recognized standard project, but automatic legacy/custom migration is refused. Do not mix manager and manual Compose operations or share writable config/data with another instance. Source updates accept a verified `--source-dir`, never an image; image updates only pull. Stable updates require the exact stable Release image/source asset to exist and pass verification; no latest fallback or silent downgrade.
 
 Updates prefetch/build before stopping, verify stop, snapshot complete config/data (including existing WAL/SHM), then validate health plus actual version/image/UID/mounts. Failure restores the paired old data/config snapshot and image, retaining failed-stage evidence in `.eio-recovery-*`. A failed rollback returns nonzero and retains evidence. Only managed standard mounts qualify; external databases/shared writers/custom layouts require manual work. Post-backup failed-stage writes may be lost; this is not zero-downtime or a cross-version database compatibility guarantee. Password reset uses stdin, verified stop and prior-running-state restoration, never automatic force. Uninstall retains data/backups/images.
 
@@ -37,19 +38,19 @@ The Docker workflow is manual-only and defaults to validation. Publication requi
 
 ## 2. Image names, versions and platforms
 
-- Official workflow destination: `ghcr.io/arizesky/emby-in-one`. Builds target `linux/amd64` and `linux/arm64`, not the six architectures supplied as Release binaries. ARMv7/MIPS/RISC-V users need a matching binary or a separately verified local build.
+- Official image: `ghcr.io/arizesky/emby-in-one`. The published public `v1.4.4-rc3` image supports anonymous pulls for `linux/amd64` and `linux/arm64`; Docker selects the matching architecture. This is not the six-architecture Release binary matrix. ARMv7/MIPS/RISC-V users need a matching binary or a separately verified local build.
 - Version is derived from the exact release tag and verified full SHA; arbitrary version overrides are not supported. Validation does not publish.
-- Use a reference actually published and verified by maintainers, preferably the multi-platform index digest: `ghcr.io/arizesky/emby-in-one@sha256:…`. All tags, even SHA-looking tags, can be overwritten.
+- No `latest` tag is currently provided. Use `v1.4.4-rc3` or its fixed multi-platform index digest below. Other versions must be checked independently; a Release or successful build does not guarantee a published image. Although the workflow refuses conflicting version-tag overwrites, a digest pins the exact manifest bytes.
 - An image ID, index digest, source commit SHA and Release asset checksum are different identifiers. Record them separately. Base images/packages/toolchains are not fully pinned, so rebuilding the same source does not promise byte-for-byte reproduction.
 
-After installing Docker/Buildx, replace the placeholder and inspect the published manifest:
+The current rc3 multi-platform index digest is `sha256:2e9a60aea67a4716b1ec4ba10a2eaf3978acab9b66a038c8aa7b46343e047f0c`. Inspect it on a machine with Docker/Buildx:
 
 ```bash
-IMAGE_REFERENCE='ghcr.io/arizesky/emby-in-one@sha256:REPLACE_WITH_PUBLISHED_INDEX_DIGEST'
+IMAGE_REFERENCE='ghcr.io/arizesky/emby-in-one@sha256:2e9a60aea67a4716b1ec4ba10a2eaf3978acab9b66a038c8aa7b46343e047f0c'
 docker buildx imagetools inspect "$IMAGE_REFERENCE"
 ```
 
-Do not run the placeholder unchanged. If missing, check the package, Actions and Release image instructions instead of guessing tags. Anonymous pulls require a public GHCR package. Private packages require appropriate `read:packages` access; use `docker login ghcr.io --password-stdin`, never put registry tokens in Compose, build arguments or Git.
+Image examples in this guide pin that published rc3 index, not a single-platform manifest. Verify the intended version's digest when changing releases. No GHCR login is needed for rc3. For other private packages, use appropriate `read:packages` access with `docker login ghcr.io --password-stdin`; never put registry tokens in Compose, build arguments or Git. A 403/denied response may indicate package permissions rather than a network problem.
 
 ## 3. First installation using a published image
 
@@ -86,10 +87,10 @@ sudo chmod 600 config/config.yaml
 
 Mount the **whole writable config directory**, not just a read-only config file: atomic config updates, server ID creation and password hashing require it. Mount data at `/app/data`; a custom `dataDir` must use a container path with its own persistent mount, not an unmounted host path. Do not work around permission problems using root, privileged mode, a Docker socket mount or chmod 777. Docker-group access is effectively host-root access.
 
-Create `.env.image` with a real published digest:
+Create `.env.image` (the example pins the published rc3 image):
 
 ```dotenv
-EIO_IMAGE=ghcr.io/arizesky/emby-in-one@sha256:REPLACE_WITH_PUBLISHED_INDEX_DIGEST
+EIO_IMAGE=ghcr.io/arizesky/emby-in-one@sha256:2e9a60aea67a4716b1ec4ba10a2eaf3978acab9b66a038c8aa7b46343e047f0c
 EIO_BIND_ADDRESS=127.0.0.1
 EIO_HTTP_PORT=8096
 ```
