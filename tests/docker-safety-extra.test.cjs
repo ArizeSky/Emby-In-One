@@ -33,8 +33,7 @@ test('latest requires stable current public Release, including uppercase V tag c
   assert.throws(() => validateIdentity({ tag: 'V1.4.4+not-docker-safe', expectedSha: 'a'.repeat(40), resolvedSha: 'a'.repeat(40) }));
 });
 test('trusted publish workflow remains manual with build and package credentials separated', () => {
-  const file = fs.existsSync(path.join(root, '.github/workflows/docker.yml')) ? '.github/workflows/docker.yml' : '.ci-source/docker.yml';
-  const w = read(file);
+  const w = read('.github/workflows/docker.yml');
   assert.match(w, /workflow_dispatch:/);
   assert.doesNotMatch(w, /^  (push|pull_request|schedule):/m);
   assert.match(w, /default: validate/);

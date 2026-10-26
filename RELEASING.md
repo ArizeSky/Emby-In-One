@@ -2,16 +2,15 @@
 
 [README](README.md) · [Docker 使用与运维](DOCKER.md) · [English Docker guide](DOCKER_EN.md)
 
-发布、更新标签和部署是不同授权边界。本轮新增 Docker 门禁不意味着已公开发布镜像，也不改变旧 rc3 tag、附件及生产实例。公共仓库未同步时，应以自建仓库实际提交为准。
+本文说明维护者如何校验发行身份、发布镜像与提升稳定标签。源码合并、工作流验证、镜像发布和实例部署是不同操作；只有实际发布并核验的镜像引用才能提供给用户。
 
 ## 1. 流水线边界
 
 | 流程 | 触发 / 产物 | 检查与限制 |
 | --- | --- | --- |
-| 公开 CI | main/master push、PR | Go build/vet/gofmt/race、前端/脚本等；不是镜像运行验收。历史 race 超时不能写成通过 |
+| CI | main/master push、PR | Go build/vet/gofmt/race、前端/脚本等；不是镜像运行验收 |
 | Release | 推送 `V[0-9]*` tag | 普通 Go 测试、六架构静态二进制、脚本/面板/源码包和 SHA-256；自动公开，不是无副作用预演 |
 | Docker | 仅 workflow_dispatch，默认 validate | 准确 tag/SHA、双架构构建、隔离版本/健康运行，验证附件；独立 publish job 才能写 GHCR |
-| 私有测试 | 独立私有仓库，唯一手动工作流 | 普通 Go 测试与构建、发布规则、双架构镜像、临时注册表、安装/更新/恢复、Artifact 独立复验；contents: read，不发布或部署 |
 
 Release tag 含 `-` 被视为预发布。重跑现有 Release 可能覆盖资产，不能为了测试脚本随意推 tag。新安装包需包含 manager 和镜像模板；旧发布附件不会随 main 文档变化而更新。
 
@@ -28,7 +27,7 @@ Release tag 含 `-` 被视为预发布。重跑现有 Release 可能覆盖资产
 
 禁止从任意 main 代码填一个发布版本号冒充正式源码。`expected_sha` 必须与准确 tag 解析结果相同；版本从 tag 推导，没有任意 version override。SemVer build metadata 含 `+` 无法直接用作 Docker 标签，本工作流拒绝这类 tag，而不悄悄改写。
 
-已发布的 Git tag、版本镜像标签和附件视为不可变。错误优先通过递增 rc/新版本修复；移动 tag 或替换产物须额外授权。历史 rc3 特批不构成以后覆盖的许可。后续文档提交不改变已有附件快照。
+已发布的 Git tag、版本镜像标签和附件视为不可变。错误优先通过递增 rc/新版本修复；移动 tag 或替换产物须额外授权。后续文档提交不改变已有附件快照。
 
 ## 3. Docker 工作流的强制门禁
 
@@ -47,7 +46,7 @@ Release tag 含 `-` 被视为预发布。重跑现有 Release 可能覆盖资产
 
 ## 4. 操作示例（需要单独的公开发布授权）
 
-下面命令会调度工作流；源代码必须已获准同步至公共仓库。不要为了让示例可运行而擅自推送。
+下面命令会调度验证工作流。先确认默认分支上的工作流已审阅，并将示例 tag 和 SHA 替换为实际待验证版本：
 
 ```bash
 # 工作流定义来自受审默认分支，应用源码来自 release_tag 指定的准确 tag。
@@ -60,17 +59,7 @@ gh workflow run docker.yml --repo ArizeSky/Emby-In-One --ref main \
 
 检查最终 index digest 和平台，匿名 pull 权限也要确认。首次 GHCR 包可能不是 public；不要将注册表管理 token 给普通用户。对用户公布实际引用，不猜测同名镜像存在。Docker 源码包不是可 `docker load` 的镜像。
 
-## 5. 私有测试及 VPS 验收
-
-私有仓库不能复制公开活动发布工作流；仅保留唯一 workflow_dispatch，公开工作流只作为 `.ci-source/` 下的惰性测试夹具。token 仅 `contents: read`，checkout 不保留凭据，不创建 Release/tag，不写 GHCR，不从 Actions 自动登录/部署 VPS。
-
-必需任务链：来源清单/脚本/Node/Compose → Go 普通测试与静态构建、双架构镜像 → 临时本地注册表与 source/image 安装、更新、故障恢复 → 下载附件后重新核验/加载/运行 → 最终 all-success 门禁。源码/测试发生变化后完整重跑最终快照；不能以旧提交绿色、skipped 或 continue-on-error 代替通过。
-
-编译只在 GitHub runner，本机不编译，测试 VPS 仅加载同次成功 run 的 amd64 镜像附件。arm64 原生 runner 构建后还在 amd64 runner 通过 QEMU 运行，二者验证边界分别记录。VPS 不安装 Node、QEMU 或编译工具，不访问生产、不开公网测试端口，不挂真实上游数据。
-
-必须记录上游源码 SHA、独立私有快照 SHA、文件清单、run URL、归档 SHA-256、镜像 ID/注册表 digest 和脱敏验收摘要。密码、token、数据库及原始含敏感日志不进入 Artifact。附件短期保留，成功后立即核验下载。临时注册表只绑定回环，作业结束销毁；VPS 清理仅限本次项目，不全局 prune。
-
-## 6. 发布前与发布后检查
+## 5. 发布前与发布后检查
 
 - [ ] 源码/分支、完整 SHA、变更边界、源码/构建配方与版本对应。
 - [ ] 脚本/Node/Compose、普通 Go 检查、构建与真实 Docker 验收结果完整；全量 race 未通过就明确写出，不删门禁或暗中放行。
@@ -82,6 +71,6 @@ gh workflow run docker.yml --repo ArizeSky/Emby-In-One --ref main \
 
 撤回须分别检查 Release、Git tag、GHCR 版本/别名/digest、已部署实例；删除一个不会撤回其他渠道，更无法收回用户已拉取的镜像。生产操作须另行授权。保留诊断，公告影响及替代版本，不批量删库或自动降级。
 
-## 7. 本次不包含
+## 6. 能力边界
 
-签名、SBOM、漏洞扫描和可验证供应链证明尚未加入；Buildx 元数据不能冒充这些门禁。私有临时注册表全流程不等于公共 GHCR 真实发布完成；测试 VPS 验收不等于生产升级、全量 race 或实际上游播放验收。公共仓库上线工作流和首次真实镜像发布仍需明确授权。
+签名、SBOM、漏洞扫描和可验证供应链证明尚未加入；Buildx 元数据不能代替这些门禁。构建及隔离注册表测试不代表 GHCR 鉴权、包可见性和匿名拉取已经通过；发布后仍须实际核验。容器健康检查也不能代替用户播放、授权或生产升级验收。
