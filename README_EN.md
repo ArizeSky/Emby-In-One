@@ -1,6 +1,6 @@
 # Emby-In-One
 
-> **Version: V1.4.4-rc3 (Pre-release)**
+> **Current release candidate: V1.4.4-rc3 (Pre-release) · Current stable release: V1.4.3**
 
 [![License: GPL v3](https://img.shields.io/github/license/ArizeSky/Emby-In-One?color=blue)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.23+-00ADD8?logo=go&logoColor=white)](https://go.dev/)
@@ -17,7 +17,6 @@ Based on Go language, it implements a multi-server Emby aggregation proxy — me
 
 - [Preview](#preview)
 - [Features Overview](#features-overview)
-- [Built-in Web Client](#built-in-web-client)
 - [Quick Installation](#quick-installation)
 - [Reverse Proxy (Nginx)](#reverse-proxy-nginx)
 - [System Requirements](#system-requirements)
@@ -62,85 +61,117 @@ Based on Go language, it implements a multi-server Emby aggregation proxy — me
 - **Token Management & Session Stability** — Proxy tokens never expire (only removed on logout, password change, or manual revocation), preventing frequent 401 errors on long-idle devices; upstream tokens auto-recover via async re-login with 30-second debounce when expired; admin password changes automatically revoke all issued tokens.
  - **Passthrough Delayed Login** — Upstream servers in passthrough mode (password or API key) never log in or send requests before a real client identity has been captured; they authenticate automatically once the admin logs in once with a real client, avoiding phantom device records on upstream Emby.
 - **Full Control & Operations** — Built-in modern SSH CLI menu and Web admin panel; comes with persistent logs and SQLite ID mapping. SSH menu auto-detects Binary/Docker deployment mode, dispatching all operations to systemd or Docker Compose commands accordingly.
-
-## Built-in Web Client
-
-Open `/web/` and sign in with a regular user created by the administrator. Admin accounts belong to `/admin/` and cannot sign in to the Web client. Libraries, search, seasons, source selection and watch progress follow the signed-in user's permissions.
-
-The root path `/` is a landing page offering two entry buttons — **Web Client** (`/web/`) and **Admin Panel** (`/admin/`) — pick as needed; it is plain static HTML/CSS with no token, no auto-login, and no extra build assets.
-
-V1.4.4-rc2 rebuilds the desktop interface: a split sign-in screen, a 216 px desktop sidebar (Home / Favorites / Search), a home Hero with a "Continue watching · All" entry, library grid/list switching with paging, per-season detail plus version cards, and grouped search with recent searches. Home adds one bounded Resume request; everything else keeps the existing backend endpoints and authentication.
-
-Item details let you choose a version, audio track and subtitle before playback; version names include their source server. The control layer auto-hides, supports click/double-click on the picture, keyboard shortcuts (Space/K, arrows, M, F, C, Esc), a seek preview bubble, volume and fullscreen; startup/runtime failures show a retryable error card, 429 is reported separately, and version/audio switching locks the controls while preserving position.
-
-Playback first requests the original media. H.264/AAC MP4 uses native video; MKV, HEVC and other formats use libmedia 1.3.1 with streaming demux and preferred browser MSE/WebCodecs decoding. Local WASM decoders load on demand. Failed direct playback, including a 20-second startup timeout, can fall back to upstream H.264/AAC HLS requested at up to 1920×1080. Higher-resolution non-MSE playback requires hardware decoding to avoid sustained 4K WASM software decode.
-
-libmedia renders embedded text/ASS. External ASS with native video or HLS uses JASSUB/libass and a local Chinese font loaded only when selected. SRT/VTT use a text overlay; PGS uses upstream-exported SUP subtitles with fragment assembly, clearing, seeking and aspect fitting. Subtitle export and HLS availability depend on upstream capabilities and permissions. Complex ASS layouts and actual 4K hardware playback still require validation on the target device and source.
-
-Development checks: `node --test tests/web-data.test.cjs tests/web-ui.test.cjs tests/web-player.test.cjs tests/web-player-ui.test.cjs tests/web-subtitles.test.cjs tests/web-mse-seek.test.cjs tests/web-mse-duration.test.cjs tests/web-seek-queue.test.cjs tests/web-session.test.cjs tests/admin-panel.test.cjs` (10 files, 67 tests). `tests/make-web-fixtures.py` creates tiny, eight-second 320×180 samples using a local ffmpeg executable. Keep generated media in a temporary directory, outside release assets.
+- **Built-in Web Client** — Browse libraries, search, manage favorites and continue watching in your browser without installing a separate client. Supports seasons, multiple source versions and independent watch progress, following the regular user's permissions.
+- **Browser Playback & Subtitles** — Select versions, audio tracks and subtitles, with seeking, keyboard shortcuts, volume and fullscreen controls. Supports common text subtitles, ASS and PGS, and can attempt upstream HLS when original-media playback fails. Compatibility depends on the browser, device and upstream capabilities.
 
 ---
 
 ## Quick Installation
 
-> **Notice for Legacy Node.js Deployment**: If you wish to deploy the V1.2.1 stable Node.js version, please navigate to the [Releases page](https://github.com/ArizeSky/Emby-In-One/releases) of this repository, download the V1.2.1 Source code archive, extract it, and run `bash install.sh`. The `legacy/` directory in this repository keeps the V1.2.1 Node.js source **for reference only** (the Go ID virtualization was written against it); it takes part in no build, image or install of the Go version — see `legacy/README.md`.
+Choose one route. For an existing deployment, check its directory and ports first; never let two instances share writable configuration or data.
 
-On Linux, choose a Release binary (systemd) or Docker. Docker supports two distinct routes: **pulling a published image** or **building from source locally**. The installer defaults to the latest stable Release; V1.4.4-rc3 is an explicitly selected prerelease. Releases and images are published independently: a Release does not guarantee a matching image exists. See [Docker operations](DOCKER_EN.md) and [release policy](RELEASING.md).
+| Installation method | Use case | Local compilation required? |
+| --- | --- | --- |
+| **Method 1: Release binary (primary recommendation)** | Standard Linux deployment managed by systemd | No |
+| **Method 2: Prebuilt Docker image** | Container-based deployment and management | No |
+| **Method 3: Docker source build** | Code changes or custom image builds | Yes |
+| **Method 4: Run Go source** | Development and debugging | Yes |
+
+> **Version selection:** The current stable release is **V1.4.3**; the current release candidate is **V1.4.4-rc3**. The binary installer defaults to the latest stable Release; prereleases must be selected explicitly. Parental controls in rc3 need further testing; see the [changelog](Update.md) for limitations. Releases and images are published independently; a Release does not guarantee a matching image.
 
 ### Method 1: Release Binary One-Click Install (Primary Recommendation)
+
+Downloads the precompiled binary for your CPU architecture; no Go build environment is needed.
 
 ```bash
 curl -fsSL -o release-install.sh https://raw.githubusercontent.com/ArizeSky/Emby-In-One/main/release-install.sh
 sudo bash release-install.sh
 ```
 
-Optional: install a specific version.
+To try the current release candidate:
 
 ```bash
 sudo bash release-install.sh V1.4.4-rc3
 ```
 
-This script will automatically:
-- Download the matching Release binary based on your CPU architecture (no local Go compilation needed)
-- Initialize `/opt/emby-in-one/{config,data,log}` and generate a random admin password on the first run
-- Fetch companion resources `admin.html`, `admin.js` and `emby-in-one-cli.sh` (the binary already embeds the whole admin panel, including the frontend dependencies under `public/vendor/`; any file missing from disk falls back to the embedded copy, so the external files are only an optional override)
-- Install and start the `systemd` service (`emby-in-one`), supporting auto-start on boot
-- Auto-backup and perform a rollback-safe upgrade if an older version is detected
+The script initializes `/opt/emby-in-one/{config,data,log}`, generates a random administrator password, and installs a systemd service. Save the initial password shown in the terminal and follow the installation output to access the admin panel. Run `emby-in-one` to open the SSH management menu later.
 
-### Method 2: Source Repo One-Click Install Script (Recommended for developers / local image build)
+> The historical official V1.4.3 binary reports `dev` through `--version`; this does not mean the development branch was installed.
+
+### Method 2: Prebuilt Docker Image (No Local Compilation)
+
+**`ghcr.io/arizesky/emby-in-one:v1.4.4-rc3`** is published for **linux/amd64 and linux/arm64**. Docker selects the matching architecture automatically.
+
+Get the current repository's installation tools and explicitly select image mode:
 
 ```bash
 git clone https://github.com/ArizeSky/Emby-In-One.git
 cd Emby-In-One
-sudo bash install.sh
+
+sudo bash install.sh \
+  --mode image \
+  --image ghcr.io/arizesky/emby-in-one:v1.4.4-rc3
 ```
 
-The new complete deployment bundle supports `--mode source` (default, local compilation) and `--mode image --image <published-reference>` (pull only, digest-pinned). New installs bind loopback; initial credentials are saved in a root-only file. The SSH menu preserves the route and checks health. See [Docker guide](DOCKER_EN.md); existing rc3 assets do not include these changes.
+This route only pulls the prebuilt image and **does not compile the project source**. The installer resolves and pins the image digest; subsequent updates stay on the image route.
 
-> Remote source installation requires a matching `SOURCE_SHA256` before extraction. `EIO_SOURCE_URL` selects the archive; `ALLOW_UNVERIFIED_SOURCE=true` explicitly bypasses verification and is not recommended.
+- Default deployment directory: `/opt/emby-in-one`
+- Default listener: `127.0.0.1:8096`, not directly exposed to the Internet
+- Administrator username: `admin`
+- Initial random password: saved in `.eio-initial-password` in the deployment directory, readable only by root and not printed to installation logs
 
-> **Note**: The source-repo install script copies `cmd/`, `internal/`, `third_party/`, and `public/` into the builder stage for Go compilation. If you customize the `Dockerfile` or copy files manually, make sure the `public/` directory is also present in the build context, otherwise the build may fail with `package emby-in-one/public is not in std`.
+Read the initial password and check service status:
 
-### Method 3: Manual Docker Compose Deployment
+```bash
+sudo cat /opt/emby-in-one/.eio-initial-password
+sudo bash /opt/emby-in-one/eio-docker.sh status
+```
 
-- **Published image (no local compilation):** use [`docker-compose.image.yml`](docker-compose.image.yml), explicitly select a published tag/digest, then `pull` / `up -d --no-build`. This template has no `build:` and defaults to host-loopback binding. Follow [the Docker guide](DOCKER_EN.md) for initial config, UID 1000 permissions, `.env.image`, network exposure and acceptance checks.
-- **Local source build:** [`docker-compose.yml`](docker-compose.yml) remains a build template. Supply the full source, including `third_party/` and `public/`, and a `--build-arg VERSION=...` matching the actual source identity. See [local builds](DOCKER_EN.md#6-local-source-builds-and-the-installer).
-- **Do not mix managers:** new managed installs support source/image; custom Compose and `.env.image` projects are not silently converted. Use one deployment context and paired data/image recovery; see the Docker guide.
-- The manual GHCR workflow targets linux/amd64 and linux/arm64. Its version input does not create a matching image tag. If unavailable, choose binaries or a local build instead of guessing latest.
+> Use the installation tools from the current main branch; the old rc3 Release source assets do not include the new Docker installer and manager changes. No `latest` tag is currently provided; select a version explicitly. See [Docker deployment and operations](DOCKER_EN.md) for manual Compose, digest pinning, updates and recovery.
 
-### Method 4: Direct Go Source Run (For Developers)
+### Method 3: Docker Source Build (For Developers)
 
-Requirements: Go 1.23+ and a C toolchain (Debian/Ubuntu run `apt install build-essential`).
+Use the complete project source when changing code or building a custom image:
+
+```bash
+git clone https://github.com/ArizeSky/Emby-In-One.git
+cd Emby-In-One
+
+sudo bash install.sh --mode source
+```
+
+This route compiles on the local machine. Allow enough build resources and access to base images and dependency repositories. Ordinary source builds default to `dev`, not an official Release identity.
+
+> If you only want to run the project, prefer Method 1 or Method 2. See [Docker deployment and operations](DOCKER_EN.md) for manual builds and Compose configuration.
+
+### Method 4: Run Go Source (For Developers)
+
+Requires Go 1.23+ and a C toolchain for SQLite's CGO support (on Debian/Ubuntu, install the C toolchain with `sudo apt install build-essential`).
+
 ```bash
 mkdir -p config data
-# Create config/config.yaml using the configuration example in the Docker guide
+# Create config/config.yaml using the Configuration Reference below
 go test ./...
 go run ./cmd/emby-in-one
 ```
 
-**Default Access URLs**:
-- Emby Client Connection Address: `http://Server_IP:8096`
-- Admin Panel: `http://Server_IP:8096/admin`
+### Access After Installation
+
+- **Admin panel:** `/admin/`, using an administrator account.
+- **Web client (current release candidate):** `/web/`, using a regular user created by the administrator. Administrator accounts cannot sign in to the Web client.
+- **Emby clients:** use the address through which you actually expose the service.
+
+Managed Docker installs listen only on localhost by default. For initial remote access, create an SSH tunnel from your own computer:
+
+```bash
+ssh -L 18096:127.0.0.1:8096 user@server-ip
+```
+
+Then open `http://127.0.0.1:18096/admin/`. Binary deployments listen on port `8096` by default and can also be accessed through an SSH tunnel.
+
+For regular use, expose the service through an [HTTPS reverse proxy](#reverse-proxy-nginx). To make Docker listen on another interface directly, explicitly set `--bind` and configure access controls; do not expose the admin panel without protection.
+
+> For legacy Node.js V1.2.1 installation and usage, see the [legacy documentation](README_V1.2.1.md). The repository's `legacy/` directory is reference-only and is not part of Go builds or installation.
 
 ---
 
