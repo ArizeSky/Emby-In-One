@@ -111,7 +111,9 @@ func (a *App) handleItemsCollection(w http.ResponseWriter, r *http.Request) {
 
 	var collected []upstreamItemsResult
 	var incomplete bool
-	if batchQuery {
+	if localFilter {
+		collected, incomplete = a.fetchLocalFilterCandidates(r, query, "/Items", "", filter)
+	} else if batchQuery {
 		// Batch IDs are the complete candidate set, but StartIndex/Limit are still
 		// applied once after merging. Do not let an upstream page this set first.
 		scanQuery := cloneValues(query)
@@ -224,10 +226,23 @@ func (a *App) handleUserItems(w http.ResponseWriter, r *http.Request) {
 			a.handleRestrictedContainerItems(w, r, resolved, query, filter, localFilter)
 			return
 		}
-		payload, err := resolved.Client.RequestJSON(r.Context(), requestContextFrom(r.Context()), a.Identity, http.MethodGet, "/Users/"+resolved.Client.clientUserID()+"/Items", query, nil)
-		if err != nil {
-			writeJSON(w, http.StatusBadGateway, map[string]any{"message": err.Error()})
-			return
+		var payload any
+		var incomplete bool
+		if localFilter {
+			results, partial := a.fetchLocalFilterCandidates(r, query, "/Users/%s/Items", resolved.ServerID, filter)
+			incomplete = partial
+			var raw []map[string]any
+			for _, result := range results {
+				raw = append(raw, result.Items...)
+			}
+			payload = map[string]any{"Items": toAnySlice(raw), "TotalRecordCount": len(raw)}
+		} else {
+			var err error
+			payload, err = resolved.Client.RequestJSON(r.Context(), requestContextFrom(r.Context()), a.Identity, http.MethodGet, "/Users/"+resolved.Client.clientUserID()+"/Items", query, nil)
+			if err != nil {
+				writeJSON(w, http.StatusBadGateway, map[string]any{"message": err.Error()})
+				return
+			}
 		}
 		items := a.parentalFilterServerItems(r, resolved.Client, asItems(payload))
 		a.rewriteItems(items, resolved.ServerID, a.clientFacingUserIDFor(r))
@@ -249,7 +264,7 @@ func (a *App) handleUserItems(w http.ResponseWriter, r *http.Request) {
 			if !a.strictSanitizedUserDataItems(w, r, kept) {
 				return
 			}
-			writeJSON(w, http.StatusOK, paginateItems(kept, r.URL.Query()))
+			a.writeItemsResponse(w, paginateItems(kept, r.URL.Query()), incomplete || w.Header().Get("X-EIO-Results-Incomplete") == "true")
 			return
 		}
 		if !a.strictSanitizedUserDataItems(w, r, items) {
@@ -269,7 +284,13 @@ func (a *App) handleUserItems(w http.ResponseWriter, r *http.Request) {
 	if !localFilter {
 		requestMergedCandidateSet(query)
 	}
-	results, incomplete := a.fetchItemsAcrossUpstreams(r.Context(), requestContextFrom(r.Context()), "/Users/%s/Items", query, nil)
+	var results []upstreamItemsResult
+	var incomplete bool
+	if localFilter {
+		results, incomplete = a.fetchLocalFilterCandidates(r, query, "/Users/%s/Items", "", filter)
+	} else {
+		results, incomplete = a.fetchItemsAcrossUpstreams(r.Context(), requestContextFrom(r.Context()), "/Users/%s/Items", query, nil)
+	}
 	// Root-level listings include the library views themselves; some clients
 	// browse the root through this endpoint instead of /Users/{id}/Views, so
 	// hidden libraries must be dropped here too. Content items are never
@@ -303,7 +324,7 @@ func (a *App) handleUserItems(w http.ResponseWriter, r *http.Request) {
 			a.writeItemsResponse(w, paginateItems(kept, r.URL.Query()), incomplete)
 			return
 		}
-		if len(asMaps) >= mergedItemsScanLimit {
+		if incomplete {
 			a.warnTruncatedMerge(len(asMaps))
 		}
 		if err := sortCatalogItems(asMaps, r.URL.Query()); err != nil {
