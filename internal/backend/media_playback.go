@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
-	"path"
 	"strings"
 )
 
@@ -67,6 +66,10 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 	var base map[string]any
 	baseServerID := resolved.ServerID
 	allMediaSources := []map[string]any{}
+	// Direct stream URLs are rewritten once the whole candidate set is known, so
+	// the resource registration is atomic and a full store fails the request
+	// instead of silently handing the client an unbound URL.
+	directStreams := []playbackDirectStream{}
 	maxR, blockUnrated := a.parentalPolicyFor(r)
 	restricted := maxR > 0 || blockUnrated
 	_, hasBodySelection := body["MediaSourceId"]
@@ -137,28 +140,10 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 				mediaSource["Id"] = virtualMSID
 			}
 			if directURL, ok := mediaSource["DirectStreamUrl"].(string); ok && directURL != "" {
-				// Extract container from URL, stripping query string first
-				// Node.js uses regex /\.([a-z0-9]+)(?:\?|$)/i — path.Ext doesn't stop at '?'
-				cleanURL := directURL
-				if qIdx := strings.IndexByte(cleanURL, '?'); qIdx >= 0 {
-					cleanURL = cleanURL[:qIdx]
-				}
-				container := strings.TrimPrefix(path.Ext(cleanURL), ".")
-				if container == "" {
-					if rawContainer, ok := mediaSource["Container"].(string); ok {
-						container = rawContainer
-					}
-				}
-				if container == "" {
-					container = "mp4"
-				}
-				proxyURL := url.Values{}
-				proxyURL.Set("MediaSourceId", virtualMSID)
-				proxyURL.Set("Static", "true")
-				if reqCtx := requestContextFrom(r.Context()); reqCtx != nil && reqCtx.ProxyToken != "" {
-					proxyURL.Set("api_key", reqCtx.ProxyToken)
-				}
-				mediaSource["DirectStreamUrl"] = "/Videos/" + r.PathValue("itemId") + "/stream." + container + "?" + proxyURL.Encode()
+				// Keep the upstream URL's own path and required query parameters by
+				// binding it to an opaque resource handle; only URLs this proxy can
+				// map onto the item's own stream route are accepted (playback_url.go).
+				directStreams = append(directStreams, planPlaybackDirectStream(mediaSource, directURL, inst.Client, inst.OriginalID))
 			}
 			if transcodingURL, ok := mediaSource["TranscodingUrl"].(string); ok && transcodingURL != "" {
 				delete(mediaSource, "TranscodingUrl")
@@ -252,6 +237,24 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 	}
 	if a.Logger != nil {
 		a.Logger.Debugf("PlaybackInfo: returning %d MediaSources for itemId=%s", len(allMediaSources), r.PathValue("itemId"))
+	}
+	if len(directStreams) > 0 {
+		proxyToken := ""
+		if reqCtx != nil {
+			proxyToken = reqCtx.ProxyToken
+		}
+		playSessionID := queryValue(query, "PlaySessionId")
+		if playSessionID == "" {
+			if raw, ok := body["PlaySessionId"].(string); ok {
+				playSessionID = raw
+			}
+		}
+		if !a.applyPlaybackDirectStreams(w, r.PathValue("itemId"), proxyToken, playSessionID, streamResourceUserID(reqCtx), directStreams) {
+			// Fail closed: capacity pressure is retryable, exposing or
+			// synthesising a different stream target is not.
+			releaseSlot()
+			return
+		}
 	}
 	cfg := a.ConfigStore.Snapshot()
 	// Rewrite top-level fields (excluding MediaSources which were already virtualised per-server above)

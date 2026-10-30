@@ -878,7 +878,12 @@
           streamUrl = apiRaw(compatible.url);
         } else {
           const container = (playSrc.value.Container || 'mp4').split(',')[0].trim() || 'mp4';
-          const streamPath = playSrc.value.DirectStreamUrl
+          const directStreamUrl = playSrc.value.DirectStreamUrl;
+          // A rejected upstream URL must not become a guessed legacy route.
+          if (!directStreamUrl && playSrc.value.EioDirectStreamUnavailable === true) {
+            throw new Error('上游未提供可安全代理的直连流地址');
+          }
+          const streamPath = directStreamUrl
             || `/Videos/${item.Id}/stream.${container}?Static=true&MediaSourceId=${encodeURIComponent(playSrc.value.Id)}`;
           streamUrl = apiRaw(streamPath);
           fallbackUrl = playSrc.value.TranscodingUrl ? apiRaw(playSrc.value.TranscodingUrl) : null;

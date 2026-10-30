@@ -466,3 +466,32 @@ test('A13 onState drives background subtitle index and audio errors', async () =
   assert.equal(app.wasmSubTrack.value, 3);
   assert.equal(app.toasts.items.value.length, toastCount);
 });
+
+test('A14 a rejected direct stream is terminal while compatibility transcode still works', async () => {
+  const playbackInfo = () => ({
+    MediaSources: [mediaSource({
+      DirectStreamUrl: undefined,
+      EioDirectStreamUnavailable: true,
+      TranscodingUrl: '/Videos/e1/master.m3u8?MediaSourceId=ms1',
+    })],
+    PlaySessionId: 'sess',
+  });
+  const normal = setup({ playbackInfo });
+  normal.context.window.location.hash = '#/play/e1';
+  await normal.app.playItem(episode('e1'), 'ms1');
+  assert.equal(normal.player.instances.length, 0, 'normal play must not create an engine');
+  assert.equal(normal.app.playerUI.status.value, 'error');
+  assert.match(normal.app.playerUI.error.value.message, /直连流/);
+  const forced = setup({ playbackInfo });
+  forced.context.window.location.hash = '#/play/e1';
+  await forced.app.playItem(episode('e1'), 'ms1', { forceTranscode: true });
+  assert.equal(forced.player.instances.length, 1);
+  const loaded = forced.player.instances[0].loadCalls[0];
+  assert.match(loaded.url, /master\.m3u8/);
+  assert.doesNotMatch(loaded.url, /stream\./);
+  assert.equal(loaded.opts.fallbackUrl, null);
+  const body = playbackInfoBodies(forced.reply)[0];
+  assert.equal(body.EnableDirectPlay, false);
+  assert.equal(body.EnableDirectStream, false);
+  assert.equal(body.EnableTranscoding, true);
+});
