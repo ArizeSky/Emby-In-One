@@ -34,6 +34,11 @@ type App struct {
 	sessionEvents  *sessionEventTracker
 	loginLimiter   loginRateLimiter
 	noticeThrottle noticeThrottle
+	// catalogSnapshots is this App's bounded, resumable raw catalog cache.
+	// The zero value is ready to use; it owns no goroutine and never outlives
+	// the App. Raw prefixes are cloned on the way out, so merge/parental code
+	// cannot poison later requests.
+	catalogSnapshots catalogSnapshotStore
 	// adminMutationMu serializes every handler that reads, validates and then
 	// persists the config or the UA library, so two admin writes cannot each
 	// base their change on a stale snapshot and overwrite one another.

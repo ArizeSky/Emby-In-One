@@ -9,8 +9,8 @@ import (
 	"strings"
 )
 
-// mergedItemsScanLimit caps how many items one merged (no ParentId) item query may pull
-// from each upstream.
+// mergedItemsScanLimit is the initial stock-upstream window and per-fill row
+// budget. Snapshot continuation may collect additional rows on later requests.
 const mergedItemsScanLimit = 5000
 
 // upstreamPageLimitCeiling is the per-request item window used for an upstream marked
@@ -27,20 +27,19 @@ const upstreamPageLimitCeiling = 200
 // merge.
 const fallbackUpstreamPageLimit = 100
 
-// fetchMergedItemsFromUpstream collects one upstream's candidate set.
+// fetchMergedItemsFromUpstream collects one upstream's raw candidate prefix.
 //
-// By default the upstream is asked for the whole scan budget (mergedItemsScanLimit
-// rows) in one request, which every stock Emby server accepts. An upstream with
-// pagedScan set in its config is the exception: a modified Emby deployment answers a
-// wider window with a bare 400, which would make every merged query fail on that
-// server. Those are pulled with a per-request window capped at
-// upstreamPageLimitCeiling, following StartIndex until the upstream runs out of rows
-// or the scan budget is reached. An upstream that still refuses the capped window is
-// retried once at fallbackUpstreamPageLimit, and pages already collected are kept, so
-// a server with a lower ceiling is narrowed rather than dropped from the merge.
+// The bounded resumable state lives in the App-local catalogSnapshotStore. This
+// method only adapts the existing upstream request (query preparation, shared
+// budget, HTTP and response decoding) into a page fetcher, then hands the store
+// the resulting raw prefix. The first Fill of an equivalent query collects at
+// most the 5000-candidate round; a later equivalent query continues from the
+// retained offset. An upstream marked pagedScan is walked in 200-row windows
+// (100 after a 400 fallback), and every incomplete prefix stays marked
+// incomplete for the caller.
 func (a *App) fetchMergedItemsFromUpstream(ctx context.Context, reqCtx *RequestContext, c *UpstreamClient, pathTemplate string, query url.Values, body any, budget *catalogRequestBudget) (items []map[string]any, complete bool, truncated bool, err error) {
 	path := strings.Replace(pathTemplate, "%s", c.clientUserID(), 1)
-	collected := make([]map[string]any, 0, upstreamPageLimitCeiling)
+	paged := c.Config.PagedScan
 
 	buildQuery := func(startIndex, window int) (url.Values, error) {
 		pageQuery := cloneValues(query)
@@ -70,96 +69,35 @@ func (a *App) fetchMergedItemsFromUpstream(ctx context.Context, reqCtx *RequestC
 		return pageQuery, nil
 	}
 
-	if !c.Config.PagedScan {
-		directQuery, queryErr := buildQuery(0, mergedItemsScanLimit)
+	fetchPage := func(pageCtx context.Context, offset, limit int) (catalogSnapshotPage, error) {
+		pageQuery, queryErr := buildQuery(offset, limit)
 		if errors.Is(queryErr, errBatchQueryNoItems) || errors.Is(queryErr, errTaxonomyQueryNotTranslatable) {
-			return []map[string]any{}, true, false, nil
+			return catalogSnapshotPage{Items: []map[string]any{}, Total: 0, HasTotal: true}, nil
 		}
 		if queryErr != nil {
-			return nil, false, false, queryErr
+			return catalogSnapshotPage{}, queryErr
 		}
 		if !budget.tryAcquire() {
-			return nil, false, true, nil
+			return catalogSnapshotPage{BudgetExhausted: true}, nil
 		}
-		payload, requestErr := c.RequestJSON(ctx, reqCtx, a.Identity, http.MethodGet, path, directQuery, body)
+		payload, requestErr := c.RequestJSON(pageCtx, reqCtx, a.Identity, http.MethodGet, path, pageQuery, body)
 		if requestErr != nil {
-			return nil, false, true, requestErr
-		}
-		items := asItems(payload)
-		if total, hasTotal := totalRecordCount(payload); hasTotal && len(items) < total {
-			return items, false, true, nil
-		}
-		if len(items) >= mergedItemsScanLimit {
-			return items, true, true, nil
-		}
-		return items, true, false, nil
-	}
-
-	effectiveCeiling := upstreamPageLimitCeiling
-	offset := 0
-	for len(collected) < mergedItemsScanLimit {
-		window := min(effectiveCeiling, mergedItemsScanLimit-len(collected))
-		pageQuery, queryErr := buildQuery(offset, window)
-		if errors.Is(queryErr, errBatchQueryNoItems) || errors.Is(queryErr, errTaxonomyQueryNotTranslatable) {
-			return []map[string]any{}, true, false, nil
-		}
-		if queryErr != nil {
-			return collected, false, true, queryErr
-		}
-		if !budget.tryAcquire() {
-			return collected, false, true, nil
-		}
-		payload, requestErr := c.RequestJSON(ctx, reqCtx, a.Identity, http.MethodGet, path, pageQuery, body)
-		if requestErr != nil {
-			if len(collected) == 0 && window > fallbackUpstreamPageLimit && isBadRequestError(requestErr) {
-				if !budget.tryAcquire() {
-					return nil, false, true, nil
-				}
-				retryQuery, retryQueryErr := buildQuery(0, fallbackUpstreamPageLimit)
-				if retryQueryErr != nil {
-					return nil, false, true, retryQueryErr
-				}
-				retryPayload, retryErr := c.RequestJSON(ctx, reqCtx, a.Identity, http.MethodGet, path, retryQuery, body)
-				if retryErr != nil {
-					return nil, false, true, retryErr
-				}
-				page := asItems(retryPayload)
-				collected = append(collected, page...)
-				offset = len(collected)
-				effectiveCeiling = fallbackUpstreamPageLimit
-				if len(page) < fallbackUpstreamPageLimit {
-					if total, hasTotal := totalRecordCount(retryPayload); hasTotal && offset < total {
-						return collected, false, true, nil
-					}
-					return collected, true, false, nil
-				}
-				continue
+			if paged && isBadRequestError(requestErr) {
+				return catalogSnapshotPage{BadRequest: true}, nil
 			}
-			return collected, false, true, requestErr
+			return catalogSnapshotPage{}, requestErr
 		}
-
 		page := asItems(payload)
 		total, hasTotal := totalRecordCount(payload)
-		if len(page) == 0 {
-			if hasTotal && offset < total {
-				return collected, false, true, nil
-			}
-			break
-		}
-		collected = append(collected, page...)
-		offset = len(collected)
-		if len(page) < window {
-			if hasTotal && offset < total {
-				continue
-			}
-			break
-		}
+		return catalogSnapshotPage{Items: page, Total: total, HasTotal: hasTotal}, nil
 	}
 
-	if len(collected) >= mergedItemsScanLimit {
-		return collected, true, true, nil
+	key, keyErr := catalogSnapshotKey(a, reqCtx, c, pathTemplate, query, body)
+	if keyErr != nil {
+		return nil, false, true, keyErr
 	}
-	return collected, true, false, nil
+	view, fillErr := a.catalogSnapshots.Fill(ctx, key, catalogSnapshotSpec{Paged: paged}, fetchPage)
+	return view.Items, view.Complete, !view.Complete, fillErr
 }
 
 // requestMergedCandidateSet asks the upstreams for the candidate set instead of the
@@ -174,14 +112,13 @@ func requestMergedCandidateSet(query url.Values) {
 	setQueryValue(query, "Limit", strconv.Itoa(mergedItemsScanLimit))
 }
 
-// warnTruncatedMerge reports that the merged candidate set hit the scan cap, so the
-// reported total is a lower bound and the tail of the library is unreachable.
+// warnTruncatedMerge reports a partial candidate set, whose total is a lower
+// bound until a later continuation finishes the scan.
 func (a *App) warnTruncatedMerge(count int) {
 	if a.Logger == nil || !a.noticeThrottle.allow("merged-scan") {
 		return
 	}
-	a.Logger.Warnf("merged item query scanned %d upstream items (limit %d): the total and the tail of the list may be truncated",
-		count, mergedItemsScanLimit)
+	a.Logger.Warnf("merged item query has %d confirmed candidates: results are incomplete; the total is a lower bound and later equivalent requests may continue the scan", count)
 }
 
 func paginateItems(merged []map[string]any, query url.Values) map[string]any {
