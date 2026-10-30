@@ -7,6 +7,10 @@ import (
 	"sync"
 )
 
+// localNextUpSeriesLimit bounds per-series upstream work; it is not a catalog
+// item or local-history scan limit.
+const localNextUpSeriesLimit = 5000
+
 func (a *App) handleShowsNextUp(w http.ResponseWriter, r *http.Request) {
 	if err := validateCatalogSort(r.URL.Query()); err != nil {
 		writeCatalogSortError(w, err)
@@ -115,8 +119,8 @@ func (a *App) handleLocalNextUp(w http.ResponseWriter, r *http.Request, reqCtx *
 		return
 	}
 	incomplete := false
-	if len(seriesList) > localFilterScanLimit {
-		seriesList = seriesList[:localFilterScanLimit]
+	if len(seriesList) > localNextUpSeriesLimit {
+		seriesList = seriesList[:localNextUpSeriesLimit]
 		incomplete = true
 	}
 	startIndex := 0
