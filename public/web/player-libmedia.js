@@ -2,6 +2,10 @@
 (function () {
   'use strict';
 
+  function abortError(message) {
+    return new DOMException(message || 'Playback cancelled', 'AbortError');
+  }
+
   class EIOPlayer {
     constructor(container) {
       this.container = container;
@@ -10,6 +14,8 @@
       this.host.className = 'absolute inset-0';
       container.prepend(this.host);
       this.mode = 'native';
+      this.core = null;
+      this.video = null;
       this.playing = false;
       this.duration = 0;
       this.positionTicks = 0;
@@ -17,6 +23,26 @@
       this._destroyed = false;
       this._fallbackUsed = false;
       this._recovering = false;
+      // User intent is player state, not engine state: replacing the engine
+      // during a runtime fallback must not reset volume or resume playback
+      // that the user had explicitly paused.
+      this._volume = 1;
+      this._pauseRequested = false;
+      this._engineGeneration = 0;
+      this._seekQueue = null;
+      this._bumpEngineGeneration();
+      this._subtitleAbort = null;
+      this._subtitleTimer = null;
+      this._subtitleSerial = 0;
+      this._defaultSubtitle = null;
+      // Sticky teardown latch. Once an old decoder fails to release within the
+      // deadline, creating another engine would leak a live decoder (and its
+      // canvas/audio device) behind the new one, so it stays blocked until the
+      // orphaned destroy actually settles.
+      this._engineWedged = null;
+      this._teardownToken = null;
+      this._cleanup = null;
+      this.audioError = null;
       this.onProgress = this.onEnded = this.onError = this.onState = null;
     }
 
@@ -27,6 +53,7 @@
       this.duration = (item.RunTimeTicks || mediaSource.RunTimeTicks || 0) / 10000000;
       this.url = new URL(url, location.origin).href;
       this.fallbackUrl = options.fallbackUrl && new URL(options.fallbackUrl, location.origin).href;
+      this._assertEngineUsable();
       this.subtitles = new EIOSubtitles(this);
       try { await this._attempt(this.url); }
       catch (error) {
@@ -35,6 +62,12 @@
         await this._fallback();
       }
       this._checkAlive();
+      // A player can be loaded again after a wedged engine finally releases.
+      // Replace the previous monitoring pair instead of orphaning it, otherwise
+      // destroy() only clears the newest timers and the old interval keeps the
+      // host process alive forever.
+      clearInterval(this._progressTimer);
+      clearInterval(this._decodeTimer);
       this._progressTimer = setInterval(() => this.onProgress?.(this.positionTicks), 10000);
       this._decodeTimer = setInterval(() => {
         const core = this.core;
@@ -43,12 +76,142 @@
       const subtitles = mediaSource.MediaStreams?.filter(s => s.Type === 'Subtitle') || [];
       const index = options.subtitleIndex ?? mediaSource.DefaultSubtitleStreamIndex;
       const selected = index == null ? subtitles.find(s => s.IsDefault)?.Index : index;
-      if (selected != null) await this.selectSubtitle(selected);
+      // Default subtitles use their own deadline and signal. They must never
+      // hold up a playable picture or turn a slow font/track fetch into a
+      // whole-page playback failure.
+      if (selected != null) this._startDefaultSubtitle(selected);
       this._emitState({ loading: false });
     }
 
     _checkAlive() {
-      if (this._destroyed) throw new DOMException('Playback cancelled', 'AbortError');
+      if (this._destroyed) throw abortError();
+    }
+
+    // Cleanup-gate interface for the host app: a wedged engine means the old
+    // decoder is still alive, so no new engine may be created on this player.
+    isEngineWedged() {
+      return this._engineWedged != null;
+    }
+
+    get engineTeardown() {
+      if (!this._engineWedged) return { released: true, wedged: false, error: null, since: null, generation: null };
+      const { error, since, generation } = this._engineWedged;
+      return { released: false, wedged: true, error, since, generation };
+    }
+
+    _assertEngineUsable() {
+      if (!this._engineWedged) return;
+      const error = new Error('旧播放引擎仍未释放：' + (this._engineWedged.error?.message || '未知原因'));
+      error.name = 'EngineTeardownError';
+      error.wedged = true;
+      throw error;
+    }
+
+    _wedgeEngine(error) {
+      // Never overwrite the first latch: the earliest failure carries the
+      // original diagnostics and the generation that still holds resources.
+      if (this._engineWedged) return;
+      this._engineWedged = { error, since: Date.now(), generation: this._engineGeneration, token: this._teardownToken };
+    }
+
+    async _releaseCore(_core) {
+      const timeout = Number(this.options?.destroyTimeout ?? this.options?.engineTeardownTimeout) || 4000;
+      const token = {};
+      this._teardownToken = token;
+      // libmedia cannot cancel a pending destroy. Keep a handler on it so a
+      // late rejection never surfaces unhandled, and clear the latch only when
+      // the orphaned teardown really finishes.
+      const pending = Promise.resolve().then(() => _core.destroy());
+      pending.catch(() => {});
+      pending.then(() => {
+        if (this._teardownToken === token) this._teardownToken = null;
+        if (this._engineWedged?.token === token) this._engineWedged = null;
+      }, () => {
+        if (this._teardownToken === token) this._teardownToken = null;
+      });
+      let timer;
+      const guard = new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          const error = new Error('旧解码器销毁超时（' + timeout + 'ms）');
+          error.name = 'EngineTeardownError';
+          error.wedged = true;
+          error.generation = this._engineGeneration;
+          reject(error);
+        }, timeout);
+        timer.unref?.();
+      });
+      try { return await Promise.race([pending, guard]); }
+      finally { clearTimeout(timer); }
+    }
+
+    _bumpEngineGeneration() {
+      this._engineGeneration++;
+      this._seekQueue?.controller.abort();
+      // A queue belongs to one engine generation. Replacing it guarantees a
+      // hung seek from the old core cannot block seeks on the new core.
+      this._seekQueue = {
+        generation: this._engineGeneration,
+        tail: Promise.resolve(),
+        controller: new AbortController(),
+      };
+      return this._engineGeneration;
+    }
+
+    _isCurrentEngine(core, video, generation) {
+      return !this._destroyed && generation === this._engineGeneration
+        && this.core === core && this.video === video;
+    }
+
+    _isCurrentQueue(queue, generation) {
+      return !this._destroyed && queue === this._seekQueue
+        && generation === this._engineGeneration;
+    }
+
+    async _awaitBounded(value, timeout, signal) {
+      const promise = Promise.resolve(value);
+      // The underlying seek cannot be cancelled in libmedia. Attach a handler
+      // so a late rejection after timeout/abort never surfaces unhandled.
+      promise.catch(() => {});
+      let timer, onAbort;
+      const guard = new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          const error = new Error('跳转超时');
+          error.name = 'TimeoutError';
+          reject(error);
+        }, timeout);
+        timer.unref?.();
+        onAbort = () => reject(abortError());
+        if (signal.aborted) onAbort();
+        else signal.addEventListener('abort', onAbort, { once: true });
+      });
+      try { return await Promise.race([promise, guard]); }
+      finally {
+        clearTimeout(timer);
+        signal.removeEventListener('abort', onAbort);
+      }
+    }
+
+    // Every engine seek, including subtitle cue repopulation, goes through
+    // this per-generation serial queue. Jobs read current engine state when
+    // they execute, not when they are queued.
+    _coordinateSeek(job, options = {}) {
+      const queue = this._seekQueue;
+      if (!queue || this._destroyed) return Promise.reject(abortError());
+      const generation = queue.generation;
+      const timeout = Number(options.timeout ?? this.options?.seekTimeout) || 10000;
+      const run = async () => {
+        if (!this._isCurrentQueue(queue, generation)) throw abortError();
+        const result = job({
+          core: this.core,
+          video: this.video,
+          generation,
+          signal: queue.controller.signal,
+        });
+        return this._awaitBounded(result, timeout, queue.controller.signal);
+      };
+      const result = queue.tail.then(run, run);
+      queue.tail = result.then(() => {}, () => {});
+      return result;
     }
 
     _emitState(extra = {}) {
@@ -72,15 +235,27 @@
 
     async _attempt(url) {
       this._checkAlive();
+      this._assertEngineUsable();
       this._emitState({ loading: true, message: this._fallbackUsed ? '正在加载转码流…' : '正在加载媒体…' });
       const pending = this._canNativePlay(url) ? this._native(url) : this._libmedia(url);
+      const attemptGeneration = this._engineGeneration;
+      // A timed-out or failed attempt must invalidate its own generation: the
+      // old core.load()/play() continuation may settle later and must not
+      // resurrect an engine that the user or watchdog already abandoned.
+      const invalidate = () => {
+        if (!this._destroyed && attemptGeneration === this._engineGeneration) this._bumpEngineGeneration();
+      };
       let timer, onAbort;
       const cancelled = new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error('媒体加载超时')), this.options.loadTimeout || 20000);
-        onAbort = () => reject(new DOMException('Playback cancelled', 'AbortError'));
+        timer = setTimeout(() => {
+          invalidate();
+          reject(new Error('媒体加载超时'));
+        }, this.options.loadTimeout || 20000);
+        onAbort = () => reject(abortError());
         this._abort.signal.addEventListener('abort', onAbort, { once: true });
       });
       try { await Promise.race([pending, cancelled]); }
+      catch (error) { invalidate(); throw error; }
       finally {
         clearTimeout(timer);
         this._abort.signal.removeEventListener('abort', onAbort);
@@ -88,36 +263,47 @@
     }
 
     _native(url) {
+      const generation = this._bumpEngineGeneration();
       this.mode = 'native';
       const video = this.video = document.createElement('video');
       video.controls = false;
       video.playsInline = true;
+      video.volume = this._volume;
       video.className = 'absolute inset-0 w-full h-full';
       this.host.append(video);
       const signal = this._abort.signal;
-      video.addEventListener('timeupdate', () => this._updateTime(video.currentTime), { signal });
-      video.addEventListener('play', () => { this.playing = true; this._emitState(); }, { signal });
-      video.addEventListener('pause', () => { this.playing = false; this._emitState(); }, { signal });
-      video.addEventListener('ended', () => this.onEnded?.(), { signal });
+      const current = () => this._isCurrentEngine(null, video, generation);
+      video.addEventListener('timeupdate', () => {
+        if (current()) this._updateTime(video.currentTime);
+      }, { signal });
+      video.addEventListener('play', () => {
+        if (current()) { this.playing = true; this._emitState(); }
+      }, { signal });
+      video.addEventListener('pause', () => {
+        if (current()) { this.playing = false; this._emitState(); }
+      }, { signal });
+      video.addEventListener('ended', () => { if (current()) this.onEnded?.(); }, { signal });
       return new Promise((resolve, reject) => {
         let ready = false;
         video.addEventListener('error', () => {
+          if (!current()) return;
           const error = new Error('视频解码失败 (' + (video.error?.code || 0) + ')');
           if (!ready) reject(error); else this._runtimeError(error);
         }, { signal });
         video.addEventListener('loadedmetadata', async () => {
-          if (this._destroyed || this.video !== video) return;
+          if (!current()) return;
           this.duration = Number.isFinite(video.duration) ? video.duration : this.duration;
           ready = true;
           try { await video.play(); }
           catch (error) { if (error.name !== 'NotAllowedError') { reject(error); return; } }
-          resolve();
+          if (current()) resolve();
         }, { once: true, signal });
         video.src = url;
       });
     }
 
     async _libmedia(url) {
+      const generation = this._bumpEngineGeneration();
       this.mode = 'libmedia';
       const core = this.core = new AVPlayer({
         container: this.host,
@@ -130,10 +316,11 @@
         checkUseMSE: () => true,
         preLoadTime: 2,
       });
+      core.setVolume?.(this._volume);
       let resolveFrame, rejectFrame;
       const firstFrame = new Promise((resolve, reject) => { resolveFrame = resolve; rejectFrame = reject; });
       firstFrame.catch(() => {});
-      const current = () => !this._destroyed && this.core === core;
+      const current = () => this._isCurrentEngine(core, null, generation);
       let started = false;
       core.on('firstVideoRendered', () => { if (current()) { started = true; resolveFrame(); } });
       core.on('firstAudioRendered', () => {
@@ -163,8 +350,17 @@
       if (core.isMSE()) { started = true; resolveFrame(); }
       core.setSubtitleEnable(false);
       await firstFrame;
+      if (!current()) return;
       await this._requireHardware(core);
-      if (this.options.audioIndex >= 0) await this.selectAudio(this.options.audioIndex);
+      if (!current()) return;
+      if (this.options.audioIndex >= 0) {
+        // W09: never treat the requested index as applied just because the
+        // call returned. A boolean false leaves the preference untouched and
+        // surfaces a diagnostic audioError for the app/recovery path.
+        const audioApplied = await this.selectAudio(this.options.audioIndex);
+        if (!current()) return;
+        if (!audioApplied && !core.isHls() && !this.audioError) this._audioUnavailable('音轨无法在本地引擎中应用');
+      }
       // A deep link may reach play() without a browser user gesture.
       if (!core.isMSE() && core.isSuspended()) { this.playing = false; this._emitState(); }
     }
@@ -189,15 +385,39 @@
       }
     }
 
+    _cancelSubtitleWork() {
+      this._subtitleSerial++;
+      this._subtitleAbort?.abort();
+      this._subtitleAbort = null;
+      if (this._subtitleTimer != null) {
+        clearTimeout(this._subtitleTimer);
+        this._subtitleTimer = null;
+      }
+    }
+
+    _audioUnavailable(message) {
+      this.audioError = message;
+      this._emitState({ audioError: message });
+    }
+
     async _fallback() {
       this._fallbackUsed = true;
       const seconds = this.positionTicks / 10000000;
+      // Capture user intent before replacing the engine. The new engine gets
+      // its own default state, so restoring only the timestamp would resume
+      // audio that the user had paused and reset the volume.
+      const volume = this._volume;
+      const paused = this._pauseRequested;
+      this._cancelSubtitleWork();
       this.subtitles?.clear();
       await this._resetEngine();
       this._checkAlive();
       await this._attempt(this.fallbackUrl);
       this._checkAlive();
+      this.setVolume(volume);
       if (seconds > 0) await this.seek(seconds);
+      this._checkAlive();
+      if (paused) await this.pause();
     }
 
     async _runtimeError(error) {
@@ -206,7 +426,9 @@
         this._recovering = true;
         try {
           await this._fallback();
-          if (this.subtitleIndex >= 0) await this.selectSubtitle(this.subtitleIndex);
+          // Re-select subtitles in the background. A slow or broken subtitle
+          // must not keep a recovered picture in the loading/error path.
+          if (this.subtitleIndex >= 0) this._startDefaultSubtitle(this.subtitleIndex);
           this._emitState({ loading: false });
           return;
         } catch (fallbackError) { error = fallbackError; }
@@ -215,74 +437,199 @@
       if (!this._destroyed) this.onError?.(error?.message || String(error));
     }
 
-    async selectSubtitle(index) {
-      this.subtitleIndex = index;
-      try { await this.subtitles.select(index); }
-      catch (error) {
-        if (!this._destroyed && error.name !== 'AbortError') {
-          this._emitState({ subtitleError: '字幕加载失败：' + error.message });
+    _startDefaultSubtitle(index) {
+      const generation = this._engineGeneration;
+      const pending = this.selectSubtitle(index, { timeout: this.options.subtitleTimeout ?? 8000 });
+      // selectSubtitle reports ordinary failures through onState itself.
+      // Keep this chain handled even when destroy/fallback aborts it.
+      this._defaultSubtitle = pending.then(() => {}, error => {
+        if (error?.name === 'AbortError' || this._destroyed || generation !== this._engineGeneration) return;
+        this._emitState({ subtitleError: '字幕加载失败：' + (error?.message || String(error)) });
+      });
+    }
+
+    async selectSubtitle(index, options = {}) {
+      this._checkAlive();
+      const normalized = Number(index);
+      const generation = this._engineGeneration;
+      const requestSerial = ++this._subtitleSerial;
+      this._subtitleAbort?.abort();
+      const controller = new AbortController();
+      this._subtitleAbort = controller;
+      const timeout = Number(options.timeout ?? this.options?.subtitleTimeout) || 8000;
+      const current = () => !this._destroyed && generation === this._engineGeneration
+        && requestSerial === this._subtitleSerial && this._subtitleAbort === controller;
+      let timedOut = false;
+      let localTimer;
+      const timeoutGuard = new Promise((_, reject) => {
+        localTimer = setTimeout(() => {
+          timedOut = true;
+          controller.abort();
+          reject(new Error('字幕加载超时'));
+        }, timeout);
+        localTimer.unref?.();
+        this._subtitleTimer = localTimer;
+      });
+      const request = Promise.resolve().then(() => this.subtitles.select(normalized, { signal: controller.signal }));
+      request.catch(() => {});
+      try {
+        const result = await Promise.race([request, timeoutGuard]);
+        // Generation alone is insufficient: a superseded request on the same
+        // engine may finish late and must not rewrite subtitleIndex/onState.
+        if (!current()) throw abortError();
+        if (result === false) {
+          // A missing/unsupported track is a real selection failure. Do not
+          // leave the UI or subtitleIndex claiming it was applied.
+          if (normalized >= 0) this._emitState({ subtitleError: '字幕轨道不可用' });
+          return false;
         }
+        this.subtitleIndex = normalized;
+        this._emitState({ subtitleIndex: normalized });
+        return true;
+      } catch (error) {
+        if (!current()) throw abortError();
+        if (timedOut) {
+          this._emitState({ subtitleError: '字幕加载超时' });
+          return false;
+        }
+        if (error?.name === 'AbortError') throw error;
+        this._emitState({ subtitleError: '字幕加载失败：' + (error?.message || String(error)) });
+        return false;
+      } finally {
+        clearTimeout(localTimer);
+        if (this._subtitleTimer === localTimer) this._subtitleTimer = null;
+        if (this._subtitleAbort === controller) this._subtitleAbort = null;
       }
     }
 
     async selectAudio(index) {
       this._checkAlive();
-      if (!this.core || this.core.isHls()) return false;
-      const stream = this.core.getStreams().find(s => s.mediaType?.toLowerCase() === 'audio' && s.index === index);
-      if (!stream) return false;
-      if (this.core.getSelectedAudioStreamId() !== stream.id) await this.core.selectAudio(stream.id);
+      const core = this.core;
+      const generation = this._engineGeneration;
+      // HLS audio is baked by the upstream request. The server may already
+      // have applied it, so false is not a client-side failure here.
+      if (!core || core.isHls()) return false;
+      const stream = core.getStreams().find(s => s.mediaType?.toLowerCase() === 'audio' && s.index === index);
+      if (!stream) {
+        this._audioUnavailable('音轨轨道不存在或无法应用');
+        return false;
+      }
+      if (core.getSelectedAudioStreamId() !== stream.id) await core.selectAudio(stream.id);
+      if (!this._isCurrentEngine(core, null, generation)) throw abortError();
+      const applied = core.getSelectedAudioStreamId?.();
+      if (applied != null && applied !== stream.id) {
+        this._audioUnavailable('音轨未能切换到所选轨道');
+        return false;
+      }
       this.audioIndex = index;
       this.options.audioIndex = index;
+      this.audioError = null;
       return true;
     }
 
     async play() {
       this._checkAlive();
-      if (this.core) { await this.core.resume(); await this.core.play(); }
-      else await this.video?.play();
+      const generation = this._engineGeneration;
+      const core = this.core;
+      const video = this.video;
+      if (core) {
+        await core.resume();
+        if (!this._isCurrentEngine(core, null, generation)) throw abortError();
+        await core.play();
+      } else if (video) {
+        await video.play();
+      } else {
+        throw new Error('播放器尚未就绪');
+      }
+      if (!this._isCurrentEngine(core, video, generation)) throw abortError();
+      this._pauseRequested = false;
       this.playing = true;
       this._emitState();
     }
-    pause() { return this.core ? this.core.pause() : this.video?.pause(); }
+
+    async pause() {
+      this._pauseRequested = true;
+      const generation = this._engineGeneration;
+      const core = this.core;
+      const video = this.video;
+      if (core) await core.pause();
+      else if (video) video.pause();
+      else return;
+      if (!this._isCurrentEngine(core, video, generation)) throw abortError();
+      this.playing = false;
+      this._emitState();
+    }
+
     async seek(seconds) {
       this._checkAlive();
-      if (this.core) {
-        await this.core.seek(BigInt(Math.round(seconds * 1000)));
-        this._checkAlive();
-        const actual = this.core.currentTime;
-        this._updateTime(actual == null ? seconds : Number(actual) / 1000);
-      } else {
-        this.video.currentTime = seconds;
-        this._updateTime(seconds);
-      }
+      const target = Number(seconds);
+      return this._coordinateSeek(async ({ core, video, generation }) => {
+        if (this._destroyed || generation !== this._engineGeneration) throw abortError();
+        if (core) {
+          await core.seek(BigInt(Math.round(target * 1000)));
+          // A late seek from a replaced core must not write its progress into
+          // the new engine's timeline.
+          if (!this._isCurrentEngine(core, null, generation)) throw abortError();
+          const actual = core.currentTime;
+          this._updateTime(actual == null ? target : Number(actual) / 1000);
+        } else if (video) {
+          if (this.video !== video) throw abortError();
+          video.currentTime = target;
+          if (this.video === video) this._updateTime(target);
+        } else {
+          throw abortError();
+        }
+      }, { timeout: this.options.seekTimeout || 10000, label: 'seek' });
     }
-    setVolume(volume) { if (this.core) this.core.setVolume(volume); else if (this.video) this.video.volume = volume; }
+
+    setVolume(volume) {
+      const value = Math.max(0, Math.min(1, Number(volume)));
+      this._volume = Number.isFinite(value) ? value : 1;
+      if (this.core) this.core.setVolume?.(this._volume);
+      else if (this.video) this.video.volume = this._volume;
+    }
 
     async _resetEngine() {
       this._resize?.disconnect();
+      this._resize = null;
       const core = this.core;
+      const video = this.video;
       this.core = null;
-      if (this.video) {
-        this.video.pause();
-        this.video.removeAttribute('src');
-        this.video.load();
-        this.video.remove();
-        this.video = null;
+      this.video = null;
+      // Invalidate queued/running seeks before destroying the old decoder.
+      this._bumpEngineGeneration();
+      if (video) {
+        video.pause();
+        video.removeAttribute('src');
+        video.load();
+        video.remove();
       }
-      if (core) await core.destroy();
+      let teardownError = null;
+      if (core) {
+        try { await this._releaseCore(core); }
+        catch (error) { teardownError = error; this._wedgeEngine(error); }
+      }
       this.host.replaceChildren();
       this.playing = false;
+      // Report the deadline failure instead of pretending cleanup succeeded;
+      // the host cleanup gate must not create a new engine over a live decoder.
+      if (teardownError) throw teardownError;
     }
 
     destroy() {
-      if (this._destroyed) return this._cleanup;
+      if (this._destroyed) return this._cleanup || Promise.reject(this._engineWedged?.error || abortError());
       this._destroyed = true;
       this._abort.abort();
       clearInterval(this._progressTimer);
       clearInterval(this._decodeTimer);
+      this._cancelSubtitleWork();
       this.subtitles?.destroy();
       this.host.remove();
-      this._cleanup = this._resetEngine().catch(error => console.warn('Player cleanup failed', error));
+      // The returned promise stays diagnosably rejected when the old decoder
+      // outlives its deadline. The extra handler only logs; it does not replace
+      // the promise the cleanup gate waits on.
+      this._cleanup = this._resetEngine();
+      this._cleanup.catch(error => console.warn('Player cleanup failed', error));
       return this._cleanup;
     }
   }

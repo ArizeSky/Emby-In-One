@@ -2,6 +2,103 @@
 (function () {
   'use strict';
 
+  const LIMITS = Object.freeze({
+    text: 16 * 1024 * 1024,
+    pgs: 64 * 1024 * 1024,
+    font: 16 * 1024 * 1024,
+  });
+
+  function abortError() {
+    return new DOMException('Subtitle cancelled', 'AbortError');
+  }
+
+  function budgetError(limit) {
+    const error = new Error('字幕文件过大（超过 ' + Math.round(limit / 1048576) + ' MiB）');
+    error.name = 'SubtitleBudgetError';
+    return error;
+  }
+
+  function decodeText(bytes) {
+    if (typeof TextDecoder === 'function') return new TextDecoder().decode(bytes);
+    let text = '';
+    for (let offset = 0; offset < bytes.length; offset += 8192) {
+      text += String.fromCharCode.apply(null, bytes.subarray(offset, offset + 8192));
+    }
+    return text;
+  }
+
+  function utf8Length(text) {
+    let bytes = 0;
+    for (const character of text) {
+      const code = character.codePointAt(0);
+      bytes += code < 0x80 ? 1 : code < 0x800 ? 2 : code < 0x10000 ? 3 : 4;
+    }
+    return bytes;
+  }
+
+  // Stream with a hard budget instead of trusting Content-Length. Unknown
+  // lengths and lying headers both stop at the same limit.
+  async function readLimited(response, limit, options = {}) {
+    const mode = options.mode || 'text';
+    const signal = options.signal;
+    const declared = Number(response.headers?.get?.('Content-Length')
+      ?? response.headers?.['content-length']);
+    if (Number.isFinite(declared) && declared > limit) {
+      try { await response.body?.cancel?.(); } catch (error) { /* body may already be locked */ }
+      throw budgetError(limit);
+    }
+    if (response.body && typeof response.body.getReader === 'function') {
+      const reader = response.body.getReader();
+      const chunks = [];
+      let total = 0;
+      let onAbort;
+      const aborted = signal ? new Promise((_, reject) => {
+        onAbort = () => reject(abortError());
+        if (signal.aborted) onAbort();
+        else signal.addEventListener('abort', onAbort, { once: true });
+      }) : null;
+      try {
+        for (;;) {
+          const read = reader.read();
+          const result = aborted ? await Promise.race([read, aborted]) : await read;
+          if (result.done) break;
+          const chunk = result.value;
+          total += chunk.byteLength;
+          if (total > limit) {
+            const error = budgetError(limit);
+            try { await reader.cancel(error); } catch (cancelError) { /* best effort */ }
+            throw error;
+          }
+          chunks.push(chunk);
+        }
+      } catch (error) {
+        if (error?.name === 'AbortError' || error?.name === 'SubtitleBudgetError') {
+          try { await reader.cancel(error); } catch (cancelError) { /* best effort */ }
+        }
+        throw error;
+      } finally {
+        if (onAbort) signal.removeEventListener('abort', onAbort);
+      }
+      const bytes = new Uint8Array(total);
+      let offset = 0;
+      for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+      return mode === 'text' ? decodeText(bytes) : bytes;
+    }
+    // Only non-streaming test doubles reach this branch. Production fetch
+    // responses expose a body, so they never buffer an unknown length first.
+    if (mode === 'text') {
+      const text = await response.text();
+      if (utf8Length(text) > limit) throw budgetError(limit);
+      return text;
+    }
+    const data = new Uint8Array(await response.arrayBuffer());
+    if (data.byteLength > limit) throw budgetError(limit);
+    return data;
+  }
+
+  window.EIOReadLimited = readLimited;
+  window.EIO_SUBTITLE_LIMITS = LIMITS;
+
   function parseTime(value) {
     return value.replace(',', '.').split(':').reduce((total, part) => total * 60 + Number(part), 0);
   }
@@ -32,6 +129,8 @@
     clear() {
       this.serial++;
       this.abort?.abort();
+      this._unlinkSignal?.();
+      this._unlinkSignal = null;
       this.jassub?.destroy();
       this.pgs?.destroy();
       this.layer?.remove();
@@ -50,64 +149,107 @@
       return url.href;
     }
 
-    async select(index) {
+    _linkSignal(external) {
+      const controller = new AbortController();
+      this.abort = controller;
+      let onAbort = null;
+      if (external) {
+        onAbort = () => controller.abort();
+        if (external.aborted) onAbort();
+        else external.addEventListener('abort', onAbort, { once: true });
+      }
+      // The unlink belongs to this request only. A superseded select may
+      // settle after a newer one installed its listener; it must remove its
+      // own listener and leave the newer one attached.
+      const unlink = () => {
+        if (!onAbort) return;
+        external.removeEventListener('abort', onAbort);
+        onAbort = null;
+      };
+      this._unlinkSignal = unlink;
+      return { signal: controller.signal, unlink };
+    }
+
+    async select(index, options = {}) {
       this.clear();
-      if (index < 0 || this.player._destroyed) return;
+      if (index < 0) return true;
+      if (this.player._destroyed) throw abortError();
       const track = this.player.mediaSource.MediaStreams?.find(s => s.Type === 'Subtitle' && s.Index === index);
-      if (!track) return;
+      if (!track) return false;
       const serial = this.serial;
-      const core = this.player.core;
-      // Embedded text/ASS tracks use libmedia's demux and subtitle renderer.
-      const stream = core && !core.isHls() && !track.IsExternal
-        && core.getStreams().find(s => s.mediaType?.toLowerCase() === 'subtitle' && s.index === index);
-      const codec = (track.Codec || '').toLowerCase();
-      if (stream && !['pgs', 'pgssub', 'hdmv_pgs_subtitle'].includes(codec)) {
-        if (core.getSelectedSubtitleStreamId() !== stream.id) await core.selectSubtitle(stream.id);
-        if (serial === this.serial && !this.player._destroyed) core.setSubtitleEnable(true);
-        // Embedded cues may have been consumed while subtitles were disabled.
-        // Seeking to the same timestamp repopulates their demux queue.
-        if (serial === this.serial && Number(core.currentTime) > 0) await core.seek(core.currentTime);
-        return;
-      }
-      this.abort = new AbortController();
-      const signal = this.abort.signal;
-      if (['pgs', 'pgssub', 'hdmv_pgs_subtitle'].includes(codec)) {
-        this.layer = this._canvas();
-        this.pgs = new EIOPGSRenderer(this.layer);
-        await this.pgs.load(this._url(track, 'sup'), signal);
-      } else {
-        const ass = codec === 'ass' || codec === 'ssa';
-        const response = await fetch(this._url(track, ass ? 'ass' : 'vtt'), { signal });
-        if (!response.ok) throw new Error('HTTP ' + response.status);
-        const content = await response.text();
-        if (serial !== this.serial || this.player._destroyed) return;
-        if (ass) {
-          // Native video and HLS external ASS need a separate libass overlay.
-          const fontResponse = await fetch('/web/vendor/web/NotoSansSC-Regular.otf', { signal });
-          if (!fontResponse.ok) throw new Error('ASS 字体加载失败');
-          const font = new Uint8Array(await fontResponse.arrayBuffer());
-          if (serial !== this.serial || this.player._destroyed) return;
-          this.layer = this._canvas();
-          this.jassub = new JASSUB({ canvas: this.layer, subContent: content,
-            workerUrl: '/web/vendor/web/jassub-worker.js?v=20260930', wasmUrl: '/web/vendor/web/jassub-worker.wasm?v=1.7.17',
-            modernWasmUrl: '/web/vendor/web/jassub-worker-modern.wasm?v=1.7.17',
-            fallbackFont: 'Noto Sans SC',
-            fonts: [font], availableFonts: {},
-            targetFps: 24, libassMemoryLimit: 32 * 1024 * 1024, libassGlyphLimit: 16 * 1024 * 1024,
-            onDemandRender: false, offscreenRender: false, useLocalFonts: false });
-          const renderer = this.jassub;
-          renderer.addEventListener('error', () => {
-            if (serial === this.serial) this.player._emitState({ subtitleError: 'ASS 字幕渲染失败' });
-          });
-          this.resize();
-        } else {
-          this.cues = parseCues(content);
-          this.layer = document.createElement('div');
-          this.layer.className = 'player-subtitle-text';
-          this.player.container.append(this.layer);
+      const { signal, unlink } = this._linkSignal(options.signal);
+      try {
+        const core = this.player.core;
+        const codec = (track.Codec || '').toLowerCase();
+        const isHls = typeof core?.isHls === 'function' ? core.isHls() : !!core?.isHls;
+        const stream = core && !isHls && !track.IsExternal
+          && core.getStreams().find(s => s.mediaType?.toLowerCase() === 'subtitle' && s.index === index);
+        if (stream && !['pgs', 'pgssub', 'hdmv_pgs_subtitle'].includes(codec)) {
+          if (core.getSelectedSubtitleStreamId() !== stream.id) await core.selectSubtitle(stream.id);
+          if (serial !== this.serial || this.player._destroyed) return false;
+          core.setSubtitleEnable(true);
+          // Embedded cues may have been consumed while subtitles were disabled.
+          // Repositioning goes through the same engine queue as user seeks and
+          // reads the current position only when the job executes.
+          const refresh = async () => {
+            if (serial !== this.serial || this.player._destroyed) return;
+            const current = this.player.core;
+            if (!current) return;
+            const now = current.currentTime;
+            if (now != null && Number(now) > 0) await current.seek(now);
+          };
+          if (typeof this.player._coordinateSeek === 'function') {
+            await this.player._coordinateSeek(refresh, { timeout: 8000, label: 'subtitle-seek' });
+          } else {
+            await refresh();
+          }
+          return serial === this.serial && !this.player._destroyed;
         }
+        if (['pgs', 'pgssub', 'hdmv_pgs_subtitle'].includes(codec)) {
+          this.layer = this._canvas();
+          this.pgs = new EIOPGSRenderer(this.layer);
+          await this.pgs.load(this._url(track, 'sup'), signal);
+        } else {
+          const ass = codec === 'ass' || codec === 'ssa';
+          const response = await fetch(this._url(track, ass ? 'ass' : 'vtt'), { signal });
+          if (!response.ok) throw new Error('HTTP ' + response.status);
+          const content = await readLimited(response, LIMITS.text, { mode: 'text', signal });
+          if (serial !== this.serial || this.player._destroyed) return false;
+          if (ass) {
+            // Native video and HLS external ASS need a separate libass overlay.
+            const fontResponse = await fetch('/web/vendor/web/NotoSansSC-Regular.otf', { signal });
+            if (!fontResponse.ok) throw new Error('ASS 字体加载失败');
+            const font = await readLimited(fontResponse, LIMITS.font, { mode: 'bytes', signal });
+            if (serial !== this.serial || this.player._destroyed) return false;
+            this.layer = this._canvas();
+            this.jassub = new JASSUB({ canvas: this.layer, subContent: content,
+              workerUrl: '/web/vendor/web/jassub-worker.js?v=20260930', wasmUrl: '/web/vendor/web/jassub-worker.wasm?v=1.7.17',
+              modernWasmUrl: '/web/vendor/web/jassub-worker-modern.wasm?v=1.7.17',
+              fallbackFont: 'Noto Sans SC',
+              fonts: [font], availableFonts: {},
+              targetFps: 24, libassMemoryLimit: 32 * 1024 * 1024, libassGlyphLimit: 16 * 1024 * 1024,
+              onDemandRender: false, offscreenRender: false, useLocalFonts: false });
+            const renderer = this.jassub;
+            renderer.addEventListener('error', () => {
+              if (serial === this.serial) this.player._emitState({ subtitleError: 'ASS 字幕渲染失败' });
+            });
+            this.resize();
+          } else {
+            this.cues = parseCues(content);
+            this.layer = document.createElement('div');
+            this.layer.className = 'player-subtitle-text';
+            this.player.container.append(this.layer);
+          }
+        }
+        if (serial !== this.serial || this.player._destroyed) return false;
+        this.render(this.player.positionTicks / 10000000);
+        return true;
+      } finally {
+        unlink();
+        // Only clear the shared field when it still points at this request;
+        // a newer select may already own it.
+        if (this._unlinkSignal === unlink) this._unlinkSignal = null;
       }
-      if (serial === this.serial) this.render(this.player.positionTicks / 10000000);
     }
 
     _canvas() {

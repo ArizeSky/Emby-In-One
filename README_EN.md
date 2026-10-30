@@ -63,6 +63,7 @@ Based on Go language, it implements a multi-server Emby aggregation proxy — me
 - **Full Control & Operations** — Built-in modern SSH CLI menu and Web admin panel; comes with persistent logs and SQLite ID mapping. SSH menu auto-detects Binary/Docker deployment mode, dispatching all operations to systemd or Docker Compose commands accordingly.
 - **Built-in Web Client** — Browse libraries, search, manage favorites and continue watching in your browser without installing a separate client. Supports seasons, multiple source versions and independent watch progress, following the regular user's permissions.
 - **Browser Playback & Subtitles** — Select versions, audio tracks and subtitles, with seeking, keyboard shortcuts, volume and fullscreen controls. Supports common text subtitles, ASS and PGS, and can attempt upstream HLS when original-media playback fails. Compatibility depends on the browser, device and upstream capabilities.
+  - Engine fallback preserves volume and explicit pause intent. Default subtitles load in the background with an independent deadline, so subtitle failure does not block playable video. Text subtitles and fonts are each capped at 16 MiB and PGS at 64 MiB, including unknown response lengths; exceeding a cap only disables that subtitle and does not change video permissions. Failed engine teardown prevents stacking more decoders; reloading the page may be required to release resources.
 
 ---
 
