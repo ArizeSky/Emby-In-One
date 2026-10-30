@@ -444,7 +444,7 @@ Because all distributed users share the same upstream Emby account, upstream wat
 
 **List filtering (local since V1.4.4):**
 
-- `Filters=IsFavorite`, `IsPlayed` and `IsResumable` are answered from the **local records**: the proxy fetches the candidate set for that container, intersects it with the local set, then sorts, pages and recounts locally. "Favorites only" therefore returns that user's own favorites, including items favorited locally that the upstream account never favorited. Container constraints such as `ParentId`, `Recursive` and `IncludeItemTypes` are still applied upstream.
+- `Filters=IsFavorite`, `IsPlayed` and `IsResumable` use **local records**. Ordinary root, `/Items`, and unrestricted container queries first resolve the user's matching local IDs, fetch those IDs in bounded batches from authorized upstreams, then merge, sort and page locally. A favorite no longer disappears because it lies beyond the upstream's first 5000 library rows. `ParentId`, `Recursive`, `IncludeItemTypes`, search and other predicates remain upstream constraints combined with `Ids`; this requires the upstream to support their intersection. Restricted containers and some specialized routes retain candidate scanning and parental checks.
 - Sorting: `SortName`, `DateCreated`, `ProductionYear` and `CommunityRating` are sorted locally; any other sort key (e.g. `DatePlayed`) degrades to the local "recently played / favorited" order.
 - Unrecognized filter values (e.g. `IsFolder`) are forwarded upstream untouched, so the client's intent is never silently dropped.
 
@@ -452,7 +452,11 @@ Because all distributed users share the same upstream Emby account, upstream wat
 
 **Paging:** the aggregated list without a `ParentId` (`GET /Users/{id}/Items` with no container) is paged by the proxy **after** merging and deduplicating, so `TotalRecordCount` is the merged total and `StartIndex` counts in merged order. Local filtering works the same way: the candidate set is fetched first, then sorted and paged locally.
 
-> One more trade-off: both of those paths fetch a **candidate set** from the upstream (rather than letting it filter and return one page), capped at 5000 items per request; past the cap the reported total is only a lower bound and the tail of the list may be unreachable, which is logged.
+> **Bounded scan snapshots:** aggregate scans add at most 5000 candidates per upstream per fill. Later equivalent requests can continue from the retained offset instead of restarting; complete snapshots are reused. Each App retains at most 16 upstream-query snapshots and 32 MiB of serialized raw candidates, with at most 50000 candidates per snapshot and a 60-second absolute lifetime. These are resource guards, not exact library sizes. The shared 100-attempt budget and global timeout still apply; resource exhaustion can still produce partial results.
+>
+> **Completeness and ordering:** partial responses carry `X-EIO-Results-Incomplete: true` and, for object responses, `EioIncompleteResults: true`; their totals are confirmed lower bounds. Extending an unfinished prefix can change earlier pages after deduplication and global sorting. Paging order is stable only within the same complete snapshot. Expiry, eviction or configuration changes restart scanning; standard clients have no snapshot cursor, so cross-refresh isolation is not guaranteed, and clients may not automatically request more partial results.
+
+**Narrow upstream windows (`pagedScan`):** the default scan window remains `Limit=5000`. For modified upstreams that reject wide windows, set `pagedScan: true` to use 200-row pages, falling back to 100 after an initial rejection and retaining that window across continuations. Local Resume history scans and NextUp series counts retain independent 5000-record/series guards; the aggregate snapshot ceiling does not enlarge them.
 
 **Working Principle:**
 
