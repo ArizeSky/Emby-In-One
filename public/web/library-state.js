@@ -23,6 +23,12 @@
     const sort = ref('DateCreated,Descending');
     const genres = ref([]);
     const hasMore = ref(false);
+    // `partial` is sticky for the current library/filter/sort listing: it only
+    // clears on a new listing or on an explicitly complete end page. It is
+    // deliberately separate from hasMore, which is just the cursor vs. the
+    // reported (lower-bound) total and must never trigger auto-paging alone.
+    const partial = ref(false);
+    const partialStalled = ref(false);
     const error = ref('');
     const pageError = ref('');
     let offset = 0;                    // StartIndex of the next page
@@ -32,20 +38,46 @@
     let pageRequest = null;
     const view = deps.view;
 
-    const countText = computed(() => (total.value != null
-      ? `共 ${total.value} 项`
-      : `已加载 ${items.value.length} 项`));
+    const countText = computed(() => {
+      if (partial.value) {
+        return total.value != null
+          ? `至少 ${total.value} 项（部分结果）`
+          : `已加载 ${items.value.length} 项（部分结果）`;
+      }
+      return total.value != null
+        ? `共 ${total.value} 项`
+        : `已加载 ${items.value.length} 项`;
+    });
+
+    const partialNotice = computed(() => {
+      if (!partial.value) return '';
+      const loaded = items.value.length;
+      const scope = total.value != null
+        ? `已加载 ${loaded} 项，至少 ${total.value} 项`
+        : `已加载 ${loaded} 项`;
+      return partialStalled.value
+        ? `部分结果：${scope}，本次未发现更多新内容。可稍后继续尝试，当前列表可能不完整。`
+        : `部分结果：${scope}，部分服务器响应可能不完整。可主动继续获取，当前列表可能不完整。`;
+    });
+
+    const partialCanContinue = computed(() =>
+      partial.value && !loading.value && !pageLoading.value);
 
     function uid() { return deps.getUserId?.(); }
     function active() { return !!deps.isActive?.(); }
 
     function resetPaging() {
       offset = 0; total.value = null; hasMore.value = false;
+      partial.value = false; partialStalled.value = false;
       retryAppend.value = false; pageError.value = '';
     }
 
     function canPage() {
       return active() && hasMore.value && !pageLoading.value && !pageError.value && !loading.value;
+    }
+
+    function canAutoPage() {
+      return canPage() && !partial.value && !partialStalled.value;
     }
 
     function pageParams(limit) {
@@ -84,10 +116,15 @@
       if (request === current) { loading.value = false; deps.refreshIcons?.(); }
     }
 
-    async function loadItems(append) {
+    async function loadItems(append, forcePartial) {
       if (!id || !active() || request?.signal.aborted) return;
       if (append) {
-        if (!canPage()) return;
+        // A partial lower bound may be reached with hasMore=false (or with
+        // hasMore=true); the explicit "continue" action is allowed either way,
+        // but only while the listing is still partial.
+        if (forcePartial) {
+          if (!partial.value || loading.value || pageLoading.value) return;
+        } else if (!canPage()) return;
         pageLoading.value = true;
       } else {
         pageRequest?.abort();
@@ -102,14 +139,40 @@
         const result = await deps.api(deps.query(`/Users/${uid()}/Items`, params), { signal: current.signal });
         if (pageRequest !== current || id !== parentId || current.signal.aborted) return;
         if (filter.value !== filterSnapshot) return; // filter changed under us
+        const incomplete = result?.EioIncompleteResults === true;
         const batch = result.Items || [];
         const existing = items.value;
         const seen = new Set(existing.map(x => x.Id));
         const fresh = batch.filter(x => !seen.has(x.Id));
-        if (append && !fresh.length && batch.length) {
-          // Repeated page: stop auto-paging instead of looping forever.
-          hasMore.value = false; retryAppend.value = true;
-          pageError.value = '分页未推进，请重试';
+        if (append && !fresh.length) {
+          const reported = result.TotalRecordCount != null ? result.TotalRecordCount : null;
+          if (incomplete) {
+            // Still partial at the current lower bound, but this page did not
+            // advance. Keep the cursor where it is, keep the partial notice,
+            // and wait for a user-initiated retry instead of auto-looping.
+            partial.value = true; partialStalled.value = true;
+            if (reported != null) total.value = reported;
+            hasMore.value = false;
+          } else if (batch.length) {
+            // Repeated page: stop auto-paging instead of looping forever.
+            hasMore.value = false; retryAppend.value = true;
+            pageError.value = '分页未推进，请重试';
+          } else if (reported == null || requestOffset >= reported) {
+            // Explicit complete empty page at (or past) the reported total:
+            // the listing genuinely ended, so any earlier partial lower bound
+            // is confirmed and must stop showing a partial notice.
+            hasMore.value = false;
+            if (reported != null) total.value = reported;
+            partial.value = false; partialStalled.value = false;
+          } else {
+            // A complete empty page while the server still reports items past
+            // this offset is a paging anomaly, not an end-of-listing proof:
+            // keep the loaded items and partial state, and let the user retry.
+            hasMore.value = false; retryAppend.value = true;
+            pageError.value = '分页未推进，请重试';
+            if (partial.value) partialStalled.value = true;
+            if (reported != null) total.value = reported;
+          }
         } else {
           items.value = append ? [...existing, ...fresh] : batch;
           // The cursor advances by the raw batch length, never by the deduped list.
@@ -120,6 +183,12 @@
           } else {
             total.value = null;
             hasMore.value = batch.length > 0;
+          }
+          if (incomplete) {
+            partial.value = true; partialStalled.value = !fresh.length;
+          } else if (!hasMore.value) {
+            // An explicitly complete end page confirms this listing.
+            partial.value = false; partialStalled.value = false;
           }
         }
       } catch (e) {
@@ -134,15 +203,24 @@
     }
 
     function armObserver() {
-      if (!canPage()) { view.disconnect(); return; }
+      if (!canAutoPage()) { view.disconnect(); return; }
       deps.nextTick(() => {
-        if (!canPage()) { view.disconnect(); return; }
-        view.attachObserver(() => { if (canPage()) loadMore(); });
+        if (!canAutoPage()) { view.disconnect(); return; }
+        view.attachObserver(() => { if (canAutoPage()) loadMore(); });
       });
     }
 
     function loadMore() { if (!canPage()) return; return loadItems(true); }
-    function retryPage() { pageError.value = ''; retryAppend.value = false; return loadItems(true); }
+    function retryPage() {
+      pageError.value = ''; retryAppend.value = false;
+      if (partial.value) return loadItems(true, true);
+      return loadItems(true);
+    }
+    function continuePartial() {
+      if (!partialCanContinue.value) return;
+      pageError.value = ''; retryAppend.value = false;
+      return loadItems(true, true);
+    }
     function retry() { return load(id); }
 
     function set(kind, value) {
@@ -161,12 +239,14 @@
       request?.abort(); request = null;
       pageRequest?.abort(); pageRequest = null;
       view.disconnect();
+      partial.value = false; partialStalled.value = false;
       loading.value = false; pageLoading.value = false;
     }
     function dispose() { cancel(); items.value = []; }
 
     return { name, items, loading, pageLoading, total, retryAppend, filter, sort, genres, hasMore,
-      error, pageError, countText, view, load, loadMore, retryPage, retry,
+      partial, partialStalled, partialNotice, partialCanContinue, error, pageError, countText, view,
+      load, loadMore, retryPage, continuePartial, retry,
       setFilter, setSort, clearFilter, cancel, dispose };
   }
 

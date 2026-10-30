@@ -9,6 +9,10 @@
 
   const API = ''; // same origin
   const { query, all: allItems, episodeOrder, defaultAudio, defaultSubtitle } = EIOData;
+  const {
+    isPartialResults, createPendingSelection, createEpisodeQueue,
+    compatibleStream, createCleanupGate,
+  } = EIOPlayback;
   // Set by setup() so a partial-results response can surface a lightweight toast
   // without api() needing the reactive toast store directly (plan §8.9).
   let notifyPartialResults = null;
@@ -206,17 +210,30 @@
       const collectionItems = ref([]);
       const collectionLoading = ref(false);
       const collectionError = ref('');
+      // A partial (incomplete) list is shown with a non-blocking notice; it is
+      // never pretended to be the complete collection.
+      const collectionNotice = ref('');
       let collectionRequest = null;
 
       async function loadCollection(kind) {
         collectionRequest?.abort();
         const request = collectionRequest = new AbortController();
-        collectionLoading.value = true; collectionError.value = ''; collectionItems.value = [];
+        collectionLoading.value = true; collectionError.value = ''; collectionNotice.value = '';
+        collectionItems.value = [];
         const path = `/Users/${localStorage.getItem('eio_user_id')}/Items`;
         try {
           const params = { Fields: 'PrimaryImageAspectRatio,RunTimeTicks,UserData,SeriesName', Recursive: true };
           if (kind === 'favorites') { params.Filters = 'IsFavorite'; params.IncludeItemTypes = 'Movie,Series,Episode'; }
-          const items = await allItems(api, kind === 'resume' ? path + '/Resume' : path, params, { signal: request.signal });
+          let items;
+          try {
+            items = await allItems(api, kind === 'resume' ? path + '/Resume' : path, params, { signal: request.signal });
+          } catch (e) {
+            // A partial candidate set is still usable; show it with a notice
+            // instead of an empty page or an exact-looking total (W04 handoff).
+            if (!isPartialResults(e)) throw e;
+            items = e.items.slice();
+            if (collectionRequest === request) collectionNotice.value = '列表可能不完整，可稍后重试补全';
+          }
           if (collectionRequest === request && !request.signal.aborted) collectionItems.value = items;
         } catch (e) {
           if (e.name !== 'AbortError' && collectionRequest === request && !request.signal.aborted) {
@@ -290,7 +307,14 @@
         seriesLoading.value = true; seriesError.value = ''; seasonLoadBusy.value = true;
         const uid = localStorage.getItem('eio_user_id');
         try {
-          const seasons = await allItems(api, `/Shows/${detail.Id}/Seasons`, { UserId: uid }, { signal: request.signal });
+          let seasons;
+          try {
+            seasons = await allItems(api, `/Shows/${detail.Id}/Seasons`, { UserId: uid }, { signal: request.signal });
+          } catch (e) {
+            if (!isPartialResults(e)) throw e;
+            seasons = e.items.slice();
+            if (itemRequest === request) seriesError.value = '季列表可能不完整，可重试补全';
+          }
           if (itemRequest !== request || request.signal.aborted) return;
           seriesSeasons.value = seasons;
           if (seasons.length && !detailView.selectedSeasonId) detailView.setSeason(seasons[0].Id);
@@ -314,10 +338,21 @@
         seasonLoading.value = { ...seasonLoading.value, [seasonId]: true };
         const cleared = { ...seasonErrors.value }; delete cleared[seasonId]; seasonErrors.value = cleared;
         try {
-          const episodes = await allItems(api, `/Shows/${seriesId}/Episodes`, {
-            UserId: uid, SeasonId: seasonId,
-            Fields: 'PrimaryImageAspectRatio,RunTimeTicks,SeriesId,SeasonId,UserData',
-          }, { signal: request.signal });
+          let episodes;
+          try {
+            episodes = await allItems(api, `/Shows/${seriesId}/Episodes`, {
+              UserId: uid, SeasonId: seasonId,
+              Fields: 'PrimaryImageAspectRatio,RunTimeTicks,SeriesId,SeasonId,UserData',
+            }, { signal: request.signal });
+          } catch (e) {
+            if (!isPartialResults(e)) throw e;
+            episodes = e.items.slice();
+            // Episodes stay clickable; the notice makes clear the season is
+            // not the complete, exact episode list.
+            if (itemRequest === request) {
+              seasonErrors.value = { ...seasonErrors.value, [seasonId]: '本季剧集可能不完整，可重试补全' };
+            }
+          }
           if (itemRequest !== request || request.signal.aborted) return;
           seasonEpisodes.value = { ...seasonEpisodes.value, [seasonId]: episodes.sort(episodeOrder) };
         } catch (e) {
@@ -495,6 +530,8 @@
       const playVersions = ref([]);
       const playAudioIndex = ref(-1);
       const episodeQueue = ref([]);
+      const episodeQueueLoading = ref(false);
+      const episodeQueuePartial = ref(false);
       const queueError = ref('');
       const trackBusy = ref(false);
       const subtitleBusy = ref(false);
@@ -534,8 +571,11 @@
 
       let player = null;
       let playSessionId = null;
-      let pendingMediaSourceId = null;
-      let pendingPlaybackOptions = {};
+      // Consumed synchronously by startPlayerFromRoute so a failed or
+      // superseded request never leaks its source/options into a later play.
+      const pendingSelection = createPendingSelection();
+      const engineCleanup = createCleanupGate();
+      let playbackStarted = false;
       let playerItemId = null;
       let playbackGeneration = 0;
       let playbackRequest = null;
@@ -547,6 +587,11 @@
       let subtitleAttempt = null;
       let subtitleSwitchSerial = 0;
       let startupSubtitleError = null;
+      // A player implementation may resolve the default subtitle in the
+      // background (package B) and report it through onState. Keep that report
+      // separate from the startup snapshot so it is not overwritten below.
+      let reportedSubtitleIndex = null;
+      let lastAudioError = '';
 
       const playerUI = reactive(EIOPlayerUI.create({
         getContainer: () => playerContainer.value,
@@ -576,15 +621,25 @@
         // A series has no media sources of its own: PlaybackInfo against a
         // series fails upstream. Resolve to NextUp or the first episode.
         if (item?.Type === 'Series') {
-          const ep = await resolveSeriesEpisode(item.Id);
+          const resolution = await resolveSeriesEpisode(item.Id);
           if (serial !== playItemSerial) return; // superseded by a newer playItem call
-          if (!ep) { toasts.push({ message: '该剧集没有可播放的集', kind: 'error' }); return; }
-          item = ep; options = {}; mediaSourceId = null;
+          if (!resolution.episode) {
+            // A partial episode list must not be turned into a silent "first
+            // episode" guess: the ordering of an incomplete list is not the
+            // real episode order.
+            if (resolution.partial) {
+              toasts.push({ message: '剧集列表未完整，请在详情页明确选择要播放的集', kind: 'error' });
+              openItem(item.Id);
+            } else {
+              toasts.push({ message: '该剧集没有可播放的集', kind: 'error' });
+            }
+            return;
+          }
+          item = resolution.episode; options = {}; mediaSourceId = null;
         }
         playItemId.value = item.Id;
         playingItem.value = item;
-        pendingMediaSourceId = mediaSourceId || null;
-        pendingPlaybackOptions = options;
+        pendingSelection.set(mediaSourceId, options);
         const target = '#/play/' + item.Id;
         if (window.location.hash === target) {
           await startPlayerFromRoute(item.Id, true);
@@ -597,12 +652,15 @@
         const uid = localStorage.getItem('eio_user_id');
         try {
           const next = await api(`/Shows/NextUp?SeriesId=${seriesId}&UserId=${uid}&Limit=1`);
-          if (next.Items?.length) return next.Items[0];
+          if (next.Items?.length) return { episode: next.Items[0], partial: false };
         } catch (e) { console.error('NextUp', e); }
         try {
           const eps = await allItems(api, `/Shows/${seriesId}/Episodes`, { UserId: uid, Fields: 'PrimaryImageAspectRatio,RunTimeTicks,SeriesId' });
-          return eps.sort(episodeOrder)[0] || null;
-        } catch (e) { console.error('resolveSeriesEpisode', e); return null; }
+          return { episode: eps.sort(episodeOrder)[0] || null, partial: false };
+        } catch (e) {
+          if (isPartialResults(e)) return { episode: null, partial: true };
+          console.error('resolveSeriesEpisode', e); return { episode: null, partial: false };
+        }
       }
 
       function buildRetryContext(item, mediaSourceId, options, seconds, paused) {
@@ -637,8 +695,11 @@
         const generation = playbackGeneration;
         playbackRequest = new AbortController();
         const signal = playbackRequest.signal;
-        const sourceId = pendingMediaSourceId;
-        const options = pendingPlaybackOptions;
+        // Consume the router handoff immediately: a failure, a route switch or
+        // a superseded request can never reuse this source/options (W08).
+        const selection = pendingSelection.consume();
+        const sourceId = selection.mediaSourceId;
+        const options = selection.options;
         playerMessage.value = '';
         playerUI.begin(operation || 'loading');
         playerUI.attach();
@@ -652,7 +713,6 @@
           }
           playItemId.value = id;
           playVersions.value = item.MediaSources || [];
-          await loadEpisodeQueue(item, signal);
           await nextTick(); // the player container only exists once navPage renders
           if (generation !== playbackGeneration) return;
           // Re-attach now that the container actually exists: the attach() near
@@ -660,30 +720,58 @@
           // so the container listeners were skipped. attach() detaches first,
           // so this is idempotent and re-binds the window/document listeners.
           playerUI.attach();
-          await startPlayback(item, sourceId, generation, signal, options);
+          // The full-series queue is navigation-only: issue it alongside the
+          // play negotiation (PlaybackInfo goes on the wire first, since it is
+          // the critical path) and never await it before engine start (W03).
+          // Its failures stay inside the queue UI state.
+          const playback = startPlayback(item, sourceId, generation, signal, options);
+          loadEpisodeQueue(item, signal, () => generation === playbackGeneration);
+          await playback;
         } catch (e) {
           handlePlaybackFailure(e, generation, buildRetryContext(item || playingItem.value, sourceId, options));
         } finally {
-          if (generation === playbackGeneration) { pendingMediaSourceId = null; pendingPlaybackOptions = {}; }
+          if (generation === playbackGeneration) pendingSelection.clear();
         }
       }
 
-      async function loadEpisodeQueue(item, signal) {
+      // The queue reports its own loading/partial/error state; start() in the
+      // orchestrator never rejects, so a slow or failing series list cannot
+      // block or fail the video.
+      const episodeQueueLoader = createEpisodeQueue({
+        load: (item, signal) => allItems(api, `/Shows/${item.SeriesId}/Episodes`, {
+          UserId: localStorage.getItem('eio_user_id'), Fields: 'SeriesId,RunTimeTicks,UserData' }, { signal }),
+        succeed: (episodes, meta) => {
+          episodeQueue.value = episodes.slice().sort(episodeOrder);
+          episodeQueuePartial.value = !meta.complete;
+          episodeQueueLoading.value = false;
+          queueError.value = meta.complete ? '' : '相邻剧集列表可能不完整，请手动选择要播放的集';
+        },
+        fail: () => {
+          episodeQueue.value = [];
+          episodeQueuePartial.value = true;
+          episodeQueueLoading.value = false;
+          queueError.value = '相邻剧集加载失败，可重试';
+        },
+        abort: () => { episodeQueueLoading.value = false; },
+      });
+
+      function loadEpisodeQueue(item, signal, isValid) {
+        episodeQueueLoader.invalidate();
         queueError.value = '';
-        if (!item?.SeriesId) { episodeQueue.value = []; return; }
-        try {
-          const episodes = await allItems(api, `/Shows/${item.SeriesId}/Episodes`, {
-            UserId: localStorage.getItem('eio_user_id'), Fields: 'SeriesId,RunTimeTicks,UserData' }, { signal });
-          if (!signal?.aborted) episodeQueue.value = episodes.sort(episodeOrder);
-        } catch (e) {
-          if (e.name === 'AbortError') throw e;
-          episodeQueue.value = []; queueError.value = '相邻剧集加载失败，请重试';
+        episodeQueuePartial.value = false;
+        if (!item?.SeriesId) {
+          episodeQueue.value = [];
+          episodeQueueLoading.value = false;
+          return Promise.resolve();
         }
+        episodeQueueLoading.value = true;
+        return episodeQueueLoader.start(item, signal, isValid);
       }
 
       function retryEpisodeQueue() {
         toasts.push({ message: '正在重试相邻剧集…' });
-        return loadEpisodeQueue(playingItem.value, playbackRequest?.signal);
+        return loadEpisodeQueue(playingItem.value, playbackRequest?.signal,
+          () => player === null || playerItemId === playingItem.value?.Id);
       }
 
       // A browser DeviceProfile lets the upstream choose direct vs transcode.
@@ -699,6 +787,7 @@
             SubtitleStreamIndex: options.subtitleIndex,
             EnableDirectPlay: options.forceTranscode ? false : undefined,
             EnableDirectStream: options.forceTranscode ? false : undefined,
+            EnableTranscoding: options.forceTranscode ? true : undefined,
           }),
         });
       }
@@ -711,6 +800,8 @@
         playSessionId = info.PlaySessionId;
         playerItemId = item.Id;
         startupSubtitleError = null;
+        reportedSubtitleIndex = null;
+        lastAudioError = '';
         instance.onState = (state) => {
           if (player !== instance || generation !== playbackGeneration) return;
           playerMode.value = state.mode;
@@ -720,6 +811,15 @@
           if (seekInFlight == null || Math.abs(state.time - seekInFlight) < 1) wasmTime.value = state.time;
           wasmDuration.value = state.duration;
           if (state.message) playerMessage.value = state.message;
+          // Package B resolves the default subtitle without blocking load and
+          // reports the applied track asynchronously. Consume it here instead
+          // of relying only on the value captured right after load().
+          if (Number.isInteger(state.subtitleIndex) && state.subtitleIndex >= -1) {
+            reportedSubtitleIndex = state.subtitleIndex;
+            wasmSubTrack.value = state.subtitleIndex;
+            if (state.subtitleIndex >= 0) lastSubtitleIndex = state.subtitleIndex;
+          }
+          if (state.audioError) handleAudioError(instance, generation, state.audioError);
           if (state.subtitleError) handleSubtitleError(instance, generation, state.subtitleError);
           playerUI.acceptState(state);
         };
@@ -740,14 +840,19 @@
         return instance;
       }
 
-      // A startup subtitle failure must not be mistaken for a live track.
+      // A startup subtitle failure must not be mistaken for a live track. The
+      // generation check keeps a stale instance from touching the new player.
       async function syncStartupSubtitle(instance, generation) {
-        if (startupSubtitleError && startupSubtitleError.instance === instance) {
+        if (startupSubtitleError && startupSubtitleError.instance === instance
+            && startupSubtitleError.generation === generation) {
           await attemptSubtitleSelection(instance, -1, generation);
           wasmSubTrack.value = -1;
           if (player === instance && generation === playbackGeneration) {
             toasts.push({ message: '默认字幕加载失败，可重新选择', kind: 'error' });
           }
+        } else if (reportedSubtitleIndex != null) {
+          wasmSubTrack.value = reportedSubtitleIndex;
+          if (reportedSubtitleIndex >= 0) lastSubtitleIndex = reportedSubtitleIndex;
         } else {
           wasmSubTrack.value = instance.subtitleIndex ?? -1;
           if (wasmSubTrack.value >= 0) lastSubtitleIndex = wasmSubTrack.value;
@@ -763,13 +868,36 @@
         if (!playSrc.value) throw new Error('No media sources');
         playAudioIndex.value = options.audioIndex >= 0 ? options.audioIndex : defaultAudio(playSrc.value);
 
+        // A forced compatibility retry must come from the transcode URL of this
+        // PlaybackInfo response; the original stream is never used instead.
+        let streamUrl;
+        let fallbackUrl = null;
+        if (options.forceTranscode) {
+          const compatible = compatibleStream(playSrc.value);
+          if (!compatible.ok) throw new Error(compatible.message);
+          streamUrl = apiRaw(compatible.url);
+        } else {
+          const container = (playSrc.value.Container || 'mp4').split(',')[0].trim() || 'mp4';
+          const streamPath = playSrc.value.DirectStreamUrl
+            || `/Videos/${item.Id}/stream.${container}?Static=true&MediaSourceId=${encodeURIComponent(playSrc.value.Id)}`;
+          streamUrl = apiRaw(streamPath);
+          fallbackUrl = playSrc.value.TranscodingUrl ? apiRaw(playSrc.value.TranscodingUrl) : null;
+        }
+        // The previous generation's cleanup gets a bounded budget; a cleanup
+        // that overruns is surfaced instead of stacking another decoder.
+        const cleanup = await engineCleanup.waitForIdle(
+          Number(window.EIO_ENGINE_CLEANUP_BUDGET_MS) || undefined);
+        if (generation !== playbackGeneration) return;
+        if (!cleanup.ok) {
+          throw new Error(cleanup.reason === 'timeout'
+            ? '上一个播放器尚未释放资源，请稍后重试'
+            : '上一个播放器释放资源失败，请刷新页面释放资源后重试');
+        }
+
         const instance = createPlaybackInstance(item, info, generation);
-        const container = (playSrc.value.Container || 'mp4').split(',')[0].trim() || 'mp4';
-        const streamPath = playSrc.value.DirectStreamUrl
-          || `/Videos/${item.Id}/stream.${container}?Static=true&MediaSourceId=${encodeURIComponent(playSrc.value.Id)}`;
-        if (options.forceTranscode && !playSrc.value.TranscodingUrl) throw new Error('上游未提供可切换音轨的兼容播放流');
-        await instance.load(options.forceTranscode ? apiRaw(playSrc.value.TranscodingUrl) : apiRaw(streamPath), playSrc.value, item, {
-          fallbackUrl: playSrc.value.TranscodingUrl ? apiRaw(playSrc.value.TranscodingUrl) : null,
+        playbackStarted = false;
+        await instance.load(streamUrl, playSrc.value, item, {
+          fallbackUrl,
           audioIndex: playAudioIndex.value, subtitleIndex: options.subtitleIndex,
         });
         if (player !== instance || generation !== playbackGeneration) return;
@@ -777,11 +905,14 @@
         const seconds = options.startSeconds ?? (item.UserData?.PlaybackPositionTicks || 0) / 10000000;
         if (seconds > 0 && seconds < instance.duration) await instance.seek(seconds);
         if (options.paused) await instance.pause();
+        // Volume is user state: a compatibility retry or version switch must
+        // not reset it to the engine default.
         instance.setVolume(playerVolume.value);
         await api('/Sessions/Playing', { method: 'POST', body: JSON.stringify({ ItemId: item.Id,
           MediaSourceId: playSrc.value.Id, PlaySessionId: instance.sessionId,
           PositionTicks: instance.positionTicks, IsPaused: !instance.playing }), signal }).catch(() => {});
         if (player === instance && generation === playbackGeneration) {
+          playbackStarted = true;
           playerUI.end();
           playerUI.acceptState({ playing: instance.playing, loading: false });
         }
@@ -790,6 +921,12 @@
 
       function stopPlayer() {
         playbackGeneration++;
+        playbackStarted = false;
+        startupSubtitleError = null;
+        reportedSubtitleIndex = null;
+        lastAudioError = '';
+        episodeQueueLoader.invalidate();
+        episodeQueueLoading.value = false;
         playbackRequest?.abort(); playbackRequest = null;
         if (seekCommitTimer != null) { clearTimeout(seekCommitTimer); seekCommitTimer = null; }
         if (seekInFlightTimer != null) { clearTimeout(seekInFlightTimer); seekInFlightTimer = null; }
@@ -804,32 +941,56 @@
           body: JSON.stringify({ ItemId: playerItemId, MediaSourceId: player.mediaSource?.Id,
             PlaySessionId: player.sessionId, PositionTicks: player.positionTicks }),
         }).catch(() => {});
-        player.destroy();
+        // Destroy is async: track it so the next engine waits within budget for
+        // the previous generation instead of overlapping decoders (W13).
+        engineCleanup.track(player.destroy());
         player = null; playerItemId = null; playSessionId = null;
       }
 
       function exitPlayer() {
         stopPlayer();
+        pendingSelection.clear();
+        // A failed destroy is a real resource leak: leaving the player must not
+        // lift the cleanup barrier, otherwise re-entering would create another
+        // decoder while the old one is still alive. Only a page reload can
+        // recover that state; a still-pending cleanup recovers when it settles.
         playerUI.reset();
         playerUI.detach();
         window.location.hash = playerReturnRoute.startsWith('#/play/')
           ? '#/item/' + (playingItem.value?.SeriesId || playingItem.value?.Id) : playerReturnRoute;
       }
 
-      function retryPlayback() {
-        const context = playerUI.error?.retryContext;
+      // `playerUI` is wrapped in reactive(): the browser unwraps its refs while
+      // the VM harness keeps the ref object. Accept either shape so the error
+      // context is never lost between them.
+      function playerError() {
+        const current = playerUI.error;
+        return current && typeof current === 'object' && 'value' in current ? current.value : current;
+      }
+
+      function retryPlayback(compatible = false) {
+        const context = playerError()?.retryContext;
         const item = context?.item || playingItem.value;
         if (!item) return;
         playerUI.reset();
-        playItem(item, context?.mediaSourceId || null, {
+        // Compatibility playback keeps the selected source, resume position,
+        // pause intent, volume and track preferences, but re-negotiates with
+        // direct play/stream disabled and only the refreshed TranscodingUrl.
+        playItem(item, compatible
+          ? (playSrc.value?.Id || context?.mediaSourceId || null)
+          : (context?.mediaSourceId || null), {
           startSeconds: context?.startSeconds, paused: context?.paused,
           audioIndex: context?.audioIndex, subtitleIndex: context?.subtitleIndex,
-          forceTranscode: context?.forceTranscode,
+          // The failed selection is consumed: a plain retry negotiates the
+          // normal profile again, while "兼容播放" is the explicit forced
+          // transcode (A2/W08). Otherwise 重试 would silently repeat a failing
+          // forced transcode.
+          forceTranscode: compatible ? true : undefined,
         });
       }
 
       function selectErrorSource(id) {
-        const context = playerUI.error?.retryContext;
+        const context = playerError()?.retryContext;
         if (context) context.mediaSourceId = id;
       }
 
@@ -870,25 +1031,49 @@
       }
 
       /* ---- subtitles ---- */
-      function handleSubtitleError(instance, generation, message) {
+      function handleAudioError(instance, generation, message) {
         if (player !== instance || generation !== playbackGeneration) return;
-        if (subtitleAttempt && subtitleAttempt.instance === instance && subtitleAttempt.generation === generation) {
-          subtitleAttempt.failed = true; subtitleAttempt.message = message;
-        } else {
-          // No user attempt: this is the startup default-subtitle selection.
-          startupSubtitleError = { instance, message };
-        }
+        const text = safeError(message) || '音轨加载失败';
+        // onState repeats for progress/play events; report one failure once.
+        if (text === lastAudioError) return;
+        lastAudioError = text;
+        toasts.push({ message: text, kind: 'error' });
       }
 
+      function handleSubtitleError(instance, generation, message) {
+        if (player !== instance || generation !== playbackGeneration) return;
+        const text = safeError(message) || '字幕加载失败';
+        if (subtitleAttempt && subtitleAttempt.instance === instance && subtitleAttempt.generation === generation) {
+          subtitleAttempt.failed = true; subtitleAttempt.message = text;
+          return;
+        }
+        // Playback is already running: the error must be visible now, not
+        // stored in a startup variable nobody reads anymore (W11).
+        if (playbackStarted) {
+          wasmSubTrack.value = -1;
+          toasts.push({ message: text, kind: 'error' });
+          return;
+        }
+        startupSubtitleError = { instance, generation, message: text };
+      }
+
+      // selectSubtitle() resolves to a boolean: true only when the client
+      // actually applied (or closed) the track. `undefined` means the engine
+      // did not confirm the result and is not treated as success.
       async function attemptSubtitleSelection(instance, index, generation) {
         const attempt = { instance, generation, serial: ++subtitleSwitchSerial, failed: false, message: '' };
         subtitleAttempt = attempt;
+        let applied;
         try {
-          await instance.selectSubtitle(index);
+          applied = await instance.selectSubtitle(index);
         } catch (e) {
           if (attempt.instance === instance && attempt.generation === generation) { attempt.failed = true; attempt.message = safeError(e); }
         }
         if (subtitleAttempt === attempt) subtitleAttempt = null;
+        if (!attempt.failed && applied !== true) {
+          attempt.failed = true;
+          if (!attempt.message) attempt.message = '字幕引擎未确认选择结果';
+        }
         const ok = !attempt.failed && instance === player && generation === playbackGeneration;
         return { ok, message: attempt.message };
       }
@@ -1062,7 +1247,7 @@
       function leavePagesToLogin() {
         home.cancel(); search.cancel();
         library.cancel(); itemRequest?.abort(); collectionRequest?.abort();
-        stopPlayer(); playerUI.reset(); playerUI.detach();
+        stopPlayer(); playerUI.reset(); playerUI.detach(); pendingSelection.clear();
         page.value = 'login';
       }
 
@@ -1078,7 +1263,9 @@
         if (target !== 'library') library.cancel();
         if (target !== 'item') itemRequest?.abort();
         if (target !== 'resume' && target !== 'favorites') collectionRequest?.abort();
-        if (navPage.value === 'player' && target !== 'player') { stopPlayer(); playerUI.reset(); playerUI.detach(); }
+        if (navPage.value === 'player' && target !== 'player') {
+          stopPlayer(); playerUI.reset(); playerUI.detach(); pendingSelection.clear();
+        }
         page.value = 'app';
         navPage.value = target;
         refreshIcons();
@@ -1138,13 +1325,20 @@
         page, navPage, loginForm, loginError, loginLoading, loginShake, passwordVisible, currentUser, passWrap,
         mobileMenu, pages, sidebarPages, togglePassword, navigateTo, doLogin, doLogout, focusPass, libraryIcon, openItem, openLibrary,
         toasts, home, hero, libraries, latestSections, loadHome,
-        collectionItems, collectionLoading, collectionError, loadCollection,
+        collectionItems, collectionLoading, collectionError, collectionNotice, loadCollection,
         libraryName: library.name, libraryItems: library.items, libraryLoading: library.loading,
         libraryPageLoading: library.pageLoading, libraryTotal: library.total, libraryRetryAppend: library.retryAppend,
         libFilter: library.filter, libSort: library.sort, libGenres: library.genres, libraryHasMore: library.hasMore,
         libraryError: library.error, libraryPageError: library.pageError, libraryCountText: library.countText,
         libraryScrolled, libraryView, loadLibrary: loadLibraryPage, loadLibraryMore: library.loadMore,
         retryLibraryPage: library.retryPage, retryLibrary: library.retry,
+        // Package E owns the library partial state (library-state.js); package A
+        // only re-exports it so the shared template can bind to it without E
+        // touching app.js.
+        libraryPartial: library.partial,
+        libraryPartialNotice: library.partialNotice,
+        libraryPartialCanContinue: library.partialCanContinue,
+        continueLibraryPartial: (...args) => library.continuePartial?.(...args),
         setLibraryFilter: library.setFilter, setLibrarySort: library.setSort, clearLibraryFilter: library.clearFilter,
         itemDetail, itemDetailLoading, itemError, retryItem, loadItem, seriesSeasons, seasonEpisodes, seasonErrors, seasonLoading,
         seriesLoading, seriesError, seasonLoadBusy, retrySeason, retrySeries, detailView,
@@ -1158,7 +1352,7 @@
         imageUrl, backdropUrl, heroImageUrl,
         playerContainer, playerUI, playerAlive, playerMode, playItem, playItemId, playSrc, playingItem, playVersions, playMediaSourceId,
         playAudioIndex, audioTracks, subtitleTracks, versionOptions, audioOptions, subtitleOptions,
-        previousEpisode, nextEpisode, queueError, retryEpisodeQueue, trackBusy, subtitleBusy, switchVersion, selectAudio, selectSubtitle,
+        previousEpisode, nextEpisode, queueError, retryEpisodeQueue, episodeQueue, episodeQueueLoading, episodeQueuePartial, trackBusy, subtitleBusy, switchVersion, selectAudio, selectSubtitle,
         wasmSubTrack, seekPreview, seekTitle, seekPercent, playerVolume, previewSeek, changeVolume, toggleMute, toggleFullscreen,
         wasmTime, wasmDuration, wasmTimeHuman, wasmDurationHuman, wasmPlaying, playerLoadingText,
         exitPlayer, retryPlayback, selectErrorSource, wasmTogglePause, onWasmSeek, endScrub, cancelScrub,

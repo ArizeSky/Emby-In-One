@@ -168,6 +168,10 @@
                          :message="navPage==='resume' ? '暂无观看记录' : '暂无收藏，可在详情页点击收藏添加。'"></eio-state-block>
         <template v-else>
           <p class="eio-hint" style="margin-bottom:14px">{{ collectionItems.length }} 项</p>
+          <p v-if="collectionNotice" class="eio-inline-error" style="margin-bottom:14px">
+            <span>{{ collectionNotice }}</span>
+            <button class="eio-btn eio-btn-sm" @click="loadCollection(navPage)">重新加载</button>
+          </p>
           <div class="eio-grid">
             <eio-poster-card v-for="it in collectionItems" :key="it.Id" :item="it" :image-src="imageUrl(it,300)"
                              :detail-href="'#/item/' + it.Id" :show-progress="navPage==='resume'" :sub="it.SeriesName || ''" @play="playItem(it)"></eio-poster-card>
@@ -206,11 +210,15 @@
             <eio-poster-card v-for="it in libraryItems" :key="it.Id" :item="it" :image-src="imageUrl(it,300)"
                              :detail-href="'#/item/' + it.Id" @play="playItem(it)"></eio-poster-card>
           </div>
+          <div v-if="libraryPartial" class="eio-inline-error" style="margin-top:16px;background:rgba(245,181,68,.12);border-color:rgba(245,181,68,.3)" data-eio-partial="library">
+            <span>{{ libraryPartialNotice }}</span>
+            <button class="eio-btn eio-btn-sm" :disabled="!libraryPartialCanContinue" @click="continueLibraryPartial()">继续尝试</button>
+          </div>
           <div v-if="libraryPageError" class="eio-inline-error" style="margin-top:16px"><span>{{ libraryPageError }}</span><button class="eio-btn eio-btn-sm" @click="retryLibraryPage()">重试</button></div>
           <div v-if="libraryPageLoading" class="eio-hint" style="margin-top:16px">正在加载更多…</div>
           <div :ref="libraryView.setSentinel" style="height:1px"></div>
-          <div v-if="libraryHasMore && !libraryPageLoading" class="eio-state"><button class="eio-btn eio-btn-sm" @click="loadLibraryMore()">加载更多</button></div>
-          <div v-else-if="!libraryHasMore && !libraryPageError" class="eio-hint" style="margin-top:16px;text-align:center">已加载全部</div>
+          <div v-if="libraryHasMore && !libraryPageLoading && !libraryPartial" class="eio-state"><button class="eio-btn eio-btn-sm" @click="loadLibraryMore()">加载更多</button></div>
+          <div v-else-if="!libraryHasMore && !libraryPageError && !libraryPartial" class="eio-hint" style="margin-top:16px;text-align:center">已加载全部</div>
         </template>
       </div>
 
@@ -459,8 +467,12 @@
           </div>
           <div class="eio-error-actions">
             <button class="eio-btn eio-btn-primary" @click="retryPlayback()">重试</button>
+            <button class="eio-btn eio-btn-ghost" @click="retryPlayback(true)">兼容播放</button>
             <button class="eio-btn eio-btn-ghost" @click="exitPlayer()">返回详情</button>
           </div>
+          <p class="eio-hint" style="max-width:360px;margin-top:10px">
+            兼容播放会使用当前版本重新请求转码流，保留播放进度；若上游未提供转码流，会明确提示而不是重试原文件。
+          </p>
         </div>
 
         <div v-else class="eio-play-bottom">
@@ -475,8 +487,8 @@
               <svg v-if="wasmPlaying" viewBox="0 0 24 24" class="w-5 h-5" fill="currentColor" aria-hidden="true"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
               <svg v-else viewBox="0 0 24 24" class="w-5 h-5" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
             </button>
-            <button class="eio-play-btn" aria-label="上一集" :disabled="!previousEpisode || trackBusy" @click="playItem(previousEpisode)"><i data-lucide="skip-back" class="w-5 h-5"></i></button>
-            <button class="eio-play-btn" aria-label="下一集" :disabled="!nextEpisode || trackBusy" @click="playItem(nextEpisode)"><i data-lucide="skip-forward" class="w-5 h-5"></i></button>
+            <button class="eio-play-btn" aria-label="上一集" :disabled="!previousEpisode || trackBusy || episodeQueueLoading" @click="playItem(previousEpisode)"><i data-lucide="skip-back" class="w-5 h-5"></i></button>
+            <button class="eio-play-btn" aria-label="下一集" :disabled="!nextEpisode || trackBusy || episodeQueueLoading" @click="playItem(nextEpisode)"><i data-lucide="skip-forward" class="w-5 h-5"></i></button>
             <span class="eio-time">{{ wasmTimeHuman }} / {{ wasmDurationHuman }}</span>
 
             <eio-track-menu v-if="playVersions.length > 1" label="版本" menu-id="eio-menu-version" :options="versionOptions"
@@ -499,7 +511,7 @@
             </div>
             <button class="eio-play-btn" aria-label="全屏" @click="toggleFullscreen()"><i data-lucide="maximize" class="w-5 h-5"></i></button>
           </div>
-          <div v-if="queueError" class="eio-inline-error" style="margin-top:10px"><span>{{ queueError }}</span><button class="eio-btn eio-btn-sm" @click="retryEpisodeQueue()">重试</button></div>
+          <div v-if="queueError" class="eio-inline-error" style="margin-top:10px"><span>{{ queueError }}</span><button class="eio-btn eio-btn-sm" :disabled="episodeQueueLoading" @click="retryEpisodeQueue()">重试</button></div>
         </div>
 
         <div class="eio-play-toasts">
@@ -516,6 +528,7 @@
 <script src="/web/web/subtitles.js?v=v1.4.4-rc3"></script>
 <script src="/web/web/subtitle-controller.js?v=v1.4.4-rc3"></script>
 <script src="/web/web/player-libmedia.js?v=v1.4.4-rc3"></script>
+<script src="/web/web/playback-orchestrator.js?v=v1.4.4-rc3"></script>
 <script src="/web/web/data.js?v=v1.4.4-rc3"></script>
 <script src="/web/web/ui.js?v=v1.4.4-rc3"></script>
 <script src="/web/web/page-state.js?v=v1.4.4-rc3"></script>

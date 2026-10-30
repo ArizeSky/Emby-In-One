@@ -10,7 +10,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const SCRIPTS = ['data.js', 'ui.js', 'page-state.js', 'player-ui.js', 'library-state.js', 'ui-components.js', 'app.js'];
+const SCRIPTS = ['data.js', 'ui.js', 'page-state.js', 'player-ui.js', 'library-state.js', 'ui-components.js', 'playback-orchestrator.js', 'app.js'];
 
 function makeStorage(initial = {}) {
   const store = new Map(Object.entries(initial));
@@ -66,6 +66,7 @@ function harness(options = {}) {
   context.window.innerWidth = options.width || 1440;
   vm.createContext(context);
   for (const file of SCRIPTS) {
+    if (file === 'app.js' && options.beforeApp) options.beforeApp(context);
     vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'public', 'web', file), 'utf8'), context);
   }
   return { app, context, calls, data: context.EIOData, storage, mountedHooks, beforeUnmountHooks };
