@@ -317,6 +317,26 @@ func (a *App) localFilterServerQuery(base url.Values, client *UpstreamClient) (u
 		query.Del("genreIds")
 		query.Del("genreids")
 	}
+	// PersonIds is an independent predicate, but its virtual IDs still need
+	// per-server translation before the physical media Ids are added.
+	people := url.Values{}
+	for key, values := range query {
+		if strings.EqualFold(key, "PersonIds") {
+			people[key] = append([]string(nil), values...)
+		}
+	}
+	if len(people) > 0 {
+		translated := translateBatchIDQueryForServer(people, client.ID, a.IDStore)
+		if translated.Err != nil || translated.Empty {
+			return nil, false
+		}
+		for key := range people {
+			query.Del(key)
+		}
+		for key, values := range translated.Query {
+			query[key] = values
+		}
+	}
 	// Replace the client's batch predicate with the intersected local batch. The
 	// PersonIds predicate names people, not media items, and stays verbatim.
 	for key := range query {
@@ -336,9 +356,9 @@ func localFilterIDBatches(ids []string) [][]string {
 		batch := make([]string, 0, min(localFilterBatchLimit, len(ids)-start))
 		encoded := 0
 		for start < len(ids) && len(batch) < localFilterBatchLimit {
-			add := len(ids[start])
+			add := len(url.QueryEscape(ids[start]))
 			if len(batch) > 0 {
-				add++
+				add += 3 // QueryEscape encodes the comma separator as %2C.
 			}
 			if len(batch) > 0 && encoded+add > localFilterBatchMaxIDBytes {
 				break
@@ -373,6 +393,11 @@ func (a *App) fetchLocalFilterTarget(ctx context.Context, reqCtx *RequestContext
 		pageQuery.Set("Ids", strings.Join(batch, ","))
 		setQueryValue(pageQuery, "StartIndex", "0")
 		setQueryValue(pageQuery, "Limit", strconv.Itoa(len(batch)))
+		if len(url.QueryEscape(strings.Join(batch, ","))) > localFilterBatchMaxIDBytes || len(pageQuery.Encode()) > 8192 {
+			result.Complete = false
+			result.Truncated = true
+			continue
+		}
 		if !budget.tryAcquire() {
 			result.Complete = false
 			result.Truncated = true
