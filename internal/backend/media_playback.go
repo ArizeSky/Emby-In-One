@@ -36,7 +36,10 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 	if !selected {
 		return
 	}
-	// Concurrent playback limit check for regular users
+	// Concurrent playback limit check for regular users. The reservation token binds
+	// this PlaybackInfo attempt to its unit so the failure paths below cannot
+	// release a unit a later reservation already replaced (W05).
+	var reservation playbackSlotReservation
 	if limiterUserID, ok := a.playbackLimiterKey(reqCtx, r, resolved.ServerID); ok {
 		var maxConcurrent int
 		for _, u := range a.ConfigStore.Snapshot().Upstream {
@@ -45,7 +48,9 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 				break
 			}
 		}
-		if !a.PlaybackLimiter.TryStart(limiterUserID, resolved.ServerID, r.PathValue("itemId"), maxConcurrent) {
+		var allowed bool
+		reservation, allowed = a.PlaybackLimiter.TryReserve(limiterUserID, resolved.ServerID, r.PathValue("itemId"), maxConcurrent)
+		if !allowed {
 			writeJSON(w, http.StatusTooManyRequests, map[string]any{"message": "已达到最大同时播放数限制"})
 			return
 		}
@@ -70,8 +75,8 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 	anyDenied := false
 	anyUnconfirmed := false
 	releaseSlot := func() {
-		if limiterUserID, ok := a.playbackLimiterKey(reqCtx, r, resolved.ServerID); ok {
-			a.PlaybackLimiter.Stop(limiterUserID, resolved.ServerID)
+		if a.PlaybackLimiter != nil {
+			a.PlaybackLimiter.ReleaseReservation(reservation)
 		}
 	}
 	for _, inst := range instances {
@@ -230,12 +235,13 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 		if a.Logger != nil {
 			a.Logger.Errorf("PlaybackInfo: all upstream requests failed for itemId=%s", r.PathValue("itemId"))
 		}
-		// Nothing will play, so release the slot TryStart reserved above. Clients retry
-		// PlaybackInfo on failure, and holding the slot kept the user counted against
+		// Nothing will play, so release the unit this request reserved. Clients retry
+		// PlaybackInfo on failure, and holding the unit kept the user counted against
 		// the server's capacity for the full heartbeat timeout while they could not
-		// actually start a stream.
-		if limiterUserID, ok := a.playbackLimiterKey(reqCtx, r, resolved.ServerID); ok {
-			a.PlaybackLimiter.Stop(limiterUserID, resolved.ServerID)
+		// actually start a stream. Releasing by reservation token means a concurrent
+		// later reservation is left untouched.
+		if a.PlaybackLimiter != nil {
+			a.PlaybackLimiter.ReleaseReservation(reservation)
 		}
 		if anyDenied && !anyUnconfirmed {
 			writeJSON(w, http.StatusForbidden, map[string]any{"message": "Content restricted by parental rating"})
@@ -251,6 +257,14 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 	// Rewrite top-level fields (excluding MediaSources which were already virtualised per-server above)
 	delete(base, "MediaSources")
 	rewriteResponseIDs(base, baseServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
+	// Bind the unit to the PlaySessionId this response hands to the client, so
+	// only that playback attempt can claim it. Late Started/segment events of the
+	// attempt this reservation replaced still carry the previous PlaySessionId.
+	if a.PlaybackLimiter != nil {
+		if playSessionID, _ := base["PlaySessionId"].(string); playSessionID != "" {
+			a.PlaybackLimiter.BindReservationPlaySession(reservation, playSessionID)
+		}
+	}
 	base["MediaSources"] = make([]any, 0, len(allMediaSources))
 	for _, mediaSource := range privacyPlaybackMediaSources(r, allMediaSources, r.PathValue("itemId")) {
 		base["MediaSources"] = append(base["MediaSources"].([]any), mediaSource)
