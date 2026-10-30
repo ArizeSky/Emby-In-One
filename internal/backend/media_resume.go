@@ -107,6 +107,8 @@ func (a *App) handleLocalResume(w http.ResponseWriter, r *http.Request, reqCtx *
 		setQueryValue(pageQuery, "Limit", strconv.Itoa(limit))
 	}
 	desiredEnd := startIndex + limit
+	// A requested global order cannot be computed from a recent-playback prefix.
+	fullOrder := len(splitQueryList(firstQueryValue(query, "SortBy", "sortBy"))) > 0
 	const batchSize = 100
 	var enriched []map[string]any
 	incomplete := false
@@ -157,7 +159,7 @@ func (a *App) handleLocalResume(w http.ResponseWriter, r *http.Request, reqCtx *
 			}
 			enriched = append(enriched, item)
 		}
-		if desiredEnd > 0 && len(enriched) >= desiredEnd {
+		if !fullOrder && desiredEnd > 0 && len(enriched) >= desiredEnd {
 			enriched = enriched[:desiredEnd]
 			if len(page) == batchSize {
 				// A full WatchStore page can have a tail that was not scanned;
