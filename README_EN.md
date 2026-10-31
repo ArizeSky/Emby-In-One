@@ -163,6 +163,7 @@ go run ./cmd/emby-in-one
 
 - **Admin panel:** `/admin/`, using an administrator account.
 - **Web client (current release candidate):** `/web/`, using a regular user created by the administrator. Administrator accounts cannot sign in to the Web client.
+- **Web appearance (development branch):** choose light, dark or system mode from the login page, desktop sidebar or mobile menu; dark remains the default and player/subtitle styling stays dark. Preferences are currently browser-local, with separate anonymous/account caches. Theme-package administration and cross-device synchronization are still in development; these changes are not deployed.
 - **Emby clients:** use the address through which you actually expose the service.
 
 Managed Docker installs listen only on localhost by default. For initial remote access, create an SSH tunnel from your own computer:
