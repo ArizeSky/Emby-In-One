@@ -55,11 +55,19 @@ function adminHarness(options = {}) {
   };
   context.window = context;
   vm.createContext(context);
+  // admin.html loads the K4 activity module before admin.js; mirror that order so
+  // the harness exercises the same globals the browser gets.
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'public', 'admin-activity.js'), 'utf8'), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'public', 'admin.js'), 'utf8'), context);
 
   // Instantiate the options-API component far enough for the refresh flow.
   const vm2 = Object.assign(Object.create(null), appOptions.data());
   for (const [name, fn] of Object.entries(appOptions.methods)) vm2[name] = fn.bind(vm2);
+  // Computed properties are getters in Vue; expose them the same way so tests
+  // can read the derived activity view directly.
+  for (const [name, fn] of Object.entries(appOptions.computed || {})) {
+    Object.defineProperty(vm2, name, { get: () => fn.call(vm2), enumerable: true, configurable: true });
+  }
   vm2.$nextTick = fn => Promise.resolve().then(() => fn && fn());
   vm2.$refs = {};
   return { vm: vm2, options: appOptions, seen, context };
@@ -407,4 +415,136 @@ test('editing and saving an existing server preserves separate streaming URLs', 
   assert.deepStrictEqual(Array.from(body.streamingUrls), urls,
     'opening and saving an existing server must preserve its separate streaming URLs');
   if (vm._refreshTimer) clearTimeout(vm._refreshTimer);
+});
+
+// --- Upstream viewing activity (K4) ---------------------------------------
+
+function activityDTO(overrides = {}) {
+  return Object.assign({
+    serverNow: '2025-01-01T00:00:00Z', available: true, state: 'normal',
+    enabled: true, intervalUnit: 'days', intervalValue: 30, minWatchSeconds: 60,
+    revision: 7, lastActivityAt: '2024-12-30T10:00:00Z', lastQualifiedAt: '2024-12-30T09:00:00Z',
+    manualReferenceAt: null, referenceAt: '2024-12-30T09:00:00Z', referenceSource: 'observed',
+    dueAt: '2025-01-29T09:00:00Z', remainingRatio: 0.94,
+  }, overrides);
+}
+
+test('servers page filters/sorts a derived view without touching upstreamList', () => {
+  const h = adminHarness();
+  const vm = h.vm;
+  vm.upstreamList = [
+    { id: 'a', name: 'A', activity: activityDTO({ state: 'normal' }) },
+    { id: 'b', name: 'B', activity: activityDTO({ state: 'overdue', dueAt: '2024-12-01T00:00:00Z' }) },
+    { id: 'c', name: 'C', activity: activityDTO({ state: 'warning' }) },
+  ];
+  const original = vm.upstreamList.map(row => row.id);
+
+  vm.activitySort = 'risk';
+  // activityRows comes from the VM realm module; Array.from re-homes it before
+  // the strict deep compare.
+  assert.deepStrictEqual(Array.from(vm.activityRows.map(row => row.server.id)), ['b', 'c', 'a']);
+  assert.strictEqual(vm.activityReorderEnabled, false);
+
+  vm.activityFilter = 'attention';
+  assert.deepStrictEqual(Array.from(vm.activityRows.map(row => row.server.id)), ['b', 'c']);
+  assert.deepStrictEqual(Array.from(vm.activityRows.map(row => row.index)), [1, 2],
+    'reorder/edit keep using original indexes, not the derived row position');
+
+  vm.activityFilter = 'all';
+  vm.activitySort = 'default';
+  assert.deepStrictEqual(Array.from(vm.activityRows.map(row => row.server.id)), original);
+  assert.strictEqual(vm.activityReorderEnabled, true);
+  assert.deepStrictEqual(vm.upstreamList.map(row => row.id), original,
+    'the source list order must never change for a display-only filter/sort');
+});
+
+test('activity dialog opens from the list and saves with the server revision', async () => {
+  const h = adminHarness({ reply: (url, opts) => {
+    if (url.includes('/activity')) {
+      return opts && opts.method === 'PUT' ? activityDTO({ revision: 8, intervalValue: 45 }) : activityDTO();
+    }
+    return {};
+  } });
+  const vm = h.vm;
+  vm.currentPage = 'servers';
+  vm.openActivity({ id: 's1', name: 'A' });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.strictEqual(vm.activityDialog.serverId, 's1');
+  assert.strictEqual(vm.activityDialog.loaded, true);
+  assert.match(vm.activityDialog.notice || '', /^$/);
+  assert.strictEqual(vm.activityCanSave, true);
+
+  vm.activityDialog.form.intervalValue = 45;
+  await vm.saveActivitySettings();
+  const put = h.seen.find(call => call.method === 'PUT' && call.url.includes('/activity'));
+  assert.ok(put, 'the dialog issued the activity PUT');
+  const body = JSON.parse(put.body);
+  assert.strictEqual(body.expectedRevision, 7);
+  assert.strictEqual(body.intervalValue, 45);
+  assert.strictEqual(vm.activityDialog.form.expectedRevision, 8);
+  assert.strictEqual(vm.activityDialog.savedNotice, '保活设置已保存');
+  assert.ok(h.seen.some(call => call.url.includes('/admin/api/upstream') && !call.url.includes('/activity')),
+    'a successful save refreshes the server list');
+  vm.closeActivity();
+});
+
+test('activity dialog falls back to the row index when a server has no id yet', async () => {
+  const h = adminHarness({ reply: () => activityDTO() });
+  const vm = h.vm;
+  vm.openActivity({ index: 2, name: 'Unpersisted' });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.strictEqual(vm.activityDialog.serverId, 2);
+  assert.ok(h.seen.some(call => call.url.includes('/admin/api/upstream/2/activity')));
+  vm.closeActivity();
+});
+
+test('closing the activity dialog aborts its request and keeps it closed', async () => {
+  const h = adminHarness({ reply: () => ({ __delay: true }) });
+  const vm = h.vm;
+  vm.currentPage = 'servers';
+  vm.openActivity({ id: 's1', name: 'A' });
+  // The GET is issued from a promise microtask; flush once so the recorded call
+  // carries the AbortController signal that closing must abort.
+  await new Promise(resolve => setTimeout(resolve, 0));
+  const call = h.seen.find(entry => entry.url.includes('/activity'));
+  assert.ok(call && call.signal, 'the GET carried an AbortController signal');
+  vm.closeActivity();
+  assert.strictEqual(call.signal.aborted, true);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.strictEqual(vm.activityDialog.open, false);
+  assert.strictEqual(vm.activityDialog.dto, null);
+});
+
+test('leaving the servers page or logging out closes the activity dialog', async () => {
+  const h = adminHarness({ reply: () => activityDTO() });
+  const vm = h.vm;
+  vm.currentPage = 'servers';
+  vm.isLoggedIn = true;
+  vm.openActivity({ id: 's1', name: 'A' });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.strictEqual(vm.activityDialog.open, true);
+
+  h.options.watch.currentPage.call(vm, 'dashboard');
+  assert.strictEqual(vm.activityDialog.open, false, 'leaving the servers page must close the dialog');
+  if (vm._refreshTimer) clearTimeout(vm._refreshTimer);
+
+  vm.currentPage = 'servers';
+  vm.openActivity({ id: 's1', name: 'A' });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  vm.logout();
+  assert.strictEqual(vm.isLoggedIn, false);
+  assert.strictEqual(vm.activityDialog.open, false);
+  assert.strictEqual(vm.activityDialog.dto, null, 'logout must not leave activity data for the next session');
+});
+
+test('a 401 on the activity request logs out and drops the dialog data', async () => {
+  const h = adminHarness({ reply: () => ({ __status: 401, __body: { error: 'unauthorized' } }) });
+  const vm = h.vm;
+  vm.currentPage = 'servers';
+  vm.isLoggedIn = true;
+  vm.openActivity({ id: 's1', name: 'A' });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.strictEqual(vm.isLoggedIn, false);
+  assert.strictEqual(vm.activityDialog.open, false);
+  assert.strictEqual(vm.activityDialog.dto, null);
 });

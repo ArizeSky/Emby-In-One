@@ -706,7 +706,7 @@ environment:
 | 页面 | 功能 |
 |------|------|
 | **系统概览** | 在线服务器数、ID 映射数、存储引擎（SQLite） |
-| **上游节点** | 添加/编辑/删除/重连服务器，拖拽排序；支持配置最大并发数 `maxConcurrent`；每行可切换「聚合开关」 |
+| **上游节点** | 添加/编辑/删除/重连服务器，拖拽排序；支持配置最大并发数 `maxConcurrent`；每行可切换「聚合开关」，并显示最近活动/有效观看与保活提醒状态，可打开独立「保活提醒」设置 |
 | **用户管理** | 创建、编辑、启用/禁用、删除普通用户，可视化配置可访问服务器 |
 | **网络代理** | HTTP/HTTPS 代理池管理，支持一键连通性测试 |
 | **全局设置** | 系统名称、默认播放模式、管理员账户、超时与宽恕期配置 |
@@ -715,6 +715,14 @@ environment:
 > 管理面板侧边栏底部显示当前运行版本号。对于 `spoofClient: passthrough` 的新增/编辑（无论密码还是 API Key），如果当前没有已捕获的客户端身份，管理 API 仍会保存配置，但会返回 warning，并把该上游保留为 offline，等待管理员用真实客户端登录一次后自动重试；全新部署也可改用 `custom` 模式显式定义身份。
 
 **上游聚合开关**：上游节点列表每行提供一个聚合开关（可键盘操作）。关闭后，该服务器仍保留配置、在线检测、管理员重连、UA 绑定与历史数据，但不再参与 `/web` 与 Emby 客户端的内容聚合（媒体库、搜索、最新、继续观看、下一集、跨服副本与播放版本列表等），管理员访问内容时同样受限；已开始的播放进度/停止、`PlayingItems` 删除与转码清理仍按授权正常进行。开关即时生效，不重启、不重新登录、不触发全量上游重连。持久化字段 `aggregationDisabled`（缺省或 `false` 表示开启聚合），按持久服务器 ID 绑定，排序/改名不受影响。
+
+**观看活动与保活提醒（本地观察，默认关闭）**：上游节点列表新增「观看活动」与「保活提醒」两列，每行可为该节点单独打开保活设置弹窗。最近活动只统计本代理观察到、且向上游上报成功（2xx）的播放事件；有效观看要求同一可靠会话内累计达到最低时长（默认 60 秒）。两者分开显示，来源标明「人工校准」或「自动观测」，精确到秒的悬停提示同时给出本地时间与 UTC；没有记录时显示「暂无记录」，不会显示 1970。
+
+- **设置项**：启用开关、周期单位（天 / UTC 自然月）、周期值、最低有效观看秒数、可清空的人工参考日期。默认不启用，周期默认 30 天。人工参考日期按本地时间输入、以 UTC RFC3339 保存；留空表示不使用人工参考，不会用当前时间自动填充，也不能晚于服务器时间。
+- **状态与剩余时间**：状态由服务端按服务器当前时间与截止时间计算为正常/留意/紧急/超期，另有未启用、未知、不可用；绿/黄/橙/红与灰色徽章都带中文文字，颜色不是唯一信息。剩余时间按服务端返回的服务器时间与截止时间推算，不用浏览器时钟判定状态，也没有高频轮询。
+- **筛选与排序**：风险筛选和「按保活风险排序」只生成派生视图，不改动上游列表顺序、不调用排序接口；派生视图下禁用上下移动，编辑/重连/删除仍使用原始服务器 ID 与顺序。同一风险档内按剩余时间从少到多排列，未启用/未知/不可用不按剩余时间重排。
+- **请求与保存**：关闭或将弹窗切换到另一节点会取消未完成请求，旧的 GET/PUT 响应不会覆盖新弹窗；保存中禁止重复提交，保存失败或冲突（409）可见，冲突需刷新后重试；数据不可用时可刷新，但不能用缺省版本保存。
+- **边界**：提醒只是本代理的本地观察，**不保证上游账号保活成功**，也不会自动播放、定时保活。周期按 UTC 日历计算（自然月滚动，月末夹到目标月最后一天），界面按本地时区展示。账号范围变化（例如更换上游地址、用户名或 API Key）会重置对应统计与人工参考，旧范围不会沿用；页面不展示账号范围摘要、凭据或任何用户观看条目。
 
 ### 管理 API
 
@@ -729,6 +737,8 @@ environment:
 | DELETE | `/admin/api/upstream/:index` | 删除上游服务器（自动清理 ID 映射） |
 | POST | `/admin/api/upstream/:index/reconnect` | 重连上游服务器 |
 | PATCH | `/admin/api/upstream/:id/aggregation` | 切换该服务器的上游聚合开关 |
+| GET | `/admin/api/upstream/:id/activity` | 读取该节点的观看活动、保活设置与服务端计算的状态 |
+| PUT | `/admin/api/upstream/:id/activity` | 保存该节点保活设置（完整字段 + `expectedRevision`，冲突返回 409） |
 | GET | `/admin/api/ua` | 列出最近采集、常驻 UA 及服务器绑定 |
 | POST | `/admin/api/ua/resident` | 将最近采集保存为常驻 UA |
 | PATCH | `/admin/api/ua/resident/:id` | 重命名常驻 UA |
@@ -955,9 +965,10 @@ Emby-In-One/
 │   └── outbound_diagnostics.go     # 出站诊断扫描（有界输入）
 ├── third_party/sqlite/             # SQLite CGO 源码依赖
 ├── public/
-│   ├── embed.go                    # go:embed 指令（将 admin.html、admin.js、vendor/ 与 web/ 编译进二进制）
+│   ├── embed.go                    # go:embed 指令（将 admin.html、admin.js、admin-activity.js、vendor/ 与 web/ 编译进二进制）
 │   ├── admin.html                  # Vue 3 + Tailwind CSS 管理面板模板
 │   ├── admin.js                    # Vue 3 应用逻辑（从 admin.html 拆分）
+│   ├── admin-activity.js           # 观看活动/保活提醒 UI 模块（状态徽章、派生筛选排序、设置弹窗）
 │   ├── web/                        # 内置 Web 客户端（/web/，Vue 3 全局构建，无打包步骤）
 │   │   ├── web.html                #   单页应用外壳
 │   │   ├── app.js                  #   应用入口（路由、页面装配、播放器接线）
@@ -973,11 +984,11 @@ Emby-In-One/
 │   │   └── ui.css                  #   Web 客户端样式
 │   └── vendor/                     # 自托管前端依赖：Vue、lucide、Tailwind 产物、Inter 字体；
 │                                   # web/ 下为 libmedia 播放器、JASSUB 字幕引擎与 Noto Sans SC 字体
-├── tests/                          # Node 前端行为测试（node --test，10 个文件 67 项）
+├── tests/                          # Node 前端行为测试（node --test）
 │   ├── web-ui-harness.cjs          #   共享 VM harness（Vue 桩，按 web.html 顺序加载脚本）
 │   ├── make-web-fixtures.py        #   ffmpeg 合成样本生成（样本不入发行资源）
 │   └── *.test.cjs                  #   data / ui / player / player-ui / subtitles / mse-seek /
-│                                   #   mse-duration / seek-queue / session / admin-panel
+│                                   #   mse-duration / seek-queue / session / admin-panel / admin-activity
 ├── assets/panel.css                # Tailwind 输入文件（含从 admin.html 迁出的面板自定义样式）
 ├── tailwind.config.js              # Tailwind 扫描配置（改动 admin.html/admin.js 后跑 npm run build:panel）
 ├── package.json                    # 根 package.json 提供 build:panel / test 脚本（Node 依赖已移至 legacy/）

@@ -134,21 +134,45 @@
     <!-- Servers -->
     <div v-if="currentPage === 'servers' && listErrors.upstream" role="alert" class="card p-4 text-amber-700 bg-amber-50 border border-amber-200">服务器列表加载失败：{{ listErrors.upstream }} <button @click="refreshServers" class="ml-2 text-blue-600 hover:underline">重试</button></div>
     <div v-if="currentPage === 'servers' && listErrors.proxies" role="alert" class="card p-4 text-amber-700 bg-amber-50 border border-amber-200">代理列表加载失败：{{ listErrors.proxies }} <button @click="refreshServers" class="ml-2 text-blue-600 hover:underline">重试</button></div>
+    <div v-if="currentPage === 'servers'" class="card p-4 flex flex-wrap items-center gap-2 text-sm">
+      <span class="text-slate-500">风险筛选</span>
+      <select v-model="activityFilter" class="px-2 py-1 border rounded-lg outline-none">
+        <option v-for="opt in activityFilterOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+      </select>
+      <span class="text-slate-500">排序</span>
+      <select v-model="activitySort" class="px-2 py-1 border rounded-lg outline-none">
+        <option v-for="opt in activitySortOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+      </select>
+      <span v-if="!activityReorderEnabled" class="text-xs text-amber-700">当前为派生筛选/排序视图：上下移动已禁用，编辑与保存仍按原服务器顺序，不会改写排序。</span>
+      <span class="text-xs text-slate-400">提醒仅基于本代理观测到的播放，不代表上游保活成功。</span>
+    </div>
     <div v-if="currentPage === 'servers'" class="card overflow-x-auto">
       <table class="w-full min-w-[700px] text-left border-collapse">
-        <thead class="bg-slate-50 text-slate-500 text-xs font-semibold uppercase"><tr><th class="px-6 py-4">顺序</th><th class="px-6 py-4">名称</th><th class="px-6 py-4">地址</th><th class="px-6 py-4">代理</th><th class="px-6 py-4">权重</th><th class="px-6 py-4">状态</th><th class="px-6 py-4">操作</th></tr></thead>
+        <thead class="bg-slate-50 text-slate-500 text-xs font-semibold uppercase"><tr><th class="px-6 py-4">顺序</th><th class="px-6 py-4">名称</th><th class="px-6 py-4">地址</th><th class="px-6 py-4">代理</th><th class="px-6 py-4">权重</th><th class="px-6 py-4">状态</th><th class="px-6 py-4" title="有效观看=同一可靠会话累计达到门槛且上游确认上报；不是保活成功保证">观看活动</th><th class="px-6 py-4">保活提醒</th><th class="px-6 py-4">操作</th></tr></thead>
         <tbody class="divide-y divide-slate-100">
-          <tr v-for="(s, idx) in upstreamList" :key="s.id || s.index" class="hover:bg-slate-50/50">
+          <tr v-if="activityRows.length === 0"><td colspan="9" class="px-6 p-8 text-center text-slate-400 italic">没有符合当前筛选条件的上游节点。</td></tr>
+          <tr v-for="row in activityRows" :key="row.server.id || row.server.index" class="hover:bg-slate-50/50">
             <td class="px-6 py-4 flex flex-col space-y-1">
-              <button @click="reorder(idx, idx-1)" :disabled="idx===0" class="hover:text-blue-600 disabled:opacity-20"><i data-lucide="chevron-up" class="w-4 h-4"></i></button>
-              <button @click="reorder(idx, idx+1)" :disabled="idx===upstreamList.length-1" class="hover:text-blue-600 disabled:opacity-20"><i data-lucide="chevron-down" class="w-4 h-4"></i></button>
+              <button @click="reorder(row.index, row.index-1)" :disabled="!activityReorderEnabled || row.index===0" class="hover:text-blue-600 disabled:opacity-20" title="上移（仅在默认视图可用）"><i data-lucide="chevron-up" class="w-4 h-4"></i></button>
+              <button @click="reorder(row.index, row.index+1)" :disabled="!activityReorderEnabled || row.index===upstreamList.length-1" class="hover:text-blue-600 disabled:opacity-20" title="下移（仅在默认视图可用）"><i data-lucide="chevron-down" class="w-4 h-4"></i></button>
             </td>
-            <td class="px-6 py-4 font-medium">{{ s.name }}</td>
-            <td class="px-6 py-4 text-slate-500 text-sm max-w-xs truncate">{{ s.url }}</td>
-            <td class="px-6 py-4 text-sm">{{ getProxyName(s.proxyId) }}</td>
-            <td class="px-6 py-4"><span v-if="s.priorityMetadata" class="px-2 py-0.5 bg-purple-100 text-purple-700 rounded text-xs font-bold">元数据优先</span><span v-if="s.directRedirect" class="ml-1 px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded text-xs font-bold">302直通</span><span v-if="s.pagedScan" class="ml-1 px-2 py-0.5 bg-sky-100 text-sky-700 rounded text-xs font-bold">分页扫描</span></td>
-            <td class="px-6 py-4"><span :class="s.online ? 'bg-green-50 text-green-600' : 'bg-red-50 text-red-600'" class="px-2 py-1 rounded-full text-xs font-bold border">{{ s.online ? '在线' : '离线' }}</span><span v-if="s.aggregationEnabled === false" class="aggregation-paused">已暂停聚合</span></td>
-            <td class="px-6 py-4"><div class="flex items-center space-x-2 flex-nowrap"><span class="aggregation-control"><button type="button" class="aggregation-switch" role="switch" :aria-checked="s.aggregationEnabled !== false" :aria-label="(s.aggregationEnabled === false ? '开启聚合：' : '关闭聚合：') + s.name" :disabled="!!aggregationPending[s.id]" :class="{ 'is-enabled': s.aggregationEnabled !== false }" @click="setServerAggregation(s)"><span v-if="s.aggregationEnabled !== false" key="aggregation-on"><i data-lucide="toggle-right" class="w-5 h-5"></i></span><span v-else key="aggregation-off"><i data-lucide="toggle-left" class="w-5 h-5"></i></span></button><span role="tooltip" class="aggregation-tooltip">{{ aggregationPending[s.id] ? '保存中' : (s.aggregationEnabled === false ? '开启聚合' : '关闭聚合') }}</span></span><button @click="editServer(s)" class="p-2 text-slate-400 hover:text-blue-600"><i data-lucide="edit-3" class="w-4 h-4"></i></button><button @click="reconnectServer(s.id || s.index)" class="p-2 text-slate-400 hover:text-green-600"><i data-lucide="refresh-cw" class="w-4 h-4"></i></button><button @click="deleteServer(s.id || s.index)" class="p-2 text-slate-400 hover:text-red-600"><i data-lucide="trash-2" class="w-4 h-4"></i></button></div></td>
+            <td class="px-6 py-4 font-medium">{{ row.server.name }}</td>
+            <td class="px-6 py-4 text-slate-500 text-sm max-w-xs truncate">{{ row.server.url }}</td>
+            <td class="px-6 py-4 text-sm">{{ getProxyName(row.server.proxyId) }}</td>
+            <td class="px-6 py-4"><span v-if="row.server.priorityMetadata" class="px-2 py-0.5 bg-purple-100 text-purple-700 rounded text-xs font-bold">元数据优先</span><span v-if="row.server.directRedirect" class="ml-1 px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded text-xs font-bold">302直通</span><span v-if="row.server.pagedScan" class="ml-1 px-2 py-0.5 bg-sky-100 text-sky-700 rounded text-xs font-bold">分页扫描</span></td>
+            <td class="px-6 py-4"><span :class="row.server.online ? 'bg-green-50 text-green-600' : 'bg-red-50 text-red-600'" class="px-2 py-1 rounded-full text-xs font-bold border">{{ row.server.online ? '在线' : '离线' }}</span><span v-if="row.server.aggregationEnabled === false" class="aggregation-paused">已暂停聚合</span></td>
+            <td class="px-6 py-4 text-sm">
+              <div>{{ activityObservedText(row.server, 'lastQualifiedAt') }}</div>
+              <div class="text-xs text-slate-400" :title="activityObservedTitle(row.server, 'lastQualifiedAt')">有效观看</div>
+              <div class="mt-1">{{ activityObservedText(row.server, 'lastActivityAt') }}</div>
+              <div class="text-xs text-slate-400" :title="activityObservedTitle(row.server, 'lastActivityAt')">最近活动（上游确认上报）</div>
+            </td>
+            <td class="px-6 py-4 text-sm" :title="activityServerTitle(row.server)">
+              <span :class="activityBadge(row.server).className" class="px-2 py-1 rounded-full text-xs font-bold border">{{ activityBadge(row.server).label }}</span>
+              <span v-if="activitySourceText(row.server)" class="ml-1 text-xs text-slate-500">{{ activitySourceText(row.server) }}</span>
+              <div class="text-xs text-slate-500 mt-1">{{ activityRemainingText(row.server) }}</div>
+            </td>
+            <td class="px-6 py-4"><div class="flex items-center space-x-2 flex-nowrap"><span class="aggregation-control"><button type="button" class="aggregation-switch" role="switch" :aria-checked="row.server.aggregationEnabled !== false" :aria-label="(row.server.aggregationEnabled === false ? '开启聚合：' : '关闭聚合：') + row.server.name" :disabled="!!aggregationPending[row.server.id]" :class="{ 'is-enabled': row.server.aggregationEnabled !== false }" @click="setServerAggregation(row.server)"><span v-if="row.server.aggregationEnabled !== false" key="aggregation-on"><i data-lucide="toggle-right" class="w-5 h-5"></i></span><span v-else key="aggregation-off"><i data-lucide="toggle-left" class="w-5 h-5"></i></span></button><span role="tooltip" class="aggregation-tooltip">{{ aggregationPending[row.server.id] ? '保存中' : (row.server.aggregationEnabled === false ? '开启聚合' : '关闭聚合') }}</span></span><button @click="openActivity(row.server)" class="p-2 text-slate-400 hover:text-blue-600" title="保活提醒设置"><i data-lucide="settings" class="w-4 h-4"></i></button><button @click="editServer(row.server)" class="p-2 text-slate-400 hover:text-blue-600"><i data-lucide="edit-3" class="w-4 h-4"></i></button><button @click="reconnectServer(row.server.id || row.server.index)" class="p-2 text-slate-400 hover:text-green-600"><i data-lucide="refresh-cw" class="w-4 h-4"></i></button><button @click="deleteServer(row.server.id || row.server.index)" class="p-2 text-slate-400 hover:text-red-600"><i data-lucide="trash-2" class="w-4 h-4"></i></button></div></td>
           </tr>
         </tbody>
       </table>
@@ -542,10 +566,49 @@
       <div class="flex justify-end space-x-3 pt-2"><button @click="uaAssignmentDialog = null" class="px-5 py-2 rounded-xl text-slate-600 hover:bg-slate-100">取消</button><button @click="saveUAAssignments()" :disabled="uaPending.assign" class="btn-primary px-6 py-2 rounded-xl font-bold">保存分配</button></div>
     </div>
   </div>
+  <!-- Upstream Activity / Retention Dialog -->
+  <div v-if="activityDialog && activityDialog.open" class="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-[500] p-4">
+    <div class="card w-full max-w-lg p-4 md:p-6 space-y-4 max-h-[90vh] overflow-y-auto">
+      <div class="flex justify-between items-center text-xl font-bold"><h3>观看活动与保活提醒：{{ activityDialog.serverName }}</h3><button @click="closeActivity" class="text-slate-400" title="关闭"><i data-lucide="x" class="w-6 h-6"></i></button></div>
+      <div v-if="activityDialog.loading" class="text-slate-400 italic p-4 text-center">加载中...</div>
+      <div v-else-if="activityDialog.error" role="alert" class="p-3 rounded-lg bg-red-50 text-red-700 text-sm">{{ activityDialog.error }}<button @click="reloadActivity" class="ml-2 text-blue-600 underline">重试</button></div>
+      <template v-else-if="activityDialog.form">
+        <div v-if="activityDialog.notice" role="alert" class="p-3 rounded-lg bg-amber-50 text-amber-700 text-sm">{{ activityDialog.notice }}<button @click="reloadActivity" class="ml-2 text-blue-600 underline">刷新</button></div>
+        <div class="space-y-1 text-sm">
+          <div><span class="text-slate-400">状态：</span><span v-if="activityDialogBadge" :class="activityDialogBadge.className" class="px-2 py-1 rounded-full text-xs font-bold border">{{ activityDialogBadge.label }}</span> <span class="text-slate-500">{{ activityDialogRemaining }}</span></div>
+          <div v-for="line in activityDetail" :key="line.label"><span class="text-slate-400">{{ line.label }}：</span><span :title="line.title">{{ line.value }}</span></div>
+        </div>
+        <div class="space-y-2">
+          <label class="flex items-center space-x-2 text-sm"><input type="checkbox" v-model="activityDialog.form.enabled" class="w-4 h-4 rounded border-slate-300 text-blue-600"> 启用保活提醒（默认关闭）</label>
+          <div class="flex items-center space-x-2 text-sm">
+            <span class="text-slate-500">周期</span>
+            <input type="number" v-model="activityDialog.form.intervalValue" min="1" :max="activityDialog.form.intervalUnit === 'months' ? 120 : 3650" class="w-16 px-2 py-1 border rounded-lg outline-none">
+            <select v-model="activityDialog.form.intervalUnit" class="px-2 py-1 border rounded-lg outline-none">
+              <option value="days">天（UTC 固定 24 小时）</option>
+              <option value="months">UTC 自然月</option>
+            </select>
+          </div>
+          <div class="text-xs text-slate-400">自然月按 UTC 日历滚动计算（月末夹到目标月最后一天），不是“每个自然月内看一次”；时间按本地时区显示。</div>
+          <div class="flex items-center space-x-2 text-sm"><span class="text-slate-500">最低有效观看秒数</span><input type="number" v-model="activityDialog.form.minWatchSeconds" min="10" max="3600" class="w-16 px-2 py-1 border rounded-lg outline-none"></div>
+          <div class="text-sm"><label class="text-slate-500">人工参考日期（本地时间）</label><input type="datetime-local" v-model="activityDialog.form.manualReferenceLocal" class="w-full px-4 py-2 border rounded-lg outline-none"></div>
+          <div class="text-xs text-slate-400">留空表示不使用人工参考，不会以当前时间自动填充。人工参考只影响提醒周期，不改写真实观测的有效观看时间，且不能晚于服务器当前时间。</div>
+        </div>
+        <p class="text-xs text-slate-400">最近活动与有效观看分开显示：最近活动是上游确认上报的播放事件；有效观看是同一可靠会话累计达到最低时长。提醒仅为本代理的本地观察，不保证上游账号保活成功，也不会自动播放。</p>
+        <div v-if="activityDialog.saveError" role="alert" class="p-3 rounded-lg bg-red-50 text-red-700 text-sm">{{ activityDialog.saveError }}<button v-if="activityDialog.conflict" @click="reloadActivity" class="ml-2 text-blue-600 underline">刷新</button></div>
+        <div v-if="activityDialog.savedNotice" role="status" class="p-3 rounded-lg bg-green-50 text-green-700 text-sm">{{ activityDialog.savedNotice }}</div>
+        <div class="flex justify-end space-x-3 pt-2">
+          <button @click="closeActivity" class="px-5 py-2 rounded-xl text-slate-600 hover:bg-slate-100">关闭</button>
+          <button @click="reloadActivity" :disabled="activityDialog.loading || activityDialog.saving" class="px-5 py-2 rounded-xl border border-slate-300 text-slate-600">刷新</button>
+          <button @click="saveActivitySettings" :disabled="!activityCanSave" class="btn-primary px-6 py-2 rounded-xl font-bold">保存</button>
+        </div>
+      </template>
+    </div>
+  </div>
 </div>
 
 <script src="vendor/vue.global.prod.js"></script>
 <script src="vendor/lucide.min.js"></script>
+<script src="admin-activity.js"></script>
 <script src="admin.js"></script>
 </body>
 </html>

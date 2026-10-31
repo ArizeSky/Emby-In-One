@@ -706,7 +706,7 @@ Access `http://your-ip:8096/admin`, logging in with the admin credentials from t
 | Page | Functions |
 |------|-----------|
 | **System Overview** | Online server count, ID mapping count, storage engine (SQLite) |
-| **Upstream Nodes** | Add / edit / delete / reconnect servers, drag-and-drop ordering; Supports configuring maximum concurrent playback (`maxConcurrent`); each row has an aggregation toggle |
+| **Upstream Nodes** | Add / edit / delete / reconnect servers, drag-and-drop ordering; Supports configuring maximum concurrent playback (`maxConcurrent`); each row has an aggregation toggle, shows last activity / qualified watching and the retention-reminder state, and opens its own retention settings dialog |
 | **User Mgmt** | Create, edit, enable/disable, delete regular users; Visually configure accessible servers |
 | **Network Proxies** | HTTP/HTTPS proxy pool management, supports one-click connectivity testing |
 | **Global Settings** | System name, default playback mode, admin account, timeout & grace period configuration |
@@ -715,6 +715,14 @@ Access `http://your-ip:8096/admin`, logging in with the admin credentials from t
 > The admin panel sidebar displays the current running version number. For adding/editing `spoofClient: passthrough` upstreams (password or API key), if there is no captured client identity available, the admin API will still save the configuration but return a warning, keeping the upstream as offline until the admin logs in once with a real client and triggers automatic retry; a brand-new deployment can also switch to `custom` mode and define the identity explicitly.
 
 **Upstream aggregation switch**: each row in the upstream node list has an aggregation toggle (keyboard accessible). When off, the server keeps its configuration, online checks, manual reconnect, UA binding and history, but no longer participates in content aggregation for `/web` and Emby clients (libraries, search, latest, resume, next-up, cross-server copies, playback version lists, etc.), and admin content access is equally restricted; already-started playback progress/stop, `PlayingItems` delete and transcoding cleanup still work under authorization only. The switch takes effect immediately — no restart, no re-login, no full upstream reconnect. The persisted field is `aggregationDisabled` (default / `false` means aggregation is on), bound to the persistent server ID, unaffected by reordering or renaming.
+
+**Viewing activity and retention reminders (local observation, off by default)**: the upstream node list gains "Viewing activity" and "Retention reminder" columns, and each row can open its own retention settings dialog. Recent activity only counts playback events this proxy observed and successfully reported upstream (2xx); qualified watching requires the same reliable session to accumulate at least the minimum duration (60 seconds by default). The two are displayed separately, the reference is labelled "manual calibration" or "automatic observation", and the second-precise tooltip shows both local time and UTC; missing records read "no record yet" instead of 1970.
+
+- **Settings**: an enable switch, cycle unit (days / UTC calendar months), cycle value, minimum qualified-watching seconds, and a clearable manual reference date. Disabled by default with a 30-day default cycle. The manual reference is entered in local time and stored as UTC RFC3339; leaving it empty means no manual reference — it is never auto-filled with the current time and cannot be later than the server time.
+- **State and remaining time**: the server computes normal / warning / urgent / overdue from its own current time and the due date, plus disabled, unknown and unavailable. Green / yellow / orange / red and gray badges always carry Chinese text, so color is never the only signal. Remaining time is derived from the server's `serverNow` and due time; the browser clock never decides the state and there is no high-frequency polling.
+- **Filtering and sorting**: risk filtering and "sort by retention risk" only build a derived view — they never change the upstream list order and never call the reorder API. While that view is active the up/down buttons are disabled, and edit/reconnect/delete keep using the original server IDs and indexes. Inside the same risk tier rows are ordered by least remaining time first; disabled / unknown / unavailable are not reordered by remaining time.
+- **Requests and saving**: closing the dialog or switching it to another node cancels unfinished requests, so an old GET/PUT response cannot overwrite the new dialog. Duplicate submits are blocked while saving; save failures and conflicts (409) stay visible and a conflict requires a refresh; unavailable data can be refreshed but cannot be saved with a default revision.
+- **Limits**: a reminder is only a local observation by this proxy and **does not guarantee the upstream account stayed alive**; it never plays media automatically or performs scheduled keep-alive. Cycles use the UTC calendar (rolling calendar months, month-end clamped to the last day of the target month) while the UI shows local time. An account-scope change (for example a different upstream URL, username or API key) resets that node's statistics and manual reference; the old scope is never reused. The page never shows the account-scope digest, credentials or any user's viewing entries.
 
 ### Admin API
 
@@ -729,6 +737,8 @@ All APIs require authentication (`X-Emby-Token` header or `api_key` query parame
 | DELETE | `/admin/api/upstream/:index` | Delete upstream server (auto-cleans ID mappings) |
 | POST | `/admin/api/upstream/:index/reconnect` | Reconnect upstream server |
 | PATCH | `/admin/api/upstream/:id/aggregation` | Toggle upstream aggregation for that server |
+| GET | `/admin/api/upstream/:id/activity` | Read a node's viewing activity, retention policy and server-computed state |
+| PUT | `/admin/api/upstream/:id/activity` | Save a node's retention policy (complete fields + `expectedRevision`, 409 on conflict) |
 | GET | `/admin/api/ua` | List recent captures, resident UAs, and server bindings |
 | POST | `/admin/api/ua/resident` | Save a recent capture as a resident UA |
 | PATCH | `/admin/api/ua/resident/:id` | Rename a resident UA |
@@ -955,9 +965,10 @@ Emby-In-One/
 │   └── outbound_diagnostics.go     # Outbound diagnostics scanning (bounded input)
 ├── third_party/sqlite/             # SQLite CGO source dependency
 ├── public/
-│   ├── embed.go                    # go:embed directive (compiles admin.html, admin.js, vendor/ and web/ into the binary)
+│   ├── embed.go                    # go:embed directive (compiles admin.html, admin.js, admin-activity.js, vendor/ and web/ into the binary)
 │   ├── admin.html                  # Vue 3 + Tailwind CSS admin panel template
 │   ├── admin.js                    # Vue 3 application logic (extracted from admin.html)
+│   ├── admin-activity.js           # Viewing activity / retention-reminder UI (badges, derived filter/sort, settings dialog)
 │   ├── web/                        # Built-in Web client (/web/, Vue 3 global build, no bundler)
 │   │   ├── web.html                #   Single-page application shell
 │   │   ├── app.js                  #   App entry (routing, page assembly, player wiring)
@@ -973,11 +984,11 @@ Emby-In-One/
 │   │   └── ui.css                  #   Web client styles
 │   └── vendor/                     # Self-hosted frontend dependencies: Vue, lucide, Tailwind output, Inter font;
 │                                   # web/ holds the libmedia player, the JASSUB subtitle engine and Noto Sans SC
-├── tests/                          # Node front-end behavior tests (node --test, 10 files / 67 tests)
+├── tests/                          # Node front-end behavior tests (node --test)
 │   ├── web-ui-harness.cjs          #   Shared VM harness (Vue stubs, scripts loaded in web.html order)
 │   ├── make-web-fixtures.py        #   ffmpeg synthetic sample generation (samples stay out of releases)
 │   └── *.test.cjs                  #   data / ui / player / player-ui / subtitles / mse-seek /
-│                                   #   mse-duration / seek-queue / session / admin-panel
+│                                   #   mse-duration / seek-queue / session / admin-panel / admin-activity
 ├── assets/panel.css                # Tailwind input (holds the panel styles moved out of admin.html)
 ├── tailwind.config.js              # Tailwind content config (run npm run build:panel after editing admin.html/admin.js)
 ├── package.json                    # Root package.json provides build:panel / test scripts (Node deps moved to legacy/)

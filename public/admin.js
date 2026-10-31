@@ -1,4 +1,7 @@
 const { createApp } = Vue;
+// K4：观看/保活提醒的逻辑集中在 admin-activity.js（模板中先于本文件加载），
+// 本文件只保留薄接线，避免继续把管理面板逻辑堆进 admin.js。
+const activityModule = typeof EIOAdminActivity === 'undefined' ? null : EIOAdminActivity;
 createApp({
   data() {
     return {
@@ -31,6 +34,9 @@ createApp({
       uaLoading: false, uaError: '', uaDetail: null,
       uaSaveDialog: null, uaReplaceDialog: null, uaAssignmentDialog: null, uaPending: {},
       aggregationPending: {},
+      // 观看/保活：筛选与排序只影响派生视图，不改 upstreamList 顺序。
+      activityFilter: 'all', activitySort: 'default',
+      activityDialog: activityModule ? activityModule.newDialogState() : null,
     };
   },
   computed: { pageTitle() { return this.pages.find(p => p.id === this.currentPage)?.name || '管理面板'; },
@@ -46,10 +52,30 @@ createApp({
         if (this.logSearch && !l.message.toLowerCase().includes(this.logSearch.toLowerCase())) return false;
         return true;
       });
-    }
+    },
+    activityRows() {
+      if (!activityModule) return (Array.isArray(this.upstreamList) ? this.upstreamList : []).map((server, index) => ({ server, index, state: 'unknown' }));
+      return activityModule.deriveList(this.upstreamList, { filter: this.activityFilter, sort: this.activitySort });
+    },
+    activityReorderEnabled() { return activityModule ? activityModule.reorderAllowed({ filter: this.activityFilter, sort: this.activitySort }) : true; },
+    activityFilterOptions() { return activityModule ? activityModule.filterOptions() : []; },
+    activitySortOptions() { return activityModule ? activityModule.sortOptions() : []; },
+    activityDetail() {
+      return activityModule && this.activityDialog && this.activityDialog.dto
+        ? activityModule.detailRows(this.activityDialog.dto) : [];
+    },
+    activityDialogBadge() {
+      const dto = this.activityDialog && this.activityDialog.dto;
+      return activityModule && dto ? activityModule.badgeForDTO(dto) : null;
+    },
+    activityDialogRemaining() {
+      const dto = this.activityDialog && this.activityDialog.dto;
+      return activityModule && dto ? activityModule.remainingText(dto) : '';
+    },
+    activityCanSave() { return activityModule ? activityModule.canSave(this.activityDialog) : false; }
   },
   watch: {
-    currentPage(v) { this.stopUAReconnectPoll(); if(this._refreshTimer) clearTimeout(this._refreshTimer); this.abortRefresh(); this._refreshTimer = setTimeout(()=>{this.refresh(); this.$nextTick(() => lucide.createIcons());}, 50); }
+    currentPage(v) { this.stopUAReconnectPoll(); if (v !== 'servers') this.closeActivity(); if(this._refreshTimer) clearTimeout(this._refreshTimer); this.abortRefresh(); this._refreshTimer = setTimeout(()=>{this.refresh(); this.$nextTick(() => lucide.createIcons());}, 50); }
   },
   mounted() { const t = localStorage.getItem('eio_admin_token'); if(t) this.checkAuth(t); this.$nextTick(() => lucide.createIcons()); },
   methods: {
@@ -86,7 +112,7 @@ createApp({
       try { await this.api('/admin/api/status'); } catch(e) { localStorage.removeItem('eio_admin_token'); this.loginError = '需要管理员权限'; return; }
       this.isLoggedIn = true; this.refresh(); this.refreshClientInfo();
     } catch(e) { this.loginError = '用户名或密码错误'; } },
-    logout() { this.stopUAReconnectPoll(); this.isLoggedIn = false; localStorage.removeItem('eio_admin_token'); },
+    logout() { this.stopUAReconnectPoll(); this.closeActivity(); this.isLoggedIn = false; localStorage.removeItem('eio_admin_token'); },
     async copyClientUA() {
       if (!this.clientInfo || !this.clientInfo.userAgent) return;
       try { await navigator.clipboard.writeText(this.clientInfo.userAgent); alert('UA 已复制到剪贴板'); } catch(e) {}
@@ -188,6 +214,37 @@ createApp({
     async deleteServer(id) { if(!confirm('删除服务器？')) return; try { await this.api('/admin/api/upstream/'+id, { method:'DELETE' }); await this.refreshServers(); } catch(e) { alert('删除失败：' + (e.message || '未知错误')); } },
     async reconnectServer(id) { try { await this.api('/admin/api/upstream/'+id+'/reconnect', { method:'POST' }); await this.refreshServers(); } catch(e) { alert('重连失败：' + (e.message || '未知错误')); } },
     async reorder(from, to) { try { await this.api('/admin/api/upstream/reorder', { method:'POST', body:JSON.stringify({fromIndex:from, toIndex:to}) }); await this.refreshServers(); } catch(e) { alert('排序失败：' + (e.message || '未知错误')); } },
+    // --- 观看活动与保活提醒（逻辑在 admin-activity.js） -------------------
+    activityBadge(s) { return activityModule ? activityModule.badgeFor(s) : { state: 'unknown', label: '—', className: '' }; },
+    activityRemainingText(s) { return activityModule ? activityModule.remainingForServer(s) : '—'; },
+    activitySourceText(s) { return activityModule ? activityModule.sourceForServer(s) : ''; },
+    activityServerTitle(s) { return activityModule ? activityModule.serverTooltip(s) : ''; },
+    activityObservedText(s, field) { return activityModule ? activityModule.evidenceText(s, field) : '—'; },
+    activityObservedTitle(s, field) { return activityModule ? activityModule.evidenceTitle(s, field) : ''; },
+    openActivity(s) {
+      if (!activityModule || !s) return;
+      activityModule.openActivity(this.activityDialog, {
+        serverId: s.id !== undefined && s.id !== null ? s.id : s.index,
+        serverName: s.name || '',
+        api: (path, opts) => this.api(path, opts),
+      });
+      this.$nextTick(() => lucide.createIcons());
+    },
+    closeActivity() { if (activityModule) activityModule.closeActivity(this.activityDialog); },
+    reloadActivity() {
+      if (!activityModule) return;
+      activityModule.refreshActivity(this.activityDialog, { api: (path, opts) => this.api(path, opts) });
+    },
+    async saveActivitySettings() {
+      if (!activityModule) return;
+      const dialog = this.activityDialog;
+      const serverId = dialog && dialog.serverId;
+      const saved = await activityModule.saveActivity(dialog, { api: (path, opts) => this.api(path, opts) });
+      // 只有服务端返回成功后才刷新列表；切换节点后旧结果不覆盖新弹窗。
+      if (!saved || !dialog || dialog.serverId !== serverId || this.currentPage !== 'servers') return;
+      await this.refreshServers(this.refreshSignal());
+      this.$nextTick(() => lucide.createIcons());
+    },
     async setServerAggregation(s) {
       const id = s.id;
       if (!id || this.aggregationPending[id]) return;
