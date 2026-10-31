@@ -2,7 +2,7 @@
 
 > **Version: V1.2.1**
 
-[中文文档](README.md) | [Changelog](Update.md) | [Update Plan](Update%20Plan.md) | [GitHub](https://github.com/ArizeSky/Emby-In-One)
+[中文文档](README.md) | [Changelog](Update.md) | [GitHub](https://github.com/ArizeSky/Emby-In-One)
 
 Multi-server Emby aggregation proxy — merges libraries from multiple upstream Emby servers into a single endpoint accessible by any standard Emby client.
 
