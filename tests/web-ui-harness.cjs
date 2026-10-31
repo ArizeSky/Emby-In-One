@@ -10,7 +10,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const SCRIPTS = ['data.js', 'ui.js', 'page-state.js', 'player-ui.js', 'library-state.js', 'ui-components.js', 'playback-orchestrator.js', 'app.js'];
+const SCRIPTS = ['data.js', 'ui.js', 'page-state.js', 'player-ui.js', 'library-state.js', 'ui-components.js', 'playback-orchestrator.js', 'theme.js', 'appearance.js', 'app.js'];
 
 function makeStorage(initial = {}) {
   const store = new Map(Object.entries(initial));
@@ -32,6 +32,16 @@ function harness(options = {}) {
   // production scripts only register them during setup().
   const mountedHooks = [];
   const beforeUnmountHooks = [];
+  const listeners = { window: {}, document: {} };
+
+  const documentElement = {
+    dataset: {},
+    style: {
+      _props: {},
+      setProperty(name, value) { this._props[name] = value; },
+      removeProperty(name) { delete this._props[name]; },
+    },
+  };
 
   const context = {
     URL, AbortController, DOMException, console, Math, JSON, Promise,
@@ -58,10 +68,25 @@ function harness(options = {}) {
       nextTick: fn => Promise.resolve().then(() => fn && fn()),
       createApp: opts => ({ component() {}, mount() { app = opts.setup(); } }),
     },
-    document: { hidden: false, fullscreenElement: null, addEventListener() {}, removeEventListener() {} },
+    document: {
+      hidden: false, fullscreenElement: null, documentElement,
+      addEventListener(type, fn) { (listeners.document[type] ||= []).push(fn); },
+      removeEventListener(type, fn) {
+        const list = listeners.document[type] || [];
+        const index = list.indexOf(fn);
+        if (index >= 0) list.splice(index, 1);
+      },
+    },
     IntersectionObserver: undefined,
-    addEventListener() {}, removeEventListener() {},
+    addEventListener(type, fn) { (listeners.window[type] ||= []).push(fn); },
+    removeEventListener(type, fn) {
+      const list = listeners.window[type] || [];
+      const index = list.indexOf(fn);
+      if (index >= 0) list.splice(index, 1);
+    },
   };
+  if (options.matchMedia) context.matchMedia = options.matchMedia;
+  if (options.EIOThemeDeps) context.EIOThemeDeps = options.EIOThemeDeps;
   context.window = context;
   context.window.innerWidth = options.width || 1440;
   vm.createContext(context);
@@ -69,7 +94,7 @@ function harness(options = {}) {
     if (file === 'app.js' && options.beforeApp) options.beforeApp(context);
     vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'public', 'web', file), 'utf8'), context);
   }
-  return { app, context, calls, data: context.EIOData, storage, mountedHooks, beforeUnmountHooks };
+  return { app, context, calls, data: context.EIOData, storage, mountedHooks, beforeUnmountHooks, listeners, documentElement };
 }
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));

@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Emby-in-One Web Player</title>
+<script src="/web/web/theme-boot.js?v=v1.4.4-rc3"></script>
 <link rel="stylesheet" href="/web/vendor/inter.css?v=v1.4.4-rc3">
 <link rel="stylesheet" href="/web/vendor/tailwind.css?v=v1.4.4-rc3">
 <link rel="stylesheet" href="/web/web/ui.css?v=v1.4.4-rc3">
@@ -12,6 +13,7 @@
 <div id="app" v-cloak>
   <!-- ===== LOGIN ===== -->
   <div v-if="page==='login'" class="eio-login">
+    <eio-appearance v-if="appearance" :controller="appearance" surface="login"></eio-appearance>
     <div class="eio-login-brand">
       <div class="eio-login-mark"><i data-lucide="play-circle" class="w-7 h-7"></i></div>
       <h1>Emby-in-One</h1>
@@ -61,6 +63,7 @@
         </a>
       </nav>
       <div class="eio-nav-foot">
+        <eio-appearance v-if="appearance" :controller="appearance" surface="sidebar"></eio-appearance>
         <button class="eio-logout" @click="doLogout"><i data-lucide="log-out" class="w-4 h-4"></i><span>退出登录</span></button>
       </div>
     </aside>
@@ -80,6 +83,7 @@
           </a>
           <button class="eio-logout" @click="doLogout"><i data-lucide="log-out" class="w-4 h-4"></i><span>退出登录</span></button>
         </nav>
+        <eio-appearance v-if="appearance" :controller="appearance" surface="mobile"></eio-appearance>
       </div>
     </div>
 
@@ -535,6 +539,8 @@
 <script src="/web/web/player-ui.js?v=v1.4.4-rc3"></script>
 <script src="/web/web/library-state.js?v=v1.4.4-rc3"></script>
 <script src="/web/web/ui-components.js?v=v1.4.4-rc3"></script>
+<script src="/web/web/theme.js?v=v1.4.4-rc3"></script>
+<script src="/web/web/appearance.js?v=v1.4.4-rc3"></script>
 <script src="/web/web/app.js?v=v1.4.4-rc3"></script>
 </body>
 </html>

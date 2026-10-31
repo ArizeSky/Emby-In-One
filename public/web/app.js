@@ -82,6 +82,32 @@
 
   const app = createApp({
     setup() {
+      /* ---- appearance (T1) ---- */
+      // T4 replaces this dependency object with real site/catalog/prefs
+      // loaders. T1 only reads the validated local cache, so switching theme
+      // never performs I/O or touches the player/subtitle engine.
+      const themeDeps = (typeof window !== 'undefined' && window.EIOThemeDeps) || {};
+      // The theme module reads window.localStorage through its own guarded
+      // getter: a browser that denies site storage must leave setup working
+      // with an in-memory appearance instead of throwing before mount.
+      const theme = typeof window !== 'undefined' && window.EIOTheme
+        && typeof window.EIOTheme.createController === 'function'
+        ? window.EIOTheme.createController({
+          window, document, deps: themeDeps,
+        })
+        : null;
+      const appearance = theme && window.EIOAppearance
+        && typeof window.EIOAppearance.createController === 'function'
+        ? window.EIOAppearance.createController({ theme })
+        : null;
+
+      function refreshAppearanceRemote() {
+        if (!appearance || !(themeDeps.loadSite || themeDeps.loadCatalog || themeDeps.loadPreferences)) return;
+        // A short timeout keeps an unavailable prefs endpoint from delaying the
+        // page; a late response is discarded by the controller generation.
+        Promise.resolve(appearance.refreshRemote({ timeoutMs: 3000 })).catch(() => {});
+      }
+
       /* ---- auth ---- */
       const page = ref('login');
       const navPage = ref('home');
@@ -162,6 +188,7 @@
           }
           localStorage.setItem('eio_token', res.AccessToken);
           localStorage.setItem('eio_user_id', res.User.Id);
+          if (appearance) appearance.enterSession(res.User.Id);
           currentUser.value = res.User;
           recentSearches.read();
           window.location.hash = '#/home';
@@ -177,6 +204,9 @@
         home.cancel(); search.cancel();
         toasts.clear();
         stopPlayer(); playerUI.reset(); playerUI.detach();
+        // Drop back to the anonymous appearance before clearing the token so a
+        // later logout cannot expose the previous account's cached choice.
+        if (appearance) appearance.leaveSession();
         localStorage.removeItem('eio_token'); localStorage.removeItem('eio_user_id');
         window.location.hash = '#/';
         location.reload();
@@ -1296,11 +1326,14 @@
             if (me.Policy?.IsAdministrator) {
               localStorage.removeItem('eio_token');
               localStorage.removeItem('eio_user_id');
+              if (appearance) appearance.leaveSession();
               loginError.value = '管理员账号请使用 /admin 管理面板登录。';
               page.value = 'login';
               return;
             }
             currentUser.value = me;
+            if (appearance) appearance.syncIdentity(localStorage.getItem('eio_user_id'));
+            refreshAppearanceRemote();
             recentSearches.read();
             const hadHash = !!window.location.hash;
             window.location.hash = window.location.hash || '#/home';
@@ -1324,10 +1357,12 @@
         libraryView.dispose(); library.dispose(); playerUI.dispose();
         itemRequest?.abort(); collectionRequest?.abort();
         stopPlayer();
+        if (appearance) appearance.destroy();
       });
 
       return {
         page, navPage, loginForm, loginError, loginLoading, loginShake, passwordVisible, currentUser, passWrap,
+        appearance,
         mobileMenu, pages, sidebarPages, togglePassword, navigateTo, doLogin, doLogout, focusPass, libraryIcon, openItem, openLibrary,
         toasts, home, hero, libraries, latestSections, loadHome,
         collectionItems, collectionLoading, collectionError, collectionNotice, loadCollection,
@@ -1366,5 +1401,8 @@
   });
 
   EIOComponents.register(app);
+  if (window.EIOAppearance && typeof window.EIOAppearance.register === 'function') {
+    window.EIOAppearance.register(app);
+  }
   app.mount('#app');
 })();
