@@ -5,6 +5,9 @@
  * use EIOData / EIOUI / EIOPages / EIOPlayerUI / EIOComponents. The Vue stub
  * covers exactly the API the modules rely on: ref, computed, reactive,
  * nextTick, lifecycle hooks and createApp.
+ *
+ * `options.skipTelemetry` omits player-telemetry-ui.js from the load order
+ * (imitating a blocked/stale script); the default loads every script.
  */
 const fs = require('node:fs');
 const path = require('node:path');
@@ -91,6 +94,7 @@ function harness(options = {}) {
   context.window.innerWidth = options.width || 1440;
   vm.createContext(context);
   for (const file of SCRIPTS) {
+    if (file === 'player-telemetry-ui.js' && options.skipTelemetry) continue;
     if (file === 'app.js' && options.beforeApp) options.beforeApp(context);
     vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'public', 'web', file), 'utf8'), context);
   }

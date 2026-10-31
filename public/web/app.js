@@ -673,7 +673,14 @@
       // Pure view model for the top-right HUD. It is created once per setup,
       // consumes the same engine snapshot as playerUI.acceptState, owns no
       // timer and no visibility state, and never touches the seek preview.
-      const playerTelemetry = EIOPlayerTelemetry.create({ reactive });
+      // The module is optional for setup: a stale cache or a blocked script
+      // must not become a ReferenceError that aborts the whole page. A missing
+      // factory degrades to a static "unknown" HUD (no state, no algorithm
+      // copied here), so update/reset stay harmless no-ops.
+      const playerTelemetry = (typeof EIOPlayerTelemetry === 'object' && EIOPlayerTelemetry !== null &&
+        typeof EIOPlayerTelemetry.create === 'function')
+        ? EIOPlayerTelemetry.create({ reactive })
+        : { update() {}, reset() {}, layers: null, receiveText: '\u2014', sourceText: '\u2014', bufferText: '\u2014' };
 
       /* ---- playback entry ---- */
       let playItemSerial = 0; // bumped per playItem call to detect a superseded Series resolution

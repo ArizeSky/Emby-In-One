@@ -502,8 +502,8 @@
               <span v-for="(seg, i) in (playerTelemetry.layers?.buffered?.segments || [])" :key="i" class="eio-seek-buffered" :style="{ left: seg.startPercent + '%', width: seg.widthPercent + '%' }"></span>
               <div class="eio-seek-played" :style="{ width: (playerTelemetry.layers?.played?.widthPercent || 0) + '%' }"></div>
             </div>
-            <input type="range" class="eio-seek-input" min="0" step="any" :max="Math.max(wasmDuration, 0)" :value="seekPreview ?? wasmTime"
-                   :disabled="!playerAlive || !wasmDuration" aria-label="播放进度" :aria-valuetext="wasmTimeHuman + ' / ' + wasmDurationHuman"
+            <input type="range" class="eio-seek-input" min="0" step="any" :max="Number.isFinite(wasmDuration) && wasmDuration > 0 ? wasmDuration : 0" :value="seekPreview ?? wasmTime"
+                   :disabled="!playerAlive || !(Number.isFinite(wasmDuration) && wasmDuration > 0)" aria-label="播放进度" :aria-valuetext="wasmTimeHuman + ' / ' + wasmDurationHuman"
                    @input="previewSeek($event.target.value)" @change="onWasmSeek($event.target.value)" @pointerup="endScrub" @pointercancel="cancelScrub">
           </div>
           <div class="eio-play-row">

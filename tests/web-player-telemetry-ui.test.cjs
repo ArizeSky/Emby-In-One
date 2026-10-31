@@ -18,6 +18,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const vm = require('node:vm');
 
 const WEB_DIR = path.join(__dirname, '..', 'public', 'web');
 const UI_PATH = path.join(WEB_DIR, 'player-telemetry-ui.js');
@@ -579,15 +580,16 @@ test('web.html: the seek bar keeps the native input, ARIA and every existing han
   assert.match(seek, /v-for="\(seg, i\) in \(playerTelemetry\.layers\?\.buffered\?\.segments \|\| \[\]\)"/);
   assert.match(seek, /class="eio-seek-buffered"[^>]*:style="\{ left: seg\.startPercent \+ '%', width: seg\.widthPercent \+ '%' \}"/);
   assert.match(seek, /class="eio-seek-played"[^>]*:style="\{ width: \(playerTelemetry\.layers\?\.played\?\.widthPercent \|\| 0\) \+ '%' \}"/);
-  const input = seek.match(/<input[^>]*class="eio-seek-input"[\s\S]*?>/);
+  const input = seek.match(/<input\b(?:"[^"]*"|'[^']*'|[^'">])*>/g)?.filter(tag => tag.includes('class="eio-seek-input"'));
   assert.ok(input, 'the native range input is still there');
   const markup = input[0];
   assert.match(markup, /type="range"/);
   assert.match(markup, /min="0"/);
   assert.match(markup, /step="any"/);
-  assert.match(markup, /:max="Math\.max\(wasmDuration, 0\)"/);
+  assert.match(markup, /:max="Number\.isFinite\(wasmDuration\) && wasmDuration > 0 \? wasmDuration : 0"/);
   assert.match(markup, /:value="seekPreview \?\? wasmTime"/);
-  assert.match(markup, /:disabled="!playerAlive \|\| !wasmDuration"/, '0 duration disables the bar');
+  assert.match(markup, /:disabled="!playerAlive \|\| !\(Number\.isFinite\(wasmDuration\) && wasmDuration > 0\)"/, 'only a finite positive duration enables the bar');
+  assert.doesNotMatch(markup, /Math\.max\(wasmDuration/, 'an infinite duration must not reach max');
   assert.match(markup, /aria-label="播放进度"/);
   assert.match(markup, /:aria-valuetext="wasmTimeHuman \+ ' \/ ' \+ wasmDurationHuman"/);
   assert.match(markup, /@input="previewSeek\(\$event\.target\.value\)"/);
@@ -596,6 +598,36 @@ test('web.html: the seek bar keeps the native input, ARIA and every existing han
   assert.match(markup, /@pointercancel="cancelScrub"/);
   // The rail sits before the input, so the input stays on top for pointer/touch.
   assert.ok(seek.indexOf('eio-seek-rail') < seek.indexOf('eio-seek-input'));
+});
+
+function seekRangeExprs() {
+  const input = HTML_SRC.match(/<input\b(?:"[^"]*"|'[^']*'|[^'">])*>/g)?.filter(tag => tag.includes('class="eio-seek-input"'));
+  assert.ok(input, 'the native range input is still there');
+  return {
+    max: input[0].match(/:max="([^"]+)"/)[1],
+    disabled: input[0].match(/:disabled="([^"]+)"/)[1],
+  };
+}
+
+test('web.html: an unusable duration leaves max at 0 and the seek bar disabled', () => {
+  // The template expressions are evaluated in a VM (not a browser) so the
+  // truth table is real code, not a visual claim.
+  const { max, disabled } = seekRangeExprs();
+  const run = (expr, wasmDuration, playerAlive) => vm.runInContext(
+    expr, vm.createContext({ wasmDuration, playerAlive, Number }));
+  const cases = [
+    ['negative', -1, 0, true],
+    ['-Infinity', Number.NEGATIVE_INFINITY, 0, true],
+    ['Infinity', Number.POSITIVE_INFINITY, 0, true],
+    ['NaN', Number.NaN, 0, true],
+    ['zero', 0, 0, true],
+    ['positive', 120.5, 120.5, false],
+  ];
+  for (const [name, duration, expectedMax, expectedDisabled] of cases) {
+    assert.equal(run(max, duration, true), expectedMax, 'max for ' + name);
+    assert.equal(run(disabled, duration, true), expectedDisabled, 'disabled for ' + name);
+  }
+  assert.equal(run(disabled, 120, false), true, 'a dead player stays disabled');
 });
 
 test('web.html: module and stylesheet order is progress -> buffer -> telemetry -> libmedia', () => {
@@ -723,7 +755,11 @@ test('app.js wires the HUD with three thin hooks and no new state', () => {
   const APP_SRC = fs.readFileSync(path.join(WEB_DIR, 'app.js'), 'utf8');
   const creates = APP_SRC.match(/EIOPlayerTelemetry\.create\(\{ reactive \}\)/g) || [];
   assert.equal(creates.length, 1, 'one telemetry view model per app setup');
-  assert.match(APP_SRC, /const playerTelemetry = EIOPlayerTelemetry\.create/);
+  // The factory is probed with typeof first: a missing script must not throw.
+  assert.match(APP_SRC, /typeof EIOPlayerTelemetry === 'object'/);
+  assert.match(APP_SRC, /typeof EIOPlayerTelemetry\.create === 'function'/);
+  assert.match(APP_SRC, /const playerTelemetry = \(typeof EIOPlayerTelemetry/);
+  assert.match(APP_SRC, /update\(\) \{\}, reset\(\) \{\}, layers: null/, 'the fallback is a static unknown HUD');
   // Created next to playerUI, before the first playback entry point.
   assert.ok(APP_SRC.indexOf('EIOPlayerTelemetry.create') < APP_SRC.indexOf('async function playItem'));
   const updates = APP_SRC.match(/playerTelemetry\.update\(/g) || [];
@@ -784,7 +820,7 @@ function mediaSource() {
   };
 }
 
-function setup() {
+function setup(extra = {}) {
   const engine = makePlayerClass();
   const env = harness({
     storage: makeStorage({ eio_token: 'token', eio_user_id: 'user' }),
@@ -799,6 +835,7 @@ function setup() {
       return { Items: [] };
     },
     beforeApp: context => { context.EIOPlayer = engine.FakePlayer; context.EIO_ENGINE_CLEANUP_BUDGET_MS = 1000; },
+    ...extra,
   });
   env.player = engine;
   env.app.page.value = 'app';
@@ -888,4 +925,34 @@ test('harness: a new load starts from unknown instead of the previous generation
   assert.equal(app.playerTelemetry.receiveText, UNKNOWN);
   assert.equal(app.playerTelemetry.layers.buffered, null);
   assert.equal(app.playerTelemetry.sourceText, '1.5 Mbps');
+});
+
+test('harness: app setup still initializes when the telemetry script is blocked', async () => {
+  const { app, player, context } = setup({ skipTelemetry: true });
+  assert.equal(context.EIOPlayerTelemetry, undefined, 'the module really is absent');
+  assert.equal(app.page.value, 'app', 'setup completed without the module');
+  assert.equal(typeof app.playerTelemetry.update, 'function');
+  assert.equal(typeof app.playerTelemetry.reset, 'function');
+  assert.equal(app.playerTelemetry.layers, null);
+  assert.equal(app.playerTelemetry.receiveText, UNKNOWN);
+  assert.equal(app.playerTelemetry.sourceText, UNKNOWN);
+  assert.equal(app.playerTelemetry.bufferText, UNKNOWN);
+
+  context.window.location.hash = '#/play/e1';
+  await app.playItem(episode('e1'));
+  assert.equal(player.instances.length, 1);
+  assert.doesNotThrow(() => player.instances[0].onState({
+    mode: 'mse', playing: true, time: 42, duration: 100,
+    buffered: { status: 'ok', ranges: [{ start: 0, end: 60 }], epoch: 5 },
+    sourceBitrateMbps: 3.25,
+    receiveRate: { status: 'ok', bytesPerSec: 2e6, epoch: 5, sampledAt: 10 },
+  }));
+  // The placeholder is static: it copies no algorithm, so nothing is derived.
+  assert.equal(app.playerTelemetry.layers, null);
+  assert.equal(app.playerTelemetry.receiveText, UNKNOWN);
+  assert.equal(app.playerTelemetry.bufferText, UNKNOWN);
+  assert.equal(app.playerTelemetry.sourceText, UNKNOWN);
+
+  assert.doesNotThrow(() => app.exitPlayer());
+  assert.equal(app.playerTelemetry.layers, null);
 });
