@@ -8,6 +8,7 @@
 <link rel="stylesheet" href="/web/vendor/inter.css?v=v1.4.4-rc3">
 <link rel="stylesheet" href="/web/vendor/tailwind.css?v=v1.4.4-rc3">
 <link rel="stylesheet" href="/web/web/ui.css?v=v1.4.4-rc3">
+<link rel="stylesheet" href="/web/web/player-progress.css?v=v1.4.4-rc3">
 </head>
 <body class="eio-web font-sans">
 <div id="app" v-cloak>
@@ -450,6 +451,16 @@
             <span>{{ playingItem?.Name }}</span>
           </div>
           <span class="eio-play-spacer"></span>
+          <!-- Telemetry HUD. It lives inside the existing control layer, so the
+               single `playerUI.controlsVisible` state hides it and also drives
+               aria-hidden. No own timer, no own visibility flag and no
+               assistive live region (nothing is announced every second);
+               unknown metrics read as an em dash. -->
+          <div class="eio-play-hud" :aria-hidden="!playerUI.controlsVisible">
+            <div class="eio-play-hud-item"><span class="eio-play-hud-label">接收</span><span class="eio-play-hud-value">{{ playerTelemetry.receiveText }}</span></div>
+            <div class="eio-play-hud-item"><span class="eio-play-hud-label">源码率（约）</span><span class="eio-play-hud-value">{{ playerTelemetry.sourceText }}</span></div>
+            <div class="eio-play-hud-item"><span class="eio-play-hud-label">缓冲</span><span class="eio-play-hud-value">{{ playerTelemetry.bufferText }}</span></div>
+          </div>
         </div>
 
         <div v-if="playerUI.status==='loading'" class="eio-play-overlay">
@@ -482,7 +493,16 @@
         <div v-else class="eio-play-bottom">
           <div class="eio-seek">
             <div v-if="seekPreview!=null" class="eio-seek-bubble" :style="{ left: seekPercent + '%' }">{{ seekTitle }}</div>
-            <input type="range" min="0" step="any" :max="Math.max(wasmDuration, 0)" :value="seekPreview ?? wasmTime"
+            <!-- Layered progress: dark track, white buffered islands (one
+                 element per real range, never joined into a prefix), blue
+                 played. The native range input stays on top and transparent so
+                 keyboard, touch, ARIA and the existing change/pointer handlers
+                 keep working unchanged. -->
+            <div class="eio-seek-rail" aria-hidden="true">
+              <span v-for="(seg, i) in (playerTelemetry.layers?.buffered?.segments || [])" :key="i" class="eio-seek-buffered" :style="{ left: seg.startPercent + '%', width: seg.widthPercent + '%' }"></span>
+              <div class="eio-seek-played" :style="{ width: (playerTelemetry.layers?.played?.widthPercent || 0) + '%' }"></div>
+            </div>
+            <input type="range" class="eio-seek-input" min="0" step="any" :max="Math.max(wasmDuration, 0)" :value="seekPreview ?? wasmTime"
                    :disabled="!playerAlive || !wasmDuration" aria-label="播放进度" :aria-valuetext="wasmTimeHuman + ' / ' + wasmDurationHuman"
                    @input="previewSeek($event.target.value)" @change="onWasmSeek($event.target.value)" @pointerup="endScrub" @pointercancel="cancelScrub">
           </div>
@@ -531,6 +551,9 @@
 <script src="/web/vendor/web/jassub.umd.js?v=v1.4.4-rc3"></script>
 <script src="/web/web/subtitles.js?v=v1.4.4-rc3"></script>
 <script src="/web/web/subtitle-controller.js?v=v1.4.4-rc3"></script>
+<script src="/web/web/player-progress.js?v=v1.4.4-rc3"></script>
+<script src="/web/web/player-buffer.js?v=v1.4.4-rc3"></script>
+<script src="/web/web/player-telemetry-ui.js?v=v1.4.4-rc3"></script>
 <script src="/web/web/player-libmedia.js?v=v1.4.4-rc3"></script>
 <script src="/web/web/playback-orchestrator.js?v=v1.4.4-rc3"></script>
 <script src="/web/web/data.js?v=v1.4.4-rc3"></script>

@@ -669,6 +669,12 @@
         },
       }));
 
+      /* ---- player telemetry HUD ---- */
+      // Pure view model for the top-right HUD. It is created once per setup,
+      // consumes the same engine snapshot as playerUI.acceptState, owns no
+      // timer and no visibility state, and never touches the seek preview.
+      const playerTelemetry = EIOPlayerTelemetry.create({ reactive });
+
       /* ---- playback entry ---- */
       let playItemSerial = 0; // bumped per playItem call to detect a superseded Series resolution
 
@@ -865,6 +871,7 @@
         lastAudioError = '';
         instance.onState = (state) => {
           if (player !== instance || generation !== playbackGeneration) return;
+          playerTelemetry.update(state);
           playerMode.value = state.mode;
           wasmPlaying.value = state.playing;
           // While an engine seek is pending, stale time events would snap the
@@ -987,6 +994,9 @@
 
       function stopPlayer() {
         playbackGeneration++;
+        // Leaves and reloads must not keep a previous generation's buffer or
+        // rate on screen: the HUD returns to its unknown dashes.
+        playerTelemetry.reset();
         playbackStarted = false;
         startupSubtitleError = null;
         reportedSubtitleIndex = null;
@@ -1426,7 +1436,7 @@
         searchQuery, searchResults, searchLoading, search, recentSearches,
         onSearchInput, submitSearch, useRecent, removeRecent, recordRecent,
         imageUrl, backdropUrl, heroImageUrl,
-        playerContainer, playerUI, playerAlive, playerMode, playItem, playItemId, playSrc, playingItem, playVersions, playMediaSourceId,
+        playerContainer, playerUI, playerTelemetry, playerAlive, playerMode, playItem, playItemId, playSrc, playingItem, playVersions, playMediaSourceId,
         playAudioIndex, audioTracks, subtitleTracks, versionOptions, audioOptions, subtitleOptions,
         previousEpisode, nextEpisode, queueError, retryEpisodeQueue, episodeQueue, episodeQueueLoading, episodeQueuePartial, trackBusy, subtitleBusy, switchVersion, selectAudio, selectSubtitle,
         wasmSubTrack, seekPreview, seekTitle, seekPercent, playerVolume, previewSeek, changeVolume, toggleMute, toggleFullscreen,

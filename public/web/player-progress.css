@@ -1,0 +1,134 @@
+/* ==========================================================================
+ * Player progress layers + telemetry HUD.
+ *
+ * Loaded from web.html after ui.css. Everything here is scoped to the /web
+ * player container and its control layer: no admin, login or library selector
+ * is touched, and nothing adds a new visibility state or a second hide timer.
+ * ========================================================================== */
+
+/* ---- palette defaults -----------------------------------------------------
+ * The four frozen player progress variables get their fixed defaults here, on
+ * the two player-domain containers only. The selector deliberately stays at
+ * class specificity (0,1,0) while the generated theme block uses
+ * `body.eio-web .player-container, body.eio-web .eio-play-layer` (0,2,0), so a
+ * v2 theme package overrides these defaults regardless of stylesheet order.
+ * The defaults are never re-declared on `.eio-seek` or any other descendant:
+ * a closer redefinition would shadow the inherited theme value. */
+.player-container,
+.eio-play-layer {
+  --eio-progress-played: #3b82f6;
+  --eio-progress-buffered: #f3f4f6;
+  --eio-progress-track: #111827;
+  --eio-progress-thumb: #3b82f6;
+}
+
+/* ---- layered seek bar -----------------------------------------------------
+ * Three background layers under the transparent native range input:
+ * dark track (rail background), white buffered islands, blue played. The
+ * input itself stays on top so keyboard, touch, ARIA and the existing
+ * input/change/pointer handlers are untouched. */
+.eio-seek-rail {
+  position: absolute;
+  top: 8px; /* matches `.eio-seek` padding-top + the 6px input box */
+  left: 0;
+  right: 0;
+  height: 6px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--eio-progress-track, #111827);
+  pointer-events: none;
+}
+.eio-seek-buffered,
+.eio-seek-played {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+}
+/* Every buffered island is painted as its own segment; gaps stay dark, so a
+ * later island is never drawn as part of a contiguous prefix. */
+.eio-seek-buffered { background: var(--eio-progress-buffered, #f3f4f6); }
+.eio-seek-played {
+  left: 0;
+  background: var(--eio-progress-played, #3b82f6);
+}
+
+/* The transparent input keeps its native track overlay above the layers. */
+.eio-seek input.eio-seek-input[type=range] {
+  position: relative;
+  z-index: 2;
+  width: 100%;
+  height: 6px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+.eio-seek input.eio-seek-input[type=range]::-webkit-slider-runnable-track { background: transparent; height: 6px; }
+.eio-seek input.eio-seek-input[type=range]::-moz-range-track { background: transparent; height: 6px; }
+/* Thumb: themeable fill (`--eio-progress-thumb`) with a fixed black/white
+ * outline, so the handle keeps a visible boundary on any theme or video frame.
+ * The outline is program-owned and not themeable. */
+.eio-seek input.eio-seek-input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: -4px;
+  border: none;
+  border-radius: 50%;
+  background: var(--eio-progress-thumb, #3b82f6);
+  box-shadow: 0 0 0 2px #000, 0 0 0 4px #fff;
+}
+.eio-seek input.eio-seek-input[type=range]::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border: none;
+  border-radius: 50%;
+  background: var(--eio-progress-thumb, #3b82f6);
+  box-shadow: 0 0 0 2px #000, 0 0 0 4px #fff;
+}
+/* Focus ring stays fixed (white on black) so a themed thumb cannot lose it. */
+.eio-seek input.eio-seek-input[type=range]:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 3px;
+  box-shadow: 0 0 0 4px #000;
+  border-radius: 6px;
+}
+.eio-seek input.eio-seek-input[type=range]:disabled { cursor: default; }
+.eio-seek input.eio-seek-input[type=range]:disabled::-webkit-slider-thumb { opacity: .6; }
+.eio-seek input.eio-seek-input[type=range]:disabled::-moz-range-thumb { opacity: .6; }
+
+/* ---- telemetry HUD --------------------------------------------------------
+ * Sits at the right end of the existing top control row, so it is hidden by
+ * the one `.eio-play-layer.hidden .eio-play-top` rule and never owns a timer,
+ * flag or aria-live region. pointer-events stays off: the HUD cannot widen the
+ * hover/touch capture area or steal a click from a button or the seek bar. */
+.eio-play-hud {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: rgba(7, 10, 18, .55);
+  /* The player surface is always dark, so the HUD uses fixed grey-white text
+   * instead of inheriting light/dark page colour tokens. */
+  border: 1px solid #94a3b8;
+  color: #f1f5f9;
+  font-size: 11px;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: none;
+  transition: opacity var(--dur-base, .18s) var(--ease, ease);
+}
+.eio-play-hud-item { display: flex; align-items: baseline; gap: 4px; }
+.eio-play-hud-label { color: #cbd5e1; }
+.eio-play-hud-value { color: #f1f5f9; min-width: 4ch; text-align: right; }
+
+/* Narrow screens: keep every label (the "约" qualifier on the source bitrate
+ * is part of the contract) and only shrink the type. */
+@media (max-width: 640px) {
+  .eio-play-hud { gap: 6px; font-size: 10px; padding: 3px 6px; }
+  .eio-play-hud-value { min-width: 3ch; }
+}

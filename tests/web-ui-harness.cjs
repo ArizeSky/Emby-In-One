@@ -10,7 +10,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const SCRIPTS = ['data.js', 'ui.js', 'page-state.js', 'player-ui.js', 'library-state.js', 'ui-components.js', 'playback-orchestrator.js', 'theme-player-controls.js', 'theme.js', 'theme-transport.js', 'appearance.js', 'app.js'];
+const SCRIPTS = ['data.js', 'ui.js', 'page-state.js', 'player-ui.js', 'library-state.js', 'ui-components.js', 'playback-orchestrator.js', 'player-progress.js', 'player-buffer.js', 'player-telemetry-ui.js', 'theme-player-controls.js', 'theme.js', 'theme-transport.js', 'appearance.js', 'app.js'];
 
 function makeStorage(initial = {}) {
   const store = new Map(Object.entries(initial));
@@ -94,7 +94,12 @@ function harness(options = {}) {
     if (file === 'app.js' && options.beforeApp) options.beforeApp(context);
     vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'public', 'web', file), 'utf8'), context);
   }
-  return { app, context, calls, data: context.EIOData, storage, mountedHooks, beforeUnmountHooks, listeners, documentElement };
+  return {
+    app, context, calls, data: context.EIOData, storage, mountedHooks, beforeUnmountHooks, listeners, documentElement,
+    progress: context.EIOPlayerProgress,
+    bufferModule: context.EIOPlayerBuffer,
+    telemetry: context.EIOPlayerTelemetry,
+  };
 }
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
