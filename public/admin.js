@@ -2,6 +2,8 @@ const { createApp } = Vue;
 // K4：观看/保活提醒的逻辑集中在 admin-activity.js（模板中先于本文件加载），
 // 本文件只保留薄接线，避免继续把管理面板逻辑堆进 admin.js。
 const activityModule = typeof EIOAdminActivity === 'undefined' ? null : EIOAdminActivity;
+// T3：主题管理的状态机/CAS/预览集中在 admin-theme.js（模板中也先于本文件加载）。
+const themeModule = typeof EIOAdminTheme === 'undefined' ? null : EIOAdminTheme;
 createApp({
   data() {
     return {
@@ -15,6 +17,7 @@ createApp({
         {id:'users', name:'用户管理', icon:'users'},
         {id:'proxies', name:'网络代理', icon:'shield'},
         {id:'settings', name:'全局设置', icon:'settings'},
+        {id:'themes', name:'主题管理', icon:'palette'},
         {id:'logs', name:'运行日志', icon:'terminal'}
       ],
       stats: { upstreamCount: 0, upstreamOnline: 0, idMappings: { mappingCount: 0, persistent: true }, upstream: [] },
@@ -37,6 +40,8 @@ createApp({
       // 观看/保活：筛选与排序只影响派生视图，不改 upstreamList 顺序。
       activityFilter: 'all', activitySort: 'default',
       activityDialog: activityModule ? activityModule.newDialogState() : null,
+      // 主题管理只保存可序列化视图；AbortController/File 在 admin-theme.js 内部。
+      themeAdmin: themeModule ? themeModule.newState() : null,
     };
   },
   computed: { pageTitle() { return this.pages.find(p => p.id === this.currentPage)?.name || '管理面板'; },
@@ -72,23 +77,39 @@ createApp({
       const dto = this.activityDialog && this.activityDialog.dto;
       return activityModule && dto ? activityModule.remainingText(dto) : '';
     },
-    activityCanSave() { return activityModule ? activityModule.canSave(this.activityDialog) : false; }
+    activityCanSave() { return activityModule ? activityModule.canSave(this.activityDialog) : false; },
+    themePreviewSrc() { return themeModule && this.themeAdmin ? themeModule.previewSrc(this.themeAdmin) : ''; },
+    themeDialogReady() { return themeModule && this.themeAdmin ? themeModule.dialogReady(this.themeAdmin) : false; },
+    themeCanInstall() { return themeModule && this.themeAdmin ? themeModule.canInstall(this.themeAdmin) : false; }
   },
   watch: {
-    currentPage(v) { this.stopUAReconnectPoll(); if (v !== 'servers') this.closeActivity(); if(this._refreshTimer) clearTimeout(this._refreshTimer); this.abortRefresh(); this._refreshTimer = setTimeout(()=>{this.refresh(); this.$nextTick(() => lucide.createIcons());}, 50); }
+    currentPage(v) { this.stopUAReconnectPoll(); if (v !== 'servers') this.closeActivity(); if (v !== 'themes') this.themeLeave(); if(this._refreshTimer) clearTimeout(this._refreshTimer); this.abortRefresh(); this._refreshTimer = setTimeout(()=>{this.refresh(); this.$nextTick(() => lucide.createIcons());}, 50); }
   },
   mounted() { const t = localStorage.getItem('eio_admin_token'); if(t) this.checkAuth(t); this.$nextTick(() => lucide.createIcons()); },
   methods: {
     navigateTo(id) { this.currentPage = id; this.showSidebar = false; },
     async api(path, opts = {}) {
       const t = localStorage.getItem('eio_admin_token');
-      const h = { 'Content-Type': 'application/json' };
+      // 合并调用方 headers（主题上传的 application/zip 与 If-Match 需要它们）：
+      // 默认仍是 JSON，但 Content-Type 可由调用方指定；X-Emby-Token 始终使用
+      // localStorage 中的管理令牌，绝不能被 opts 覆盖或遗漏。
+      const source = opts.headers || {};
+      const h = {};
+      for (const key of Object.keys(source)) {
+        if (key.toLowerCase() === 'x-emby-token') continue;
+        h[key] = source[key];
+      }
+      if (!Object.keys(h).some(key => key.toLowerCase() === 'content-type')) h['Content-Type'] = 'application/json';
       if(t) h['X-Emby-Token'] = t;
       const r = await fetch(path, { ...opts, headers: h });
       if (!r.ok) {
         let data = {};
         try { data = await r.json(); } catch(e) {}
-        if (r.status === 401) this.logout();
+        // 401 只有在“发出请求的令牌仍是当前令牌、且请求没有被取消”时才登出：
+        // 旧令牌的延迟 401 不能把刚登录的新会话踢下线（主题模块的 generation
+        // 守卫管不到这一层）。无论是否登出，401 错误照旧抛给调用者，不吞掉。
+        if (r.status === 401 && t && localStorage.getItem('eio_admin_token') === t
+            && !(opts.signal && opts.signal.aborted)) this.logout();
         const message = data && (data.error || data.message);
         const err = new Error(message || ('HTTP ' + r.status));
         err.status = r.status; err.data = data;
@@ -112,7 +133,7 @@ createApp({
       try { await this.api('/admin/api/status'); } catch(e) { localStorage.removeItem('eio_admin_token'); this.loginError = '需要管理员权限'; return; }
       this.isLoggedIn = true; this.refresh(); this.refreshClientInfo();
     } catch(e) { this.loginError = '用户名或密码错误'; } },
-    logout() { this.stopUAReconnectPoll(); this.closeActivity(); this.isLoggedIn = false; localStorage.removeItem('eio_admin_token'); },
+    logout() { this.stopUAReconnectPoll(); this.closeActivity(); this.themeReset(); this.isLoggedIn = false; localStorage.removeItem('eio_admin_token'); },
     async copyClientUA() {
       if (!this.clientInfo || !this.clientInfo.userAgent) return;
       try { await navigator.clipboard.writeText(this.clientInfo.userAgent); alert('UA 已复制到剪贴板'); } catch(e) {}
@@ -131,6 +152,7 @@ createApp({
       if(this.currentPage === 'users') this.refreshUsers(signal);
       if(this.currentPage === 'proxies') this.refreshProxies(signal);
       if(this.currentPage === 'settings') this.refreshSettings(signal);
+      if(this.currentPage === 'themes') this.themeRefresh();
       if(this.currentPage === 'logs') this.refreshLogs(signal);
       if(this.currentPage === 'ua') this.refreshUAs(signal);
     },
@@ -214,6 +236,47 @@ createApp({
     async deleteServer(id) { if(!confirm('删除服务器？')) return; try { await this.api('/admin/api/upstream/'+id, { method:'DELETE' }); await this.refreshServers(); } catch(e) { alert('删除失败：' + (e.message || '未知错误')); } },
     async reconnectServer(id) { try { await this.api('/admin/api/upstream/'+id+'/reconnect', { method:'POST' }); await this.refreshServers(); } catch(e) { alert('重连失败：' + (e.message || '未知错误')); } },
     async reorder(from, to) { try { await this.api('/admin/api/upstream/reorder', { method:'POST', body:JSON.stringify({fromIndex:from, toIndex:to}) }); await this.refreshServers(); } catch(e) { alert('排序失败：' + (e.message || '未知错误')); } },
+    // --- 主题管理（逻辑在 admin-theme.js） ---------------------------------
+    // 这里只做方法与事件接线：每个方法一行委托，状态与 CAS 规则都在模块里，
+    // 避免把上传/预览/冲突处理重新堆回 admin.js。
+    themeRefresh() {
+      if (!themeModule || !this.themeAdmin) return Promise.resolve();
+      return themeModule.refreshThemes(this.themeAdmin, { api: (path, opts) => this.api(path, opts) });
+    },
+    themeLeave() { if (themeModule && this.themeAdmin) themeModule.leave(this.themeAdmin); },
+    themeReset() { if (themeModule && this.themeAdmin) themeModule.reset(this.themeAdmin); },
+    themeOpenUpload() { if (themeModule && this.themeAdmin) themeModule.openUploadDialog(this.themeAdmin); },
+    themeOpenUpdate(theme) { return themeModule && this.themeAdmin ? themeModule.openUpdateDialog(this.themeAdmin, theme) : false; },
+    themeCloseDialog() { if (themeModule && this.themeAdmin) themeModule.closeDialog(this.themeAdmin); },
+    themeSelectFile(event) {
+      if (!themeModule || !this.themeAdmin) return;
+      const input = event && event.target;
+      themeModule.selectFile(this.themeAdmin, input && input.files ? input.files[0] : null);
+    },
+    themeSubmit() {
+      if (!themeModule || !this.themeAdmin) return Promise.resolve(false);
+      return themeModule.submitDialog(this.themeAdmin, { api: (path, opts) => this.api(path, opts) });
+    },
+    themeToggle(theme) {
+      if (!themeModule || !this.themeAdmin) return Promise.resolve(false);
+      return themeModule.toggleTheme(this.themeAdmin, theme, { api: (path, opts) => this.api(path, opts) });
+    },
+    themeSetDefault(theme) {
+      if (!themeModule || !this.themeAdmin) return Promise.resolve(false);
+      return themeModule.setSiteDefault(this.themeAdmin, theme, { api: (path, opts) => this.api(path, opts) });
+    },
+    themeDelete(theme) {
+      if (!themeModule || !this.themeAdmin) return Promise.resolve(false);
+      if (!confirm('删除主题「' + (theme && theme.name ? theme.name : '') + '」？删除后其公开资源链接将不再可用，此操作不可撤销。')) return Promise.resolve(false);
+      return themeModule.deleteTheme(this.themeAdmin, theme, { api: (path, opts) => this.api(path, opts) });
+    },
+    themeOpenPreview(theme, mode) { return themeModule && this.themeAdmin ? themeModule.openPreview(this.themeAdmin, theme, mode) : false; },
+    themePreviewMode(mode) { if (themeModule && this.themeAdmin) themeModule.setPreviewMode(this.themeAdmin, mode); },
+    themeClosePreview() { if (themeModule && this.themeAdmin) themeModule.closePreview(this.themeAdmin); },
+    themePending(theme) { return themeModule && this.themeAdmin && theme ? themeModule.isThemePending(this.themeAdmin, theme.id) : false; },
+    themeFormatBytes(value) { return themeModule ? themeModule.formatBytes(value) : ''; },
+    themeStateText(theme) { return themeModule ? themeModule.themeStateText(theme) : ''; },
+    themeStateClass(theme) { return themeModule ? themeModule.themeStateClass(theme) : ''; },
     // --- 观看活动与保活提醒（逻辑在 admin-activity.js） -------------------
     activityBadge(s) { return activityModule ? activityModule.badgeFor(s) : { state: 'unknown', label: '—', className: '' }; },
     activityRemainingText(s) { return activityModule ? activityModule.remainingForServer(s) : '—'; },

@@ -281,6 +281,86 @@
       <div class="pt-4 flex items-center space-x-4"><button @click="saveSettings" :disabled="!settingsLoadedOnce || settingsLoadState === 'loading'" class="btn-primary px-8 py-2.5 rounded-xl font-bold disabled:opacity-50 disabled:cursor-not-allowed">保存修改</button><span v-if="saveSuccess" class="text-green-600 text-sm flex items-center space-x-1"><i data-lucide="check-circle" class="w-4 h-4"></i><span>保存成功！</span></span></div>
     </div>
 
+    <!-- Themes -->
+    <div v-if="currentPage === 'themes'" class="space-y-4 md:space-y-6">
+      <div v-if="!themeAdmin" class="card p-8 text-center text-slate-400 italic">主题管理模块未加载：admin-theme.js 不可用。</div>
+      <div v-if="themeAdmin && themeAdmin.error" role="alert" class="card p-4 text-amber-700 bg-amber-50 border border-amber-200">
+        {{ themeAdmin.error }}
+        <button @click="themeRefresh()" class="ml-2 text-blue-600 hover:underline">重试</button>
+      </div>
+      <div v-if="themeAdmin && !themeAdmin.available" class="card p-8 text-center text-slate-400 italic">
+        主题服务当前不可用：无法读取主题目录。内置明暗主题仍然可用，/web 浏览界面不会因此白屏。
+      </div>
+      <template v-if="themeAdmin && themeAdmin.available">
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div class="card p-4">
+            <div class="text-xs font-bold text-slate-400 uppercase tracking-widest">主题配额</div>
+            <div class="mt-2 text-lg font-bold">{{ themeAdmin.quota.usedThemes }} / {{ themeAdmin.quota.maxThemes }}</div>
+            <div class="text-xs text-slate-400">自定义主题数量</div>
+          </div>
+          <div class="card p-4">
+            <div class="text-xs font-bold text-slate-400 uppercase tracking-widest">存储占用</div>
+            <div class="mt-2 text-lg font-bold">{{ themeFormatBytes(themeAdmin.quota.usedBytes) }} / {{ themeFormatBytes(themeAdmin.quota.maxBytes) }}</div>
+            <div class="text-xs text-slate-400">包含当前版本、上一版本与暂存资源</div>
+          </div>
+          <div class="card p-4">
+            <div class="text-xs font-bold text-slate-400 uppercase tracking-widest">存储健康</div>
+            <div class="mt-2 text-lg font-bold">{{ themeAdmin.health.available ? '可用' : '降级' }}</div>
+            <div class="text-xs text-slate-400">恢复 {{ themeAdmin.health.recovered }} · 缺失 {{ themeAdmin.health.missing }} · 孤儿 {{ themeAdmin.health.orphanDirs }}</div>
+          </div>
+        </div>
+        <div v-if="themeAdmin.health.problems.length" role="alert" class="card p-4 text-amber-700 bg-amber-50 border border-amber-200 text-sm">
+          <div class="font-bold mb-1">存储报告的问题</div>
+          <div v-for="(problem, index) in themeAdmin.health.problems" :key="index">{{ problem }}</div>
+        </div>
+        <div class="card p-4 text-sm text-slate-500 space-y-1">
+          <div class="font-bold text-slate-700">公开资源提示</div>
+          <p>已安装主题的 CSS、图片与预览页都是公开资源：无需登录即可访问，并且可能被浏览器长期缓存。</p>
+          <p>请勿在主题包中放入私密照片、个人信息、凭据或任何不希望公开的内容。停用或删除主题只会把它从可选目录移除，不会撤回浏览器已经缓存的公开资源。</p>
+        </div>
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div class="text-sm text-slate-500">站点默认主题：<span class="font-bold text-slate-700">{{ themeAdmin.site.themeId }}</span>（revision {{ themeAdmin.site.revision }}）</div>
+          <div class="flex flex-wrap items-center gap-2">
+            <button @click="themeRefresh()" :disabled="themeAdmin.loading" class="px-4 py-2 rounded-lg bg-white border flex items-center space-x-2 disabled:opacity-50"><i data-lucide="refresh-cw" class="w-4 h-4"></i><span>刷新</span></button>
+            <button @click="themeOpenUpload()" :disabled="!themeCanInstall" class="btn-primary px-4 py-2 rounded-lg flex items-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed"><i data-lucide="plus" class="w-4 h-4"></i><span>上传主题包</span></button>
+          </div>
+        </div>
+        <div v-if="themeAdmin.notice" role="status" class="card p-3 text-green-700 bg-green-50 border border-green-100 text-sm">{{ themeAdmin.notice }}</div>
+        <div v-if="themeAdmin.actionError" role="alert" class="card p-3 text-red-700 bg-red-50 border border-red-100 text-sm">{{ themeAdmin.actionError }}</div>
+        <div v-if="!themeAdmin.loaded && themeAdmin.loading" class="card p-8 text-center text-slate-400 italic">正在加载主题目录...</div>
+        <div v-else class="card overflow-x-auto">
+          <table class="w-full min-w-[820px] text-left border-collapse">
+            <thead class="bg-slate-50 text-slate-500 text-xs font-semibold uppercase"><tr><th class="px-4 py-3">主题</th><th class="px-4 py-3">状态</th><th class="px-4 py-3">版本</th><th class="px-4 py-3">包大小</th><th class="px-4 py-3">revision</th><th class="px-4 py-3">操作</th></tr></thead>
+            <tbody class="divide-y divide-slate-100">
+              <tr v-for="t in themeAdmin.themes" :key="t.id" class="hover:bg-slate-50/50">
+                <td class="px-4 py-3">
+                  <div class="font-medium">{{ t.name }} <span v-if="themeAdmin.site.themeId === t.id" class="ml-1 px-2 py-0.5 bg-blue-50 text-blue-600 border border-blue-100 rounded-full text-xs font-bold">站点默认</span></div>
+                  <div class="text-xs text-slate-400 font-mono">{{ t.id }}</div>
+                  <div v-if="t.author" class="text-xs text-slate-400">作者：{{ t.author }}</div>
+                  <div v-if="t.description" class="text-xs text-slate-500">{{ t.description }}</div>
+                  <div v-if="t.problem" class="text-xs text-red-600">{{ t.problem }}</div>
+                </td>
+                <td class="px-4 py-3"><span :class="themeStateClass(t)" class="px-2 py-1 rounded-full text-xs font-bold border">{{ themeStateText(t) }}</span></td>
+                <td class="px-4 py-3 text-sm text-slate-500">{{ t.version || '—' }}</td>
+                <td class="px-4 py-3 text-sm text-slate-500">{{ themeFormatBytes(t.packageBytes) }}</td>
+                <td class="px-4 py-3 text-sm text-slate-500">{{ t.revision }}</td>
+                <td class="px-4 py-3">
+                  <div class="flex flex-wrap items-center gap-1">
+                    <button v-if="!t.builtin" @click="themeOpenPreview(t, 'light')" :disabled="!t.previewLightUrl && !t.previewDarkUrl" class="p-2 text-slate-400 hover:text-blue-600 disabled:opacity-20" title="预览明暗主题"><i data-lucide="eye" class="w-4 h-4"></i></button>
+                    <button v-if="!t.builtin" @click="themeOpenUpdate(t)" :disabled="themePending(t)" class="p-2 text-slate-400 hover:text-blue-600 disabled:opacity-20" title="用同 ID 主题包更新"><i data-lucide="upload" class="w-4 h-4"></i></button>
+                    <button v-if="!t.builtin" @click="themeToggle(t)" :disabled="themePending(t)" class="p-2 text-slate-400 hover:text-amber-600 disabled:opacity-20" :title="t.enabled ? '停用主题' : '启用主题'"><i :data-lucide="t.enabled ? 'toggle-right' : 'toggle-left'" class="w-4 h-4"></i></button>
+                    <button v-if="themeAdmin.site.themeId !== t.id" @click="themeSetDefault(t)" :disabled="themePending(t) || (!t.builtin && (!t.enabled || !t.available))" class="p-2 text-slate-400 hover:text-green-600 disabled:opacity-20" title="设为站点默认主题"><i data-lucide="home" class="w-4 h-4"></i></button>
+                    <button v-if="!t.builtin" @click="themeDelete(t)" :disabled="themePending(t)" class="p-2 text-slate-400 hover:text-red-600 disabled:opacity-20" title="删除主题"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="text-xs text-slate-400">内置主题不可修改或删除，但可以设为站点默认。自定义主题首装与同 ID 更新都限制为单一 ZIP（≤ 1.5 MiB）；更新必须携带列表显示的当前 revision。</p>
+      </template>
+    </div>
+
     <!-- Users -->
     <div v-if="currentPage === 'users'" class="space-y-6">
       <div v-if="listErrors.users" role="alert" class="card p-4 text-amber-700 bg-amber-50 border border-amber-200">用户列表加载失败：{{ listErrors.users }} <button @click="refreshUsers" class="ml-2 text-blue-600 hover:underline">重试</button></div>
@@ -330,6 +410,43 @@
       <div class="card overflow-hidden"><div class="log-container p-4 md:p-6 h-[70vh] overflow-y-auto" ref="logBox"><div v-for="(l, idx) in filteredLogs" :key="idx" class="mb-1"><span class="opacity-40">[{{ l.timestamp }}]</span><span :class="'level-' + l.level.toUpperCase()" class="mx-2">[{{ l.level.toUpperCase() }}]</span><span>{{ l.message }}</span></div></div></div>
     </div>
   </main>
+
+  <!-- Theme Upload / Update Dialog -->
+  <div v-if="themeAdmin && themeAdmin.dialog" class="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-[500] p-4">
+    <div class="card w-full max-w-lg p-4 md:p-8 space-y-4 max-h-[90vh] overflow-y-auto">
+      <div class="flex justify-between items-center text-xl font-bold"><h3>{{ themeAdmin.dialog.mode === 'update' ? '更新主题包' : '上传新主题' }}</h3><button @click="themeCloseDialog()" class="text-slate-400" title="关闭"><i data-lucide="x" class="w-6 h-6"></i></button></div>
+      <p v-if="themeAdmin.dialog.mode === 'update'" class="text-sm text-slate-500">目标主题：{{ themeAdmin.dialog.themeName }}（<span class="font-mono">{{ themeAdmin.dialog.themeId }}</span>），当前 revision {{ themeAdmin.dialog.expectedRevision }}。主题包 manifest.json 中的 id 必须与之一致。</p>
+      <p v-else class="text-sm text-slate-500">首次安装请上传单一 ZIP（≤ 1.5 MiB）。同一 ID 已安装时请使用列表中对应主题的「更新」，不要重复首装。</p>
+      <div class="p-3 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-700">主题包内的 CSS、图片与预览页安装后都是公开资源，请勿放入私密照片、个人信息或凭据。</div>
+      <div>
+        <label class="text-sm font-medium">主题包 ZIP</label>
+        <input type="file" accept=".zip,application/zip" @change="themeSelectFile" class="w-full px-4 py-2 border rounded-lg outline-none">
+        <p v-if="themeAdmin.dialog.fileName" class="mt-1 text-xs text-slate-500">已选择：{{ themeAdmin.dialog.fileName }}（{{ themeFormatBytes(themeAdmin.dialog.fileSize) }}）</p>
+      </div>
+      <div v-if="themeAdmin.dialog.error" role="alert" class="p-3 rounded-lg bg-red-50 text-red-700 text-sm">{{ themeAdmin.dialog.error }}</div>
+      <div class="flex justify-end space-x-3 pt-2">
+        <button @click="themeCloseDialog()" class="px-6 py-2.5 rounded-xl text-slate-600 hover:bg-slate-100">取消</button>
+        <button @click="themeSubmit()" :disabled="!themeDialogReady" class="btn-primary px-8 py-2.5 rounded-xl font-bold disabled:opacity-50 disabled:cursor-not-allowed">{{ themeAdmin.dialog.mode === 'update' ? '上传更新' : '安装主题' }}</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Theme Preview (fixed, generated, scriptless document) -->
+  <div v-if="themeAdmin && themeAdmin.preview" class="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-[500] p-4">
+    <div class="card w-full max-w-4xl p-4 md:p-6 space-y-4 max-h-[90vh] overflow-y-auto">
+      <div class="flex flex-wrap justify-between items-center gap-2">
+        <h3 class="text-xl font-bold">主题预览：{{ themeAdmin.preview.name }}</h3>
+        <div class="flex items-center space-x-2">
+          <button @click="themePreviewMode('light')" :disabled="!themeAdmin.preview.lightUrl" :class="themeAdmin.preview.mode === 'light' ? 'bg-blue-600 text-white' : 'bg-white border text-slate-600'" class="px-3 py-1.5 rounded text-sm font-bold disabled:opacity-20">明亮</button>
+          <button @click="themePreviewMode('dark')" :disabled="!themeAdmin.preview.darkUrl" :class="themeAdmin.preview.mode === 'dark' ? 'bg-blue-600 text-white' : 'bg-white border text-slate-600'" class="px-3 py-1.5 rounded text-sm font-bold disabled:opacity-20">深色</button>
+          <button @click="themeClosePreview()" class="p-2 text-slate-400 hover:text-red-600" title="关闭预览"><i data-lucide="x" class="w-5 h-5"></i></button>
+        </div>
+      </div>
+      <div v-if="!themePreviewSrc" class="p-8 text-center text-slate-400 italic">该主题没有可用的预览文档。</div>
+      <iframe v-else :src="themePreviewSrc" sandbox="allow-same-origin" referrerpolicy="no-referrer" title="主题预览" class="w-full h-[60vh] rounded-lg border border-slate-200 bg-white"></iframe>
+      <p class="text-xs text-slate-400">预览来自程序生成的固定公开页面：页面与样式都没有脚本，不包含账号数据，并使用不可变的内容 hash URL；浏览器可能缓存这些公开资源。</p>
+    </div>
+  </div>
 
   <!-- Server Modal -->
   <div v-if="showModal" class="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-[500] p-4">
@@ -609,6 +726,7 @@
 <script src="vendor/vue.global.prod.js"></script>
 <script src="vendor/lucide.min.js"></script>
 <script src="admin-activity.js"></script>
+<script src="admin-theme.js"></script>
 <script src="admin.js"></script>
 </body>
 </html>
