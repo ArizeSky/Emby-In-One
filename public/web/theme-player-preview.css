@@ -1,0 +1,96 @@
+/* Emby-in-One isolated theme preview: fixed player progress sample.
+ *
+ * Loaded only by the generated /web/themes/HASH/preview.html document (the
+ * URL is /web/web/theme-player-preview.css because the /web static handler is
+ * rooted at public/). It draws a purely static illustration — no script, no
+ * timer, no media element, no external resources — of a player progress bar: played 30%,
+ * buffered 65%, track 100% of a fake item.
+ *
+ * The four --eio-progress-* custom properties are the only theme-controlled
+ * values here (themeApiVersion 2, playerControls). Every other value, including
+ * the dark control surface and the thumb's black/white double outline, is
+ * fixed: a theme may recolor the thumb but can never erase its boundary, paint
+ * over the control bar or reach the page background/subtitle text.
+ *
+ * The bare `.eio-preview-player` selector intentionally loses to the generated
+ * theme.css rule `body.eio-preview .eio-preview-player`, so these declarations
+ * are fallbacks for v1 packages and for v2 packages without playerControls.
+ */
+
+.eio-preview-player {
+  --eio-progress-played: #3b82f6;
+  --eio-progress-buffered: #f3f4f6;
+  --eio-progress-track: #111827;
+  --eio-progress-thumb: #3b82f6;
+
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 520px;
+  margin: 18px 0 0;
+  padding: 16px 18px;
+  border-radius: 10px;
+  background: #1f2937; /* fixed dark control surface */
+  color: #f9fafb; /* fixed bar text, independent of the theme */
+  font: 500 13px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+.eio-preview-player-caption {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: #e5e7eb;
+  font-size: 12px;
+  letter-spacing: .01em;
+}
+
+.eio-preview-player-rail {
+  position: relative;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--eio-progress-track, #111827);
+}
+
+.eio-preview-player-buffered,
+.eio-preview-player-played {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  border-radius: 999px;
+}
+
+/* Static sample widths: the track is 100%, buffered 65%, played 30%. */
+.eio-preview-player-buffered {
+  width: 65%;
+  background: var(--eio-progress-buffered, #f3f4f6);
+}
+
+.eio-preview-player-played {
+  width: 30%;
+  background: var(--eio-progress-played, #3b82f6);
+}
+
+.eio-preview-player-thumb {
+  position: absolute;
+  top: 50%;
+  left: 30%;
+  width: 12px;
+  height: 12px;
+  margin: -6px 0 0 -6px;
+  box-sizing: border-box;
+  border-radius: 50%;
+  background: var(--eio-progress-thumb, #3b82f6);
+  /* Fixed two-colour outline: white ring plus an outer black ring. */
+  border: 2px solid #ffffff;
+  box-shadow: 0 0 0 1px #000000;
+}
+
+.eio-preview-player-meta {
+  display: flex;
+  justify-content: space-between;
+  color: #d1d5db;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}

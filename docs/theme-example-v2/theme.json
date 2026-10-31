@@ -1,0 +1,41 @@
+{
+  "variants": {
+    "light": {
+      "bg0": "#FFFFFF",
+      "bg1": "#F5F5F5",
+      "bg2": "#E8E8E8",
+      "bg3": "#D9D9D9",
+      "text1": "#111111",
+      "text2": "#444444",
+      "text3": "#5A5A5A",
+      "line": "#CCCCCC",
+      "line2": "#B3B3B3",
+      "accent": "#0A4FB5",
+      "accentText": "#0A4FB5"
+    },
+    "dark": {
+      "bg0": "#0F1115",
+      "bg1": "#171A20",
+      "bg2": "#1F242C",
+      "bg3": "#2A303A",
+      "text1": "#F2F4F8",
+      "text2": "#C3C9D4",
+      "text3": "#9AA3B2",
+      "line": "#2F3540",
+      "line2": "#3D4552",
+      "accent": "#6EA8FE",
+      "accentText": "#6EA8FE"
+    }
+  },
+  "appearance": {
+    "radius": 14,
+    "density": "comfortable"
+  },
+  "backgroundImage": "",
+  "playerControls": {
+    "played": "#3b82f6",
+    "buffered": "#f3f4f6",
+    "track": "#111827",
+    "thumb": "#3b82f6"
+  }
+}

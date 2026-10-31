@@ -1,0 +1,8 @@
+{
+  "themeApiVersion": 2,
+  "id": "eio-player-theme-example",
+  "name": "播放器主题示例",
+  "author": "EIO Project",
+  "description": "Minimal valid theme package used by tests and documentation. It contains no images and no external resources.",
+  "version": "1.0.0"
+}

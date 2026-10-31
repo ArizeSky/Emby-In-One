@@ -223,9 +223,22 @@ func themeAPIETagMatches(r *http.Request, etag string) bool {
 	return false
 }
 
+// themePreviewPlayerCSSURL is the fixed stylesheet that draws the preview's
+// static player progress sample. It is a checked-in static asset, not theme
+// output: the /web static handler is rooted at the public root, so the file
+// public/web/theme-player-preview.css is reached as /web/web/... (the same
+// shape as /web/web/app.js).
+const themePreviewPlayerCSSURL = "/web/web/theme-player-preview.css"
+
 // themePreviewDocument builds the fixed preview markup. Only the already
 // validated content hash, the fixed mode and a server-built resource URL are
 // interpolated.
+//
+// The player sample below is literal markup with a fixed class list and a
+// fixed aria-label: it carries no theme strings, no style attribute and no
+// script, and the four progress colors reach it only through the same-origin
+// stylesheet that the generated theme.css overrides. Subtitle text and the
+// page background stay entirely outside this block.
 func themePreviewDocument(hash, mode, previewURL string) string {
 	poster := `<span>示例封面</span>`
 	if previewURL != "" {
@@ -238,6 +251,7 @@ func themePreviewDocument(hash, mode, previewURL string) string {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>主题预览</title>
 <link rel="stylesheet" href="` + themeAPICSSURL(hash) + `">
+<link rel="stylesheet" href="` + themePreviewPlayerCSSURL + `">
 </head>
 <body class="eio-preview">
 <div class="eio-preview-shell">
@@ -256,6 +270,11 @@ func themePreviewDocument(hash, mode, previewURL string) string {
 <article class="eio-preview-card"><div class="eio-preview-poster">示例封面</div><div class="eio-preview-card-body"><div class="eio-preview-card-title">示例卡片</div><div class="eio-preview-card-sub">副标题文本</div></div></article>
 </div>
 <div class="eio-preview-panel"><p>内容面板</p><p class="eio-preview-sub">固定预览内容，不包含任何账号、媒体或上游数据。</p><p><a class="eio-preview-link" href="#">强调链接示例</a></p></div>
+<div class="eio-preview-player" role="img" aria-label="播放器进度配色示意（静态图）：已播放 30%，已缓冲 65%，轨道 100%，缩略点带固定黑白描边">
+<div class="eio-preview-player-caption"><span>播放器进度配色示意</span><span>静态示例</span></div>
+<div class="eio-preview-player-rail"><div class="eio-preview-player-buffered"></div><div class="eio-preview-player-played"></div><div class="eio-preview-player-thumb"></div></div>
+<div class="eio-preview-player-meta"><span>00:30</span><span>01:40</span></div>
+</div>
 </main>
 </div>
 </body>

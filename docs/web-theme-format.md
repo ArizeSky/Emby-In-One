@@ -1,5 +1,7 @@
 # Web 主题包格式 v1 / Web Theme Package Format v1
 
+主题 v2 的可选播放器配色扩展与完整示例另见[双语增补说明](web-theme-format-v2.md)；本文继续冻结 v1 规则和示例。
+For the optional v2 player palette and complete example, see the [bilingual supplement](web-theme-format-v2.md). This document keeps the v1 rules and example frozen.
 本文是 `/web` 自定义主题包 (`themeApiVersion 1`) 的格式与限制说明，中英文同文并列。
 This document defines the `/web` custom theme package format (`themeApiVersion 1`) and its
 limits; the Chinese and English halves carry the same content.
@@ -78,6 +80,8 @@ assets/<name>.jpeg
   每个变体必须完整提供 11 个颜色 token，不允许缺项或多余字段。
 * 颜色只接受字面量 `#RRGGBB`（不接受 `#RGB`、`rgb()`、`hsl()`、渐变、阴影、CSS 变量或
   任何 CSS 文本）；解析后统一转成大写，因此大小写与 JSON 键顺序不影响内容 hash。
+  v2 的 `playerControls` 是唯一例外：它同样接受大小写两种写法的 6 位 HEX，但规范化为
+  小写 `#rrggbb`（见 [v2 增补说明](web-theme-format-v2.md)）；v1 token 的写出格式不变。
 * `appearance` 可选；缺省为 `radius: 14`、`density: "comfortable"`。
   `radius` 取整数 4..24（CSS 像素），`density` 只能是 `compact` 或 `comfortable`。
 * `backgroundImage` 可选，缺省或空字符串表示无背景图；非空时必须是归一化的
@@ -246,7 +250,10 @@ tracked by the content hash.
   are allowed. Each variant must provide all 11 color tokens, with no missing or extra fields.
 * Colors are literal `#RRGGBB` values only (`#RGB`, `rgb()`, `hsl()`, gradients, shadows, CSS
   variables and any CSS text are rejected). Values are normalized to upper case, so letter
-  casing and JSON key order never affect the content hash.
+  casing and JSON key order never affect the content hash. The v2 `playerControls` block is the
+  one exception: it also accepts 6-digit HEX in either case but canonicalizes to lowercase
+  `#rrggbb` (see the [v2 supplement](web-theme-format-v2.md)); v1 tokens keep their upper-case
+  output form.
 * `appearance` is optional and defaults to `radius: 14`, `density: "comfortable"`.
   `radius` is an integer in 4..24 (CSS pixels); `density` is `compact` or `comfortable`.
 * `backgroundImage` is optional; missing or empty means no background image. Otherwise it must
