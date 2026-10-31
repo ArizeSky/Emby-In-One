@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -24,8 +25,14 @@ import (
 // store can persist them without re-parsing user input.
 
 const (
-	// ThemeAPIVersion is the only accepted themeApiVersion value.
+	// ThemeAPIVersion is the frozen v1 theme API version. It stays 1 forever so
+	// existing fixtures, canonical hashes and generated stylesheets keep their
+	// exact bytes; v2 packages must declare ThemeAPIVersionLatest explicitly.
 	ThemeAPIVersion = 1
+	// ThemeAPIVersionLatest is the newest accepted themeApiVersion. Packages
+	// that declare it may carry the optional playerControls block; older
+	// programs reject the value instead of silently downgrading it to v1.
+	ThemeAPIVersionLatest = 2
 
 	// ThemePackageMaxBytes bounds the uploaded ZIP itself ("net package").
 	ThemePackageMaxBytes = 1536 * 1024
@@ -56,6 +63,28 @@ const (
 	ThemeDescriptionMaxLength = 400
 	ThemeVersionMaxLength     = 32
 )
+
+// themeSupportedAPIVersions lists every accepted themeApiVersion, oldest
+// first. Parsing, store re-validation and the DTO all derive "supported" from
+// this single list.
+func themeSupportedAPIVersions() []int {
+	return []int{ThemeAPIVersion, ThemeAPIVersionLatest}
+}
+
+// themeAPIVersionSupported reports whether apiVersion is an accepted value.
+func themeAPIVersionSupported(apiVersion int) bool {
+	return apiVersion == ThemeAPIVersion || apiVersion == ThemeAPIVersionLatest
+}
+
+// themeSupportedAPIVersionsText renders the accepted versions for error text.
+func themeSupportedAPIVersionsText() string {
+	versions := themeSupportedAPIVersions()
+	parts := make([]string, 0, len(versions))
+	for _, version := range versions {
+		parts = append(parts, strconv.Itoa(version))
+	}
+	return strings.Join(parts, " or ")
+}
 
 // ThemeErrorCode classifies every theme package rejection so API handlers can
 // map failures to 400/413/415 without string matching.
@@ -201,10 +230,16 @@ type ThemeAppearance struct {
 // ThemeVariantLight and ThemeVariantDark. BackgroundImage is empty when the
 // package ships no background asset, otherwise it is a package-relative
 // "assets/..." path that is guaranteed to exist in Assets.
+//
+// PlayerControls is the optional themeApiVersion 2 player palette. It is nil
+// for v1 packages and for v2 packages that do not configure the player, so the
+// canonical hash and the stored JSON of a v1 package stay byte-identical and
+// "not configured" is never replaced by the render-time defaults.
 type ThemeDefinition struct {
 	Variants        map[string]ThemeVariant `json:"variants"`
 	Appearance      ThemeAppearance         `json:"appearance"`
 	BackgroundImage string                  `json:"backgroundImage"`
+	PlayerControls  *ThemePlayerControls    `json:"playerControls,omitempty"`
 }
 
 // ThemeAsset is one validated binary resource. MIME is the content-derived
@@ -273,12 +308,24 @@ func (p *ThemePackage) AllAssets() []ThemeAsset {
 }
 
 // JSON field sets. Unknown fields are rejected against exactly these lists.
+// themeDefinitionFields is the frozen v1 set; v2 additionally allows the
+// optional playerControls block.
 var (
-	themeManifestFields   = []string{"themeApiVersion", "id", "name", "author", "description", "version"}
-	themeDefinitionFields = []string{"variants", "appearance", "backgroundImage"}
-	themeAppearanceFields = []string{"radius", "density"}
-	themeVariantNames     = []string{ThemeVariantLight, ThemeVariantDark}
+	themeManifestFields     = []string{"themeApiVersion", "id", "name", "author", "description", "version"}
+	themeDefinitionFields   = []string{"variants", "appearance", "backgroundImage"}
+	themeDefinitionFieldsV2 = append(append([]string(nil), themeDefinitionFields...), "playerControls")
+	themeAppearanceFields   = []string{"radius", "density"}
+	themeVariantNames       = []string{ThemeVariantLight, ThemeVariantDark}
 )
+
+// themeDefinitionFieldsForVersion returns the accepted theme.json field set of
+// one API version.
+func themeDefinitionFieldsForVersion(apiVersion int) []string {
+	if apiVersion >= ThemeAPIVersionLatest {
+		return themeDefinitionFieldsV2
+	}
+	return themeDefinitionFields
+}
 
 // decodeThemeJSONObject parses exactly one JSON object, rejecting duplicate
 // keys, non-object roots and trailing data. The payload must already be bounded
@@ -400,9 +447,9 @@ func parseThemeManifest(data []byte) (ThemeManifest, error) {
 	if err != nil {
 		return ThemeManifest{}, err
 	}
-	if apiVersion != ThemeAPIVersion {
+	if !themeAPIVersionSupported(apiVersion) {
 		return ThemeManifest{}, themeErrorf(ThemeCodeInvalidManifest, path,
-			"unsupported themeApiVersion %d, supported version is %d", apiVersion, ThemeAPIVersion)
+			"unsupported themeApiVersion %d, supported versions are %s", apiVersion, themeSupportedAPIVersionsText())
 	}
 	manifest := ThemeManifest{ThemeAPIVersion: apiVersion}
 	textFields := []struct {
@@ -434,7 +481,7 @@ func parseThemeManifest(data []byte) (ThemeManifest, error) {
 
 func validateThemeManifest(manifest ThemeManifest) error {
 	const path = "manifest.json"
-	if manifest.ThemeAPIVersion != ThemeAPIVersion {
+	if !themeAPIVersionSupported(manifest.ThemeAPIVersion) {
 		return themeErrorf(ThemeCodeInvalidManifest, path, "unsupported themeApiVersion %d", manifest.ThemeAPIVersion)
 	}
 	if err := validateThemeID(manifest.ID); err != nil {
@@ -521,14 +568,28 @@ func validateThemeTextField(code ThemeErrorCode, name, value string, minRunes, m
 	return nil
 }
 
-// parseThemeDefinition validates theme.json.
+// parseThemeDefinition validates a theme.json against the frozen v1 field set.
+// It is kept as the v1 entry point for existing callers and tests; packages are
+// parsed through parseThemeDefinitionForVersion with the manifest's version, so
+// a v1 package can never smuggle in the v2 player block.
 func parseThemeDefinition(data []byte) (ThemeDefinition, error) {
+	return parseThemeDefinitionForVersion(data, ThemeAPIVersion)
+}
+
+// parseThemeDefinitionForVersion validates theme.json for one accepted
+// themeApiVersion. v1 rejects the playerControls field outright; v2 accepts it
+// as an optional, all-or-nothing block.
+func parseThemeDefinitionForVersion(data []byte, apiVersion int) (ThemeDefinition, error) {
 	const path = "theme.json"
+	if !themeAPIVersionSupported(apiVersion) {
+		return ThemeDefinition{}, themeErrorf(ThemeCodeInvalidTheme, path,
+			"unsupported themeApiVersion %d, supported versions are %s", apiVersion, themeSupportedAPIVersionsText())
+	}
 	fields, err := decodeThemeJSONObject(data, path, ThemeJSONMaxBytes)
 	if err != nil {
 		return ThemeDefinition{}, err
 	}
-	if err := rejectThemeJSONUnknownFields(fields, themeDefinitionFields, path); err != nil {
+	if err := rejectThemeJSONUnknownFields(fields, themeDefinitionFieldsForVersion(apiVersion), path); err != nil {
 		return ThemeDefinition{}, err
 	}
 	rawVariants, err := requireThemeJSONField(fields, "variants", path, ThemeCodeInvalidTheme)
@@ -567,7 +628,21 @@ func parseThemeDefinition(data []byte) (ThemeDefinition, error) {
 			}
 		}
 	}
-	return ThemeDefinition{Variants: variants, Appearance: appearance, BackgroundImage: backgroundImage}, nil
+	playerControls := (*ThemePlayerControls)(nil)
+	if raw, ok := fields["playerControls"]; ok {
+		// decodeThemeJSONObject already rejected a null or non-object value; a
+		// present block must be complete, so nothing is defaulted here.
+		playerControls, err = parseThemePlayerControls(raw, path)
+		if err != nil {
+			return ThemeDefinition{}, err
+		}
+	}
+	return ThemeDefinition{
+		Variants:        variants,
+		Appearance:      appearance,
+		BackgroundImage: backgroundImage,
+		PlayerControls:  playerControls,
+	}, nil
 }
 
 // underlyingThemePathError rewraps a path rejection with the JSON context while
@@ -723,8 +798,15 @@ func themeAssetFingerprintOf(asset ThemeAsset) themeAssetFingerprint {
 }
 
 func themePackageContentHash(manifest ThemeManifest, definition ThemeDefinition, preview *ThemeAsset, assets []ThemeAsset) (string, error) {
+	// The canonical prefix carries the API version, so a v1 package can never
+	// collide with (or be migrated to) a v2 identity. v1 keeps the literal
+	// "eio-web-theme-package/1" prefix byte for byte.
+	if !themeAPIVersionSupported(manifest.ThemeAPIVersion) {
+		return "", themeErrorf(ThemeCodeInvalidManifest, "manifest.json",
+			"unsupported themeApiVersion %d", manifest.ThemeAPIVersion)
+	}
 	fingerprint := themePackageFingerprint{
-		Canonical: "eio-web-theme-package/1",
+		Canonical: "eio-web-theme-package/" + strconv.Itoa(manifest.ThemeAPIVersion),
 		Manifest:  manifest,
 		Theme:     definition,
 		Assets:    make([]themeAssetFingerprint, 0, len(assets)),

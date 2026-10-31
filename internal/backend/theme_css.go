@@ -65,8 +65,45 @@ func renderThemeCSS(contentHash string, definition ThemeDefinition) ([]byte, err
 	builder.WriteString(themeCSSVariantBlock(ThemeVariantLight, light, definition.Appearance))
 	builder.WriteString(themeCSSVariantBlock(ThemeVariantDark, dark, definition.Appearance))
 	builder.WriteString(backgroundRule)
+	if definition.PlayerControls != nil {
+		if err := themeStoreValidatePlayerControls(definition.PlayerControls); err != nil {
+			return nil, errThemeCSSInvalid
+		}
+		// v2 only: a v1 definition can never carry the block, so this adds no
+		// byte to any v1 stylesheet.
+		playerRule, err := themeCSSPlayerBlock(themePlayerPaletteFor(definition))
+		if err != nil {
+			return nil, err
+		}
+		builder.WriteString(playerRule)
+	}
 	builder.WriteString(themeCSSPreviewRules())
 	return []byte(builder.String()), nil
+}
+
+// themeCSSPlayerBlock emits the frozen player progress variables of a v2
+// package. Only the four variable names contractually frozen by the client are
+// written, the values are re-checked as literal #rrggbb, and the selectors stay
+// inside the player domain (the /web player container and control layer, plus
+// the isolated preview document), so a theme can never restyle the page or the
+// squares around the player through these variables.
+func themeCSSPlayerBlock(palette themePlayerPalette) (string, error) {
+	for _, color := range []string{palette.Played, palette.Buffered, palette.Track, palette.Thumb} {
+		if _, err := normalizeThemePlayerColor(color); err != nil {
+			return "", errThemeCSSInvalid
+		}
+	}
+	var builder strings.Builder
+	builder.WriteString("/* v2 shared player progress palette; omitted blocks use fixed client defaults. */\n")
+	builder.WriteString("body.eio-web .player-container,\n")
+	builder.WriteString("body.eio-web .eio-play-layer,\n")
+	builder.WriteString("body.eio-preview .eio-preview-player {\n")
+	builder.WriteString("  --eio-progress-played: " + palette.Played + ";\n")
+	builder.WriteString("  --eio-progress-buffered: " + palette.Buffered + ";\n")
+	builder.WriteString("  --eio-progress-track: " + palette.Track + ";\n")
+	builder.WriteString("  --eio-progress-thumb: " + palette.Thumb + ";\n")
+	builder.WriteString("}\n\n")
+	return builder.String(), nil
 }
 
 // themeCSSVariantBlock emits the token block for one variant.

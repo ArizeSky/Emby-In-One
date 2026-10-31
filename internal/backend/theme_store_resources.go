@@ -124,9 +124,23 @@ func themeStoreNormalizeVariant(variant ThemeVariant, name string) (ThemeVariant
 	return variant, nil
 }
 
+// themeStoreCloneDefinition returns an independent copy of a validated
+// definition, including the optional v2 playerControls pointers, so a caller
+// can never mutate store state through a shared pointer.
+func themeStoreCloneDefinition(definition ThemeDefinition) ThemeDefinition {
+	out := cloneThemeDefinition(definition)
+	out.PlayerControls = cloneThemePlayerControls(definition.PlayerControls)
+	return out
+}
+
 // themeStoreValidateDefinition enforces the frozen theme.json contract on
-// values loaded from the database or supplied in a package object.
-func themeStoreValidateDefinition(definition ThemeDefinition) error {
+// values loaded from the database or supplied in a package object. apiVersion
+// is the manifest's themeApiVersion: v1 rejects the playerControls block, v2
+// accepts it as an optional but complete block.
+func themeStoreValidateDefinition(definition ThemeDefinition, apiVersion int) error {
+	if !themeAPIVersionSupported(apiVersion) {
+		return fmt.Errorf("%w: unsupported themeApiVersion %d", ErrThemeInvalid, apiVersion)
+	}
 	if len(definition.Variants) != 2 {
 		return fmt.Errorf("%w: theme must define exactly light and dark variants", ErrThemeInvalid)
 	}
@@ -165,6 +179,9 @@ func themeStoreValidateDefinition(definition ThemeDefinition) error {
 		if cleaned == themeEntryPreview || cleaned == themeEntryPreviewJ {
 			return fmt.Errorf("%w: backgroundImage may not be the preview image", ErrThemeInvalid)
 		}
+	}
+	if err := themeStoreValidatePlayerControlsForVersion(definition.PlayerControls, apiVersion); err != nil {
+		return err
 	}
 	return nil
 }
@@ -217,7 +234,7 @@ func themeStoreValidateVersion(version *themeStoreVersion) error {
 	if version.Manifest.ID != version.ThemeID {
 		return fmt.Errorf("%w: manifest id does not match version id", ErrThemeCorrupt)
 	}
-	if err := themeStoreValidateDefinition(version.Theme); err != nil {
+	if err := themeStoreValidateDefinition(version.Theme, version.Manifest.ThemeAPIVersion); err != nil {
 		return fmt.Errorf("%w: %v", ErrThemeCorrupt, err)
 	}
 	if version.PackageBytes < 0 || version.PackageBytes > ThemePackageMaxUncompressedBytes {
@@ -384,8 +401,8 @@ func themeStoreVersionFromPackage(pkg *ThemePackage) (*themeStoreVersion, error)
 	if err := validateThemeManifest(manifest); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrThemeInvalid, err)
 	}
-	definition := cloneThemeDefinition(pkg.Theme)
-	if err := themeStoreValidateDefinition(definition); err != nil {
+	definition := themeStoreCloneDefinition(pkg.Theme)
+	if err := themeStoreValidateDefinition(definition, manifest.ThemeAPIVersion); err != nil {
 		return nil, err
 	}
 	version := &themeStoreVersion{

@@ -129,7 +129,7 @@ func ParseThemePackage(data []byte) (*ThemePackage, error) {
 	if err != nil {
 		return nil, err
 	}
-	definition, err := parseThemeDefinition(contents[themeEntryTheme])
+	definition, err := parseThemeDefinitionForVersion(contents[themeEntryTheme], manifest.ThemeAPIVersion)
 	if err != nil {
 		return nil, err
 	}

@@ -150,6 +150,7 @@ type ThemeStoreHealth struct {
 // is included as a synthetic, read-only entry so the admin UI can offer it as
 // the site default.
 type ThemeCatalogEntry struct {
+	ThemeAPIVersion int      `json:"themeApiVersion"`
 	ID              string   `json:"id"`
 	Name            string   `json:"name"`
 	Author          string   `json:"author"`
@@ -181,6 +182,7 @@ type ThemeCatalog struct {
 // validation-approved public data and the immutable content hash used in
 // resource URLs.
 type ThemePublicEntry struct {
+	ThemeAPIVersion int      `json:"themeApiVersion"`
 	ID              string   `json:"id"`
 	Name            string   `json:"name"`
 	Author          string   `json:"author"`
@@ -357,6 +359,7 @@ func cloneThemeSiteSettings(settings ThemeSiteSettings) ThemeSiteSettings {
 func cloneThemeDefinition(definition ThemeDefinition) ThemeDefinition {
 	out := ThemeDefinition{
 		Appearance:      definition.Appearance,
+		PlayerControls:  cloneThemePlayerControls(definition.PlayerControls),
 		BackgroundImage: definition.BackgroundImage,
 		Variants:        make(map[string]ThemeVariant, len(definition.Variants)),
 	}

@@ -331,6 +331,7 @@ func themeAPIPublicThemeFrom(entry ThemePublicEntry, definition *ThemeDefinition
 		variants = append([]string(nil), variants...)
 	}
 	return themeAPIPublicThemeDTO{
+		ThemeAPIVersion: entry.ThemeAPIVersion,
 		ID:              entry.ID,
 		Name:            entry.Name,
 		Author:          entry.Author,
@@ -360,6 +361,7 @@ func themeAPIAdminThemeFrom(entry ThemeCatalogEntry, definition *ThemeDefinition
 	}
 	hash := entry.CurrentHash
 	return themeAPIAdminThemeDTO{
+		ThemeAPIVersion: entry.ThemeAPIVersion,
 		ID:              entry.ID,
 		Name:            entry.Name,
 		Author:          entry.Author,

@@ -101,7 +101,7 @@ func TestParseThemeManifestStrictJSON(t *testing.T) {
 			ThemeCodeJSONType},
 		{"apiVersion zero", themeTestManifestRaw(`0`, `"valid-theme"`, `"n"`, `""`, `""`, `"1"`),
 			ThemeCodeInvalidManifest},
-		{"apiVersion two", themeTestManifestRaw(`2`, `"valid-theme"`, `"n"`, `""`, `""`, `"1"`),
+		{"apiVersion three", themeTestManifestRaw(`3`, `"valid-theme"`, `"n"`, `""`, `""`, `"1"`),
 			ThemeCodeInvalidManifest},
 		{"id number", themeTestManifestRaw(`1`, `42`, `"n"`, `""`, `""`, `"1"`), ThemeCodeJSONType},
 		{"id null", themeTestManifestRaw(`1`, `null`, `"n"`, `""`, `""`, `"1"`), ThemeCodeJSONType},

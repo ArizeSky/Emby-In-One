@@ -103,6 +103,7 @@ type themeAPISiteDTO struct {
 // theme is listed first with builtin=true, an empty hash and empty URLs; its
 // light/dark tokens live in the client stylesheet.
 type themeAPIPublicThemeDTO struct {
+	ThemeAPIVersion int      `json:"themeApiVersion"`
 	ID              string   `json:"id"`
 	Name            string   `json:"name"`
 	Author          string   `json:"author"`
@@ -132,6 +133,7 @@ type themeAPIPublicCatalogDTO struct {
 // theme is listed first with builtin=true, enabled=true, available=true,
 // revision=0 and empty hashes/URLs.
 type themeAPIAdminThemeDTO struct {
+	ThemeAPIVersion int              `json:"themeApiVersion"`
 	ID              string           `json:"id"`
 	Name            string           `json:"name"`
 	Author          string           `json:"author"`

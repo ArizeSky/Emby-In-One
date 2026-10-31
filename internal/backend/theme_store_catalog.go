@@ -393,6 +393,7 @@ func themeStoreCatalogEntryFromMirror(entry *themeStoreEntry) ThemeCatalogEntry 
 		out.PreviousHash = entry.previous.ContentHash
 	}
 	if entry.current != nil {
+		out.ThemeAPIVersion = entry.current.Manifest.ThemeAPIVersion
 		out.PackageBytes = entry.current.PackageBytes
 		out.BackgroundImage = entry.current.Theme.BackgroundImage
 		if entry.current.Preview != nil {
@@ -416,6 +417,7 @@ func themeStoreBuiltinCatalogEntry() ThemeCatalogEntry {
 
 func themeStorePublicEntry(version *themeStoreVersion) ThemePublicEntry {
 	out := ThemePublicEntry{
+		ThemeAPIVersion: version.Manifest.ThemeAPIVersion,
 		ID:              version.ThemeID,
 		Name:            version.Manifest.Name,
 		Author:          version.Manifest.Author,
