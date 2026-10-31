@@ -421,17 +421,19 @@ func TestUpstreamActivityHandlerAccountSwitchDuringRequest(t *testing.T) {
 	})
 }
 
-// TestUpstreamActivityDeleteDoesNotClearForeignFailure guards the store-health
-// state: deleting an unrelated node must not report a failed activity store as
-// healthy again.
+// TestUpstreamActivityDeleteDoesNotClearForeignFailure guards the per-server
+// store-health state: deleting one node must not clear another node's failure.
 func TestUpstreamActivityDeleteDoesNotClearForeignFailure(t *testing.T) {
 	f := newUpstreamActivityEventFixture(t)
-	f.app.activityHealth.markFailed(errors.New("activity database failure"))
+	f.app.activityHealth.markFailed("other-server", upstreamActivityHealthSummary, errors.New("activity database failure"))
 
 	f.app.purgeUpstreamActivityServer(f.upstream.ID)
 
-	if got := f.app.UpstreamActivityAvailability(); got.Available || got.Message == "" {
+	if got := f.app.activityHealth.serverAvailability(true, "other-server"); got.Available || got.Message == "" {
 		t.Fatalf("delete success cleared a foreign failure: %#v", got)
+	}
+	if got := f.app.activityHealth.serverAvailability(true, f.upstream.ID); !got.Available {
+		t.Fatalf("delete success left the deleted node marked failed: %#v", got)
 	}
 }
 

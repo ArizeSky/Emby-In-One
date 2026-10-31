@@ -118,13 +118,32 @@ func (c *upstreamActivityPolicyCache) invalidate(serverID string) {
 	delete(c.entries, serverID)
 }
 
+// upstreamActivityHealthKind separates the operations that can fail for one
+// server: a successful policy save must not clear a summary write failure, and
+// a success on one node must never hide another node's failure.
+type upstreamActivityHealthKind string
+
+const (
+	upstreamActivityHealthScope upstreamActivityHealthKind = "scope"
+	// policy is a policy write failure (SavePolicy). Policy/threshold reads use
+	// read, so a successful read cannot clear a failed write.
+	upstreamActivityHealthPolicy  upstreamActivityHealthKind = "policy"
+	upstreamActivityHealthSummary upstreamActivityHealthKind = "summary"
+	upstreamActivityHealthRead    upstreamActivityHealthKind = "read"
+)
+
+type upstreamActivityFailure struct {
+	failedAt int64
+	message  string
+}
+
 // upstreamActivityHealth is the read-only availability state K3 exposes. A
 // missing store or a failed write must show as unavailable/stale instead of
-// "disabled" or "healthy"; a later success clears the failure.
+// "disabled" or "healthy"; a later success clears only the same server and the
+// same operation, never a foreign failure.
 type upstreamActivityHealth struct {
-	mu        sync.Mutex
-	failedAt  int64
-	lastError string
+	mu       sync.Mutex
+	failures map[string]map[upstreamActivityHealthKind]upstreamActivityFailure
 }
 
 // UpstreamActivityAvailability is the sanitized state of the activity store.
@@ -135,32 +154,109 @@ type UpstreamActivityAvailability struct {
 	FailedAt  int64  `json:"failedAt,omitempty"`
 }
 
-func (h *upstreamActivityHealth) markFailed(err error) {
-	message := "activity store write failed"
-	if err != nil {
-		message = redactURLInError(err)
+func upstreamActivityHealthMessage(err error) string {
+	if err == nil {
+		return "activity store write failed"
+	}
+	message := strings.TrimSpace(redactURLInError(err))
+	if message == "" {
+		return "activity store write failed"
+	}
+	return message
+}
+
+func (h *upstreamActivityHealth) markFailed(serverID string, kind upstreamActivityHealthKind, err error) {
+	if h == nil || strings.TrimSpace(serverID) == "" || kind == "" {
+		return
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.failedAt = time.Now().UnixMilli()
-	h.lastError = message
+	if h.failures == nil {
+		h.failures = map[string]map[upstreamActivityHealthKind]upstreamActivityFailure{}
+	}
+	byKind := h.failures[serverID]
+	if byKind == nil {
+		byKind = map[upstreamActivityHealthKind]upstreamActivityFailure{}
+		h.failures[serverID] = byKind
+	}
+	byKind[kind] = upstreamActivityFailure{failedAt: time.Now().UnixMilli(), message: upstreamActivityHealthMessage(err)}
 }
 
-func (h *upstreamActivityHealth) markAvailable() {
+func (h *upstreamActivityHealth) markAvailable(serverID string, kind upstreamActivityHealthKind) {
+	if h == nil || strings.TrimSpace(serverID) == "" || kind == "" {
+		return
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.failedAt = 0
-	h.lastError = ""
+	byKind := h.failures[serverID]
+	if byKind == nil {
+		return
+	}
+	delete(byKind, kind)
+	if len(byKind) == 0 {
+		delete(h.failures, serverID)
+	}
 }
 
+// forgetServer drops every marker of a deleted node. It is only called after
+// the delete itself succeeded; a foreign node's failure is untouched.
+func (h *upstreamActivityHealth) forgetServer(serverID string) {
+	if h == nil || strings.TrimSpace(serverID) == "" {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	delete(h.failures, serverID)
+}
+
+func latestUpstreamActivityFailure(byKind map[upstreamActivityHealthKind]upstreamActivityFailure) (upstreamActivityFailure, bool) {
+	var latest upstreamActivityFailure
+	found := false
+	for _, failure := range byKind {
+		if !found || failure.failedAt > latest.failedAt {
+			latest = failure
+			found = true
+		}
+	}
+	return latest, found
+}
+
+// availability reports the whole App. K2 keeps using it for diagnostics; K3's
+// admin API uses serverAvailability so one broken node cannot hide a healthy
+// one, nor can a healthy node hide a broken one.
 func (h *upstreamActivityHealth) availability(storeAvailable bool) UpstreamActivityAvailability {
 	if !storeAvailable {
 		return UpstreamActivityAvailability{Available: false, Message: "activity store unavailable"}
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.failedAt != 0 {
-		return UpstreamActivityAvailability{Available: false, Message: h.lastError, FailedAt: h.failedAt}
+	var latest upstreamActivityFailure
+	found := false
+	for _, byKind := range h.failures {
+		failure, ok := latestUpstreamActivityFailure(byKind)
+		if ok && (!found || failure.failedAt > latest.failedAt) {
+			latest = failure
+			found = true
+		}
+	}
+	if found {
+		return UpstreamActivityAvailability{Available: false, Message: latest.message, FailedAt: latest.failedAt}
+	}
+	return UpstreamActivityAvailability{Available: true}
+}
+
+// serverAvailability reports one server's markers only. A successful read or
+// write for this server clears exactly its own operation, so a summary failure
+// survives a policy save and a foreign node's failure is never hidden.
+func (h *upstreamActivityHealth) serverAvailability(storeAvailable bool, serverID string) UpstreamActivityAvailability {
+	if !storeAvailable {
+		return UpstreamActivityAvailability{Available: false, Message: "activity store unavailable"}
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	failure, found := latestUpstreamActivityFailure(h.failures[serverID])
+	if found {
+		return UpstreamActivityAvailability{Available: false, Message: failure.message, FailedAt: failure.failedAt}
 	}
 	return UpstreamActivityAvailability{Available: true}
 }
@@ -259,10 +355,11 @@ func (a *App) confirmUpstreamActivityScope(serverID, capturedScope string) (stri
 		return capturedScope, true
 	}
 	if _, err := a.UpstreamActivity.EnsureScope(serverID, capturedScope, time.Now().UnixMilli()); err != nil {
-		a.activityHealth.markFailed(err)
+		a.activityHealth.markFailed(serverID, upstreamActivityHealthScope, err)
 		a.logUpstreamActivityProblem("scope-init", serverID, err)
 		return "", false
 	}
+	a.activityHealth.markAvailable(serverID, upstreamActivityHealthScope)
 	// A scope change may accompany a policy edit; never reuse a threshold cached
 	// for the previous account range.
 	if previous, ok := a.activityScopes.get(serverID); !ok || !SameUpstreamAccountScope(previous, capturedScope) {
@@ -350,10 +447,13 @@ func (a *App) recordUpstreamActivityEvent(r *http.Request, event upstreamActivit
 			// statistics cannot be read/written.
 			a.activityTracker.Finish(event.Token.Key)
 		}
-		a.activityHealth.markFailed(err)
+		a.activityHealth.markFailed(serverID, upstreamActivityHealthRead, err)
 		a.logUpstreamActivityProblem("policy", serverID, err)
 		return
 	}
+	// A successful threshold read clears only this server's read marker; a
+	// summary write failure or another server's failure stays visible.
+	a.activityHealth.markAvailable(serverID, upstreamActivityHealthRead)
 	sample := upstreamActivitySample{
 		Token:         event.Token,
 		Kind:          kind,
@@ -381,11 +481,11 @@ func (a *App) recordUpstreamActivityEvent(r *http.Request, event upstreamActivit
 		// throttling reservation so the next heartbeat retries, and advance the
 		// persisted marker only through MarkPersisted on success.
 		a.activityTracker.MarkPersistFailed(event.Token.Key, observation)
-		a.activityHealth.markFailed(err)
+		a.activityHealth.markFailed(serverID, upstreamActivityHealthSummary, err)
 		a.logUpstreamActivityProblem("persist", serverID, err)
 		return
 	}
-	a.activityHealth.markAvailable()
+	a.activityHealth.markAvailable(serverID, upstreamActivityHealthSummary)
 	a.activityTracker.MarkPersisted(event.Token.Key, observation.LastQualifiedAt)
 }
 
@@ -410,7 +510,6 @@ func (a *App) ensureUpstreamActivityScopes() {
 	defer a.adminMutationMu.Unlock()
 	cfg := a.ConfigStore.Snapshot()
 	now := time.Now().UnixMilli()
-	failed := false
 	for i := range cfg.Upstream {
 		serverID := cfg.Upstream[i].ID
 		if strings.TrimSpace(serverID) == "" {
@@ -423,18 +522,13 @@ func (a *App) ensureUpstreamActivityScopes() {
 		// The snapshot was taken under adminMutationMu, so this write cannot
 		// overwrite a scope from a newer configuration.
 		if _, err := a.UpstreamActivity.EnsureScope(serverID, scope, now); err != nil {
-			failed = true
-			a.activityHealth.markFailed(err)
+			a.activityHealth.markFailed(serverID, upstreamActivityHealthScope, err)
 			a.logUpstreamActivityProblem("scope-init", serverID, err)
 			continue
 		}
 		a.activityScopes.set(serverID, scope)
+		a.activityHealth.markAvailable(serverID, upstreamActivityHealthScope)
 		a.activityPolicies.invalidate(serverID)
-	}
-	if !failed {
-		// Availability is only cleared when the whole required operation
-		// succeeded; a partial failure stays visible to K3.
-		a.activityHealth.markAvailable()
 	}
 }
 
@@ -448,8 +542,12 @@ func (a *App) purgeUpstreamActivityServer(serverID string) {
 	}
 	if a.UpstreamActivity != nil {
 		if err := a.UpstreamActivity.Delete(serverID); err != nil {
-			a.activityHealth.markFailed(err)
+			a.activityHealth.markFailed(serverID, upstreamActivityHealthSummary, err)
 			a.logUpstreamActivityProblem("delete", serverID, err)
+		} else {
+			// The node is gone; its own markers must not keep the global
+			// diagnostic unavailable forever. Other nodes are untouched.
+			a.activityHealth.forgetServer(serverID)
 		}
 	}
 	if a.activityTracker != nil {

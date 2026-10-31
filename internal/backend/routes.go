@@ -52,6 +52,8 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("PUT /admin/api/users/{id}", a.withContext(a.requireAdmin(a.handleAdminUsersUpdate)))
 	mux.HandleFunc("DELETE /admin/api/users/{id}", a.withContext(a.requireAdmin(a.handleAdminUsersDelete)))
 	mux.HandleFunc("GET /admin/api/upstream/{id}/libraries", a.withContext(a.requireAdmin(a.handleAdminUpstreamLibraries)))
+	mux.HandleFunc("GET /admin/api/upstream/{id}/activity", a.withContext(a.requireAdmin(a.handleAdminUpstreamActivityGet)))
+	mux.HandleFunc("PUT /admin/api/upstream/{id}/activity", a.withContext(a.requireAdmin(a.handleAdminUpstreamActivityPut)))
 	mux.HandleFunc("GET /admin/api/home-libraries", a.withContext(a.requireAdmin(a.handleAdminHomeLibrariesGet)))
 	mux.HandleFunc("PUT /admin/api/home-libraries", a.withContext(a.requireAdmin(a.handleAdminHomeLibrariesPut)))
 	// The panel answers on /admin/, the URL every install script, the CLI and the

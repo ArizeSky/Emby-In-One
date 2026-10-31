@@ -103,7 +103,7 @@ func (a *App) handleAdminStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleAdminUpstreamList(w http.ResponseWriter, r *http.Request) {
-	cfg := a.ConfigStore.Snapshot()
+	cfg, activityByIndex := a.loadAdminUpstreamActivityList()
 	clients := a.Upstream.Clients()
 	onlineByIndex := map[int]bool{}
 	for _, client := range clients {
@@ -176,6 +176,7 @@ func (a *App) handleAdminUpstreamList(w http.ResponseWriter, r *http.Request) {
 			"uaIdentityCapturedAt": uaIdentityCapturedAt,
 			"uaBindingMissing":     uaBindingMissing,
 			"uaLibraryUnavailable": uaLibraryUnavailable,
+			"activity":             activityByIndex[index],
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
