@@ -140,6 +140,8 @@
     const theme = themeModule();
     if (!theme || typeof theme.normalizeTheme !== 'function') return null;
     const adapted = theme.normalizeTheme({
+      themeApiVersion: raw.themeApiVersion,
+      ...(Object.prototype.hasOwnProperty.call(raw, 'playerControls') ? { playerControls: raw.playerControls } : {}),
       id: raw.id,
       name: raw.name,
       author: raw.author,
@@ -172,6 +174,7 @@
 
     const definition = adaptDefinition({
       ...(isObject(raw.definition) ? raw.definition : {}),
+      themeApiVersion: raw.themeApiVersion,
       id,
       name: raw.name,
       author: raw.author,

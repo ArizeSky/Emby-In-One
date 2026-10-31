@@ -9,7 +9,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { harness, makeStorage } = require('./web-ui-harness.cjs');
 
-const THEME_SRC = fs.readFileSync(path.join(__dirname, '..', 'public', 'web', 'theme.js'), 'utf8');
+const THEME_SRC = fs.readFileSync(path.join(__dirname, '..', 'public', 'web', 'theme-player-controls.js'), 'utf8') + '\n' + fs.readFileSync(path.join(__dirname, '..', 'public', 'web', 'theme.js'), 'utf8');
 const APPEARANCE_SRC = fs.readFileSync(path.join(__dirname, '..', 'public', 'web', 'appearance.js'), 'utf8');
 
 function loadAppearance() {

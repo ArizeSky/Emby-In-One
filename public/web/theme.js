@@ -139,6 +139,9 @@
   function normalizeTheme(input) {
     if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
     if (!validThemeId(input.id)) return null;
+    const controlsModule = (typeof window !== 'undefined' ? window : globalThis).EIOThemePlayerControls;
+    const playerFields = controlsModule?.normalizeThemeFields(input, input.id === 'builtin');
+    if (!playerFields) return null;
     const name = typeof input.name === 'string' ? input.name.trim().slice(0, 80) : '';
     if (!name) return null;
     const variants = input.variants;
@@ -154,6 +157,7 @@
     if (input.backgroundUrl != null && !backgroundUrl) return null;
     const revision = validRevision(input.revision) ? input.revision : null;
     return {
+      ...playerFields,
       id: input.id,
       name,
       author: typeof input.author === 'string' ? input.author.trim().slice(0, 80) : '',

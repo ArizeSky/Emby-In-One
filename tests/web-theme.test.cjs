@@ -8,7 +8,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const THEME_SRC = fs.readFileSync(path.join(__dirname, '..', 'public', 'web', 'theme.js'), 'utf8');
+const THEME_SRC = fs.readFileSync(path.join(__dirname, '..', 'public', 'web', 'theme-player-controls.js'), 'utf8') + '\n' + fs.readFileSync(path.join(__dirname, '..', 'public', 'web', 'theme.js'), 'utf8');
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 function makeStorage(initial = {}, flags = {}) {
