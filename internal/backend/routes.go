@@ -21,6 +21,7 @@ func (a *App) Handler() http.Handler {
 	a.registerMediaRoutes(mux)
 	a.registerLibraryAndImageRoutes(mux)
 	a.registerSessionAndUserStateRoutes(mux)
+	a.registerThemeRoutes(mux)
 
 	mux.HandleFunc("POST /admin/api/logout", a.withContext(a.requireAuth(a.handleAdminLogout)))
 	mux.HandleFunc("GET /admin/api/client-info", a.withContext(a.requireAdmin(a.handleAdminClientInfo)))

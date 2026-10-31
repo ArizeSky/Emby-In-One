@@ -29,6 +29,11 @@ type App struct {
 	// nil when the shared SQLite database or the schema is unavailable; every
 	// call site stays nil-safe and never turns that into "disabled".
 	UpstreamActivity *UpstreamActivityStore
+	// ThemeStore owns the /web theme catalog, the anonymous site default and
+	// per-user appearance preferences. It is nil when the shared SQLite handle
+	// or the resource root is unusable; handlers stay nil-safe, /web falls back
+	// to the builtin theme and writes report 503 instead of a fake success.
+	ThemeStore *ThemeStore
 	// activityTracker owns the bounded in-memory session accumulation, and the
 	// scope/policy/health helpers are safe on their zero value.
 	activityTracker  *upstreamActivityTracker
@@ -106,6 +111,7 @@ func NewApp() (*App, error) {
 	var watchStore *WatchStore
 	var hiddenLibraries *HiddenLibraryStore
 	var upstreamActivity *UpstreamActivityStore
+	var themeStore *ThemeStore
 	if db := idStore.DB(); db != nil {
 		us, err := NewUserStore(db, logger)
 		if err != nil {
@@ -131,6 +137,15 @@ func NewApp() (*App, error) {
 		} else {
 			upstreamActivity = as
 		}
+		// The theme store shares the IDStore-owned SQLite handle and never
+		// opens or closes it. A failure degrades /web to the builtin theme;
+		// it must not take the rest of the application down.
+		ts, err := NewThemeStore(cfg.DataDir, db)
+		if err != nil {
+			logger.Warnf("ThemeStore init failed: %v (/web custom themes disabled, builtin theme remains available)", err)
+		} else {
+			themeStore = ts
+		}
 	}
 
 	// Created here, after every early return, so no error path can leak it: the
@@ -150,6 +165,7 @@ func NewApp() (*App, error) {
 		WatchStore:       watchStore,
 		HiddenLibraries:  hiddenLibraries,
 		UpstreamActivity: upstreamActivity,
+		ThemeStore:       themeStore,
 		activityTracker:  newUpstreamActivityTracker(),
 		libraryCache:     newUpstreamLibraryCache(),
 		PlaybackLimiter:  NewPlaybackLimiter(),
@@ -196,6 +212,13 @@ func (a *App) Close() error {
 	a.bgWorkWG.Wait()
 	if a.Upstream != nil {
 		a.Upstream.stopHealthChecks()
+	}
+	// The theme store shares the IDStore-owned connection; stop it before the
+	// connection goes away. It never closes the database itself.
+	if a.ThemeStore != nil {
+		if err := a.ThemeStore.CloseSafety(); err != nil && a.Logger != nil {
+			a.Logger.Warnf("theme store close: %v", err)
+		}
 	}
 	// Stores come off the shared SQLite connection: it is closed under its
 	// exclusive lock (closeSQLite), so no reader or writer can be mid-statement.

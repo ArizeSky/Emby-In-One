@@ -928,6 +928,11 @@ func (a *App) handleAdminUsersDelete(w http.ResponseWriter, r *http.Request) {
 			a.Logger.Errorf("delete user %s: remove hidden libraries: %v", id, err)
 		}
 	}
+	if a.ThemeStore != nil {
+		if err := a.ThemeStore.DeleteUserPreferences(id); err != nil && a.Logger != nil {
+			a.Logger.Warnf("delete user %s: remove theme preferences: %v", id, err)
+		}
+	}
 	a.Auth.RevokeTokensByUserID(id)
 	if a.WatchStore != nil {
 		if err := a.WatchStore.DeleteUser(id); err != nil && a.Logger != nil {
