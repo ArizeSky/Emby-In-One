@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const vm = require('node:vm');
 
 const MODULE_PATH = path.join(__dirname, '..', 'public', 'web', 'player-progress.js');
 const api = require(MODULE_PATH);
@@ -24,7 +25,7 @@ const UNKNOWN = '\u2014';
 
 /* ---------------------------------------------------------------- surface */
 
-test('module exposes a frozen dual API without browser facilities', () => {
+test('module exposes a frozen dual API with no DOM/network/timer facilities', () => {
   assert.equal(Object.isFrozen(api), true);
   assert.deepEqual(Object.keys(api).sort(), [
     'continuousBufferedSeconds',
@@ -41,11 +42,31 @@ test('module exposes a frozen dual API without browser facilities', () => {
   const source = fs.readFileSync(MODULE_PATH, 'utf8');
   const forbidden = [
     'setTimeout', 'setInterval', 'requestAnimationFrame', 'XMLHttpRequest',
-    'localStorage', 'sessionStorage', 'fetch(', 'document', 'window', 'navigator'
+    'localStorage', 'sessionStorage', 'fetch(', 'document', 'navigator'
   ];
   for (const token of forbidden) {
     assert.equal(source.includes(token), false, 'unexpected module token: ' + token);
   }
+});
+
+test('the UMD root prefers window over globalThis and falls back to globalThis', () => {
+  const source = fs.readFileSync(MODULE_PATH, 'utf8');
+
+  // A vm/worker may expose globalThis separately from the page's window. The
+  // module must attach to window when it exists, because the player reads the
+  // API off window, and only fall back to globalThis when window is absent.
+  const browser = { window: {} };
+  vm.createContext(browser);
+  vm.runInContext(source, browser);
+  assert.equal(typeof browser.window.EIOPlayerProgress, 'object');
+  assert.equal(typeof browser.window.EIOPlayerProgress.normalizeRanges, 'function');
+  assert.equal(browser.EIOPlayerProgress, undefined);
+
+  const worker = {};
+  vm.createContext(worker);
+  vm.runInContext(source, worker);
+  assert.equal(typeof worker.EIOPlayerProgress, 'object');
+  assert.equal(typeof worker.EIOPlayerProgress.normalizeRanges, 'function');
 });
 
 /* --------------------------------------------------------- normalizeRanges */

@@ -1,8 +1,9 @@
 /*!
  * EIO player progress - pure data module (UMD).
  *
- * Exposed as `globalThis.EIOPlayerProgress` and as `module.exports`. No DOM,
- * no network, no timer and no storage access: plain data in, plain data out.
+ * Exposed as `window.EIOPlayerProgress` (globalThis/self when no window exists)
+ * and as `module.exports`. No DOM, no network, no timer and no storage access:
+ * plain data in, plain data out.
  */
 (function (root, factory) {
   'use strict';
@@ -14,7 +15,10 @@
     root.EIOPlayerProgress = api;
   }
 }(
-  typeof globalThis !== 'undefined' ? globalThis : (typeof self !== 'undefined' ? self : this),
+  // `window` first: a sandbox (vm) or worker may expose a different globalThis
+  // than the page's window, and the player reads these APIs off `window`.
+  typeof window !== 'undefined' ? window :
+    (typeof globalThis !== 'undefined' ? globalThis : (typeof self !== 'undefined' ? self : this)),
   function () {
     'use strict';
 

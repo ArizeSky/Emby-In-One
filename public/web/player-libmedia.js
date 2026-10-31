@@ -6,6 +6,55 @@
     return new DOMException(message || 'Playback cancelled', 'AbortError');
   }
 
+  // Telemetry data modules (EIOPlayerBuffer/EIOPlayerProgress) are optional page
+  // scripts. A deployment without them, a blocked script or a global mismatch
+  // keeps explicit unknown values instead of a guess.
+  function telemetryRoot() {
+    if (typeof window !== 'undefined' && window) return window;
+    if (typeof globalThis !== 'undefined' && globalThis) return globalThis;
+    return null;
+  }
+
+  function telemetryApi(name) {
+    try {
+      const root = telemetryRoot();
+      if (!root) return null;
+      const api = root[name];
+      return api && typeof api === 'object' ? api : null;
+    } catch (error) { return null; }
+  }
+
+  // Buffered telemetry is bounded exactly like the data modules: more than 128
+  // entries is unknown, not a truncated list.
+  const MAX_BUFFER_RANGES = 128;
+
+  function finiteEpoch(value) {
+    return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
+  }
+
+  function unknownBuffered(epoch) {
+    return { status: 'unknown', ranges: [], epoch: epoch };
+  }
+
+  // Copies a snapshot's ranges into plain numbers. Anything malformed means the
+  // answer is unknown, never a truncated or partially trusted range list.
+  function copyRanges(ranges) {
+    if (!Array.isArray(ranges)) return null;
+    if (ranges.length > MAX_BUFFER_RANGES) return null;
+    const out = [];
+    for (let index = 0; index < ranges.length; index++) {
+      const item = ranges[index];
+      if (!item || typeof item !== 'object') return null;
+      const start = item.start;
+      const end = item.end;
+      if (typeof start !== 'number' || typeof end !== 'number') return null;
+      if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+      if (start < 0 || end < start) return null;
+      out.push({ start: start, end: end });
+    }
+    return out;
+  }
+
   class EIOPlayer {
     constructor(container) {
       this.container = container;
@@ -44,6 +93,7 @@
       this._cleanup = null;
       this.audioError = null;
       this.onProgress = this.onEnded = this.onError = this.onState = null;
+      this._bindTelemetryEvents();
     }
 
     async load(url, mediaSource, item, options = {}) {
@@ -215,9 +265,91 @@
     }
 
     _emitState(extra = {}) {
-      if (this._destroyed) return;
+      if (this._destroyed || !this.onState) return;
+      // Frozen telemetry fields are written last so a caller-supplied `extra`
+      // can never replace a measured value with an assumed one.
       this.onState?.({ mode: this.mode, playing: this.playing, time: this.positionTicks / 10000000,
-        duration: this.duration, ...extra });
+        duration: this.duration, ...extra,
+        buffered: this._bufferedSnapshot(),
+        sourceBitrateMbps: this._sourceBitrateMbps(),
+        receiveRate: this._receiveRate() });
+    }
+
+    // Buffered ranges keep growing while playback is paused and neither progress
+    // nor durationchange bubbles, so one capture listener per event on the owned
+    // host refreshes the state. It is installed once in the constructor, adds no
+    // timer and is removed with the player's abort signal.
+    _bindTelemetryEvents() {
+      const host = this.host;
+      if (!host || typeof host.addEventListener !== 'function') return;
+      const refresh = event => this._onTelemetryEvent(event);
+      for (const type of ['progress', 'loadedmetadata', 'durationchange']) {
+        host.addEventListener(type, refresh, { capture: true, signal: this._abort.signal });
+      }
+    }
+
+    _onTelemetryEvent(event) {
+      if (this._destroyed) return;
+      const host = this.host;
+      if (!host || typeof host.contains !== 'function') return;
+      const target = event && event.target;
+      if (!target || target === host) return;
+      // Only media elements owned by this host may refresh this player's state.
+      if (host.contains(target) !== true) return;
+      this._emitState();
+    }
+
+    // Thin wiring to the optional EIOPlayerBuffer module. A missing module or a
+    // throwing snapshot must never disturb playback: it degrades to an explicit
+    // unknown, never to a fake known-empty range list.
+    _bufferedSnapshot() {
+      let epoch = null;
+      try {
+        epoch = finiteEpoch(this._engineGeneration);
+        const api = telemetryApi('EIOPlayerBuffer');
+        if (!api || typeof api.snapshot !== 'function') return unknownBuffered(epoch);
+        const snapshot = api.snapshot(this);
+        if (!snapshot || typeof snapshot !== 'object') return unknownBuffered(epoch);
+        if (snapshot.status !== 'ok') return unknownBuffered(epoch);
+        // The real helper always stamps its captured generation. An explicit
+        // epoch must match this engine; a stale one is unknown and may never be
+        // rewritten with the current generation. Only an old/fake adapter that
+        // omits the property keeps the compatibility fallback.
+        if ('epoch' in snapshot) {
+          const snapshotEpoch = finiteEpoch(snapshot.epoch);
+          if (snapshotEpoch === null || snapshotEpoch !== epoch) return unknownBuffered(epoch);
+        }
+        const ranges = copyRanges(snapshot.ranges);
+        if (!ranges) return unknownBuffered(epoch);
+        // Range getters can run arbitrary code. If they swap the engine while
+        // the list is copied, the copied ranges belong to the old decoder and
+        // must not be reported as a current ok snapshot.
+        const currentEpoch = finiteEpoch(this._engineGeneration);
+        if (currentEpoch !== epoch) return unknownBuffered(currentEpoch);
+        return { status: 'ok', ranges: ranges, epoch: epoch };
+      } catch (error) {
+        return unknownBuffered(epoch);
+      }
+    }
+
+    // Source bitrate: only the selected MediaSource `Bitrate` (bits/s) through the
+    // progress module, which divides by 1e6. No bandwidth or download estimate.
+    _sourceBitrateMbps() {
+      try {
+        const api = telemetryApi('EIOPlayerProgress');
+        if (!api || typeof api.getSourceBitrateMbps !== 'function') return null;
+        const mbps = api.getSourceBitrateMbps(this.mediaSource);
+        return typeof mbps === 'number' && Number.isFinite(mbps) && mbps > 0 ? mbps : null;
+      } catch (error) { return null; }
+    }
+
+    // Frozen receiving placeholder. The real receiving sample has not passed its
+    // PoC gate, so this stays unknown: IO byte counters, tick bandwidth or bitrate
+    // never stand in for delivered response bytes, and unknown is never 0.
+    _receiveRate() {
+      let epoch = null;
+      try { epoch = finiteEpoch(this._engineGeneration); } catch (error) { epoch = null; }
+      return { status: 'unknown', bytesPerSec: null, epoch: epoch, sampledAt: null };
     }
 
     _canNativePlay(url) {

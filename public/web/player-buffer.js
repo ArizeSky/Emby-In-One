@@ -10,7 +10,11 @@
   } else {
     root.EIOPlayerBuffer = factory(root.EIOPlayerProgress);
   }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function (progress) {
+})(
+  // `window` first so the browser global and the vm/worker globalThis can differ.
+  typeof window !== 'undefined' ? window :
+    (typeof globalThis !== 'undefined' ? globalThis : this),
+  function (progress) {
   'use strict';
 
   var MAX_TRACKS = 2;
