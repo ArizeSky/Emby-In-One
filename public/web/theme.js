@@ -25,6 +25,7 @@
   const HEX = /^#[0-9a-f]{6}$/i;
   const THEME_ID = /^[a-z0-9](?:[a-z0-9-]{1,46})[a-z0-9]$/;
   const CSS_HREF = /^\/web\/themes\/([a-f0-9]{8,64})\/theme\.css$/;
+  const BACKGROUND_URL = /^\/web\/themes\/([a-f0-9]{64})\/assets\/[A-Za-z0-9][A-Za-z0-9._-]*\.(?:png|jpe?g)$/;
   const RESERVED_IDS = Object.freeze({ default: true, admin: true, web: true });
   const CACHE_KEYS = Object.freeze({
     anon: 'eio_theme_anon_v1',
@@ -94,6 +95,20 @@
     return CSS_HREF.test(value) ? value : null;
   }
 
+  // A background is only accepted when it is an immutable asset of the same
+  // hashed theme package as the stylesheet. It is applied as a CSS variable
+  // on page surfaces only (never to player/subtitle markup).
+  function normalizeBackgroundUrl(value, cssHref) {
+    if (value == null) return null;
+    if (typeof value !== 'string' || value.length > 512) return null;
+    if (/[\\\s"'#?]/.test(value)) return null;
+    const background = BACKGROUND_URL.exec(value);
+    if (!background) return null;
+    const css = cssHref ? CSS_HREF.exec(cssHref) : null;
+    if (!css || css[1] !== background[1]) return null;
+    return value;
+  }
+
   function normalizeVariant(input) {
     if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
     const keys = Object.keys(input);
@@ -135,6 +150,8 @@
     if (!appearance) return null;
     const cssHref = input.cssHref == null ? null : normalizeCssHref(input.cssHref);
     if (input.cssHref != null && !cssHref) return null;
+    const backgroundUrl = normalizeBackgroundUrl(input.backgroundUrl, cssHref);
+    if (input.backgroundUrl != null && !backgroundUrl) return null;
     const revision = validRevision(input.revision) ? input.revision : null;
     return {
       id: input.id,
@@ -144,6 +161,7 @@
       builtin: input.id === 'builtin',
       revision,
       cssHref,
+      backgroundUrl,
       appearance,
       variants: { light, dark },
     };
@@ -305,9 +323,13 @@
     return white >= black ? '#ffffff' : '#000000';
   }
 
-  function variantToCssVars(variant, variantName, appearance) {
+  function variantToCssVars(variant, variantName, appearance, backgroundUrl) {
     const radius = appearance && Number.isInteger(appearance.radius) ? appearance.radius : 14;
+    const density = appearance && appearance.density === 'compact' ? 'compact' : 'comfortable';
     const light = variantName === 'light';
+    const background = typeof backgroundUrl === 'string' && BACKGROUND_URL.test(backgroundUrl)
+      ? backgroundUrl
+      : null;
     return {
       '--bg-0': variant.bg0,
       '--bg-1': variant.bg1,
@@ -335,6 +357,14 @@
       '--hover-overlay': light ? 'rgba(15, 23, 42, .06)' : 'rgba(255, 255, 255, .08)',
       '--r-card': radius + 'px',
       '--r-btn': Math.max(4, Math.round(radius * 0.72)) + 'px',
+      // Page-only density: consumed by .eio-page/.eio-grid, never by player
+      // controls, subtitles or media sizing.
+      '--eio-density-space': density === 'compact' ? '10px' : '20px',
+      '--eio-density-gap': density === 'compact' ? '10px' : '20px',
+      // The background only reaches the login/main shell selectors in ui.css;
+      // the scrim keeps opaque panels and token text readable over the image.
+      '--eio-theme-bg-image': background ? 'url("' + background + '")' : 'none',
+      '--eio-theme-bg-scrim': background ? rgba(variant.bg0, light ? 0.6 : 0.74) : 'transparent',
     };
   }
 
@@ -363,10 +393,20 @@
     let storageListener = null;
     let mediaListener = null;
     let pending = null;
+    let pendingKind = null;
     let destroyed = false;
 
     const state = {
       generation: 0,
+      // Monotonic per-identity user-intent sequence. A remote response may
+      // absorb the server's opaque CAS revision but must never replace a
+      // choice made after its request started.
+      intentSeq: 0,
+      // Monotonic request sequence. The server revision is an opaque random
+      // positive number, so it can only be compared for equality, never
+      // ordered. Only the newest request may absorb a revision; a late
+      // response from an older request must not overwrite it.
+      requestSeq: 0,
       identity: null,
       preference: null,
       resolved: null,
@@ -440,6 +480,7 @@
         notice,
         revision: preference.revision,
         cssHref: cssHref || null,
+        backgroundUrl: theme.backgroundUrl || null,
       };
     }
 
@@ -451,7 +492,7 @@
       root.dataset.eioThemeId = resolved.themeId;
       root.dataset.eioMode = resolved.mode;
       if (!root.style) return;
-      const vars = variantToCssVars(resolved.variantTokens, resolved.variant, resolved.theme.appearance);
+      const vars = variantToCssVars(resolved.variantTokens, resolved.variant, resolved.theme.appearance, resolved.theme.backgroundUrl);
       if (typeof root.style.setProperty === 'function') {
         for (const key of Object.keys(vars)) root.style.setProperty(key, vars[key]);
         try { root.style.colorScheme = resolved.variant; } catch (e) { /* older engines */ }
@@ -474,6 +515,7 @@
         notice: getNotice(),
         revision: resolved.revision,
         cssHref: resolved.cssHref,
+        backgroundUrl: resolved.backgroundUrl || null,
         tokens: { ...resolved.variantTokens },
       };
     }
@@ -504,10 +546,31 @@
       return state.resolved;
     }
 
-    function abortPending() {
+    function abortPending(keepKind) {
       if (!pending) return;
+      // Concurrent saves are allowed to settle so an older success can still
+      // supply the server's exact revision; the latest intent is protected
+      // separately, and a newer request owns the revision once it starts.
+      if (keepKind && pendingKind === keepKind) return;
       try { pending.abort(); } catch (e) { /* already settled */ }
       pending = null;
+      pendingKind = null;
+    }
+
+    function currentRevision() {
+      const preference = state.preference;
+      return preference && validRevision(preference.revision) ? preference.revision : 0;
+    }
+
+    // Keep the current theme/mode (which may be newer than a response) while
+    // absorbing the server's exact opaque revision so the next CAS PUT is not
+    // a false conflict. The revision may legitimately decrease.
+    function mergeRevision(identity, revision, reason) {
+      const current = state.preference || defaultPreference(identity ? 'user' : 'anon', identity);
+      const nextRevision = validRevision(revision) ? revision : currentRevision();
+      const merged = { ...current, revision: nextRevision };
+      writeCached(merged);
+      return applyPreference(merged, reason);
     }
 
     function setPreference(next) {
@@ -541,6 +604,11 @@
         cssHref: chosen && chosen.cssHref ? chosen.cssHref : null,
         themeRevision: chosen && validRevision(chosen.revision) ? chosen.revision : null,
       };
+      if (!state.preference
+        || preference.themeId !== state.preference.themeId
+        || preference.mode !== state.preference.mode) {
+        state.intentSeq += 1;
+      }
       writeCached(preference);
       return applyPreference(preference, 'local');
     }
@@ -553,6 +621,8 @@
       if (destroyed) return state.generation;
       const identity = normalizeUserId(userId);
       state.generation += 1;
+      state.intentSeq += 1;
+      state.requestSeq = 0;
       abortPending();
       state.identity = identity;
       state.forcedNotice = '';
@@ -609,7 +679,14 @@
     function remoteController() {
       const AC = (win && win.AbortController) || (typeof AbortController !== 'undefined' ? AbortController : null);
       if (AC) return new AC();
-      return { signal: undefined, abort: function () {} };
+      // Engines without AbortController still need observable cancellation:
+      // T4 checks signal.aborted before committing a late payload, so an
+      // opaque no-op controller would let an old account's response win.
+      const signal = { aborted: false };
+      return {
+        signal,
+        abort: function () { signal.aborted = true; },
+      };
     }
 
     async function refreshRemote(remoteOptions) {
@@ -619,15 +696,20 @@
       const timeoutMs = Math.max(50, Number(remoteOptions.timeoutMs) || 3000);
       const generation = state.generation;
       const identity = state.identity;
+      const intent = state.intentSeq;
       abortPending();
+      state.requestSeq += 1;
+      const requestSeq = state.requestSeq;
       const controller = remoteController();
       pending = controller;
+      pendingKind = 'refresh';
       state.remoteError = '';
       state.remoteStatus = 'loading';
       emit('remote-start');
       const current = function () {
         return !destroyed && generation === state.generation && identity === state.identity;
       };
+      let degraded = false;
       try {
         if (deps.loadSite) {
           const site = await withTimeout(Promise.resolve(deps.loadSite({
@@ -636,7 +718,7 @@
           if (!current()) return publicResolved();
           const normalized = normalizeSite(site);
           if (normalized) siteDefault = normalized;
-          else state.remoteError = '站点外观设置无效，已保留本机设置';
+          else { state.remoteError = '站点外观设置无效，已保留本机设置'; degraded = true; }
         }
         if (deps.loadCatalog) {
           const catalogResult = await withTimeout(Promise.resolve(deps.loadCatalog({
@@ -645,7 +727,7 @@
           if (!current()) return publicResolved();
           const themes = Array.isArray(catalogResult) ? catalogResult : catalogResult && catalogResult.themes;
           if (Array.isArray(themes)) setCatalog(themes);
-          else state.remoteError = '主题目录无效，已保留本机主题';
+          else { state.remoteError = '主题目录无效，已保留本机主题'; degraded = true; }
         }
         if (identity && deps.loadPreferences) {
           const remote = await withTimeout(Promise.resolve(deps.loadPreferences({
@@ -654,14 +736,30 @@
           if (!current()) return publicResolved();
           const preference = normalizeRemotePreference(remote, identity);
           if (preference) {
-            writeCached(preference);
-            applyPreference(preference, 'remote');
+            if (requestSeq !== state.requestSeq) {
+              // A newer request owns the revision now; this stale GET must not
+              // write its older opaque revision back over the newer state.
+              return publicResolved();
+            }
+            if (state.intentSeq !== intent) {
+              // The user chose while the initial GET was in flight: keep that
+              // local intent and absorb only the server's exact revision.
+              mergeRevision(identity, preference.revision, 'remote-revision');
+            } else {
+              const merged = { ...preference };
+              writeCached(merged);
+              applyPreference(merged, 'remote');
+            }
           } else {
             state.remoteError = '在线外观设置无效，已保留本机缓存';
+            degraded = true;
           }
         }
         if (current()) {
-          state.remoteStatus = 'ok';
+          // A loader that rejected its payload (unavailable site, partial
+          // catalog) must not be reported as a clean success; the local cache
+          // is still applied and the notice explains the degradation.
+          state.remoteStatus = degraded ? 'fallback' : 'ok';
           applyPreference(state.preference, 'remote-done');
         }
         return publicResolved();
@@ -674,7 +772,10 @@
         }
         return publicResolved();
       } finally {
-        if (pending === controller) pending = null;
+        if (pending === controller) {
+          pending = null;
+          pendingKind = null;
+        }
       }
     }
 
@@ -684,17 +785,23 @@
       const timeoutMs = Math.max(50, Number(remoteOptions.timeoutMs) || 3000);
       const generation = state.generation;
       const identity = state.identity;
-      abortPending();
+      const intent = state.intentSeq;
+      const sent = state.preference;
+      const sentRevision = currentRevision();
+      abortPending('save');
+      state.requestSeq += 1;
+      const requestSeq = state.requestSeq;
       const controller = remoteController();
       pending = controller;
+      pendingKind = 'save';
       const current = function () {
         return !destroyed && generation === state.generation && identity === state.identity;
       };
       try {
         const result = await withTimeout(Promise.resolve(deps.savePreferences({
-          themeId: state.preference.themeId,
-          mode: state.preference.mode,
-          expectedRevision: state.preference.revision,
+          themeId: sent.themeId,
+          mode: sent.mode,
+          expectedRevision: sentRevision,
           signal: controller.signal,
           generation: generation,
           userId: identity,
@@ -702,9 +809,24 @@
         if (!current()) return { saved: false, stale: true };
         const preference = normalizeRemotePreference(result, identity);
         if (!preference) throw new Error('invalid appearance response');
-        writeCached(preference);
-        applyPreference(preference, 'remote-save');
-        return { saved: true };
+        if (requestSeq !== state.requestSeq) {
+          // A newer request owns the revision. This response may belong to an
+          // older PUT/GET that interleaved with it, so absorbing its opaque
+          // revision could move the CAS token backwards.
+          return { saved: false, stale: true };
+        }
+        const revision = preference.revision;
+        if (state.intentSeq !== intent) {
+          // This response belongs to an older choice. Its success still proves
+          // the server accepted its exact revision, so keep it for the queued
+          // latest save without replacing the newer local choice.
+          mergeRevision(identity, revision, 'remote-save-revision');
+          return { saved: false, superseded: true, revision: revision };
+        }
+        const merged = { ...preference };
+        writeCached(merged);
+        applyPreference(merged, 'remote-save');
+        return { saved: true, revision: revision };
       } catch (error) {
         if (current() && (!error || error.name !== 'AbortError')) {
           state.remoteError = '保存外观设置失败，已保留本机选择';
@@ -712,7 +834,10 @@
         }
         return { saved: false, error: error };
       } finally {
-        if (pending === controller) pending = null;
+        if (pending === controller) {
+          pending = null;
+          pendingKind = null;
+        }
       }
     }
 

@@ -21,12 +21,14 @@
 
   async function api(path, opts = {}) {
     const token = localStorage.getItem('eio_token');
-    // Authentication uses X-Emby-Token only. The web client deliberately sends
-    // no client identity: on passthrough upstreams those headers would win the
+    // Anonymous theme-site reads deliberately carry no token; every other
+    // request authenticates with X-Emby-Token only. The web client sends no
+    // client identity: on passthrough upstreams those headers would win the
     // identity resolution over the captured real-client identity.
-    const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
-    if (token) headers['X-Emby-Token'] = token;
-    const res = await fetch(`${API}${path}`, { ...opts, headers });
+    const { anonymous, ...requestOptions } = opts;
+    const headers = { 'Content-Type': 'application/json', ...(requestOptions.headers || {}) };
+    if (token && !anonymous) headers['X-Emby-Token'] = token;
+    const res = await fetch(`${API}${path}`, { ...requestOptions, headers });
     if (!res.ok) {
       const body = await res.text().catch(() => '');
       let detail = body || res.statusText;
@@ -82,11 +84,25 @@
 
   const app = createApp({
     setup() {
-      /* ---- appearance (T1) ---- */
-      // T4 replaces this dependency object with real site/catalog/prefs
-      // loaders. T1 only reads the validated local cache, so switching theme
-      // never performs I/O or touches the player/subtitle engine.
-      const themeDeps = (typeof window !== 'undefined' && window.EIOThemeDeps) || {};
+      /* ---- appearance (T1 controller, T4 transport) ---- */
+      // The transport owns only the /web theme endpoints and the immutable
+      // stylesheet link. It receives the app's existing token/identity access
+      // and 401 hook instead of reading localStorage itself, and the T1
+      // controller stays the only preference/generation authority.
+      const themeTransport = typeof window !== 'undefined' && window.EIOThemeTransport
+        && typeof window.EIOThemeTransport.create === 'function'
+        ? window.EIOThemeTransport.create({
+          request: (path, options) => api(path, options),
+          getToken: () => localStorage.getItem('eio_token'),
+          getUserId: () => localStorage.getItem('eio_user_id'),
+          document,
+          window,
+          onUnauthorized: handleThemeUnauthorized,
+        })
+        : null;
+      const themeDeps = themeTransport
+        || (typeof window !== 'undefined' && window.EIOThemeDeps)
+        || {};
       // The theme module reads window.localStorage through its own guarded
       // getter: a browser that denies site storage must leave setup working
       // with an in-memory appearance instead of throwing before mount.
@@ -100,12 +116,26 @@
         && typeof window.EIOAppearance.createController === 'function'
         ? window.EIOAppearance.createController({ theme })
         : null;
+      if (theme && themeTransport && typeof themeTransport.attach === 'function') {
+        themeTransport.attach(theme, {
+          onCssError() {
+            toasts.push({ message: '自定义主题样式加载失败，已保留主题配色', kind: 'info' });
+          },
+        });
+      }
 
       function refreshAppearanceRemote() {
-        if (!appearance || !(themeDeps.loadSite || themeDeps.loadCatalog || themeDeps.loadPreferences)) return;
-        // A short timeout keeps an unavailable prefs endpoint from delaying the
+        if (!appearance) return;
+        // A short timeout keeps an unavailable theme endpoint from delaying the
         // page; a late response is discarded by the controller generation.
         Promise.resolve(appearance.refreshRemote({ timeoutMs: 3000 })).catch(() => {});
+      }
+
+      // The transport already proved this 401 belongs to the current token and
+      // account, so a stale response from an old login cannot log out a newer
+      // session. The existing logout path stays the only one that clears it.
+      function handleThemeUnauthorized() {
+        doLogout();
       }
 
       /* ---- auth ---- */
@@ -189,6 +219,7 @@
           localStorage.setItem('eio_token', res.AccessToken);
           localStorage.setItem('eio_user_id', res.User.Id);
           if (appearance) appearance.enterSession(res.User.Id);
+          refreshAppearanceRemote();
           currentUser.value = res.User;
           recentSearches.read();
           window.location.hash = '#/home';
@@ -1329,6 +1360,7 @@
               if (appearance) appearance.leaveSession();
               loginError.value = '管理员账号请使用 /admin 管理面板登录。';
               page.value = 'login';
+              refreshAppearanceRemote();
               return;
             }
             currentUser.value = me;
@@ -1347,7 +1379,10 @@
             loginError.value = '暂时无法连接服务器，请刷新重试。';
             page.value = 'login';
           }
-        } else { syncFromHash(); }
+        } else {
+          syncFromHash();
+          refreshAppearanceRemote();
+        }
       });
 
       onBeforeUnmount(() => {
@@ -1358,6 +1393,7 @@
         itemRequest?.abort(); collectionRequest?.abort();
         stopPlayer();
         if (appearance) appearance.destroy();
+        if (themeTransport) themeTransport.destroy();
       });
 
       return {

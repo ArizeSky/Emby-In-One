@@ -38,11 +38,33 @@
       modeOptions: MODE_OPTIONS.slice(),
       notice: initialResolved.notice || '',
       remoteStatus: theme.getRemoteStatus ? theme.getRemoteStatus() : 'local',
+      saving: false,
     };
     const state = typeof Vue.reactive === 'function' ? Vue.reactive(seed) : seed;
     let unsubscribe = null;
     let destroyed = false;
     let keydownAttached = false;
+    let saveTimer = null;
+    let saveChain = Promise.resolve();
+    // Bumped on every session entry/leave (including re-entering the same ID).
+    // The theme generation is also part of the epoch so a direct theme switch
+    // is observed as well.
+    let identityEpoch = 0;
+
+    function currentEpoch() {
+      const generation = typeof theme.getGeneration === 'function' ? theme.getGeneration() : 0;
+      const identity = typeof theme.getIdentity === 'function' ? theme.getIdentity() : null;
+      return { local: identityEpoch, generation: generation, identity: identity };
+    }
+
+    function epochMatches(epoch) {
+      if (destroyed || !epoch) return false;
+      if (epoch.local !== identityEpoch) return false;
+      const generation = typeof theme.getGeneration === 'function' ? theme.getGeneration() : 0;
+      if (epoch.generation !== generation) return false;
+      const identity = typeof theme.getIdentity === 'function' ? theme.getIdentity() : null;
+      return epoch.identity === identity;
+    }
 
     function sync() {
       if (destroyed) return;
@@ -88,52 +110,174 @@
       if (state.open) close(); else open();
     }
 
+    function clearSaveTimer() {
+      if (saveTimer == null) return;
+      clearTimeout(saveTimer);
+      saveTimer = null;
+    }
+
+    function canPersist() {
+      if (typeof theme.saveRemote !== 'function') return false;
+      const identity = typeof theme.getIdentity === 'function' ? theme.getIdentity() : null;
+      if (!identity) return false;
+      const preference = typeof theme.getPreference === 'function' ? theme.getPreference() : null;
+      // A CAS PUT needs the positive revision a GET seeded. Without one the
+      // change stays local instead of guessing a revision.
+      if (!preference || !(preference.revision >= 1)) return false;
+      const status = typeof theme.getRemoteStatus === 'function' ? theme.getRemoteStatus() : 'local';
+      return status !== 'loading' && status !== 'local';
+    }
+
+    function scheduleSave() {
+      clearSaveTimer();
+      if (destroyed || !canPersist()) return;
+      const epoch = currentEpoch();
+      saveTimer = setTimeout(function () {
+        saveTimer = null;
+        if (!epochMatches(epoch)) return;
+        enqueueSave(epoch);
+      }, 220);
+    }
+
+    function afterChange() {
+      sync();
+      scheduleSave();
+    }
+
+    function runSave(epoch) {
+      if (destroyed || !epochMatches(epoch)) return Promise.resolve({ saved: false, stale: true });
+      state.saving = true;
+      return Promise.resolve(theme.saveRemote({ timeoutMs: 3000 })).then(function (result) {
+        // Every completion must belong to the session that started it. An old
+        // account may not touch the new account's notice, saving flag or
+        // trigger a refresh for the new account.
+        if (destroyed || !epochMatches(epoch)) return result;
+        sync();
+        state.saving = false;
+        if (result && result.saved === true) {
+          state.notice = '已保存到账号';
+          return result;
+        }
+        if (result && result.superseded === true) {
+          // The server accepted an older selection; the queued save for the
+          // latest local intent still has to run.
+          state.notice = '已保存较早的选择，最新选择尚未保存';
+          return result;
+        }
+        if (result && result.stale === true) return result;
+        if (result && result.error && result.error.status === 409) {
+          // A revision conflict is a real server change: reload once and show
+          // the server state. Never pretend it was saved and never retry in a
+          // loop.
+          state.notice = '外观已在其他设备修改，正在重新加载';
+          return Promise.resolve(theme.refreshRemote({ timeoutMs: 3000 })).then(function () {
+            if (destroyed || !epochMatches(epoch)) return result;
+            sync();
+            state.notice = '外观已在其他设备修改，已重新加载';
+            return result;
+          }, function () {
+            if (destroyed || !epochMatches(epoch)) return result;
+            state.notice = '外观已在其他设备修改，请刷新重试';
+            return result;
+          });
+        }
+        if (result && result.error && result.error.name === 'AbortError') {
+          state.notice = '保存超时，已保留本机选择';
+          return result;
+        }
+        state.notice = '未能保存到账号，已保留本机选择';
+        return result;
+      }, function () {
+        if (!destroyed && epochMatches(epoch)) {
+          sync();
+          state.saving = false;
+          state.notice = '未能保存到账号，已保留本机选择';
+        }
+        return { saved: false };
+      });
+    }
+
+    function enqueueSave(epoch) {
+      const task = function () {
+        if (!epochMatches(epoch)) return { saved: false, stale: true };
+        return runSave(epoch);
+      };
+      saveChain = saveChain.then(task, task);
+      return saveChain;
+    }
+
+    function persist() {
+      if (destroyed) return Promise.resolve({ saved: false });
+      clearSaveTimer();
+      return enqueueSave(currentEpoch());
+    }
+
     function chooseMode(mode) {
       if (destroyed) return;
       if (!MODE_OPTIONS.some(function (option) { return option.id === mode; })) return;
       theme.setPreference({ mode: mode });
-      sync();
+      afterChange();
     }
 
     function chooseTheme(themeId) {
       if (destroyed) return;
       theme.setPreference({ themeId: themeId == null || themeId === '' ? null : themeId });
-      sync();
+      afterChange();
     }
 
     function resetBuiltin() {
       if (destroyed) return;
       theme.setPreference({ themeId: 'builtin' });
-      sync();
+      afterChange();
       state.notice = '已恢复内置主题';
     }
 
     function enterSession(userId) {
       if (destroyed) return;
+      clearSaveTimer();
+      identityEpoch += 1;
+      state.saving = false;
       theme.enterSession(userId);
       sync();
     }
 
     function leaveSession() {
       if (destroyed) return;
+      clearSaveTimer();
+      identityEpoch += 1;
+      state.saving = false;
       theme.enterSession(null);
       sync();
     }
 
     function syncIdentity(userId) {
       if (destroyed) return;
+      clearSaveTimer();
+      const before = typeof theme.getIdentity === 'function' ? theme.getIdentity() : null;
+      state.saving = false;
       theme.syncIdentity(userId);
+      const after = typeof theme.getIdentity === 'function' ? theme.getIdentity() : null;
+      if (after !== before) identityEpoch += 1;
       sync();
     }
 
     function refreshRemote(remoteOptions) {
       if (destroyed) return Promise.resolve();
-      return Promise.resolve(theme.refreshRemote(remoteOptions)).then(sync, sync);
+      const epoch = currentEpoch();
+      return Promise.resolve(theme.refreshRemote(remoteOptions)).then(function (value) {
+        if (!destroyed && epochMatches(epoch)) sync();
+        return value;
+      }, function () {
+        if (!destroyed && epochMatches(epoch)) sync();
+        return undefined;
+      });
     }
 
     function destroy() {
       if (destroyed) return;
       destroyed = true;
+      clearSaveTimer();
+      state.saving = false;
       detachKeydown();
       if (unsubscribe) unsubscribe();
       unsubscribe = null;
@@ -155,6 +299,7 @@
       leaveSession: leaveSession,
       syncIdentity: syncIdentity,
       refreshRemote: refreshRemote,
+      save: persist,
       destroy: destroy,
       isDestroyed: function () { return destroyed; },
     };
@@ -176,6 +321,16 @@
         const options = this.controller.state.themeOptions || [];
         const selected = options.find(function (option) { return option.id === this.controller.state.themeId; }, this);
         return selected ? selected.label : '外观';
+      },
+      syncLabel() {
+        const source = this.controller.theme;
+        let identity = null;
+        try { identity = source && source.getIdentity ? source.getIdentity() : null; }
+        catch (e) { identity = null; }
+        if (!identity) return '未登录：仅保存到本机';
+        if (this.controller.state.remoteStatus === 'ok') return '已连接：按账号保存';
+        if (this.controller.state.remoteStatus === 'loading') return '正在同步账号外观…';
+        return '离线：本次仅保存到本机';
       },
     },
     template: `
@@ -219,6 +374,9 @@
             </div>
             <div class="eio-appearance-resolved">{{ schemeLabel }}</div>
           </div>
+          <div v-if="controller.state.saving" class="eio-appearance-resolved" role="status">
+            正在保存到账号…
+          </div>
           <div v-if="controller.state.notice" class="eio-appearance-notice" role="status">
             {{ controller.state.notice }}
           </div>
@@ -226,7 +384,7 @@
             <button class="eio-appearance-reset" type="button" @click="controller.resetBuiltin()">
               恢复内置主题
             </button>
-            <span class="eio-appearance-meta">仅保存到本机，登录后按账号隔离</span>
+            <span class="eio-appearance-meta">{{ syncLabel }}</span>
           </div>
         </div>
       </div>`,
