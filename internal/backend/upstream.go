@@ -522,6 +522,18 @@ func (p *UpstreamPool) retryOfflinePassthrough(token string, headers http.Header
 	}
 }
 
+// ConfigSnapshot returns a copy of the client's locked upstream configuration.
+// Callers that must bind an in-flight request to the account it was sent under
+// use this instead of reading the mutable Config field directly.
+func (c *UpstreamClient) ConfigSnapshot() UpstreamConfig {
+	if c == nil {
+		return UpstreamConfig{}
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.Config
+}
+
 func (c *UpstreamClient) snapshot() UpstreamClient {
 	c.mu.RLock()
 	defer c.mu.RUnlock()

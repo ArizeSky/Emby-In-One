@@ -453,6 +453,9 @@ func (a *App) handleAdminUpstreamDelete(w http.ResponseWriter, r *http.Request) 
 				a.Logger.Errorf("delete upstream %s: remove hidden libraries: %v", serverID, err)
 			}
 		}
+		// Remove the node's viewing summary/policy and every in-memory session,
+		// so a deleted node cannot keep accumulating or expose stale statistics.
+		a.purgeUpstreamActivityServer(serverID)
 	}
 	a.invalidateUpstreamLibraryCache(serverID)
 

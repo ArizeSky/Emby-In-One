@@ -25,9 +25,19 @@ type App struct {
 	UserStore       *UserStore
 	WatchStore      *WatchStore
 	HiddenLibraries *HiddenLibraryStore
-	libraryCache    *upstreamLibraryCache
-	PlaybackLimiter *PlaybackLimiter
-	StreamResources *streamResourceStore
+	// UpstreamActivity persists per-server confirmed playback summaries. It is
+	// nil when the shared SQLite database or the schema is unavailable; every
+	// call site stays nil-safe and never turns that into "disabled".
+	UpstreamActivity *UpstreamActivityStore
+	// activityTracker owns the bounded in-memory session accumulation, and the
+	// scope/policy/health helpers are safe on their zero value.
+	activityTracker  *upstreamActivityTracker
+	activityScopes   upstreamActivityScopeGuard
+	activityPolicies upstreamActivityPolicyCache
+	activityHealth   upstreamActivityHealth
+	libraryCache     *upstreamLibraryCache
+	PlaybackLimiter  *PlaybackLimiter
+	StreamResources  *streamResourceStore
 	// sessionEvents tracks which playback session is live for (user, item), so
 	// a late event from a superseded session cannot overwrite newer watch
 	// state. Nil in minimal test apps: all methods are nil-safe.
@@ -95,6 +105,7 @@ func NewApp() (*App, error) {
 	var userStore *UserStore
 	var watchStore *WatchStore
 	var hiddenLibraries *HiddenLibraryStore
+	var upstreamActivity *UpstreamActivityStore
 	if db := idStore.DB(); db != nil {
 		us, err := NewUserStore(db, logger)
 		if err != nil {
@@ -114,6 +125,12 @@ func NewApp() (*App, error) {
 		} else {
 			hiddenLibraries = hls
 		}
+		as, err := NewUpstreamActivityStore(db)
+		if err != nil {
+			logger.Warnf("UpstreamActivityStore init failed: %v (upstream viewing statistics unavailable)", err)
+		} else {
+			upstreamActivity = as
+		}
 	}
 
 	// Created here, after every early return, so no error path can leak it: the
@@ -121,26 +138,32 @@ func NewApp() (*App, error) {
 	uaJobsCtx, uaJobsCancel := context.WithCancel(context.Background())
 	bgWorkCtx, bgWorkCancel := context.WithCancel(context.Background())
 
-	return &App{
-		ConfigStore:     configStore,
-		Logger:          logger,
-		IDStore:         idStore,
-		Identity:        identity,
-		UALibrary:       uaLibrary,
-		Auth:            auth,
-		Upstream:        upstream,
-		UserStore:       userStore,
-		WatchStore:      watchStore,
-		HiddenLibraries: hiddenLibraries,
-		libraryCache:    newUpstreamLibraryCache(),
-		PlaybackLimiter: NewPlaybackLimiter(),
-		StreamResources: newStreamResourceStore(),
-		sessionEvents:   newSessionEventTracker(),
-		uaJobsCtx:       uaJobsCtx,
-		uaJobsCancel:    uaJobsCancel,
-		bgWorkCtx:       bgWorkCtx,
-		bgWorkCancel:    bgWorkCancel,
-	}, nil
+	app := &App{
+		ConfigStore:      configStore,
+		Logger:           logger,
+		IDStore:          idStore,
+		Identity:         identity,
+		UALibrary:        uaLibrary,
+		Auth:             auth,
+		Upstream:         upstream,
+		UserStore:        userStore,
+		WatchStore:       watchStore,
+		HiddenLibraries:  hiddenLibraries,
+		UpstreamActivity: upstreamActivity,
+		activityTracker:  newUpstreamActivityTracker(),
+		libraryCache:     newUpstreamLibraryCache(),
+		PlaybackLimiter:  NewPlaybackLimiter(),
+		StreamResources:  newStreamResourceStore(),
+		sessionEvents:    newSessionEventTracker(),
+		uaJobsCtx:        uaJobsCtx,
+		uaJobsCancel:     uaJobsCancel,
+		bgWorkCtx:        bgWorkCtx,
+		bgWorkCancel:     bgWorkCancel,
+	}
+	// Initialize per-server activity scopes from the current configuration. A
+	// failure is logged inside and never blocks startup or playback.
+	app.ensureUpstreamActivityScopes()
+	return app, nil
 }
 
 // logTimeoutNotice warns when the per-operation timeouts are tighter than the API

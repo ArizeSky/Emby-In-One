@@ -463,11 +463,16 @@ func (a *App) handleSessionPlaying(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]any{"message": "Server not found"})
 		return
 	}
+	// Capture receipt order and the account scope before the request leaves the
+	// process; statistics are only written for a confirmed 2xx.
+	activityEvent := a.beginUpstreamActivityEvent(r, serverID, client, body)
+	confirmed := false
 	if err := a.forwardNoContent(r, client, http.MethodPost, "/Sessions/Playing", nil, body); err != nil {
 		// A preparation failure means the request never left the process, so the
 		// client gets the preparation status and no local progress is recorded for
 		// a play event that was never announced upstream.
 		if status, ok := preparationErrorStatus(err); ok {
+			a.discardUpstreamActivityEvent(activityEvent)
 			writeJSON(w, status, preparationErrorBody(err))
 			return
 		}
@@ -480,9 +485,12 @@ func (a *App) handleSessionPlaying(w http.ResponseWriter, r *http.Request) {
 			a.Logger.Warnf("Sessions/Playing upstream error (server %s): %v", serverID, redactURLInError(err))
 		}
 		if _, refused := asUpstreamHTTPError(err); refused {
+			a.discardUpstreamActivityEvent(activityEvent)
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
+	} else {
+		confirmed = true
 	}
 	verdict := a.applySessionEvent(r, serverID, virtualItemID, identity, playbackEventStarted)
 	if verdict.LocalProgress {
@@ -502,6 +510,7 @@ func (a *App) handleSessionPlaying(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	a.recordUpstreamActivityEvent(r, activityEvent, serverID, virtualItemID, body, playbackEventStarted, confirmed, verdict)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -532,11 +541,15 @@ func (a *App) handleSessionPlayingProgress(w http.ResponseWriter, r *http.Reques
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
+	// Statistics are bound to the account and receipt order at send time.
+	activityEvent := a.beginUpstreamActivityEvent(r, serverID, client, body)
+	confirmed := false
 	if err := a.forwardNoContent(r, client, http.MethodPost, "/Sessions/Playing/Progress", nil, body); err != nil {
 		// Progress used to swallow every error as 204. A preparation failure is the
 		// client's or the configuration's, and reporting it is what makes the
 		// failure visible instead of looking like a successful report.
 		if status, ok := preparationErrorStatus(err); ok {
+			a.discardUpstreamActivityEvent(activityEvent)
 			writeJSON(w, status, preparationErrorBody(err))
 			return
 		}
@@ -547,14 +560,18 @@ func (a *App) handleSessionPlayingProgress(w http.ResponseWriter, r *http.Reques
 			a.Logger.Warnf("Sessions/Playing/Progress upstream error (server %s): %v", serverID, redactURLInError(err))
 		}
 		if _, refused := asUpstreamHTTPError(err); refused {
+			a.discardUpstreamActivityEvent(activityEvent)
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
+	} else {
+		confirmed = true
 	}
 	verdict := a.applySessionEvent(r, serverID, virtualItemID, identity, playbackEventProgress)
 	if verdict.LocalProgress {
 		a.recordSessionToWatchStore(r, virtualItemID, body, serverID, false)
 	}
+	a.recordUpstreamActivityEvent(r, activityEvent, serverID, virtualItemID, body, playbackEventProgress, confirmed, verdict)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -589,10 +606,13 @@ func (a *App) handleSessionPlayingStopped(w http.ResponseWriter, r *http.Request
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
+	activityEvent := a.beginUpstreamActivityEvent(r, serverID, client, body)
+	confirmed := false
 	if err := a.forwardNoContent(r, client, http.MethodPost, "/Sessions/Playing/Stopped", nil, body); err != nil {
 		if status, ok := preparationErrorStatus(err); ok {
 			// The stop still has to release the concurrency unit and record the
 			// local progress: leaving them behind would strand a playback permit.
+			a.discardUpstreamActivityEvent(activityEvent)
 			a.finishStoppedSession(r, virtualItemID, serverID, body, identity, true)
 			writeJSON(w, status, preparationErrorBody(err))
 			return
@@ -602,6 +622,7 @@ func (a *App) handleSessionPlayingStopped(w http.ResponseWriter, r *http.Request
 			// local progress is not written either. The concurrency unit is still
 			// released when this event owns it: the client did stop playing, and
 			// holding the unit would leak it. The client keeps the fire-and-forget 204.
+			a.discardUpstreamActivityEvent(activityEvent)
 			if a.Logger != nil {
 				a.Logger.Warnf("Sessions/Playing/Stopped upstream error (server %s): %v", serverID, redactURLInError(err))
 			}
@@ -609,8 +630,11 @@ func (a *App) handleSessionPlayingStopped(w http.ResponseWriter, r *http.Request
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
+	} else {
+		confirmed = true
 	}
-	a.finishStoppedSession(r, virtualItemID, serverID, body, identity, true)
+	verdict := a.finishStoppedSession(r, virtualItemID, serverID, body, identity, true)
+	a.recordUpstreamActivityEvent(r, activityEvent, serverID, virtualItemID, body, playbackEventStopped, confirmed, verdict)
 	w.WriteHeader(http.StatusNoContent)
 }
 
