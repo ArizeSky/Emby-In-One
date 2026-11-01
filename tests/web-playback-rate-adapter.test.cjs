@@ -77,9 +77,9 @@ function makeCore(options = {}) {
   return core;
 }
 
-function makeVideo(overrideSet) {
+function makeVideo(overrideSet, duration) {
   const state = { value: 1, sets: [] };
-  const video = {};
+  const video = duration === undefined ? {} : { duration };
   Object.defineProperty(video, 'playbackRate', {
     configurable: true,
     enumerable: true,
@@ -94,12 +94,13 @@ function makeVideo(overrideSet) {
   return video;
 }
 
-function makePlayer({ core = null, video = null } = {}) {
+function makePlayer({ core = null, video = null, mediaSource = null } = {}) {
   const player = Object.create(proto);
   player._destroyed = false;
   player._engineGeneration = 1;
   player.core = core;
   player.video = video;
+  player.mediaSource = mediaSource;
   const emitted = [];
   player._emitState = function () { emitted.push(this.playbackRate); };
   return { player, emitted };
@@ -237,6 +238,31 @@ test('native setter throw and getter mismatch do not commit state', async () => 
   assert.equal(mismatched.state.value, 1.25);
   assert.deepEqual(second.emitted, []);
   assert.equal(readRate(second.player), 1);
+});
+
+test('infinite stream rejects even when the core is finite', async () => {
+  const core = makeCore();
+  const mediaSource = { IsInfiniteStream: true };
+  const made = makePlayer({ core, mediaSource });
+  const result = await attempt(made.player, 1.25);
+  assert.equal(result.ok, false);
+  assert.match(result.error.message, /直播/);
+  assert.deepEqual(core.sets, []);
+  assert.deepEqual(made.emitted, []);
+  assertNoCommit(made, made.player);
+  assert.equal(readRate(made.player), 1);
+});
+
+test('infinite native video duration rejects without a write', async () => {
+  const video = makeVideo(undefined, Infinity);
+  const made = makePlayer({ video });
+  const result = await attempt(made.player, 1.5);
+  assert.equal(result.ok, false);
+  assert.match(result.error.message, /直播/);
+  assert.deepEqual(video.state.sets, []);
+  assert.deepEqual(made.emitted, []);
+  assertNoCommit(made, made.player);
+  assert.equal(readRate(made.player), 1);
 });
 
 test('reentrant generation replacement aborts the commit', async () => {

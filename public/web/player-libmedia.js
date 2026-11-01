@@ -736,6 +736,11 @@
       const video = this.video;
       // Fixed API checks run before any engine write.
       if (!core && !video) throw new Error('播放器尚未就绪');
+      // Only explicit live evidence rejects: an infinite stream/duration is live,
+      // while a missing or zero duration is normal for an ordinary movie.
+      if (this.mediaSource?.IsInfiniteStream === true || (video && video.duration === Infinity)) {
+        throw new Error('直播不支持切换播放速度');
+      }
       if (core) {
         if (core.isLive?.()) throw new Error('直播不支持切换播放速度');
         if (typeof core.setPlaybackRate !== 'function' || typeof core.getPlaybackRate !== 'function') {
