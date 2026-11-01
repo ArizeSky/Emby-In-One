@@ -17,6 +17,8 @@
 
 > **内嵌 ASS 字幕描边修复（本轮变更）：** 修正内嵌 ASS renderer 子节点的描边/阴影 CSS 选择器（补上后代组合符，共 4 处），恢复字幕原有的描边/阴影声明；不全局强制 `text-shadow`，不改 JASSUB。离线真实 Chromium 合成 ASS（Arial 24、Outline 3）实测：原构建 `span::after` 无 `content`、描边 0px；修复 4 个选择器后、未注入任何 override 时真实 pseudo-element 为黑色 6px（2 倍 stroke 居中属预期，非缺陷）。该测量不等同原片验收；本轮未构建、未部署此变更。状态：全套 Node 470/470（454 基线 + 10 项系列变更 + 6 项 CSS 契约用例）、相关 Go web/player/asset 测试及 `go vet` 通过；原片仍未验收。
 
+> **完整构建与部署状态（2026-11-01，覆盖以上两条“未部署”）：** 用户明确授权构建并替换、重启 `emby-in-one.service`，本轮已成功。源码 `9984016`，版本 `v1.4.4-rc4-dev.9984016`；Go 1.27.1 linux/amd64、CGO=1 静态（`netgo`/`osusergo`）、离线、单 CPU（nice 15、`GOMAXPROCS=1`、`-p 1`）构建 103 秒；产物 62,972,336 字节，SHA-256 `541f15c1…4c83d0`。已部署至 `/opt/emby-in-one/emby-in-one`，2026-11-01 18:00:33 CST 启动，PID 546295，active/running，`NRestarts=0`；进程与磁盘哈希一致，uid/gid/mode 保留；旧版本可执行文件及 config/data/public/log 已在停服状态完整快照备份并通过校验。本地健康检查与静态资源逐字匹配通过，未回滚、未重试。完整构建与部署不等于原片验收：本轮未播放媒体、未手动执行上游登录，需用户自行验收；未创建 tag、Release 或镜像。详见[完整程序构建验证](docs/full-build-verification.md)。
+
 ## 目录
 
 - [预览](#预览)
