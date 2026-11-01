@@ -36,6 +36,15 @@
     const resumeError = ref('');
     const latestLoading = ref({});
     const latestError = ref({});
+    // Second, independent home data channel: one first page of the complete
+    // library per row, loaded on demand by the row component. The Latest
+    // channel above stays the hero source and is not reused for rows.
+    const libraryRows = window.EIOHomeLibraryRows.create({
+      api: deps.api,
+      query: deps.query,
+      getUserId: deps.getUserId,
+      isActive: deps.isActive,
+    });
     const viewsSlow = slowFlag();
     const resumeSlow = slowFlag();
     const latestSlow = slowFlag();
@@ -64,7 +73,11 @@
       try {
         const res = await deps.api(`/Users/${uid()}/Views`, { signal });
         if (!live(gen, signal)) return;
-        deps.libraries.value = res.Items || [];
+        const items = res.Items || [];
+        deps.libraries.value = items;
+        // Rows are rebuilt only from a committed Views response. A failed or
+        // stale Views keeps them empty (load() already cancelled them).
+        libraryRows.reset(items);
       } catch (e) {
         if (e.name === 'AbortError' || !live(gen, signal)) return;
         viewsError.value = '媒体库加载失败';
@@ -110,6 +123,7 @@
       generation++;
       controller?.abort();
       controller = null;
+      libraryRows.cancel();
       viewsSlow.stop(); resumeSlow.stop(); latestSlow.stop();
       viewsLoading.value = false; resumeLoading.value = false;
     }
@@ -141,10 +155,10 @@
       if (!signal) return Promise.resolve();
       return loadLatest(gen, signal, lib);
     }
-    function dispose() { cancel(); }
+    function dispose() { cancel(); libraryRows.dispose(); }
 
     return { resumeItems, viewsLoading, viewsError, resumeLoading, resumeError,
-      latestLoading, latestError, viewsSlow, resumeSlow, latestSlow,
+      latestLoading, latestError, viewsSlow, resumeSlow, latestSlow, libraryRows,
       load, cancel, retryResume, retryLatest, dispose };
   }
 

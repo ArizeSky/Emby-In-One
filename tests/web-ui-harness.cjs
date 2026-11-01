@@ -13,7 +13,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const SCRIPTS = ['data.js', 'ui.js', 'page-state.js', 'player-ui.js', 'library-state.js', 'resume-card.js', 'ui-components.js', 'playback-orchestrator.js', 'player-progress.js', 'player-buffer.js', 'player-telemetry-ui.js', 'theme-player-controls.js', 'theme.js', 'theme-transport.js', 'appearance.js', 'app.js'];
+// Load order mirrors web.html. library-query.js feeds library-state/page-state,
+// home-library-rows.js must exist before page-state.js creates the controller and
+// home-library-row.js must exist before app.js registers the component.
+const SCRIPTS = ['data.js', 'ui.js', 'library-query.js', 'home-library-rows.js', 'page-state.js', 'player-ui.js', 'library-state.js', 'resume-card.js', 'ui-components.js', 'home-library-row.js', 'playback-orchestrator.js', 'player-progress.js', 'player-buffer.js', 'player-telemetry-ui.js', 'theme-player-controls.js', 'theme.js', 'theme-transport.js', 'appearance.js', 'app.js'];
 
 function makeStorage(initial = {}) {
   const store = new Map(Object.entries(initial));
@@ -100,7 +103,8 @@ function harness(options = {}) {
   for (const file of SCRIPTS) {
     if (file === 'player-telemetry-ui.js' && options.skipTelemetry) continue;
     if (file === 'app.js' && options.beforeApp) options.beforeApp(context);
-    vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'public', 'web', file), 'utf8'), context);
+    const fullPath = path.join(__dirname, '..', 'public', 'web', file);
+    vm.runInContext(fs.readFileSync(fullPath, 'utf8'), context);
   }
   return {
     app, context, calls, components, resumeCard: context.EIOResumeCard,

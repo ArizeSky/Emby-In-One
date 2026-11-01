@@ -4,12 +4,21 @@
  * sort/filter, the real paging cursor and the sentinel observer. The caller
  * injects api/query, the shared EIOUI library view and the page-activity
  * check; this module never reads auth or builds its own requests.
+ *
+ * The listing parameters come from the shared EIOLibraryQuery builder
+ * (library-query.js) so the home row preview and this paging listing always
+ * request exactly the same first page. A missing global is a script-order bug,
+ * so this module throws instead of silently falling back to another parameter
+ * set. Paging, dedupe, partial and cursor semantics are unchanged.
  */
 (function () {
   'use strict';
 
-  const PAGE_LIMIT = 50;
-  const FIELDS = 'PrimaryImageAspectRatio,ProductionYear,ProviderIds,CommunityRating,RunTimeTicks,UserData';
+  const EIOLibraryQuery = window.EIOLibraryQuery;
+  const PAGE_LIMIT = EIOLibraryQuery.PAGE_LIMIT;
+  // Kept as the shared constant: this module holds no local copy of the field
+  // list any more, and the builder is the only place that assembles a request.
+  const FIELDS = EIOLibraryQuery.FIELDS;
 
   function create(deps) {
     const { ref, computed } = window.Vue;
@@ -80,15 +89,6 @@
       return canPage() && !partial.value && !partialStalled.value;
     }
 
-    function pageParams(limit) {
-      const [sortField, sortDir] = sort.value.split(',');
-      return {
-        ParentId: id, Limit: limit, SortBy: sortField, SortOrder: sortDir, Genres: filter.value,
-        Fields: FIELDS, Recursive: true,
-        IncludeItemTypes: type === 'tvshows' ? 'Series' : type === 'movies' ? 'Movie' : '',
-      };
-    }
-
     async function load(nextId) {
       request?.abort(); pageRequest?.abort();
       const current = request = new AbortController();
@@ -135,7 +135,12 @@
       const filterSnapshot = filter.value;
       pageError.value = ''; retryAppend.value = false;
       try {
-        const params = { ...pageParams(PAGE_LIMIT), StartIndex: requestOffset };
+        const params = {
+          ...EIOLibraryQuery.pageParams({
+            id, type, sort: sort.value, filter: filter.value,
+            limit: PAGE_LIMIT, startIndex: requestOffset,
+          }),
+        };
         const result = await deps.api(deps.query(`/Users/${uid()}/Items`, params), { signal: current.signal });
         if (pageRequest !== current || id !== parentId || current.signal.aborted) return;
         if (filter.value !== filterSnapshot) return; // filter changed under us

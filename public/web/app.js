@@ -1481,6 +1481,9 @@
   });
 
   EIOComponents.register(app);
+  if (window.EIOHomeLibraryRow && typeof window.EIOHomeLibraryRow.register === 'function') {
+    window.EIOHomeLibraryRow.register(app);
+  }
   if (window.EIOAppearance && typeof window.EIOAppearance.register === 'function') {
     window.EIOAppearance.register(app);
   }

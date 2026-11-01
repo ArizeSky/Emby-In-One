@@ -40,6 +40,9 @@ function createRuntime(reply, options = {}) {
   context.window = context;
   vm.createContext(context);
   vm.runInContext(fs.readFileSync(path.join(WEB, 'data.js'), 'utf8'), context);
+  // library-state.js now builds its params through the shared constructor, so the
+  // isolated VM has to provide it before the state module is evaluated.
+  vm.runInContext(fs.readFileSync(path.join(WEB, 'library-query.js'), 'utf8'), context);
   vm.runInContext(fs.readFileSync(path.join(WEB, 'library-state.js'), 'utf8'), context);
   const libraries = { value: options.libraries || [
     { Id: 'lib-a', Name: 'Library A', CollectionType: 'movies' },
