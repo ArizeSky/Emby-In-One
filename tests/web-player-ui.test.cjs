@@ -173,7 +173,7 @@ test('menus toggle and Escape closes the menu before exiting', () => {
   assert.deepEqual(actions, ['exit']);
 });
 
-test('controls auto-hide only while playing and not hovered', () => {
+test('controls auto-hide while playing even with stationary pointer', () => {
   const { ui, fire, container } = harness();
   ui.acceptState({ playing: false }); // paused
   ui.activity();
@@ -187,11 +187,8 @@ test('controls auto-hide only while playing and not hovered', () => {
 
   ui.activity();
   assert.equal(ui.controlsVisible.value, true);
-  container.dispatch('pointerenter', {}); // hovering blocks hiding
+  container.dispatch('pointerenter', {}); // stationary pointer no longer blocks hiding
   ui.activity();
-  assert.equal(fire(HIDE_DELAY), undefined);
-  assert.equal(ui.controlsVisible.value, true);
-  container.dispatch('pointerleave', {}); // leaving re-arms the hide
   assert.ok(fire(HIDE_DELAY));
   assert.equal(ui.controlsVisible.value, false);
 });
@@ -268,9 +265,9 @@ test('keyboard handling skips modifiers, editable targets, repeats and inactive 
 test('attach registers listeners, detach and dispose remove them', () => {
   const { ui, container, win, doc } = harness();
   const containerEvents = container.listeners.map(l => l.type).sort();
-  assert.deepEqual(containerEvents, ['click', 'focusin', 'focusout', 'pointerdown', 'pointerenter', 'pointerleave', 'pointermove']);
+  assert.deepEqual(containerEvents, ['click', 'focusin', 'focusout', 'pointerdown', 'pointerenter', 'pointermove']);
   assert.deepEqual(win.listeners.map(l => l.type), ['keydown']);
-  assert.deepEqual(doc.listeners.map(l => l.type).sort(), ['fullscreenchange', 'visibilitychange']);
+  assert.deepEqual(doc.listeners.map(l => l.type).sort(), ['fullscreenchange', 'pointercancel', 'pointerup', 'visibilitychange']);
 
   ui.detach();
   assert.equal(container.listeners.length, 0);
@@ -278,7 +275,7 @@ test('attach registers listeners, detach and dispose remove them', () => {
   assert.equal(doc.listeners.length, 0);
 
   ui.attach();
-  assert.equal(container.listeners.length, 7);
+  assert.equal(container.listeners.length, 6);
   ui.dispose();
   assert.equal(container.listeners.length, 0);
   assert.equal(ui.status.value, 'idle');
@@ -296,5 +293,5 @@ test('reset restores the initial state without detaching listeners', () => {
   assert.equal(ui.operation.value, null);
   assert.equal(ui.openMenu.value, null);
   assert.equal(ui.controlsVisible.value, true);
-  assert.equal(container.listeners.length, 7); // reset keeps the DOM attached
+  assert.equal(container.listeners.length, 6); // reset keeps the DOM attached
 });

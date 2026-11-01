@@ -680,6 +680,16 @@
         },
       }));
 
+      // Playback-rate helper (public/web/player-rate-ui.js). Same lifecycle as
+      // playerUI: one instance per setup, fed the shared engine snapshot, no
+      // timers of its own.
+      const rateUI = EIOPlaybackRateUI.create({
+        getPlayer: () => player,
+        isActive: () => navPage.value === 'player' && page.value === 'app',
+        onActivity: () => playerUI.activity(),
+        onSuccess: () => playerUI.closeMenu(),
+      });
+
       /* ---- player telemetry HUD ---- */
       // Pure view model for the top-right HUD. It is created once per setup,
       // consumes the same engine snapshot as playerUI.acceptState, owns no
@@ -756,6 +766,7 @@
           startSeconds: seconds ?? options?.startSeconds,
           paused: paused ?? options?.paused,
           forceTranscode: options?.forceTranscode,
+          playbackRate: options?.playbackRate ?? rateUI.playbackRate.value,
         };
       }
 
@@ -1011,6 +1022,12 @@
             throw error;
           }
         }
+        // Speed is user state like volume: apply it before the paused branch
+        // so a version switch or compatibility retry keeps the chosen rate.
+        if (options.playbackRate != null && options.playbackRate !== 1) {
+          await rateUI.selectPlaybackRate(options.playbackRate);
+        }
+        if (player !== instance || generation !== playbackGeneration) return;
         if (options.paused) await instance.pause();
         // Volume is user state: a compatibility retry or version switch must
         // not reset it to the engine default.
@@ -1028,6 +1045,7 @@
 
       function stopPlayer() {
         playbackGeneration++;
+        rateUI.reset();
         // Leaves and reloads must not keep a previous generation's buffer or
         // rate on screen: the HUD returns to its unknown dashes.
         playerTelemetry.reset();
@@ -1112,7 +1130,8 @@
         trackBusy.value = true;
         playerUI.begin('version');
         try {
-          await playItem(playingItem.value, id, { startSeconds: instance.positionTicks / 10000000, paused: !instance.playing });
+          await playItem(playingItem.value, id, { startSeconds: instance.positionTicks / 10000000,
+            paused: !instance.playing, playbackRate: rateUI.playbackRate.value });
         } catch (e) {
           toasts.push({ message: '版本切换失败：' + safeError(e), kind: 'error' });
         } finally {
@@ -1132,7 +1151,8 @@
           playerUI.begin('audio');
           await playItem(playingItem.value, playMediaSourceId.value, { audioIndex: index,
             subtitleIndex: wasmSubTrack.value, startSeconds: instance.positionTicks / 10000000,
-            paused: !instance.playing, forceTranscode: !!instance.core?.isHls?.() });
+            paused: !instance.playing, forceTranscode: !!instance.core?.isHls?.(),
+            playbackRate: rateUI.playbackRate.value });
         } catch (e) {
           toasts.push({ message: '音轨切换失败：' + safeError(e), kind: 'error' });
         } finally {
@@ -1433,7 +1453,7 @@
         window.removeEventListener('hashchange', syncFromHash);
         window.removeEventListener('scroll', onScroll);
         home.dispose(); search.dispose(); hero.dispose(); toasts.dispose();
-        libraryView.dispose(); library.dispose(); playerUI.dispose();
+        libraryView.dispose(); library.dispose(); playerUI.dispose(); rateUI.dispose();
         itemRequest?.abort(); collectionRequest?.abort();
         stopPlayer();
         if (appearance) appearance.destroy();
@@ -1470,7 +1490,8 @@
         searchQuery, searchResults, searchLoading, search, recentSearches,
         onSearchInput, submitSearch, useRecent, removeRecent, recordRecent,
         imageUrl, backdropUrl, heroImageUrl,
-        playerContainer, playerUI, playerTelemetry, playerAlive, playerMode, playItem, playItemId, playSrc, playingItem, playVersions, playMediaSourceId,
+        playerContainer, playerUI, playerTelemetry, playerAlive, playerMode,
+        rateUI, playbackRate: rateUI.playbackRate, ratePending: rateUI.ratePending, rateError: rateUI.rateError, selectPlaybackRate: rateUI.selectPlaybackRate, playItem, playItemId, playSrc, playingItem, playVersions, playMediaSourceId,
         playAudioIndex, audioTracks, subtitleTracks, versionOptions, audioOptions, subtitleOptions,
         previousEpisode, nextEpisode, queueError, retryEpisodeQueue, episodeQueue, episodeQueueLoading, episodeQueuePartial, trackBusy, subtitleBusy, switchVersion, selectAudio, selectSubtitle,
         wasmSubTrack, seekPreview, seekTitle, seekPercent, playerVolume, previewSeek, changeVolume, toggleMute, toggleFullscreen,

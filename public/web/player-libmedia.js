@@ -304,6 +304,7 @@
       // can never replace a measured value with an assumed one.
       this.onState?.({ mode: this.mode, playing: this.playing, time: this.positionTicks / 10000000,
         duration: this.duration, ...extra,
+        playbackRate: this.playbackRate,
         buffered: this._bufferedSnapshot(),
         sourceBitrateMbps: this._sourceBitrateMbps(),
         receiveRate: this._receiveRate() });
@@ -460,8 +461,14 @@
           if (!current()) return;
           this.duration = Number.isFinite(video.duration) ? video.duration : this.duration;
           ready = true;
-          try { await video.play(); }
-          catch (error) { if (error.name !== 'NotAllowedError') { reject(error); return; } }
+          try {
+            if (this.playbackRate !== 1) await this.setPlaybackRate(this.playbackRate);
+            if (!current()) return;
+            await video.play();
+          } catch (error) {
+            if (!current()) return;
+            if (error.name !== 'NotAllowedError') { reject(error); return; }
+          }
           if (current()) resolve();
         }, { once: true, signal });
         video.src = url;
@@ -511,6 +518,10 @@
       if (duration > 0) this.duration = duration;
       await core.play({ audio: true, video: true, subtitle: true });
       if (!current()) return;
+      if (this.playbackRate !== 1) {
+        await this.setPlaybackRate(this.playbackRate);
+        if (!current()) return;
+      }
       // MSE uses HTMLMediaElement.play(), which resolves once playback starts;
       // libmedia's decoder-only firstVideoRendered event is not emitted there.
       if (core.isMSE()) { started = true; resolveFrame(); }
@@ -691,6 +702,75 @@
       this.options.audioIndex = index;
       this.audioError = null;
       return true;
+    }
+
+    get playbackRate() {
+      return this._playbackRate ?? 1;
+    }
+
+    // A vendor write may throw (or read back wrong) after it already changed
+    // the engine. Restore the previous rate at most once on the same engine
+    // that is still current: no await, no retry loop and never a rollback on a
+    // replaced generation. A failed restore reports false instead of pretending
+    // the old rate was re-applied.
+    _restorePlaybackRate(core, video, generation, previous) {
+      const current = () => this._isCurrentEngine(core, video, generation);
+      if (!current()) return false;
+      try {
+        if (core) core.setPlaybackRate(previous);
+        else video.playbackRate = previous;
+        if (!current()) return false;
+        const restored = core ? core.getPlaybackRate() : video.playbackRate;
+        return current() && restored === previous;
+      } catch (error) { return false; }
+    }
+
+    async setPlaybackRate(rate) {
+      this._checkAlive();
+      const allowed = [0.5, 1, 1.25, 1.5, 2];
+      if (typeof rate !== 'number' || !allowed.includes(rate)) {
+        throw new TypeError('不支持的播放速度');
+      }
+      const generation = this._engineGeneration;
+      const core = this.core;
+      const video = this.video;
+      // Fixed API checks run before any engine write.
+      if (!core && !video) throw new Error('播放器尚未就绪');
+      if (core) {
+        if (core.isLive?.()) throw new Error('直播不支持切换播放速度');
+        if (typeof core.setPlaybackRate !== 'function' || typeof core.getPlaybackRate !== 'function') {
+          throw new Error('当前引擎不支持切换播放速度');
+        }
+      }
+      // The vendor setter/getter are synchronous. `previous` is the last
+      // confirmed rate and is only used to undo a partial write.
+      const previous = this.playbackRate;
+      const current = () => this._isCurrentEngine(core, video, generation);
+      let actual;
+      try {
+        if (core) {
+          core.setPlaybackRate(rate);
+          actual = core.getPlaybackRate();
+        } else {
+          video.playbackRate = rate;
+          actual = video.playbackRate;
+        }
+      } catch (error) {
+        if (current()) this._restorePlaybackRate(core, video, generation, previous);
+        throw error;
+      }
+      if (!current()) throw abortError();
+      if (actual !== rate) {
+        // A mismatched readback is not applied state: restore once, but always
+        // keep the fixed diagnostic even when the restore cannot confirm.
+        this._restorePlaybackRate(core, video, generation, previous);
+        throw new Error('无法应用播放速度');
+      }
+      // Only a confirmed request updates the cache; failures keep the last
+      // confirmed rate instead of claiming the requested one.
+      this._playbackRate = actual;
+      this._emitState();
+      return actual;
     }
 
     async play() {

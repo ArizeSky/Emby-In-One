@@ -54,6 +54,7 @@
 
 /* The transparent input keeps its native track overlay above the layers. */
 .eio-seek input.eio-seek-input[type=range] {
+  display: block;
   position: relative;
   z-index: 2;
   width: 100%;

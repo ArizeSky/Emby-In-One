@@ -524,6 +524,17 @@
                             :value="wasmSubTrack" :open="playerUI.openMenu==='subtitle'" :disabled="trackBusy || subtitleBusy"
                             @toggle="playerUI.toggleMenu('subtitle')" @select="selectSubtitle" @close="playerUI.closeMenu()"></eio-track-menu>
 
+            <div class="eio-menu-btn">
+              <button type="button" class="eio-btn eio-btn-sm" :disabled="!playerAlive || ratePending || playerUI.busy || trackBusy"
+                      aria-label="播放倍速" aria-controls="eio-menu-rate" :aria-expanded="playerUI.isMenuOpen('rate') ? 'true' : 'false'"
+                      @click="playerUI.toggleMenu('rate')">{{ ratePending ? '设置中…' : rateError ? '倍速未确认' : ('倍速 ' + playbackRate + '×') }}</button>
+              <div v-if="playerUI.isMenuOpen('rate')" class="eio-menu" id="eio-menu-rate" role="menu" aria-label="播放倍速">
+                <button v-for="rate in [0.5, 1, 1.25, 1.5, 2]" :key="rate" type="button" class="eio-menu-item"
+                        :aria-pressed="!rateError && !ratePending && rate === playbackRate ? 'true' : 'false'"
+                        :disabled="ratePending" @click="selectPlaybackRate(rate)">{{ rate }}×<span v-if="!rateError && !ratePending && rate === playbackRate">✓</span></button>
+              </div>
+              <span v-if="rateError" role="alert" style="color:#f87171;font-size:12px">{{ rateError }}</span>
+            </div>
             <span class="eio-play-spacer"></span>
             <div class="eio-volume">
               <button class="eio-play-btn" :aria-label="playerVolume > 0 ? '静音' : '取消静音'" @click="toggleMute()">
@@ -569,6 +580,7 @@
 <script src="/web/web/theme.js?v=v1.4.4-rc3"></script>
 <script src="/web/web/theme-transport.js?v=v1.4.4-rc3"></script>
 <script src="/web/web/appearance.js?v=v1.4.4-rc3"></script>
+<script src="/web/web/player-rate-ui.js?v=v1.4.4-rc3"></script>
 <script src="/web/web/app.js?v=v1.4.4-rc3"></script>
 </body>
 </html>
