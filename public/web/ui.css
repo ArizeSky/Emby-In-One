@@ -471,6 +471,34 @@ body.eio-web .player-subtitle-canvas { position: absolute; inset: 0; width: 100%
 .eio-play-btn { background: none; border: none; color: #fff; cursor: pointer; width: 44px; height: 44px; display: grid; place-items: center; border-radius: 10px; }
 .eio-play-btn:hover { background: rgba(255, 255, 255, .12); }
 .eio-play-btn:disabled { opacity: .38; cursor: default; }
+
+/* Rate trigger: a text button on the player's dark surface. It opts out of the
+ * page .eio-btn/.eio-btn-sm background (which rendered as a white block) while
+ * every other .eio-play-btn icon button keeps its 44x44 square. Scoped to
+ * .eio-player so page buttons and the icon controls are unaffected. */
+body.eio-web .eio-player .eio-play-btn.eio-play-text-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: auto; min-width: 0; max-width: 100%; height: auto; min-height: 44px;
+  padding: 8px 10px; gap: 6px;
+  background: transparent; border: 1px solid rgba(255, 255, 255, .24);
+  color: #fff; font-size: 13px; font-weight: 600; line-height: 1.2;
+  white-space: nowrap;
+}
+body.eio-web .eio-player .eio-play-btn.eio-play-text-btn:hover {
+  background: rgba(255, 255, 255, .12);
+}
+body.eio-web .eio-player .eio-play-btn.eio-play-text-btn:focus-visible {
+  outline: 2px solid var(--ac-text); outline-offset: 2px;
+}
+body.eio-web .eio-player .eio-play-btn.eio-play-text-btn:disabled,
+body.eio-web .eio-player .eio-play-btn.eio-play-text-btn:disabled:hover {
+  background: transparent; opacity: .5;
+}
+@media (max-width: 480px) {
+  body.eio-web .eio-player .eio-play-btn.eio-play-text-btn {
+    font-size: 12px; padding: 6px 8px;
+  }
+}
 .eio-time { font-size: 13px; color: var(--t2); font-variant-numeric: tabular-nums; }
 .eio-volume { display: flex; align-items: center; gap: 8px; }
 .eio-volume input[type=range] { width: 90px; accent-color: var(--ac-text); }

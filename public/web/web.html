@@ -438,7 +438,7 @@
   </div>
 
   <!-- ===== PLAYER ===== -->
-  <div v-if="navPage==='player'" style="position:fixed;inset:0;background:#000;z-index:900">
+  <div v-if="navPage==='player'" class="eio-player" style="position:fixed;inset:0;background:#000;z-index:900">
     <div class="player-container" ref="playerContainer">
       <!-- The player engine creates and owns its video/subtitle/HDR canvases
            inside this container; the template only adds the control layer. -->
@@ -525,8 +525,8 @@
                             @toggle="playerUI.toggleMenu('subtitle')" @select="selectSubtitle" @close="playerUI.closeMenu()"></eio-track-menu>
 
             <div class="eio-menu-btn">
-              <button type="button" class="eio-btn eio-btn-sm" :disabled="!playerAlive || ratePending || playerUI.busy || trackBusy"
-                      aria-label="播放倍速" aria-controls="eio-menu-rate" :aria-expanded="playerUI.isMenuOpen('rate') ? 'true' : 'false'"
+              <button type="button" class="eio-play-btn eio-play-text-btn" :disabled="!playerAlive || ratePending || playerUI.busy || trackBusy"
+                      aria-label="播放倍速" aria-haspopup="menu" aria-controls="eio-menu-rate" :aria-expanded="playerUI.isMenuOpen('rate') ? 'true' : 'false'"
                       @click="playerUI.toggleMenu('rate')">{{ ratePending ? '设置中…' : rateError ? '倍速未确认' : ('倍速 ' + playbackRate + '×') }}</button>
               <div v-if="playerUI.isMenuOpen('rate')" class="eio-menu" id="eio-menu-rate" role="menu" aria-label="播放倍速">
                 <button v-for="rate in [0.5, 1, 1.25, 1.5, 2]" :key="rate" type="button" class="eio-menu-item"
