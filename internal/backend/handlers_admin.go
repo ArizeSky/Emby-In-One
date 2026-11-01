@@ -103,7 +103,7 @@ func (a *App) handleAdminStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleAdminUpstreamList(w http.ResponseWriter, r *http.Request) {
-	cfg := a.ConfigStore.Snapshot()
+	cfg, activityByIndex := a.loadAdminUpstreamActivityList()
 	clients := a.Upstream.Clients()
 	onlineByIndex := map[int]bool{}
 	for _, client := range clients {
@@ -176,6 +176,7 @@ func (a *App) handleAdminUpstreamList(w http.ResponseWriter, r *http.Request) {
 			"uaIdentityCapturedAt": uaIdentityCapturedAt,
 			"uaBindingMissing":     uaBindingMissing,
 			"uaLibraryUnavailable": uaLibraryUnavailable,
+			"activity":             activityByIndex[index],
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -453,6 +454,9 @@ func (a *App) handleAdminUpstreamDelete(w http.ResponseWriter, r *http.Request) 
 				a.Logger.Errorf("delete upstream %s: remove hidden libraries: %v", serverID, err)
 			}
 		}
+		// Remove the node's viewing summary/policy and every in-memory session,
+		// so a deleted node cannot keep accumulating or expose stale statistics.
+		a.purgeUpstreamActivityServer(serverID)
 	}
 	a.invalidateUpstreamLibraryCache(serverID)
 
@@ -922,6 +926,11 @@ func (a *App) handleAdminUsersDelete(w http.ResponseWriter, r *http.Request) {
 	if a.HiddenLibraries != nil {
 		if err := a.HiddenLibraries.RemoveUser(id); err != nil && a.Logger != nil {
 			a.Logger.Errorf("delete user %s: remove hidden libraries: %v", id, err)
+		}
+	}
+	if a.ThemeStore != nil {
+		if err := a.ThemeStore.DeleteUserPreferences(id); err != nil && a.Logger != nil {
+			a.Logger.Warnf("delete user %s: remove theme preferences: %v", id, err)
 		}
 	}
 	a.Auth.RevokeTokensByUserID(id)

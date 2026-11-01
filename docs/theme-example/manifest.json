@@ -1,0 +1,8 @@
+{
+  "themeApiVersion": 1,
+  "id": "eio-example",
+  "name": "EIO Example Theme",
+  "author": "EIO Project",
+  "description": "Minimal valid theme package used by tests and documentation. It contains no images.",
+  "version": "1.0.0"
+}

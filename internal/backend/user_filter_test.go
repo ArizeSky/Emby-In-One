@@ -56,12 +56,20 @@ func newFilterStub(t *testing.T, items []map[string]any) *filterStubUpstream {
 	return stub
 }
 
-// filterStubPage applies the user-state filters the way the shared upstream account
-// would, then the paging the proxy asked for.
+// filterStubPage applies the ID predicates and the user-state filters the way the
+// shared upstream account would, then the paging the proxy asked for.
+//
+// Ids and ItemIds are separate predicates: a request carrying both must match
+// both (intersection, never union). PersonIds names people, not library items,
+// and is deliberately ignored here.
 func filterStubPage(items []map[string]any, query url.Values) ([]map[string]any, int) {
 	filters := query.Get("Filters")
+	idPredicates := filterStubIDPredicates(query, "Ids", "ItemIds")
 	matching := make([]map[string]any, 0, len(items))
 	for _, item := range items {
+		if !filterStubIDMatches(item, idPredicates) {
+			continue
+		}
 		if filterStubMatches(item, filters, query.Get("ParentId")) {
 			matching = append(matching, item)
 		}
@@ -83,6 +91,49 @@ func filterStubPage(items []map[string]any, query url.Values) ([]map[string]any,
 		}
 	}
 	return matching, total
+}
+
+func filterStubIDPredicates(query url.Values, keys ...string) []map[string]struct{} {
+	predicates := make([]map[string]struct{}, 0, len(keys))
+	for _, key := range keys {
+		raw, present := filterStubQueryValue(query, key)
+		if !present {
+			continue
+		}
+		set := map[string]struct{}{}
+		for _, part := range strings.Split(raw, ",") {
+			if id := strings.TrimSpace(part); id != "" {
+				set[id] = struct{}{}
+			}
+		}
+		predicates = append(predicates, set)
+	}
+	return predicates
+}
+
+// filterStubQueryValue looks a query key up case-insensitively so the stub
+// applies the same predicate regardless of the client's key casing.
+func filterStubQueryValue(query url.Values, key string) (string, bool) {
+	for name, values := range query {
+		if !strings.EqualFold(name, key) || len(values) == 0 {
+			continue
+		}
+		return strings.Join(values, ","), true
+	}
+	return "", false
+}
+
+func filterStubIDMatches(item map[string]any, predicates []map[string]struct{}) bool {
+	if len(predicates) == 0 {
+		return true
+	}
+	id, _ := item["Id"].(string)
+	for _, set := range predicates {
+		if _, ok := set[id]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func filterStubMatches(item map[string]any, filters, parentID string) bool {

@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
-	"path"
 	"strings"
 )
 
@@ -36,7 +35,10 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 	if !selected {
 		return
 	}
-	// Concurrent playback limit check for regular users
+	// Concurrent playback limit check for regular users. The reservation token binds
+	// this PlaybackInfo attempt to its unit so the failure paths below cannot
+	// release a unit a later reservation already replaced (W05).
+	var reservation playbackSlotReservation
 	if limiterUserID, ok := a.playbackLimiterKey(reqCtx, r, resolved.ServerID); ok {
 		var maxConcurrent int
 		for _, u := range a.ConfigStore.Snapshot().Upstream {
@@ -45,7 +47,9 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 				break
 			}
 		}
-		if !a.PlaybackLimiter.TryStart(limiterUserID, resolved.ServerID, r.PathValue("itemId"), maxConcurrent) {
+		var allowed bool
+		reservation, allowed = a.PlaybackLimiter.TryReserve(limiterUserID, resolved.ServerID, r.PathValue("itemId"), maxConcurrent)
+		if !allowed {
 			writeJSON(w, http.StatusTooManyRequests, map[string]any{"message": "已达到最大同时播放数限制"})
 			return
 		}
@@ -62,6 +66,10 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 	var base map[string]any
 	baseServerID := resolved.ServerID
 	allMediaSources := []map[string]any{}
+	// Direct stream URLs are rewritten once the whole candidate set is known, so
+	// the resource registration is atomic and a full store fails the request
+	// instead of silently handing the client an unbound URL.
+	directStreams := []playbackDirectStream{}
 	maxR, blockUnrated := a.parentalPolicyFor(r)
 	restricted := maxR > 0 || blockUnrated
 	_, hasBodySelection := body["MediaSourceId"]
@@ -70,8 +78,8 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 	anyDenied := false
 	anyUnconfirmed := false
 	releaseSlot := func() {
-		if limiterUserID, ok := a.playbackLimiterKey(reqCtx, r, resolved.ServerID); ok {
-			a.PlaybackLimiter.Stop(limiterUserID, resolved.ServerID)
+		if a.PlaybackLimiter != nil {
+			a.PlaybackLimiter.ReleaseReservation(reservation)
 		}
 	}
 	for _, inst := range instances {
@@ -132,28 +140,10 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 				mediaSource["Id"] = virtualMSID
 			}
 			if directURL, ok := mediaSource["DirectStreamUrl"].(string); ok && directURL != "" {
-				// Extract container from URL, stripping query string first
-				// Node.js uses regex /\.([a-z0-9]+)(?:\?|$)/i — path.Ext doesn't stop at '?'
-				cleanURL := directURL
-				if qIdx := strings.IndexByte(cleanURL, '?'); qIdx >= 0 {
-					cleanURL = cleanURL[:qIdx]
-				}
-				container := strings.TrimPrefix(path.Ext(cleanURL), ".")
-				if container == "" {
-					if rawContainer, ok := mediaSource["Container"].(string); ok {
-						container = rawContainer
-					}
-				}
-				if container == "" {
-					container = "mp4"
-				}
-				proxyURL := url.Values{}
-				proxyURL.Set("MediaSourceId", virtualMSID)
-				proxyURL.Set("Static", "true")
-				if reqCtx := requestContextFrom(r.Context()); reqCtx != nil && reqCtx.ProxyToken != "" {
-					proxyURL.Set("api_key", reqCtx.ProxyToken)
-				}
-				mediaSource["DirectStreamUrl"] = "/Videos/" + r.PathValue("itemId") + "/stream." + container + "?" + proxyURL.Encode()
+				// Keep the upstream URL's own path and required query parameters by
+				// binding it to an opaque resource handle; only URLs this proxy can
+				// map onto the item's own stream route are accepted (playback_url.go).
+				directStreams = append(directStreams, planPlaybackDirectStream(mediaSource, directURL, inst.Client, inst.OriginalID))
 			}
 			if transcodingURL, ok := mediaSource["TranscodingUrl"].(string); ok && transcodingURL != "" {
 				delete(mediaSource, "TranscodingUrl")
@@ -230,12 +220,13 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 		if a.Logger != nil {
 			a.Logger.Errorf("PlaybackInfo: all upstream requests failed for itemId=%s", r.PathValue("itemId"))
 		}
-		// Nothing will play, so release the slot TryStart reserved above. Clients retry
-		// PlaybackInfo on failure, and holding the slot kept the user counted against
+		// Nothing will play, so release the unit this request reserved. Clients retry
+		// PlaybackInfo on failure, and holding the unit kept the user counted against
 		// the server's capacity for the full heartbeat timeout while they could not
-		// actually start a stream.
-		if limiterUserID, ok := a.playbackLimiterKey(reqCtx, r, resolved.ServerID); ok {
-			a.PlaybackLimiter.Stop(limiterUserID, resolved.ServerID)
+		// actually start a stream. Releasing by reservation token means a concurrent
+		// later reservation is left untouched.
+		if a.PlaybackLimiter != nil {
+			a.PlaybackLimiter.ReleaseReservation(reservation)
 		}
 		if anyDenied && !anyUnconfirmed {
 			writeJSON(w, http.StatusForbidden, map[string]any{"message": "Content restricted by parental rating"})
@@ -247,10 +238,36 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 	if a.Logger != nil {
 		a.Logger.Debugf("PlaybackInfo: returning %d MediaSources for itemId=%s", len(allMediaSources), r.PathValue("itemId"))
 	}
+	if len(directStreams) > 0 {
+		proxyToken := ""
+		if reqCtx != nil {
+			proxyToken = reqCtx.ProxyToken
+		}
+		playSessionID := queryValue(query, "PlaySessionId")
+		if playSessionID == "" {
+			if raw, ok := body["PlaySessionId"].(string); ok {
+				playSessionID = raw
+			}
+		}
+		if !a.applyPlaybackDirectStreams(w, r.PathValue("itemId"), proxyToken, playSessionID, streamResourceUserID(reqCtx), directStreams) {
+			// Fail closed: capacity pressure is retryable, exposing or
+			// synthesising a different stream target is not.
+			releaseSlot()
+			return
+		}
+	}
 	cfg := a.ConfigStore.Snapshot()
 	// Rewrite top-level fields (excluding MediaSources which were already virtualised per-server above)
 	delete(base, "MediaSources")
 	rewriteResponseIDs(base, baseServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
+	// Bind the unit to the PlaySessionId this response hands to the client, so
+	// only that playback attempt can claim it. Late Started/segment events of the
+	// attempt this reservation replaced still carry the previous PlaySessionId.
+	if a.PlaybackLimiter != nil {
+		if playSessionID, _ := base["PlaySessionId"].(string); playSessionID != "" {
+			a.PlaybackLimiter.BindReservationPlaySession(reservation, playSessionID)
+		}
+	}
 	base["MediaSources"] = make([]any, 0, len(allMediaSources))
 	for _, mediaSource := range privacyPlaybackMediaSources(r, allMediaSources, r.PathValue("itemId")) {
 		base["MediaSources"] = append(base["MediaSources"].([]any), mediaSource)

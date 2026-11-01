@@ -27,7 +27,7 @@ function adminHarness(options = {}) {
     navigator: {},
     document: { createElement: () => ({ click() {}, style: {} }) },
     fetch: (url, opts) => new Promise((resolve, reject) => {
-      seen.push({ url: String(url), signal: opts && opts.signal, method: opts && opts.method, body: opts && opts.body });
+      seen.push({ url: String(url), signal: opts && opts.signal, method: opts && opts.method, body: opts && opts.body, headers: opts && opts.headers });
       const signal = opts && opts.signal;
       // Mirror the browser: an aborted signal rejects the request with an
       // AbortError, before or after it was issued.
@@ -55,11 +55,21 @@ function adminHarness(options = {}) {
   };
   context.window = context;
   vm.createContext(context);
+  // admin.html loads the K4 activity module before admin.js; mirror that order so
+  // the harness exercises the same globals the browser gets. T3 adds the theme
+  // module to the same pre-app.js slot.
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'public', 'admin-activity.js'), 'utf8'), context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'public', 'admin-theme.js'), 'utf8'), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'public', 'admin.js'), 'utf8'), context);
 
   // Instantiate the options-API component far enough for the refresh flow.
   const vm2 = Object.assign(Object.create(null), appOptions.data());
   for (const [name, fn] of Object.entries(appOptions.methods)) vm2[name] = fn.bind(vm2);
+  // Computed properties are getters in Vue; expose them the same way so tests
+  // can read the derived activity view directly.
+  for (const [name, fn] of Object.entries(appOptions.computed || {})) {
+    Object.defineProperty(vm2, name, { get: () => fn.call(vm2), enumerable: true, configurable: true });
+  }
   vm2.$nextTick = fn => Promise.resolve().then(() => fn && fn());
   vm2.$refs = {};
   return { vm: vm2, options: appOptions, seen, context };
@@ -407,4 +417,365 @@ test('editing and saving an existing server preserves separate streaming URLs', 
   assert.deepStrictEqual(Array.from(body.streamingUrls), urls,
     'opening and saving an existing server must preserve its separate streaming URLs');
   if (vm._refreshTimer) clearTimeout(vm._refreshTimer);
+});
+
+// --- Upstream viewing activity (K4) ---------------------------------------
+
+function activityDTO(overrides = {}) {
+  return Object.assign({
+    serverNow: '2025-01-01T00:00:00Z', available: true, state: 'normal',
+    enabled: true, intervalUnit: 'days', intervalValue: 30, minWatchSeconds: 60,
+    revision: 7, lastActivityAt: '2024-12-30T10:00:00Z', lastQualifiedAt: '2024-12-30T09:00:00Z',
+    manualReferenceAt: null, referenceAt: '2024-12-30T09:00:00Z', referenceSource: 'observed',
+    dueAt: '2025-01-29T09:00:00Z', remainingRatio: 0.94,
+  }, overrides);
+}
+
+test('servers page filters/sorts a derived view without touching upstreamList', () => {
+  const h = adminHarness();
+  const vm = h.vm;
+  vm.upstreamList = [
+    { id: 'a', name: 'A', activity: activityDTO({ state: 'normal' }) },
+    { id: 'b', name: 'B', activity: activityDTO({ state: 'overdue', dueAt: '2024-12-01T00:00:00Z' }) },
+    { id: 'c', name: 'C', activity: activityDTO({ state: 'warning' }) },
+  ];
+  const original = vm.upstreamList.map(row => row.id);
+
+  vm.activitySort = 'risk';
+  // activityRows comes from the VM realm module; Array.from re-homes it before
+  // the strict deep compare.
+  assert.deepStrictEqual(Array.from(vm.activityRows.map(row => row.server.id)), ['b', 'c', 'a']);
+  assert.strictEqual(vm.activityReorderEnabled, false);
+
+  vm.activityFilter = 'attention';
+  assert.deepStrictEqual(Array.from(vm.activityRows.map(row => row.server.id)), ['b', 'c']);
+  assert.deepStrictEqual(Array.from(vm.activityRows.map(row => row.index)), [1, 2],
+    'reorder/edit keep using original indexes, not the derived row position');
+
+  vm.activityFilter = 'all';
+  vm.activitySort = 'default';
+  assert.deepStrictEqual(Array.from(vm.activityRows.map(row => row.server.id)), original);
+  assert.strictEqual(vm.activityReorderEnabled, true);
+  assert.deepStrictEqual(vm.upstreamList.map(row => row.id), original,
+    'the source list order must never change for a display-only filter/sort');
+});
+
+test('activity dialog opens from the list and saves with the server revision', async () => {
+  const h = adminHarness({ reply: (url, opts) => {
+    if (url.includes('/activity')) {
+      return opts && opts.method === 'PUT' ? activityDTO({ revision: 8, intervalValue: 45 }) : activityDTO();
+    }
+    return {};
+  } });
+  const vm = h.vm;
+  vm.currentPage = 'servers';
+  vm.openActivity({ id: 's1', name: 'A' });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.strictEqual(vm.activityDialog.serverId, 's1');
+  assert.strictEqual(vm.activityDialog.loaded, true);
+  assert.match(vm.activityDialog.notice || '', /^$/);
+  assert.strictEqual(vm.activityCanSave, true);
+
+  vm.activityDialog.form.intervalValue = 45;
+  await vm.saveActivitySettings();
+  const put = h.seen.find(call => call.method === 'PUT' && call.url.includes('/activity'));
+  assert.ok(put, 'the dialog issued the activity PUT');
+  const body = JSON.parse(put.body);
+  assert.strictEqual(body.expectedRevision, 7);
+  assert.strictEqual(body.intervalValue, 45);
+  assert.strictEqual(vm.activityDialog.form.expectedRevision, 8);
+  assert.strictEqual(vm.activityDialog.savedNotice, '保活设置已保存');
+  assert.ok(h.seen.some(call => call.url.includes('/admin/api/upstream') && !call.url.includes('/activity')),
+    'a successful save refreshes the server list');
+  vm.closeActivity();
+});
+
+test('activity dialog falls back to the row index when a server has no id yet', async () => {
+  const h = adminHarness({ reply: () => activityDTO() });
+  const vm = h.vm;
+  vm.openActivity({ index: 2, name: 'Unpersisted' });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.strictEqual(vm.activityDialog.serverId, 2);
+  assert.ok(h.seen.some(call => call.url.includes('/admin/api/upstream/2/activity')));
+  vm.closeActivity();
+});
+
+test('closing the activity dialog aborts its request and keeps it closed', async () => {
+  const h = adminHarness({ reply: () => ({ __delay: true }) });
+  const vm = h.vm;
+  vm.currentPage = 'servers';
+  vm.openActivity({ id: 's1', name: 'A' });
+  // The GET is issued from a promise microtask; flush once so the recorded call
+  // carries the AbortController signal that closing must abort.
+  await new Promise(resolve => setTimeout(resolve, 0));
+  const call = h.seen.find(entry => entry.url.includes('/activity'));
+  assert.ok(call && call.signal, 'the GET carried an AbortController signal');
+  vm.closeActivity();
+  assert.strictEqual(call.signal.aborted, true);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.strictEqual(vm.activityDialog.open, false);
+  assert.strictEqual(vm.activityDialog.dto, null);
+});
+
+test('leaving the servers page or logging out closes the activity dialog', async () => {
+  const h = adminHarness({ reply: () => activityDTO() });
+  const vm = h.vm;
+  vm.currentPage = 'servers';
+  vm.isLoggedIn = true;
+  vm.openActivity({ id: 's1', name: 'A' });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.strictEqual(vm.activityDialog.open, true);
+
+  h.options.watch.currentPage.call(vm, 'dashboard');
+  assert.strictEqual(vm.activityDialog.open, false, 'leaving the servers page must close the dialog');
+  if (vm._refreshTimer) clearTimeout(vm._refreshTimer);
+
+  vm.currentPage = 'servers';
+  vm.openActivity({ id: 's1', name: 'A' });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  vm.logout();
+  assert.strictEqual(vm.isLoggedIn, false);
+  assert.strictEqual(vm.activityDialog.open, false);
+  assert.strictEqual(vm.activityDialog.dto, null, 'logout must not leave activity data for the next session');
+});
+
+test('a 401 on the activity request logs out and drops the dialog data', async () => {
+  const h = adminHarness({ reply: () => ({ __status: 401, __body: { error: 'unauthorized' } }) });
+  const vm = h.vm;
+  vm.currentPage = 'servers';
+  vm.isLoggedIn = true;
+  vm.openActivity({ id: 's1', name: 'A' });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.strictEqual(vm.isLoggedIn, false);
+  assert.strictEqual(vm.activityDialog.open, false);
+  assert.strictEqual(vm.activityDialog.dto, null);
+});
+
+// --- Theme management wiring (T3) -----------------------------------------
+
+function themePanelCatalog(overrides = {}) {
+  return Object.assign({
+    available: true,
+    themes: [
+      { id: 'builtin', name: '内置主题', builtin: true, enabled: true, available: true, revision: 0, variants: ['light', 'dark'] },
+      {
+        id: 'aurora', name: 'Aurora', author: 'Studio', description: '', version: '1.0.0',
+        hash: 'h1', variants: ['light', 'dark'], builtin: false, enabled: true, available: true,
+        revision: 6, packageBytes: 2048, currentHash: 'h1', previousHash: '',
+        cssUrl: '/web/themes/h1/theme.css', previewUrl: '', backgroundUrl: '',
+        previewLightUrl: '/web/themes/h1/preview.html?mode=light',
+        previewDarkUrl: '/web/themes/h1/preview.html?mode=dark',
+      },
+    ],
+    site: { available: true, themeId: 'builtin', revision: 2 },
+    quota: { maxThemes: 20, usedThemes: 1, maxBytes: 1024, usedBytes: 2048 },
+    health: { available: true, recovered: 0, missing: 0, orphanDirs: 0, orphanBytes: 0, problems: [] },
+  }, overrides);
+}
+
+test('the themes page is in the navigation and the module state is wired', () => {
+  const h = adminHarness();
+  assert.ok(h.vm.pages.some(page => page.id === 'themes'), 'the themes page is missing from the nav');
+  assert.ok(h.vm.themeAdmin, 'admin.js did not create the theme state from EIOAdminTheme');
+  assert.strictEqual(h.vm.themeAdmin.site.themeId, 'builtin');
+  assert.strictEqual(h.vm.themeCanInstall, false, 'an unloaded catalog cannot offer an install');
+});
+
+test('admin api merges ZIP headers but never lets a caller override the admin token', async () => {
+  const h = adminHarness({ reply: () => ({ success: true }) });
+  const file = { size: 16, name: 'a.zip' };
+  await h.vm.api('/admin/api/themes/aurora/package', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/zip', 'If-Match': '7', 'X-Emby-Token': 'attacker' },
+    body: file,
+  });
+  const call = h.seen[0];
+  assert.strictEqual(call.method, 'PUT');
+  assert.strictEqual(call.body, file);
+  assert.strictEqual(call.headers['Content-Type'], 'application/zip', 'the ZIP content type was dropped');
+  assert.strictEqual(call.headers['If-Match'], '7', 'the CAS premise was dropped');
+  assert.strictEqual(call.headers['X-Emby-Token'], 'admin-token', 'opts must not override the stored admin token');
+});
+
+test('a 401 on a theme request logs out and clears the previous admin theme state', async () => {
+  const h = adminHarness({ reply: () => ({ __status: 401, __body: { message: '需要登录' } }) });
+  const vm = h.vm;
+  vm.isLoggedIn = true;
+  vm.themeAdmin.themes = [{ id: 'aurora', name: 'Aurora' }];
+  vm.themeAdmin.loaded = true;
+  await assert.rejects(vm.api('/admin/api/themes'), error => error.status === 401);
+  assert.strictEqual(vm.isLoggedIn, false, 'a 401 must log the admin out');
+  assert.strictEqual(vm.themeAdmin.themes.length, 0, 'login state must not leak the previous admin theme list');
+  assert.strictEqual(vm.themeAdmin.loaded, false);
+});
+
+// --- Delayed 401 session isolation (T3 hardening) -------------------------
+// The theme module guards its own state with generations, but api() sits one
+// layer below it: a request issued with the previous token can settle after a
+// new login and must not log the new session out.
+
+function deferredAdminFetch(h) {
+  const calls = [];
+  h.context.fetch = (url, opts) => new Promise((resolve, reject) => {
+    const entry = { url: String(url), opts, headers: (opts && opts.headers) || {}, resolve };
+    const signal = opts && opts.signal;
+    // Mirror the browser: aborting a still-pending request rejects it.
+    if (signal) signal.addEventListener('abort', () => reject(new DOMException('The operation was aborted.', 'AbortError')));
+    calls.push(entry);
+  });
+  return calls;
+}
+
+function unauthorizedResponse(body = { error: 'unauthorized' }) {
+  return {
+    ok: false, status: 401, headers: { get: () => null },
+    json: async () => body, text: async () => JSON.stringify(body),
+  };
+}
+
+test('a delayed 401 from a previous token must not log the new session out', async () => {
+  const h = adminHarness();
+  const calls = deferredAdminFetch(h);
+  const storage = h.context.localStorage;
+  const vm = h.vm;
+  vm.isLoggedIn = true;
+  vm.themeAdmin.themes = [{ id: 'aurora', name: 'Aurora' }];
+  vm.themeAdmin.loaded = true;
+
+  // The old session's request leaves with the old token...
+  const stale = vm.api('/admin/api/themes');
+  assert.strictEqual(calls.length, 1);
+  assert.strictEqual(calls[0].headers['X-Emby-Token'], 'admin-token');
+
+  // ...then the admin logs in again while it is still in flight.
+  storage.setItem('eio_admin_token', 'fresh-token');
+  calls[0].resolve(unauthorizedResponse());
+
+  // The 401 still reaches the caller, it just must not end the new session.
+  await assert.rejects(stale, error => error.status === 401 && error.message === 'unauthorized');
+  assert.strictEqual(storage.getItem('eio_admin_token'), 'fresh-token', 'the stale 401 cleared the new token');
+  assert.strictEqual(vm.isLoggedIn, true, 'the stale 401 logged the new session out');
+  assert.strictEqual(vm.themeAdmin.themes.length, 1, 'the stale 401 dropped the new session state');
+});
+
+test('a 401 for a request whose signal was aborted must not log out', async () => {
+  const h = adminHarness();
+  const calls = deferredAdminFetch(h);
+  const storage = h.context.localStorage;
+  const vm = h.vm;
+  vm.isLoggedIn = true;
+  const controller = new AbortController();
+  const pending = vm.api('/admin/api/themes', { signal: controller.signal });
+  assert.strictEqual(calls.length, 1);
+
+  // The response was already on the wire when the caller cancelled: fetch
+  // still settles, but api() must treat it as a leftover.
+  calls[0].resolve(unauthorizedResponse());
+  controller.abort();
+
+  await assert.rejects(pending, error => error.status === 401);
+  assert.strictEqual(storage.getItem('eio_admin_token'), 'admin-token', 'an aborted 401 cleared the token');
+  assert.strictEqual(vm.isLoggedIn, true, 'an aborted request must not end the session');
+});
+
+test('a 401 on the current token still ends the session and clears theme and activity state', async () => {
+  const h = adminHarness({ reply: () => ({ __status: 401, __body: { error: 'unauthorized' } }) });
+  const vm = h.vm;
+  const storage = h.context.localStorage;
+  vm.isLoggedIn = true;
+  vm.themeAdmin.themes = [{ id: 'aurora', name: 'Aurora' }];
+  vm.themeAdmin.loaded = true;
+  vm.themeAdmin.dialog = { kind: 'install' };
+  vm.activityDialog.open = true;
+  vm.activityDialog.loaded = true;
+  vm.activityDialog.dto = { serverName: 'A' };
+
+  await assert.rejects(vm.api('/admin/api/themes'), error => error.status === 401 && error.message === 'unauthorized');
+  assert.strictEqual(storage.getItem('eio_admin_token'), null, 'the rejected token must be cleared');
+  assert.strictEqual(vm.isLoggedIn, false, 'a current 401 must still log the admin out');
+  assert.strictEqual(vm.themeAdmin.themes.length, 0, 'the previous admin theme list must not leak');
+  assert.strictEqual(vm.themeAdmin.loaded, false);
+  assert.strictEqual(vm.themeAdmin.dialog, null);
+  assert.strictEqual(vm.activityDialog.open, false);
+  assert.strictEqual(vm.activityDialog.dto, null);
+});
+
+test('leaving the themes page aborts its refresh and closes dialog/preview', async () => {
+  const h = adminHarness({ reply: () => ({ __delay: true }) });
+  const vm = h.vm;
+  vm.currentPage = 'themes';
+  const pending = vm.themeRefresh();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  const call = h.seen.find(entry => entry.url === '/admin/api/themes');
+  assert.ok(call && call.signal, 'the theme refresh carried an AbortController signal');
+
+  vm.themeOpenUpload();
+  vm.themeAdmin.preview = { themeId: 'aurora', name: 'Aurora', mode: 'light', lightUrl: '/web/themes/h1/preview.html?mode=light', darkUrl: '' };
+  h.options.watch.currentPage.call(vm, 'dashboard');
+  assert.strictEqual(call.signal.aborted, true, 'leaving the page must abort the in-flight theme refresh');
+  assert.strictEqual(vm.themeAdmin.dialog, null);
+  assert.strictEqual(vm.themeAdmin.preview, null);
+  if (vm._refreshTimer) clearTimeout(vm._refreshTimer);
+  await pending;
+});
+
+test('theme upload delegates through admin.js with the ZIP body and headers', async () => {
+  const uploaded = Object.assign(themePanelCatalog().themes[1], { revision: 7 });
+  const h = adminHarness({ reply: (url, opts) => {
+    if (url === '/admin/api/themes' && opts && opts.method === 'POST') return uploaded;
+    if (url === '/admin/api/themes') return themePanelCatalog({ themes: [themePanelCatalog().themes[0], uploaded], quota: { maxThemes: 20, usedThemes: 1, maxBytes: 1024, usedBytes: 4096 } });
+    return {};
+  } });
+  const vm = h.vm;
+  vm.currentPage = 'themes';
+  await vm.themeRefresh();
+  assert.strictEqual(vm.themeAdmin.themes.length, 2);
+  assert.strictEqual(vm.themeCanInstall, true);
+
+  vm.themeOpenUpload();
+  const file = { size: 64, name: 'aurora.zip' };
+  vm.themeSelectFile({ target: { files: [file] } });
+  assert.strictEqual(vm.themeDialogReady, true, 'a valid ZIP must enable the install button');
+  await vm.themeSubmit();
+
+  const post = h.seen.find(entry => entry.url === '/admin/api/themes' && entry.method === 'POST');
+  assert.ok(post, 'the install did not reach the admin API');
+  assert.strictEqual(post.headers['Content-Type'], 'application/zip');
+  assert.strictEqual(post.headers['X-Emby-Token'], 'admin-token');
+  assert.strictEqual(post.headers['If-Match'], undefined);
+  assert.strictEqual(post.body, file);
+  assert.strictEqual(vm.themeAdmin.dialog, null);
+  assert.ok(vm.themeAdmin.themes.some(theme => theme.id === 'aurora' && theme.revision === 7));
+});
+
+test('theme update sends the row revision as If-Match through the panel API', async () => {
+  const updated = Object.assign(themePanelCatalog().themes[1], { revision: 7 });
+  let catalogServed = false;
+  const h = adminHarness({ reply: (url, opts) => {
+    if (url.includes('/package') && opts && opts.method === 'PUT') {
+      catalogServed = true;
+      return updated;
+    }
+    if (url === '/admin/api/themes') {
+      return catalogServed
+        ? themePanelCatalog({ themes: [themePanelCatalog().themes[0], updated] })
+        : themePanelCatalog();
+    }
+    return {};
+  } });
+  const vm = h.vm;
+  vm.currentPage = 'themes';
+  await vm.themeRefresh();
+  const row = vm.themeAdmin.themes.find(theme => theme.id === 'aurora');
+  assert.ok(row);
+  assert.strictEqual(vm.themeOpenUpdate(row), true);
+  vm.themeSelectFile({ target: { files: [{ size: 64, name: 'aurora.zip' }] } });
+  await vm.themeSubmit();
+
+  const put = h.seen.find(entry => entry.method === 'PUT' && entry.url === '/admin/api/themes/aurora/package');
+  assert.ok(put, 'the update did not reach the package endpoint');
+  assert.strictEqual(put.headers['If-Match'], '6');
+  assert.strictEqual(put.headers['Content-Type'], 'application/zip');
+  assert.strictEqual(vm.themeAdmin.dialog, null);
+  assert.strictEqual(vm.themeAdmin.themes.find(theme => theme.id === 'aurora').revision, 7);
 });

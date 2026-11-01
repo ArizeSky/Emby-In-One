@@ -115,13 +115,13 @@ func (a *App) translateSessionBodyIDs(body map[string]any) (string, bool) {
 // value, while an explicit 0 is a real position — rewind-to-start and the
 // end-of-playback reset both rely on it. Late events from a superseded
 // session are identified and dropped instead of overwriting newer state.
-func (a *App) recordSessionToWatchStore(r *http.Request, virtualItemID string, body map[string]any, serverID string, isStopped bool) {
+func (a *App) recordSessionToWatchStore(r *http.Request, virtualItemID string, body map[string]any, serverID string, isStopped bool) bool {
 	if a.WatchStore == nil || virtualItemID == "" {
-		return
+		return false
 	}
 	reqCtx := requestContextFrom(r.Context())
 	if reqCtx == nil || reqCtx.ProxyUser == nil || reqCtx.ProxyUser.Role == "admin" {
-		return
+		return false
 	}
 	userID := reqCtx.ProxyUser.UserID
 
@@ -141,7 +141,7 @@ func (a *App) recordSessionToWatchStore(r *http.Request, virtualItemID string, b
 		if a.Logger != nil {
 			a.Logger.Debugf("Session event for %s belongs to a superseded session; dropped", virtualItemID)
 		}
-		return
+		return false
 	}
 
 	positionRaw, hasPositionField := numericInt64(body["PositionTicks"])
@@ -193,7 +193,9 @@ func (a *App) recordSessionToWatchStore(r *http.Request, virtualItemID string, b
 		if a.Logger != nil {
 			a.Logger.Warnf("WatchStore record error: %s", redactURLInError(err))
 		}
+		return false
 	}
+	return true
 }
 
 // sessionIdentityID picks the strongest session identity a playback event
@@ -387,6 +389,53 @@ func asBodyMap(payload any) (map[string]any, bool) {
 	return body, ok
 }
 
+// applySessionEvent applies the concurrency-slot ownership rules for one
+// playback session event and reports what the caller may do with it.
+//
+// The slot decision is taken here rather than inside recordSessionToWatchStore
+// because it must hold even when the local watch store is absent, disabled or
+// rejects the write (W05). Permission, server attribution and identity checks
+// stay in the handlers: this helper only runs for an event that was already
+// attributed to a server.
+func (a *App) applySessionEvent(r *http.Request, serverID, virtualItemID string, identity playbackSessionIdentity, kind playbackEventKind) playbackSessionVerdict {
+	if a.PlaybackLimiter == nil {
+		return playbackSessionVerdict{LocalProgress: true}
+	}
+	reqCtx := requestContextFrom(r.Context())
+	if reqCtx == nil || reqCtx.ProxyUser == nil {
+		return playbackSessionVerdict{LocalProgress: true}
+	}
+	userID := reqCtx.ProxyUser.UserID
+	switch kind {
+	case playbackEventStarted:
+		return a.PlaybackLimiter.ClaimStarted(userID, serverID, virtualItemID, identity)
+	case playbackEventProgress:
+		return a.PlaybackLimiter.TouchProgress(userID, serverID, virtualItemID, identity)
+	default:
+		return a.PlaybackLimiter.StoppedRelease(userID, serverID, virtualItemID, identity)
+	}
+}
+
+// finishStoppedSession closes out a Stopped event locally: the concurrency unit
+// (through the ownership check) and, when the event may be attributed to the
+// live session, the final local progress.
+//
+// It is used on every path whose caller was already authenticated and
+// attributed to a server, including a preparation failure, an upstream refusal
+// and an offline upstream (W06). A verified stop must not strand a unit or lose
+// its last position, while an event that cannot prove ownership leaves the unit
+// to the heartbeat timeout instead of deleting it blindly.
+func (a *App) finishStoppedSession(r *http.Request, virtualItemID, serverID string, body map[string]any, identity playbackSessionIdentity, recordProgress bool) playbackSessionVerdict {
+	verdict := a.applySessionEvent(r, serverID, virtualItemID, identity, playbackEventStopped)
+	if recordProgress && verdict.LocalProgress {
+		a.recordSessionToWatchStore(r, virtualItemID, body, serverID, true)
+	}
+	if verdict.Tracked && !verdict.Release && a.Logger != nil {
+		a.Logger.Debugf("Stopped event for %s did not own the playback slot on server %s; slot kept until heartbeat expiry", virtualItemID, serverID)
+	}
+	return verdict
+}
+
 func (a *App) handleSessionPlaying(w http.ResponseWriter, r *http.Request) {
 	payload, err := decodeOptionalJSON(r)
 	if err != nil {
@@ -399,6 +448,7 @@ func (a *App) handleSessionPlaying(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	virtualItemID, _ := body["ItemId"].(string) // capture before translation
+	identity := playbackSessionIdentityFromBody(body)
 	serverID, found := a.translateSessionBodyIDs(body)
 	if !found {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "Cannot determine target server"})
@@ -413,11 +463,16 @@ func (a *App) handleSessionPlaying(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]any{"message": "Server not found"})
 		return
 	}
+	// Capture receipt order and the account scope before the request leaves the
+	// process; statistics are only written for a confirmed 2xx.
+	activityEvent := a.beginUpstreamActivityEvent(r, serverID, client, body)
+	confirmed := false
 	if err := a.forwardNoContent(r, client, http.MethodPost, "/Sessions/Playing", nil, body); err != nil {
 		// A preparation failure means the request never left the process, so the
 		// client gets the preparation status and no local progress is recorded for
 		// a play event that was never announced upstream.
 		if status, ok := preparationErrorStatus(err); ok {
+			a.discardUpstreamActivityEvent(activityEvent)
 			writeJSON(w, status, preparationErrorBody(err))
 			return
 		}
@@ -430,23 +485,32 @@ func (a *App) handleSessionPlaying(w http.ResponseWriter, r *http.Request) {
 			a.Logger.Warnf("Sessions/Playing upstream error (server %s): %v", serverID, redactURLInError(err))
 		}
 		if _, refused := asUpstreamHTTPError(err); refused {
+			a.discardUpstreamActivityEvent(activityEvent)
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
+	} else {
+		confirmed = true
 	}
-	a.recordSessionToWatchStore(r, virtualItemID, body, serverID, false)
+	verdict := a.applySessionEvent(r, serverID, virtualItemID, identity, playbackEventStarted)
+	if verdict.LocalProgress {
+		a.recordSessionToWatchStore(r, virtualItemID, body, serverID, false)
+	}
 	// Register the session identity so later progress/stop events that still
-	// carry an older session are recognised as superseded (S9).
-	if sessionID := sessionIdentityID(body); sessionID != "" {
-		if reqCtx := requestContextFrom(r.Context()); reqCtx != nil && reqCtx.ProxyUser != nil {
-			a.sessionEvents.StartSession(reqCtx.ProxyUser.UserID, virtualItemID, sessionID)
+	// carry an older session are recognised as superseded (S9). Only a Started
+	// the limiter permitted may become the tracked live session: a refused
+	// started belongs to the attempt a newer claim superseded, and registering
+	// it would make the accepted attempt's own progress look superseded, so the
+	// local watch store would silently stop receiving its position. Without a
+	// tracked unit nothing is refused, which keeps the legacy behaviour.
+	if verdict.Accepted || !verdict.Tracked {
+		if sessionID := sessionIdentityID(body); sessionID != "" {
+			if reqCtx := requestContextFrom(r.Context()); reqCtx != nil && reqCtx.ProxyUser != nil {
+				a.sessionEvents.StartSession(reqCtx.ProxyUser.UserID, virtualItemID, sessionID)
+			}
 		}
 	}
-	if a.PlaybackLimiter != nil {
-		if reqCtx := requestContextFrom(r.Context()); reqCtx != nil && reqCtx.ProxyUser != nil && reqCtx.ProxyUser.Role != "admin" {
-			a.PlaybackLimiter.Heartbeat(reqCtx.ProxyUser.UserID, serverID)
-		}
-	}
+	a.recordUpstreamActivityEvent(r, activityEvent, serverID, virtualItemID, body, playbackEventStarted, confirmed, verdict)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -462,6 +526,7 @@ func (a *App) handleSessionPlayingProgress(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	virtualItemID, _ := body["ItemId"].(string)
+	identity := playbackSessionIdentityFromBody(body)
 	serverID, found := a.translateSessionBodyIDs(body)
 	if !found {
 		w.WriteHeader(http.StatusNoContent)
@@ -476,11 +541,15 @@ func (a *App) handleSessionPlayingProgress(w http.ResponseWriter, r *http.Reques
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
+	// Statistics are bound to the account and receipt order at send time.
+	activityEvent := a.beginUpstreamActivityEvent(r, serverID, client, body)
+	confirmed := false
 	if err := a.forwardNoContent(r, client, http.MethodPost, "/Sessions/Playing/Progress", nil, body); err != nil {
 		// Progress used to swallow every error as 204. A preparation failure is the
 		// client's or the configuration's, and reporting it is what makes the
 		// failure visible instead of looking like a successful report.
 		if status, ok := preparationErrorStatus(err); ok {
+			a.discardUpstreamActivityEvent(activityEvent)
 			writeJSON(w, status, preparationErrorBody(err))
 			return
 		}
@@ -491,16 +560,18 @@ func (a *App) handleSessionPlayingProgress(w http.ResponseWriter, r *http.Reques
 			a.Logger.Warnf("Sessions/Playing/Progress upstream error (server %s): %v", serverID, redactURLInError(err))
 		}
 		if _, refused := asUpstreamHTTPError(err); refused {
+			a.discardUpstreamActivityEvent(activityEvent)
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
+	} else {
+		confirmed = true
 	}
-	a.recordSessionToWatchStore(r, virtualItemID, body, serverID, false)
-	if a.PlaybackLimiter != nil {
-		if reqCtx := requestContextFrom(r.Context()); reqCtx != nil && reqCtx.ProxyUser != nil && reqCtx.ProxyUser.Role != "admin" {
-			a.PlaybackLimiter.Heartbeat(reqCtx.ProxyUser.UserID, serverID)
-		}
+	verdict := a.applySessionEvent(r, serverID, virtualItemID, identity, playbackEventProgress)
+	if verdict.LocalProgress {
+		a.recordSessionToWatchStore(r, virtualItemID, body, serverID, false)
 	}
+	a.recordUpstreamActivityEvent(r, activityEvent, serverID, virtualItemID, body, playbackEventProgress, confirmed, verdict)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -516,6 +587,7 @@ func (a *App) handleSessionPlayingStopped(w http.ResponseWriter, r *http.Request
 		return
 	}
 	virtualItemID, _ := body["ItemId"].(string)
+	identity := playbackSessionIdentityFromBody(body)
 	serverID, found := a.translateSessionBodyIDs(body)
 	if !found {
 		w.WriteHeader(http.StatusNoContent)
@@ -527,45 +599,42 @@ func (a *App) handleSessionPlayingStopped(w http.ResponseWriter, r *http.Request
 	}
 	client := a.Upstream.ClientByID(serverID)
 	if client == nil || !client.IsOnline() {
+		// The upstream cannot hear the stop, but the playback did end. Finish it
+		// locally so the concurrency unit is not stranded until the heartbeat
+		// timeout and the last position is not lost (W06).
+		a.finishStoppedSession(r, virtualItemID, serverID, body, identity, true)
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
+	activityEvent := a.beginUpstreamActivityEvent(r, serverID, client, body)
+	confirmed := false
 	if err := a.forwardNoContent(r, client, http.MethodPost, "/Sessions/Playing/Stopped", nil, body); err != nil {
 		if status, ok := preparationErrorStatus(err); ok {
-			// The stop still has to release the concurrency slot and record the local
-			// progress: leaving them behind would strand a playback permit.
-			a.recordSessionToWatchStore(r, virtualItemID, body, serverID, true)
-			if a.PlaybackLimiter != nil {
-				if reqCtx := requestContextFrom(r.Context()); reqCtx != nil && reqCtx.ProxyUser != nil && reqCtx.ProxyUser.Role != "admin" {
-					a.PlaybackLimiter.Stop(reqCtx.ProxyUser.UserID, serverID)
-				}
-			}
+			// The stop still has to release the concurrency unit and record the
+			// local progress: leaving them behind would strand a playback permit.
+			a.discardUpstreamActivityEvent(activityEvent)
+			a.finishStoppedSession(r, virtualItemID, serverID, body, identity, true)
 			writeJSON(w, status, preparationErrorBody(err))
 			return
 		}
 		if _, refused := asUpstreamHTTPError(err); refused {
 			// An explicit refusal means the stop was not registered upstream, so the
-			// local progress is not written either. The concurrency slot is still
-			// released: the client did stop playing, and holding the slot would leak
-			// it. The client keeps the fire-and-forget 204.
+			// local progress is not written either. The concurrency unit is still
+			// released when this event owns it: the client did stop playing, and
+			// holding the unit would leak it. The client keeps the fire-and-forget 204.
+			a.discardUpstreamActivityEvent(activityEvent)
 			if a.Logger != nil {
 				a.Logger.Warnf("Sessions/Playing/Stopped upstream error (server %s): %v", serverID, redactURLInError(err))
 			}
-			if a.PlaybackLimiter != nil {
-				if reqCtx := requestContextFrom(r.Context()); reqCtx != nil && reqCtx.ProxyUser != nil && reqCtx.ProxyUser.Role != "admin" {
-					a.PlaybackLimiter.Stop(reqCtx.ProxyUser.UserID, serverID)
-				}
-			}
+			a.finishStoppedSession(r, virtualItemID, serverID, body, identity, false)
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
+	} else {
+		confirmed = true
 	}
-	a.recordSessionToWatchStore(r, virtualItemID, body, serverID, true)
-	if a.PlaybackLimiter != nil {
-		if reqCtx := requestContextFrom(r.Context()); reqCtx != nil && reqCtx.ProxyUser != nil && reqCtx.ProxyUser.Role != "admin" {
-			a.PlaybackLimiter.Stop(reqCtx.ProxyUser.UserID, serverID)
-		}
-	}
+	verdict := a.finishStoppedSession(r, virtualItemID, serverID, body, identity, true)
+	a.recordUpstreamActivityEvent(r, activityEvent, serverID, virtualItemID, body, playbackEventStopped, confirmed, verdict)
 	w.WriteHeader(http.StatusNoContent)
 }
 

@@ -454,8 +454,14 @@ func (a *App) resolveStreamTarget(w http.ResponseWriter, r *http.Request, resolv
 }
 
 // switchPlaybackSlot enforces the concurrency limit on the server that will serve
-// the stream and releases the previously held slot. Writes 429 and returns false
+// the stream and releases the previously held unit. Writes 429 and returns false
 // when the target server is already at its limit.
+//
+// This runs for every per-resource stream request, so the target unit must be an
+// idempotent touch: bumping its version per segment would invalidate the Started
+// claim. The previous unit is released only after the ownership/version checks
+// in ReleaseSwitchedSource, because a late segment of an older playback must not
+// delete a newer session's unit on the server it switched away from.
 func (a *App) switchPlaybackSlot(w http.ResponseWriter, r *http.Request, targetID, previousID string, virtualItemID string) bool {
 	reqCtx := requestContextFrom(r.Context())
 	if a.PlaybackLimiter == nil || reqCtx == nil || reqCtx.ProxyUser == nil || reqCtx.ProxyUser.Role == "admin" {
@@ -474,11 +480,15 @@ func (a *App) switchPlaybackSlot(w http.ResponseWriter, r *http.Request, targetI
 	if !found {
 		return true
 	}
-	if !a.PlaybackLimiter.TryStart(reqCtx.ProxyUser.UserID, targetID, virtualItemID, maxConcurrent) {
+	identity := playbackSessionIdentityFromPlaySessionID(queryValue(r.URL.Query(), "PlaySessionId"))
+	previousVersion, ok := a.PlaybackLimiter.EnsureStreamSlot(reqCtx.ProxyUser.UserID, targetID, virtualItemID, maxConcurrent, identity)
+	if !ok {
 		writeJSON(w, http.StatusTooManyRequests, map[string]any{"message": "已达到最大同时播放数限制"})
 		return false
 	}
-	a.PlaybackLimiter.Stop(reqCtx.ProxyUser.UserID, previousID)
+	if targetID != previousID {
+		a.PlaybackLimiter.ReleaseSwitchedSource(reqCtx.ProxyUser.UserID, previousID, virtualItemID, identity, previousVersion)
+	}
 	return true
 }
 

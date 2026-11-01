@@ -18,6 +18,7 @@
     name: 'EioPosterCard',
     props: {
       item: { type: Object, required: true },
+      title: { type: String, default: '' },
       imageSrc: { type: String, default: '' },
       detailHref: { type: String, default: '' },
       showProgress: { type: Boolean, default: false },
@@ -27,7 +28,8 @@
     data() { return { failed: false }; },
     watch: { imageSrc() { this.failed = false; } },
     computed: {
-      initial() { return String(this.item.Name || '?').trim().charAt(0) || '?'; },
+      displayTitle() { return this.title || String(this.item.Name || ''); },
+      initial() { return String(this.displayTitle || '?').trim().charAt(0) || '?'; },
       ratio() {
         const duration = this.item.RunTimeTicks || 0;
         if (!duration) return 0;
@@ -39,17 +41,17 @@
     },
     template: `
       <article class="eio-card">
-        <a class="eio-card-link" :href="detailHref" :aria-label="item.Name"></a>
+        <a class="eio-card-link" :href="detailHref" :aria-label="displayTitle"></a>
         <div class="eio-card-media">
-          <img v-if="imageSrc && !failed" :src="imageSrc" :alt="item.Name" loading="lazy" @error="failed = true">
+          <img v-if="imageSrc && !failed" :src="imageSrc" :alt="displayTitle" loading="lazy" @error="failed = true">
           <div v-else class="eio-card-placeholder">{{ initial }}</div>
           <span v-if="played" class="eio-card-played">&#10003;</span>
-          <button class="eio-card-play" type="button" :aria-label="'播放 ' + item.Name" @click="$emit('play', item)">
+          <button class="eio-card-play" type="button" :aria-label="'播放 ' + displayTitle" @click="$emit('play', item)">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
           </button>
         </div>
         <div class="eio-card-body">
-          <div class="eio-card-title" :title="item.Name">{{ item.Name }}</div>
+          <div class="eio-card-title" :title="displayTitle">{{ displayTitle }}</div>
           <div v-if="sub" class="eio-card-sub">{{ sub }}</div>
           <div v-else-if="item.ProductionYear" class="eio-card-sub">{{ item.ProductionYear }}</div>
           <div v-if="showBar" class="eio-card-progress"><i :style="{ width: (ratio * 100) + '%' }"></i></div>

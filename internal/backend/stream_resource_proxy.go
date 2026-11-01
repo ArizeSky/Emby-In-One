@@ -158,6 +158,7 @@ func writeStreamResourceRewriteError(w http.ResponseWriter, err error) {
 // serveStreamResource re-checks the bound user, live server grant and actual
 // instance rating for every authenticated resource request.
 func (a *App) serveStreamResource(w http.ResponseWriter, r *http.Request, virtualItemID, opaqueID string) {
+	opaqueID = streamResourceHandleID(opaqueID)
 	reqCtx := requestContextFrom(r.Context())
 	entry, ok := a.StreamResources.peek(opaqueID)
 	if !ok {
@@ -201,6 +202,13 @@ func (a *App) serveStreamResource(w http.ResponseWriter, r *http.Request, virtua
 	defer resp.Body.Close()
 	contentType := resp.Header.Get("Content-Type")
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 && isPlaylistResponse(contentType, entry.ResourceURL) {
+		if r.Method == http.MethodHead {
+			// HEAD must answer with the manifest headers only; the body is never
+			// buffered or rewritten downstream.
+			copyStreamResponseHeaders(w, resp)
+			w.WriteHeader(resp.StatusCode)
+			return
+		}
 		body, rerr := io.ReadAll(io.LimitReader(resp.Body, maxHLSManifestSize+1))
 		if rerr != nil || len(body) > maxHLSManifestSize {
 			w.WriteHeader(http.StatusBadGateway)
@@ -224,8 +232,14 @@ func (a *App) serveStreamResource(w http.ResponseWriter, r *http.Request, virtua
 		}
 		storeHLSSegmentPositions(entry.TimelineSession, "", rewritten)
 		w.Header().Set("Content-Type", "application/x-mpegURL")
+		w.Header().Del("Content-Length")
 		w.WriteHeader(resp.StatusCode)
 		_, _ = io.WriteString(w, rewritten)
+		return
+	}
+	if r.Method == http.MethodHead {
+		copyStreamResponseHeaders(w, resp)
+		w.WriteHeader(resp.StatusCode)
 		return
 	}
 	resourceURL, _ := url.Parse(entry.ResourceURL)
@@ -248,11 +262,55 @@ func (a *App) serveStreamResource(w http.ResponseWriter, r *http.Request, virtua
 	_, _ = io.Copy(w, resp.Body)
 }
 
+// streamResourceHandleID strips the cosmetic extension suffix from a resource
+// route. The suffix exists only so clients can sniff the container; the opaque
+// handle itself is hex, so a trailing safe extension is never part of it.
+func streamResourceHandleID(raw string) string {
+	if dot := strings.LastIndexByte(raw, '.'); dot > 0 {
+		if sanitizeStreamExtension(raw[dot+1:]) != "" {
+			return raw[:dot]
+		}
+	}
+	return raw
+}
+
+// fetchResourceRedirectTarget is the method-preserving variant of
+// UpstreamClient.fetchRedirectTarget: resource requests keep HEAD and Range
+// semantics instead of always issuing a GET. Credential rules are identical —
+// the upstream's own token is attached only on a canonical self-origin hop.
+func (c *UpstreamClient) fetchResourceRedirectTarget(ctx context.Context, method, rawURL string, extraHeaders http.Header) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, method, rawURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	for key, values := range extraHeaders {
+		for _, value := range values {
+			req.Header.Add(key, value)
+		}
+	}
+	auth := c.authSnapshot()
+	if auth.AccessToken != "" && c.isSelfURL(rawURL) {
+		req.Header.Set("X-Emby-Token", auth.AccessToken)
+	}
+	client := &http.Client{Transport: c.transport, Timeout: 0, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, doErr := client.Do(req)
+	if doErr != nil {
+		return nil, &redactedError{err: doErr}
+	}
+	return resp, nil
+}
+
 // fetchResourceFollowingRedirects follows bounded redirects and only attaches
 // upstream credentials on same-origin hops. Range headers are preserved.
 func (a *App) fetchResourceFollowingRedirects(r *http.Request, client *UpstreamClient, rawURL string) (*http.Response, error) {
 	headers := streamRequestHeaders(r)
-	resp, err := client.fetchRedirectTarget(r.Context(), rawURL, headers)
+	method := http.MethodGet
+	if r.Method == http.MethodHead {
+		// A HEAD must reach the upstream as HEAD; sending a GET on behalf of a
+		// HEAD client and closing its body unread wastes the full response.
+		method = http.MethodHead
+	}
+	resp, err := client.fetchResourceRedirectTarget(r.Context(), method, rawURL, headers)
 	if err != nil {
 		return nil, err
 	}
@@ -269,7 +327,7 @@ func (a *App) fetchResourceFollowingRedirects(r *http.Request, client *UpstreamC
 		if rerr != nil || abs == nil {
 			break
 		}
-		followed, ferr := client.fetchRedirectTarget(r.Context(), abs.String(), headers)
+		followed, ferr := client.fetchResourceRedirectTarget(r.Context(), method, abs.String(), headers)
 		if ferr != nil {
 			resp.Body.Close()
 			return nil, ferr

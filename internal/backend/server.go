@@ -25,15 +25,35 @@ type App struct {
 	UserStore       *UserStore
 	WatchStore      *WatchStore
 	HiddenLibraries *HiddenLibraryStore
-	libraryCache    *upstreamLibraryCache
-	PlaybackLimiter *PlaybackLimiter
-	StreamResources *streamResourceStore
+	// UpstreamActivity persists per-server confirmed playback summaries. It is
+	// nil when the shared SQLite database or the schema is unavailable; every
+	// call site stays nil-safe and never turns that into "disabled".
+	UpstreamActivity *UpstreamActivityStore
+	// ThemeStore owns the /web theme catalog, the anonymous site default and
+	// per-user appearance preferences. It is nil when the shared SQLite handle
+	// or the resource root is unusable; handlers stay nil-safe, /web falls back
+	// to the builtin theme and writes report 503 instead of a fake success.
+	ThemeStore *ThemeStore
+	// activityTracker owns the bounded in-memory session accumulation, and the
+	// scope/policy/health helpers are safe on their zero value.
+	activityTracker  *upstreamActivityTracker
+	activityScopes   upstreamActivityScopeGuard
+	activityPolicies upstreamActivityPolicyCache
+	activityHealth   upstreamActivityHealth
+	libraryCache     *upstreamLibraryCache
+	PlaybackLimiter  *PlaybackLimiter
+	StreamResources  *streamResourceStore
 	// sessionEvents tracks which playback session is live for (user, item), so
 	// a late event from a superseded session cannot overwrite newer watch
 	// state. Nil in minimal test apps: all methods are nil-safe.
 	sessionEvents  *sessionEventTracker
 	loginLimiter   loginRateLimiter
 	noticeThrottle noticeThrottle
+	// catalogSnapshots is this App's bounded, resumable raw catalog cache.
+	// The zero value is ready to use; it owns no goroutine and never outlives
+	// the App. Raw prefixes are cloned on the way out, so merge/parental code
+	// cannot poison later requests.
+	catalogSnapshots catalogSnapshotStore
 	// adminMutationMu serializes every handler that reads, validates and then
 	// persists the config or the UA library, so two admin writes cannot each
 	// base their change on a stale snapshot and overwrite one another.
@@ -90,6 +110,8 @@ func NewApp() (*App, error) {
 	var userStore *UserStore
 	var watchStore *WatchStore
 	var hiddenLibraries *HiddenLibraryStore
+	var upstreamActivity *UpstreamActivityStore
+	var themeStore *ThemeStore
 	if db := idStore.DB(); db != nil {
 		us, err := NewUserStore(db, logger)
 		if err != nil {
@@ -109,6 +131,21 @@ func NewApp() (*App, error) {
 		} else {
 			hiddenLibraries = hls
 		}
+		as, err := NewUpstreamActivityStore(db)
+		if err != nil {
+			logger.Warnf("UpstreamActivityStore init failed: %v (upstream viewing statistics unavailable)", err)
+		} else {
+			upstreamActivity = as
+		}
+		// The theme store shares the IDStore-owned SQLite handle and never
+		// opens or closes it. A failure degrades /web to the builtin theme;
+		// it must not take the rest of the application down.
+		ts, err := NewThemeStore(cfg.DataDir, db)
+		if err != nil {
+			logger.Warnf("ThemeStore init failed: %v (/web custom themes disabled, builtin theme remains available)", err)
+		} else {
+			themeStore = ts
+		}
 	}
 
 	// Created here, after every early return, so no error path can leak it: the
@@ -116,26 +153,33 @@ func NewApp() (*App, error) {
 	uaJobsCtx, uaJobsCancel := context.WithCancel(context.Background())
 	bgWorkCtx, bgWorkCancel := context.WithCancel(context.Background())
 
-	return &App{
-		ConfigStore:     configStore,
-		Logger:          logger,
-		IDStore:         idStore,
-		Identity:        identity,
-		UALibrary:       uaLibrary,
-		Auth:            auth,
-		Upstream:        upstream,
-		UserStore:       userStore,
-		WatchStore:      watchStore,
-		HiddenLibraries: hiddenLibraries,
-		libraryCache:    newUpstreamLibraryCache(),
-		PlaybackLimiter: NewPlaybackLimiter(),
-		StreamResources: newStreamResourceStore(),
-		sessionEvents:   newSessionEventTracker(),
-		uaJobsCtx:       uaJobsCtx,
-		uaJobsCancel:    uaJobsCancel,
-		bgWorkCtx:       bgWorkCtx,
-		bgWorkCancel:    bgWorkCancel,
-	}, nil
+	app := &App{
+		ConfigStore:      configStore,
+		Logger:           logger,
+		IDStore:          idStore,
+		Identity:         identity,
+		UALibrary:        uaLibrary,
+		Auth:             auth,
+		Upstream:         upstream,
+		UserStore:        userStore,
+		WatchStore:       watchStore,
+		HiddenLibraries:  hiddenLibraries,
+		UpstreamActivity: upstreamActivity,
+		ThemeStore:       themeStore,
+		activityTracker:  newUpstreamActivityTracker(),
+		libraryCache:     newUpstreamLibraryCache(),
+		PlaybackLimiter:  NewPlaybackLimiter(),
+		StreamResources:  newStreamResourceStore(),
+		sessionEvents:    newSessionEventTracker(),
+		uaJobsCtx:        uaJobsCtx,
+		uaJobsCancel:     uaJobsCancel,
+		bgWorkCtx:        bgWorkCtx,
+		bgWorkCancel:     bgWorkCancel,
+	}
+	// Initialize per-server activity scopes from the current configuration. A
+	// failure is logged inside and never blocks startup or playback.
+	app.ensureUpstreamActivityScopes()
+	return app, nil
 }
 
 // logTimeoutNotice warns when the per-operation timeouts are tighter than the API
@@ -168,6 +212,13 @@ func (a *App) Close() error {
 	a.bgWorkWG.Wait()
 	if a.Upstream != nil {
 		a.Upstream.stopHealthChecks()
+	}
+	// The theme store shares the IDStore-owned connection; stop it before the
+	// connection goes away. It never closes the database itself.
+	if a.ThemeStore != nil {
+		if err := a.ThemeStore.CloseSafety(); err != nil && a.Logger != nil {
+			a.Logger.Warnf("theme store close: %v", err)
+		}
 	}
 	// Stores come off the shared SQLite connection: it is closed under its
 	// exclusive lock (closeSQLite), so no reader or writer can be mid-statement.

@@ -9,6 +9,10 @@ import (
 	"time"
 )
 
+// localResumeRecordScanLimit bounds local history enrichment independently of
+// aggregate catalog scanning and NextUp's per-series fan-out.
+const localResumeRecordScanLimit = 5000
+
 func (a *App) handleUserItemsResume(w http.ResponseWriter, r *http.Request) {
 	reqCtx := requestContextFrom(r.Context())
 	// Non-admin users: serve resume from local WatchStore
@@ -107,10 +111,12 @@ func (a *App) handleLocalResume(w http.ResponseWriter, r *http.Request, reqCtx *
 		setQueryValue(pageQuery, "Limit", strconv.Itoa(limit))
 	}
 	desiredEnd := startIndex + limit
+	// A requested global order cannot be computed from a recent-playback prefix.
+	fullOrder := len(splitQueryList(firstQueryValue(query, "SortBy", "sortBy"))) > 0
 	const batchSize = 100
 	var enriched []map[string]any
 	incomplete := false
-	for offset := 0; offset < localFilterScanLimit; offset += batchSize {
+	for offset := 0; offset < localResumeRecordScanLimit; offset += batchSize {
 		if r.Context().Err() != nil {
 			incomplete = true
 			break
@@ -157,7 +163,7 @@ func (a *App) handleLocalResume(w http.ResponseWriter, r *http.Request, reqCtx *
 			}
 			enriched = append(enriched, item)
 		}
-		if desiredEnd > 0 && len(enriched) >= desiredEnd {
+		if !fullOrder && desiredEnd > 0 && len(enriched) >= desiredEnd {
 			enriched = enriched[:desiredEnd]
 			if len(page) == batchSize {
 				// A full WatchStore page can have a tail that was not scanned;
@@ -169,7 +175,7 @@ func (a *App) handleLocalResume(w http.ResponseWriter, r *http.Request, reqCtx *
 		if len(page) < batchSize {
 			break
 		}
-		if offset+batchSize >= localFilterScanLimit && len(page) == batchSize {
+		if offset+batchSize >= localResumeRecordScanLimit && len(page) == batchSize {
 			incomplete = true
 		}
 	}

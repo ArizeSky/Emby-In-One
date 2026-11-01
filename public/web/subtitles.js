@@ -19,7 +19,10 @@
     async load(url, signal) {
       const res = await fetch(url, { signal });
       if (!res.ok) throw new Error('PGS fetch failed');
-      const data = new Uint8Array(await res.arrayBuffer());
+      // Enforce the shared streaming budget for unknown or missing lengths.
+      if (typeof window.EIOReadLimited !== 'function') throw new Error('字幕加载器不可用');
+      const limit = window.EIO_SUBTITLE_LIMITS?.pgs || 64 * 1024 * 1024;
+      const data = await window.EIOReadLimited(res, limit, { mode: 'bytes', signal });
       this._parse(data);
     }
 

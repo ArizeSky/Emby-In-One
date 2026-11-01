@@ -1,0 +1,219 @@
+/* Emby-in-One Web client — home library horizontal rows (V1.4.4-rc2).
+ *
+ * Presentation-only layer for EioHomeLibraryRow. Every rule is scoped under
+ * body.eio-web and an .eio-home-lib-* class; no bare element/global rules and
+ * no new theme tokens. Colours, radii, spacing and motion come from ui.css
+ * custom properties. ui.css is intentionally not extended by this feature.
+ */
+
+body.eio-web .eio-home-lib-row {
+  min-width: 0;
+  max-width: 100%;
+}
+
+body.eio-web .eio-home-lib-head {
+  margin-bottom: 6px;
+}
+
+body.eio-web .eio-home-lib-title {
+  color: var(--t1);
+  text-decoration: none;
+}
+
+body.eio-web .eio-home-lib-title:hover {
+  color: var(--ac-text);
+}
+
+body.eio-web .eio-home-lib-viewport {
+  position: relative;
+  min-width: 0;
+  max-width: 100%;
+}
+
+body.eio-web .eio-home-lib-track {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--eio-density-gap);
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow-x: auto;
+  overflow-y: hidden;
+  /* 12px top / 18px bottom keep the existing .eio-card translateY(-6px)
+   * hover lift and its focus ring inside the scroll box instead of clipping
+   * them; horizontal padding creates the same breathing room as the grid. */
+  padding: 12px 4px 18px;
+  scroll-behavior: smooth;
+  scrollbar-width: thin;
+}
+
+body.eio-web .eio-home-lib-track .eio-card {
+  flex: 0 0 150px;
+  min-width: 0;
+}
+
+body.eio-web .eio-home-lib-skeletons {
+  display: flex;
+  flex: 0 0 auto;
+  gap: var(--eio-density-gap);
+}
+
+body.eio-web .eio-home-lib-skeleton {
+  flex: 0 0 150px;
+  height: 284px;
+}
+
+body.eio-web .eio-home-lib-enter {
+  flex: 0 0 150px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 284px;
+  padding: 16px 12px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-card);
+  background: var(--bg-2);
+  color: var(--t1);
+  text-align: center;
+  text-decoration: none;
+  transition: background var(--dur-base) var(--ease), border-color var(--dur-base) var(--ease),
+    color var(--dur-base) var(--ease);
+}
+
+body.eio-web .eio-home-lib-enter:hover,
+body.eio-web .eio-home-lib-enter:focus-visible {
+  background: var(--bg-3);
+  border-color: var(--ac-text);
+  color: var(--ac-text);
+}
+
+body.eio-web .eio-home-lib-enter-name {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--t2);
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body.eio-web .eio-home-lib-nav {
+  position: absolute;
+  top: 50%;
+  z-index: 3;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-btn);
+  background: var(--surface-2);
+  color: var(--t1);
+  cursor: pointer;
+  transform: translateY(-50%);
+  backdrop-filter: blur(8px);
+  transition: opacity var(--dur-base) var(--ease), background var(--dur-micro) var(--ease);
+}
+
+body.eio-web .eio-home-lib-nav-left {
+  left: 6px;
+}
+
+body.eio-web .eio-home-lib-nav-right {
+  right: 6px;
+}
+
+body.eio-web .eio-home-lib-nav:hover:not(:disabled) {
+  background: var(--bg-3);
+}
+
+body.eio-web .eio-home-lib-nav:disabled {
+  opacity: .35;
+  cursor: default;
+}
+
+body.eio-web .eio-home-lib-state {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 4px 4px 0;
+  padding: 10px 12px;
+  border-radius: var(--r-btn);
+  background: var(--surface-2);
+  color: var(--t2);
+  font-size: 13px;
+}
+
+body.eio-web .eio-home-lib-state:empty {
+  display: none;
+}
+
+body.eio-web .eio-home-lib-error {
+  border: 1px solid var(--danger);
+  background: var(--surface-2);
+  color: var(--t1);
+}
+
+body.eio-web .eio-home-lib-partial {
+  border: 1px solid var(--gold);
+  background: var(--surface-2);
+  color: var(--t1);
+}
+
+@media (min-width: 1280px) {
+  body.eio-web .eio-home-lib-track .eio-card,
+  body.eio-web .eio-home-lib-skeleton,
+  body.eio-web .eio-home-lib-enter {
+    flex-basis: 168px;
+  }
+
+  body.eio-web .eio-home-lib-skeleton,
+  body.eio-web .eio-home-lib-enter {
+    height: 312px;
+    min-height: 312px;
+  }
+}
+
+@media (max-width: 767px) {
+  body.eio-web .eio-home-lib-track {
+    gap: min(var(--eio-density-gap), 12px);
+  }
+
+  body.eio-web .eio-home-lib-skeletons {
+    gap: min(var(--eio-density-gap), 12px);
+  }
+
+  body.eio-web .eio-home-lib-track .eio-card,
+  body.eio-web .eio-home-lib-skeleton,
+  body.eio-web .eio-home-lib-enter {
+    flex-basis: 112px;
+  }
+
+  body.eio-web .eio-home-lib-skeleton,
+  body.eio-web .eio-home-lib-enter {
+    height: 227px;
+    min-height: 227px;
+  }
+
+  /* Mobile keeps native touch scrolling; the desktop arrows are hidden. */
+  body.eio-web .eio-home-lib-nav {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body.eio-web .eio-home-lib-track {
+    scroll-behavior: auto;
+  }
+
+  body.eio-web .eio-home-lib-nav,
+  body.eio-web .eio-home-lib-enter,
+  body.eio-web .eio-home-lib-track .eio-card {
+    transition-duration: .001ms;
+  }
+}

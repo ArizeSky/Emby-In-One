@@ -5,12 +5,18 @@
  * use EIOData / EIOUI / EIOPages / EIOPlayerUI / EIOComponents. The Vue stub
  * covers exactly the API the modules rely on: ref, computed, reactive,
  * nextTick, lifecycle hooks and createApp.
+ *
+ * `options.skipTelemetry` omits player-telemetry-ui.js from the load order
+ * (imitating a blocked/stale script); the default loads every script.
  */
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const SCRIPTS = ['data.js', 'ui.js', 'page-state.js', 'player-ui.js', 'library-state.js', 'ui-components.js', 'app.js'];
+// Load order mirrors web.html. library-query.js feeds library-state/page-state,
+// home-library-rows.js must exist before page-state.js creates the controller and
+// home-library-row.js must exist before app.js registers the component.
+const SCRIPTS = ['data.js', 'ui.js', 'library-query.js', 'home-library-rows.js', 'page-state.js', 'player-ui.js', 'library-state.js', 'resume-card.js', 'ui-components.js', 'home-library-row.js', 'playback-orchestrator.js', 'player-progress.js', 'player-buffer.js', 'player-telemetry-ui.js', 'theme-player-controls.js', 'theme.js', 'theme-transport.js', 'appearance.js', 'player-rate-ui.js', 'app.js'];
 
 function makeStorage(initial = {}) {
   const store = new Map(Object.entries(initial));
@@ -28,10 +34,21 @@ function harness(options = {}) {
   const reply = options.reply || (() => ({ Items: [] }));
   const storage = options.storage || makeStorage({ eio_token: 'token', eio_user_id: 'user' });
   let app;
+  const components = {};
   // Lifecycle hooks are captured (not invoked) so tests can drive them; the
   // production scripts only register them during setup().
   const mountedHooks = [];
   const beforeUnmountHooks = [];
+  const listeners = { window: {}, document: {} };
+
+  const documentElement = {
+    dataset: {},
+    style: {
+      _props: {},
+      setProperty(name, value) { this._props[name] = value; },
+      removeProperty(name) { delete this._props[name]; },
+    },
+  };
 
   const context = {
     URL, AbortController, DOMException, console, Math, JSON, Promise,
@@ -56,19 +73,46 @@ function harness(options = {}) {
       onMounted(fn) { mountedHooks.push(fn); },
       onBeforeUnmount(fn) { beforeUnmountHooks.push(fn); },
       nextTick: fn => Promise.resolve().then(() => fn && fn()),
-      createApp: opts => ({ component() {}, mount() { app = opts.setup(); } }),
+      createApp: opts => ({
+        component(name, definition) { components[name] = definition; },
+        mount() { app = opts.setup(); },
+      }),
     },
-    document: { hidden: false, fullscreenElement: null, addEventListener() {}, removeEventListener() {} },
+    document: {
+      hidden: false, fullscreenElement: null, documentElement,
+      addEventListener(type, fn) { (listeners.document[type] ||= []).push(fn); },
+      removeEventListener(type, fn) {
+        const list = listeners.document[type] || [];
+        const index = list.indexOf(fn);
+        if (index >= 0) list.splice(index, 1);
+      },
+    },
     IntersectionObserver: undefined,
-    addEventListener() {}, removeEventListener() {},
+    addEventListener(type, fn) { (listeners.window[type] ||= []).push(fn); },
+    removeEventListener(type, fn) {
+      const list = listeners.window[type] || [];
+      const index = list.indexOf(fn);
+      if (index >= 0) list.splice(index, 1);
+    },
   };
+  if (options.matchMedia) context.matchMedia = options.matchMedia;
+  if (options.EIOThemeDeps) context.EIOThemeDeps = options.EIOThemeDeps;
   context.window = context;
   context.window.innerWidth = options.width || 1440;
   vm.createContext(context);
   for (const file of SCRIPTS) {
-    vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'public', 'web', file), 'utf8'), context);
+    if (file === 'player-telemetry-ui.js' && options.skipTelemetry) continue;
+    if (file === 'app.js' && options.beforeApp) options.beforeApp(context);
+    const fullPath = path.join(__dirname, '..', 'public', 'web', file);
+    vm.runInContext(fs.readFileSync(fullPath, 'utf8'), context);
   }
-  return { app, context, calls, data: context.EIOData, storage, mountedHooks, beforeUnmountHooks };
+  return {
+    app, context, calls, components, resumeCard: context.EIOResumeCard,
+    data: context.EIOData, storage, mountedHooks, beforeUnmountHooks, listeners, documentElement,
+    progress: context.EIOPlayerProgress,
+    bufferModule: context.EIOPlayerBuffer,
+    telemetry: context.EIOPlayerTelemetry,
+  };
 }
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));

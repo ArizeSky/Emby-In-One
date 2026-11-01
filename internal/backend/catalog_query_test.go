@@ -60,10 +60,10 @@ func TestClientRandomCandidateScanIsStableBeforeLocalPaging(t *testing.T) {
 				t.Fatalf("Random route order differs: %s", target)
 			}
 		}
-		for _, recorder := range []*catalogOrderQueryRecorder{qA, qB} {
+		for recorder, wantRequests := range map[*catalogOrderQueryRecorder]int{qA: 6, qB: 3} {
 			queries := recorder.snapshot()
-			if len(queries) < 5 {
-				t.Fatalf("not all pages scanned: %d", len(queries))
+			if len(queries) != wantRequests {
+				t.Fatalf("snapshot scans made %d upstream requests, want %d (one scan per distinct route/query)", len(queries), wantRequests)
 			}
 			for _, q := range queries {
 				assertSingleQueryValue(t, q, "SortBy", "SortName")

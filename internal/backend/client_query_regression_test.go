@@ -223,7 +223,7 @@ func TestClientPlaybackInfoPreservesOnlyRewrittenLocalURLs(t *testing.T) {
 		}
 		writeJSON(w, 200, map[string]any{"MediaSources": []any{
 			map[string]any{"Id": "ms-b", "Container": "mkv", "Path": "/private/movie.mkv",
-				"DirectStreamUrl": "https://upstream.invalid/Videos/item-b/stream.mkv?api_key=upstream-secret",
+				"DirectStreamUrl": "/Videos/item-b/stream.mkv?api_key=upstream-secret",
 				"TranscodingUrl":  "https://upstream.invalid/videos/item-b/master.m3u8?mediaSourceId=ms-b&ApiKey=upstream-secret",
 				"MediaStreams":    []any{map[string]any{"Type": "Subtitle", "DeliveryUrl": "https://upstream.invalid/videos/item-b/ms-b/Subtitles/0/Stream.srt?X-Emby-Token=upstream-secret"}}},
 			map[string]any{"Id": "malformed", "TranscodingUrl": "http://[bad", "Path": "/private/bad"},
@@ -252,16 +252,28 @@ func TestClientPlaybackInfoPreservesOnlyRewrittenLocalURLs(t *testing.T) {
 				t.Fatalf("sources=%#v", sources)
 			}
 			first := sources[0]
-			for _, field := range []string{"DirectStreamUrl", "TranscodingUrl"} {
-				raw, _ := first[field].(string)
-				if !isLocalPlaybackURL(raw, item) {
-					t.Fatalf("lost or unsafe %s=%q", field, raw)
-				}
-				parsed, _ := url.Parse(raw)
-				assertSingleQueryValue(t, parsed.Query(), "MediaSourceId", source)
-				if parsed.Query().Get("api_key") != tc.token {
-					t.Fatalf("proxy credential missing in %s", field)
-				}
+			directRaw, _ := first["DirectStreamUrl"].(string)
+			if !isLocalPlaybackURL(directRaw, item) {
+				t.Fatalf("lost or unsafe DirectStreamUrl=%q", directRaw)
+			}
+			directURL, _ := url.Parse(directRaw)
+			if !strings.Contains(directURL.Path, "/eio-resource/") || !strings.HasSuffix(directURL.Path, ".mkv") {
+				t.Fatalf("direct stream is not an opaque .mkv resource: %q", directRaw)
+			}
+			if directURL.Query().Get("api_key") != tc.token {
+				t.Fatalf("proxy credential missing in DirectStreamUrl: %q", directRaw)
+			}
+			if len(directURL.Query()) != 1 || directURL.Query().Get("MediaSourceId") != "" || strings.Contains(directRaw, "upstream-secret") {
+				t.Fatalf("upstream query leaked into DirectStreamUrl: %q", directRaw)
+			}
+			transcodeRaw, _ := first["TranscodingUrl"].(string)
+			if !isLocalPlaybackURL(transcodeRaw, item) {
+				t.Fatalf("lost or unsafe TranscodingUrl=%q", transcodeRaw)
+			}
+			transcodeURL, _ := url.Parse(transcodeRaw)
+			assertSingleQueryValue(t, transcodeURL.Query(), "MediaSourceId", source)
+			if transcodeURL.Query().Get("api_key") != tc.token {
+				t.Fatalf("proxy credential missing in TranscodingUrl: %q", transcodeRaw)
 			}
 			streams := asItems(map[string]any{"Items": first["MediaStreams"]})
 			if len(streams) != 1 || !isLocalPlaybackURL(fmt.Sprint(streams[0]["DeliveryUrl"]), item) {

@@ -129,8 +129,8 @@ func TestCatalogSearchPaginatesAfterCrossServerMergeAndDedup(t *testing.T) {
 		}
 
 		for name, queries := range map[string][]url.Values{"first": firstQueries.snapshot(), "second": secondQueries.snapshot()} {
-			if len(queries) != 4 {
-				t.Fatalf("%s source received %d requests, want two Items and two User Items scans", name, len(queries))
+			if len(queries) != 2 {
+				t.Fatalf("%s source received %d requests, want one Items and one User Items scan with later pages served from snapshots", name, len(queries))
 			}
 			for _, query := range queries {
 				if query.Get("StartIndex") != "0" || query.Get("Limit") != strconv.Itoa(mergedItemsScanLimit) {
