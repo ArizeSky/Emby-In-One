@@ -34,7 +34,7 @@ createApp({
       userList: [], showUserModal: false, editUserId: null, userForm: { username: '', password: '', enabled: true, allowedServers: [], maxParentalRating: 0, blockUnratedItems: false },
       userLibraryGroups: [], adminHomeOpen: false, adminLibraryGroups: [], libraryGroupsLoading: false,
       uaTab: 'resident', uaRecent: [], uaResident: [], uaServers: [],
-      uaLoading: false, uaError: '', uaDetail: null,
+      uaLoading: false, uaLoadedOnce: false, uaRequestID: 0, uaError: '', uaDetail: null,
       uaSaveDialog: null, uaReplaceDialog: null, uaAssignmentDialog: null, uaPending: {},
       aggregationPending: {},
       // 观看/保活：筛选与排序只影响派生视图，不改 upstreamList 顺序。
@@ -83,7 +83,7 @@ createApp({
     themeCanInstall() { return themeModule && this.themeAdmin ? themeModule.canInstall(this.themeAdmin) : false; }
   },
   watch: {
-    currentPage(v) { this.stopUAReconnectPoll(); if (v !== 'servers') this.closeActivity(); if (v !== 'themes') this.themeLeave(); if(this._refreshTimer) clearTimeout(this._refreshTimer); this.abortRefresh(); this._refreshTimer = setTimeout(()=>{this.refresh(); this.$nextTick(() => lucide.createIcons());}, 50); }
+    currentPage(v) { if (v === 'ua') { this.uaLoading = true; if (!this.uaLoadedOnce) this.uaError = ''; } this.stopUAReconnectPoll(); if (v !== 'servers') this.closeActivity(); if (v !== 'themes') this.themeLeave(); if(this._refreshTimer) clearTimeout(this._refreshTimer); this.abortRefresh(); this._refreshTimer = setTimeout(()=>{this.refresh(); this.$nextTick(() => lucide.createIcons());}, 50); }
   },
   mounted() { const t = localStorage.getItem('eio_admin_token'); if(t) this.checkAuth(t); this.$nextTick(() => lucide.createIcons()); },
   methods: {
@@ -133,7 +133,7 @@ createApp({
       try { await this.api('/admin/api/status'); } catch(e) { localStorage.removeItem('eio_admin_token'); this.loginError = '需要管理员权限'; return; }
       this.isLoggedIn = true; this.refresh(); this.refreshClientInfo();
     } catch(e) { this.loginError = '用户名或密码错误'; } },
-    logout() { this.stopUAReconnectPoll(); this.closeActivity(); this.themeReset(); this.isLoggedIn = false; localStorage.removeItem('eio_admin_token'); },
+    logout() { this.stopUAReconnectPoll(); this.closeActivity(); this.themeReset(); this.uaRequestID++; this.uaLoadedOnce = false; this.uaLoading = false; this.uaError = ''; this.uaRecent = []; this.uaResident = []; this.uaServers = []; this.isLoggedIn = false; localStorage.removeItem('eio_admin_token'); },
     async copyClientUA() {
       if (!this.clientInfo || !this.clientInfo.userAgent) return;
       try { await navigator.clipboard.writeText(this.clientInfo.userAgent); alert('UA 已复制到剪贴板'); } catch(e) {}
@@ -158,7 +158,7 @@ createApp({
     },
     async refreshDashboard(signal) { try { this.stats = await this.api('/admin/api/status', { signal }); } catch(e) { if (this.isAbort(e)) return; } this.refreshClientInfo(signal); this.$nextTick(()=>lucide.createIcons()); },
     async refreshClientInfo(signal) { try { this.clientInfo = await this.api('/admin/api/client-info', { signal }); } catch(e) { if (this.isAbort(e)) return; } this.$nextTick(()=>lucide.createIcons()); },
-    async refreshServers(signal) { try { this.upstreamList = await this.api('/admin/api/upstream', { signal }); this.listErrors.upstream = ''; } catch(e) { if (this.isAbort(e)) return; this.listErrors.upstream = e.message || '加载服务器列表失败'; } try { await this.refreshProxies(signal); } catch(e) {} try { const ua = await this.api('/admin/api/ua', { signal }); this.uaResident = ua.resident || []; this.uaServers = ua.servers || []; } catch(e) {} this.$nextTick(()=>lucide.createIcons()); },
+    async refreshServers(signal) { try { this.upstreamList = await this.api('/admin/api/upstream', { signal }); this.listErrors.upstream = ''; } catch(e) { if (this.isAbort(e)) return; this.listErrors.upstream = e.message || '加载服务器列表失败'; } try { await this.refreshProxies(signal); } catch(e) {} try { await this.refreshServerUAOptions(signal); } catch(e) {} this.$nextTick(()=>lucide.createIcons()); },
     async refreshProxies(signal) { try { this.proxyList = await this.api('/admin/api/proxies', { signal }); this.listErrors.proxies = ''; } catch(e) { if (!this.isAbort(e)) this.listErrors.proxies = e.message || '加载代理列表失败'; } this.$nextTick(()=>lucide.createIcons()); },
     async refreshSettings(signal) {
       const requestID = ++this.settingsRequestID;
@@ -478,17 +478,44 @@ createApp({
     },
     async toggleUser(u) { try { const enabled = !u.enabled; await this.api('/admin/api/users/' + u.id, { method:'PUT', body:JSON.stringify({enabled}) }); await this.refreshUsers(); } catch(e) { alert('操作失败：' + (e.message || '未知错误')); } },
     async deleteUser(id) { if(!confirm('删除用户？该操作不可撤销。')) return; try { await this.api('/admin/api/users/' + id, { method:'DELETE' }); await this.refreshUsers(); } catch(e) { alert('删除失败：' + (e.message || '未知错误')); } },
-    async refreshServerUAOptions() { try { const ua = await this.api('/admin/api/ua'); this.uaResident = ua.resident || []; this.uaServers = ua.servers || []; } catch(e) {} },
+    async refreshServerUAOptions(signal) {
+      const gen = this.uaRequestID;
+      const token = localStorage.getItem('eio_admin_token');
+      try {
+        const ua = await this.api('/admin/api/ua', { signal });
+        // 选项预取不设置 uaLoadedOnce；旧账号、已离开页面或已被 refreshUAs 超越的结果不得回填。
+        if (gen !== this.uaRequestID || (signal && signal.aborted)) return;
+        if (localStorage.getItem('eio_admin_token') !== token) return;
+        this.uaResident = ua.resident || []; this.uaServers = ua.servers || [];
+      } catch(e) {}
+    },
     async refreshUAs(signal) {
+      const gen = ++this.uaRequestID;
+      const token = localStorage.getItem('eio_admin_token');
       this.uaLoading = true; this.uaError = '';
       try {
         const data = await this.api('/admin/api/ua', { signal });
+        if (gen !== this.uaRequestID || (signal && signal.aborted)) return;
+        if (localStorage.getItem('eio_admin_token') !== token) return;
         this.uaRecent = data.recent || []; this.uaResident = data.resident || []; this.uaServers = data.servers || [];
+        this.uaLoadedOnce = true; this.uaError = '';
       } catch(e) {
-        if (this.isAbort(e)) return;
-        this.uaError = e.message || '加载失败'; this.uaRecent = []; this.uaResident = []; this.uaServers = [];
-      } finally { this.uaLoading = false; this.$nextTick(()=>lucide.createIcons()); }
+        if (gen !== this.uaRequestID || (signal && signal.aborted) || this.isAbort(e)) return;
+        if (localStorage.getItem('eio_admin_token') !== token) return;
+        this.uaError = e.message || '加载失败';
+        // 首次加载失败不能伪装成“没有数据”；已加载过的列表在刷新失败时保持原样。
+        if (!this.uaLoadedOnce) { this.uaRecent = []; this.uaResident = []; this.uaServers = []; }
+      } finally {
+        // 旧请求被 abort 后已经离开过 UA 页（可能又快速回来，watch 已同步
+        // 设置 uaLoading = true）：它不再拥有 UI 状态，不能清掉新页面的 loading。
+        if (gen === this.uaRequestID && !(signal && signal.aborted)
+            && localStorage.getItem('eio_admin_token') === token) {
+          this.uaLoading = false;
+          this.$nextTick(()=>lucide.createIcons());
+        }
+      }
     },
+    retryUAs() { this.refreshUAs(this.refreshSignal()); },
     formatUATime(v) { if(!v) return '—'; const d = new Date(v); return isNaN(d.getTime()) ? '—' : d.toLocaleString(); },
     uaAgeText(item) { if(!item || !item.ageKnown) return '采集时间未知，建议重新采集'; return '采集于 ' + item.ageDays + ' 天前'; },
     uaSummary(item) { const ua = (item && item.userAgent) || ''; return ua.length > 60 ? ua.slice(0, 60) + '…' : ua; },

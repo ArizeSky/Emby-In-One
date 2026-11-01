@@ -135,7 +135,7 @@
     <div v-if="currentPage === 'servers' && listErrors.upstream" role="alert" class="card p-4 text-amber-700 bg-amber-50 border border-amber-200">服务器列表加载失败：{{ listErrors.upstream }} <button @click="refreshServers" class="ml-2 text-blue-600 hover:underline">重试</button></div>
     <div v-if="currentPage === 'servers' && listErrors.proxies" role="alert" class="card p-4 text-amber-700 bg-amber-50 border border-amber-200">代理列表加载失败：{{ listErrors.proxies }} <button @click="refreshServers" class="ml-2 text-blue-600 hover:underline">重试</button></div>
     <div v-if="currentPage === 'servers'" class="card p-4 flex flex-wrap items-center gap-2 text-sm">
-      <span class="text-slate-500">风险筛选</span>
+      <span class="text-slate-500">筛选</span>
       <select v-model="activityFilter" class="px-2 py-1 border rounded-lg outline-none">
         <option v-for="opt in activityFilterOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
       </select>
@@ -184,9 +184,12 @@
         <button @click="uaTab = 'resident'" :class="uaTab === 'resident' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-100'" class="px-4 py-1.5 rounded text-sm font-bold">常驻 UA</button>
         <button @click="uaTab = 'recent'" :class="uaTab === 'recent' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-100'" class="px-4 py-1.5 rounded text-sm font-bold">最近采集</button>
       </div>
-      <div v-if="uaLoading" class="card p-8 text-center text-slate-400 italic">加载中...</div>
-      <div v-else-if="uaError" class="card p-8 text-center text-red-500">{{ uaError }}</div>
+      <div v-if="!uaLoadedOnce && uaLoading" class="card p-8 text-center text-slate-400 italic">正在加载 UA 列表...</div>
+      <div v-else-if="!uaLoadedOnce && uaError" role="alert" class="card p-8 text-center text-red-500">{{ uaError }} <button @click="retryUAs" class="ml-2 text-blue-600 hover:underline">重试</button></div>
+      <div v-else-if="!uaLoadedOnce" class="card p-8 text-center text-slate-400 italic">准备加载 UA 列表...</div>
       <template v-else>
+        <div v-if="uaLoading" role="status" class="text-xs text-slate-400">正在刷新 UA 列表…</div>
+        <div v-if="uaError" role="alert" class="card p-3 text-red-700 bg-red-50 border border-red-100 text-sm">{{ uaError }} <button @click="retryUAs" class="ml-2 text-blue-600 hover:underline">重试</button></div>
         <div v-if="uaTab === 'resident'" class="space-y-4">
           <div v-if="uaResident.length === 0" class="card p-12 text-center text-slate-400 italic">暂无常驻 UA。首次用真实客户端以管理员账号登录本代理后会自动生成一条，或在「最近采集」中手动保存。</div>
           <div v-else class="card overflow-x-auto">
@@ -321,8 +324,8 @@
         <div class="flex flex-wrap items-center justify-between gap-3">
           <div class="text-sm text-slate-500">站点默认主题：<span class="font-bold text-slate-700">{{ themeAdmin.site.themeId }}</span>（revision {{ themeAdmin.site.revision }}）</div>
           <div class="flex flex-wrap items-center gap-2">
-            <button @click="themeRefresh()" :disabled="themeAdmin.loading" class="px-4 py-2 rounded-lg bg-white border flex items-center space-x-2 disabled:opacity-50"><i data-lucide="refresh-cw" class="w-4 h-4"></i><span>刷新</span></button>
-            <button @click="themeOpenUpload()" :disabled="!themeCanInstall" class="btn-primary px-4 py-2 rounded-lg flex items-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed"><i data-lucide="plus" class="w-4 h-4"></i><span>上传主题包</span></button>
+            <button @click="themeRefresh()" :disabled="themeAdmin.loading" class="px-4 py-2 rounded-lg bg-white border flex items-center space-x-2 disabled:opacity-50"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false" class="flex-shrink-0"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg><span>刷新</span></button>
+            <button @click="themeOpenUpload()" :disabled="!themeCanInstall" class="btn-primary px-4 py-2 rounded-lg flex items-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false" class="flex-shrink-0"><path d="M5 12h14"/><path d="M12 5v14"/></svg><span>上传主题包</span></button>
           </div>
         </div>
         <div v-if="themeAdmin.notice" role="status" class="card p-3 text-green-700 bg-green-50 border border-green-100 text-sm">{{ themeAdmin.notice }}</div>
