@@ -132,7 +132,8 @@
           <div v-else-if="!home.resumeItems.length" class="eio-state"><div class="eio-state-msg">还没有观看记录。</div></div>
           <div v-else class="eio-grid">
             <eio-poster-card v-for="it in home.resumeItems" :key="it.Id" :item="it" :image-src="imageUrl(it,300)"
-                             :detail-href="'#/item/' + it.Id" :show-progress="true" :sub="it.SeriesName || ''" @play="playItem(it)"></eio-poster-card>
+                             :detail-href="resumeCard(it).href" :title="resumeCard(it).title"
+                             :show-progress="true" :sub="resumeCard(it).subtitle" @play="playItem(it)"></eio-poster-card>
           </div>
           <div v-if="home.resumeSlow && home.resumeLoading" class="eio-hint" style="margin-top:10px">加载较慢，请稍候…</div>
         </section>
@@ -179,7 +180,10 @@
           </p>
           <div class="eio-grid">
             <eio-poster-card v-for="it in collectionItems" :key="it.Id" :item="it" :image-src="imageUrl(it,300)"
-                             :detail-href="'#/item/' + it.Id" :show-progress="navPage==='resume'" :sub="it.SeriesName || ''" @play="playItem(it)"></eio-poster-card>
+                             :detail-href="navPage==='resume' ? resumeCard(it).href : '#/item/' + it.Id"
+                             :title="navPage==='resume' ? resumeCard(it).title : ''"
+                             :show-progress="navPage==='resume'"
+                             :sub="navPage==='resume' ? resumeCard(it).subtitle : (it.SeriesName || '')" @play="playItem(it)"></eio-poster-card>
           </div>
         </template>
       </div>
@@ -561,6 +565,7 @@
 <script src="/web/web/page-state.js?v=v1.4.4-rc3"></script>
 <script src="/web/web/player-ui.js?v=v1.4.4-rc3"></script>
 <script src="/web/web/library-state.js?v=v1.4.4-rc3"></script>
+<script src="/web/web/resume-card.js?v=v1.4.4-rc3"></script>
 <script src="/web/web/ui-components.js?v=v1.4.4-rc3"></script>
 <script src="/web/web/theme-player-controls.js?v=player-v2"></script>
 <script src="/web/web/theme.js?v=v1.4.4-rc3"></script>

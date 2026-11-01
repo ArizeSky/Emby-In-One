@@ -13,7 +13,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const SCRIPTS = ['data.js', 'ui.js', 'page-state.js', 'player-ui.js', 'library-state.js', 'ui-components.js', 'playback-orchestrator.js', 'player-progress.js', 'player-buffer.js', 'player-telemetry-ui.js', 'theme-player-controls.js', 'theme.js', 'theme-transport.js', 'appearance.js', 'app.js'];
+const SCRIPTS = ['data.js', 'ui.js', 'page-state.js', 'player-ui.js', 'library-state.js', 'resume-card.js', 'ui-components.js', 'playback-orchestrator.js', 'player-progress.js', 'player-buffer.js', 'player-telemetry-ui.js', 'theme-player-controls.js', 'theme.js', 'theme-transport.js', 'appearance.js', 'app.js'];
 
 function makeStorage(initial = {}) {
   const store = new Map(Object.entries(initial));
@@ -31,6 +31,7 @@ function harness(options = {}) {
   const reply = options.reply || (() => ({ Items: [] }));
   const storage = options.storage || makeStorage({ eio_token: 'token', eio_user_id: 'user' });
   let app;
+  const components = {};
   // Lifecycle hooks are captured (not invoked) so tests can drive them; the
   // production scripts only register them during setup().
   const mountedHooks = [];
@@ -69,7 +70,10 @@ function harness(options = {}) {
       onMounted(fn) { mountedHooks.push(fn); },
       onBeforeUnmount(fn) { beforeUnmountHooks.push(fn); },
       nextTick: fn => Promise.resolve().then(() => fn && fn()),
-      createApp: opts => ({ component() {}, mount() { app = opts.setup(); } }),
+      createApp: opts => ({
+        component(name, definition) { components[name] = definition; },
+        mount() { app = opts.setup(); },
+      }),
     },
     document: {
       hidden: false, fullscreenElement: null, documentElement,
@@ -99,7 +103,8 @@ function harness(options = {}) {
     vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'public', 'web', file), 'utf8'), context);
   }
   return {
-    app, context, calls, data: context.EIOData, storage, mountedHooks, beforeUnmountHooks, listeners, documentElement,
+    app, context, calls, components, resumeCard: context.EIOResumeCard,
+    data: context.EIOData, storage, mountedHooks, beforeUnmountHooks, listeners, documentElement,
     progress: context.EIOPlayerProgress,
     bufferModule: context.EIOPlayerBuffer,
     telemetry: context.EIOPlayerTelemetry,

@@ -13,6 +13,7 @@
     isPartialResults, createPendingSelection, createEpisodeQueue,
     compatibleStream, createCleanupGate,
   } = EIOPlayback;
+  const { resumeCardView } = window.EIOResumeCard;
   // Set by setup() so a partial-results response can surface a lightweight toast
   // without api() needing the reactive toast store directly (plan §8.9).
   let notifyPartialResults = null;
@@ -288,7 +289,12 @@
         collectionItems.value = [];
         const path = `/Users/${localStorage.getItem('eio_user_id')}/Items`;
         try {
-          const params = { Fields: 'PrimaryImageAspectRatio,RunTimeTicks,UserData,SeriesName', Recursive: true };
+          const params = {
+            Fields: kind === 'resume'
+              ? 'PrimaryImageAspectRatio,RunTimeTicks,UserData,SeriesName,SeriesId,SeasonId,IndexNumber,ParentIndexNumber'
+              : 'PrimaryImageAspectRatio,RunTimeTicks,UserData,SeriesName',
+            Recursive: true,
+          };
           if (kind === 'favorites') { params.Filters = 'IsFavorite'; params.IncludeItemTypes = 'Movie,Series,Episode'; }
           let items;
           try {
@@ -1439,7 +1445,7 @@
         appearance,
         mobileMenu, pages, sidebarPages, togglePassword, navigateTo, doLogin, doLogout, focusPass, libraryIcon, openItem, openLibrary,
         toasts, home, hero, libraries, latestSections, loadHome,
-        collectionItems, collectionLoading, collectionError, collectionNotice, loadCollection,
+        collectionItems, collectionLoading, collectionError, collectionNotice, loadCollection, resumeCard: resumeCardView,
         libraryName: library.name, libraryItems: library.items, libraryLoading: library.loading,
         libraryPageLoading: library.pageLoading, libraryTotal: library.total, libraryRetryAppend: library.retryAppend,
         libFilter: library.filter, libSort: library.sort, libGenres: library.genres, libraryHasMore: library.hasMore,

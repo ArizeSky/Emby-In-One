@@ -11,7 +11,7 @@
   'use strict';
 
   const LATEST_FIELDS = 'PrimaryImageAspectRatio,ProductionYear,CommunityRating,Overview,Genres,RunTimeTicks,UserData,BackdropImageTags,OfficialRating,OriginalTitle';
-  const RESUME_FIELDS = 'PrimaryImageAspectRatio,RunTimeTicks,UserData,SeriesName';
+  const RESUME_FIELDS = 'PrimaryImageAspectRatio,RunTimeTicks,UserData,SeriesName,SeriesId,SeasonId,IndexNumber,ParentIndexNumber';
   const SEARCH_FIELDS = 'PrimaryImageAspectRatio,ProductionYear,Overview';
   const SLOW_MS = 8000;
 

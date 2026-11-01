@@ -13,6 +13,8 @@
 
 Based on Go language, it implements a multi-server Emby aggregation proxy — merges media libraries from multiple upstream Emby servers into a single unified endpoint accessible by any standard Emby client. Supports multi-user management, independent watch history, UA spoofing, concurrent playback limits, and role-based access control.
 
+> **Continue Watching note (this round's change):** When a card carries both `Episode` and `SeriesId`, `SeriesName` is preferred as the title with `SxxExx` as the subtitle, and clicking the card opens the series detail page for episode selection; quick play still uses the original episode and original progress. Without `SeriesId`, the original behavior and favorites remain unchanged; API grouping, pagination, and totals are unchanged, with no extra detail requests. Status: local Node 464/464 (454 baseline + 10 new) as of this round; this change was not built or deployed this round, and real playback has not been verified.
+
 ## Table of Contents
 
 - [Preview](#preview)
