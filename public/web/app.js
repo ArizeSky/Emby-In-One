@@ -17,6 +17,11 @@
   // without api() needing the reactive toast store directly (plan §8.9).
   let notifyPartialResults = null;
 
+  // A startup resume can race a cold/transcoding engine and is not an
+  // interactive drag. It gets its own bounded budget; this stays an internal
+  // constant instead of a window/external setting.
+  const STARTUP_SEEK_TIMEOUT_MS = 30000;
+
   /* ================= helpers ================= */
 
   async function api(path, opts = {}) {
@@ -983,7 +988,23 @@
         if (player !== instance || generation !== playbackGeneration) return;
         await syncStartupSubtitle(instance, generation);
         const seconds = options.startSeconds ?? (item.UserData?.PlaybackPositionTicks || 0) / 10000000;
-        if (seconds > 0 && seconds < instance.duration) await instance.seek(seconds);
+        if (seconds > 0 && seconds < instance.duration) {
+          try {
+            await instance.seek(seconds, { timeout: STARTUP_SEEK_TIMEOUT_MS, label: 'resume' });
+          } catch (error) {
+            // Only the current generation may report this startup budget. The
+            // marker and numbers are static/safe: the original error, URL,
+            // item id and credentials never reach the log. The rejection is
+            // rethrown so the existing failure cleanup/destroy path still runs.
+            if (generation === playbackGeneration && error?.name === 'TimeoutError') {
+              console.warn('[EIO] startup resume seek timeout', {
+                timeoutMs: STARTUP_SEEK_TIMEOUT_MS,
+                targetSeconds: Math.round(seconds),
+              });
+            }
+            throw error;
+          }
+        }
         if (options.paused) await instance.pause();
         // Volume is user state: a compatibility retry or version switch must
         // not reset it to the engine default.

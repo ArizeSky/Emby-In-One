@@ -55,6 +55,28 @@
     return out;
   }
 
+  // Every engine seek is bounded. A caller may pick a smaller or larger
+  // per-call budget, but a missing/non-positive/non-finite value falls back to
+  // the interactive default and nothing may exceed the hard upper bound.
+  const DEFAULT_SEEK_TIMEOUT_MS = 10000;
+  const MAX_SEEK_TIMEOUT_MS = 60000;
+
+  function normalizeSeekTimeout(value, fallback) {
+    const fallbackValue = Number(fallback);
+    const safeFallback = Number.isFinite(fallbackValue) && fallbackValue > 0
+      ? fallbackValue : DEFAULT_SEEK_TIMEOUT_MS;
+    const candidate = Number(value);
+    const base = Number.isFinite(candidate) && candidate > 0 ? candidate : safeFallback;
+    return Math.min(base, MAX_SEEK_TIMEOUT_MS);
+  }
+
+  // Labels are diagnostics only, so an unexpected value is replaced instead of
+  // being copied into an error or a log.
+  function normalizeSeekLabel(value) {
+    return typeof value === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,31}$/.test(value)
+      ? value : 'seek';
+  }
+
   class EIOPlayer {
     constructor(container) {
       this.container = container;
@@ -217,18 +239,26 @@
         && generation === this._engineGeneration;
     }
 
-    async _awaitBounded(value, timeout, signal) {
+    async _awaitBounded(value, timeout, signal, metadata = {}) {
       const promise = Promise.resolve(value);
+      const timeoutMs = normalizeSeekTimeout(timeout, DEFAULT_SEEK_TIMEOUT_MS);
+      const label = normalizeSeekLabel(metadata.label);
+      const attempt = metadata.attempt || null;
       // The underlying seek cannot be cancelled in libmedia. Attach a handler
-      // so a late rejection after timeout/abort never surfaces unhandled.
+      // so a late rejection after timeout/abort never surfaces unhandled. A
+      // timeout does not abort the core: it only marks this adapter attempt so
+      // a late completion cannot write the old seek position into the UI.
       promise.catch(() => {});
       let timer, onAbort;
       const guard = new Promise((_, reject) => {
         timer = setTimeout(() => {
+          if (attempt) attempt.timedOut = true;
           const error = new Error('跳转超时');
           error.name = 'TimeoutError';
+          error.label = label;
+          error.timeoutMs = timeoutMs;
           reject(error);
-        }, timeout);
+        }, timeoutMs);
         timer.unref?.();
         onAbort = () => reject(abortError());
         if (signal.aborted) onAbort();
@@ -248,16 +278,20 @@
       const queue = this._seekQueue;
       if (!queue || this._destroyed) return Promise.reject(abortError());
       const generation = queue.generation;
-      const timeout = Number(options.timeout ?? this.options?.seekTimeout) || 10000;
+      const timeout = normalizeSeekTimeout(options.timeout,
+        normalizeSeekTimeout(this.options?.seekTimeout, DEFAULT_SEEK_TIMEOUT_MS));
+      const label = normalizeSeekLabel(options.label);
       const run = async () => {
         if (!this._isCurrentQueue(queue, generation)) throw abortError();
-        const result = job({
+        const attempt = {
           core: this.core,
           video: this.video,
           generation,
           signal: queue.controller.signal,
-        });
-        return this._awaitBounded(result, timeout, queue.controller.signal);
+          timedOut: false,
+        };
+        const result = job(attempt);
+        return this._awaitBounded(result, timeout, queue.controller.signal, { label, attempt });
       };
       const result = queue.tail.then(run, run);
       queue.tail = result.then(() => {}, () => {});
@@ -692,26 +726,35 @@
       this._emitState();
     }
 
-    async seek(seconds) {
+    async seek(seconds, options = {}) {
       this._checkAlive();
       const target = Number(seconds);
-      return this._coordinateSeek(async ({ core, video, generation }) => {
-        if (this._destroyed || generation !== this._engineGeneration) throw abortError();
-        if (core) {
+      const timeout = normalizeSeekTimeout(options.timeout,
+        normalizeSeekTimeout(this.options?.seekTimeout, DEFAULT_SEEK_TIMEOUT_MS));
+      const label = normalizeSeekLabel(options.label);
+      return this._coordinateSeek(async (attempt) => {
+        if (this._destroyed || attempt.generation !== this._engineGeneration) throw abortError();
+        if (attempt.core) {
+          const core = attempt.core;
           await core.seek(BigInt(Math.round(target * 1000)));
+          // The core seek cannot be cancelled. If its bounded adapter wait
+          // already timed out, the late completion must not rewrite progress.
+          if (attempt.timedOut) return;
           // A late seek from a replaced core must not write its progress into
           // the new engine's timeline.
-          if (!this._isCurrentEngine(core, null, generation)) throw abortError();
+          if (!this._isCurrentEngine(core, null, attempt.generation)) throw abortError();
           const actual = core.currentTime;
           this._updateTime(actual == null ? target : Number(actual) / 1000);
-        } else if (video) {
+        } else if (attempt.video) {
+          const video = attempt.video;
           if (this.video !== video) throw abortError();
           video.currentTime = target;
+          if (attempt.timedOut) return;
           if (this.video === video) this._updateTime(target);
         } else {
           throw abortError();
         }
-      }, { timeout: this.options.seekTimeout || 10000, label: 'seek' });
+      }, { timeout, label });
     }
 
     setVolume(volume) {
