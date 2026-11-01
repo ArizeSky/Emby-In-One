@@ -15,6 +15,8 @@ Based on Go language, it implements a multi-server Emby aggregation proxy — me
 
 > **Continue Watching note (this round's change):** When a card carries both `Episode` and `SeriesId`, `SeriesName` is preferred as the title with `SxxExx` as the subtitle, and clicking the card opens the series detail page for episode selection; quick play still uses the original episode and original progress. Without `SeriesId`, the original behavior and favorites remain unchanged; API grouping, pagination, and totals are unchanged, with no extra detail requests. Status: local Node 464/464 (454 baseline + 10 new) as of this round; this change was not built or deployed this round, and real playback has not been verified.
 
+> **Embedded ASS subtitle outline fix (this round's change):** Corrects the outline/shadow CSS selectors for the embedded ASS renderer's child nodes (adding the descendant combinator in four places), restoring subtitles' original outline/shadow declarations; no global forced `text-shadow`, and JASSUB is unchanged. Measured offline in real Chromium compositing a synthetic ASS (Arial 24, Outline 3): the original build's `span::after` had no `content` and a 0px outline; after fixing the four selectors, with no override injected, the real pseudo-element measured black 6px (a 2x stroke centered on the path is expected, not a defect). That measurement is not equivalent to accepting the original media; this round did not build or deploy the change. Status: the full Node suite passes 470/470 (454 baseline + 10 series changes + 6 CSS contract cases), together with the related Go web/player/asset tests and `go vet`. The original media remains unverified.
+
 ## Table of Contents
 
 - [Preview](#preview)
