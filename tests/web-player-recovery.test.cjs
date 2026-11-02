@@ -68,6 +68,7 @@ function harness(options = {}) {
       if (this.seekImpl) return this.seekImpl(timestamp);
       this.currentTime = timestamp;
     }
+    getEioSharedMediaDomain() { return options.getDomain?.(this) || null; }
     async destroy() { this.destroyed = true; }
     getDuration() { return 300000n; }
     getStreams() { return this.streams; }
@@ -330,4 +331,22 @@ test('destroy rejects diagnosably when the decoder outlives its deadline', { tim
   // afterEach teardown, which always awaits destroy().
   const index = livePlayers.indexOf(player);
   if (index >= 0) livePlayers.splice(index, 1);
+});
+
+test('opt-in fallback reuses the ownership descriptor without inventing teardown credit', { timeout: 3000 }, async () => {
+  // Descriptor stub tests adapter handoff only, not physical-memory verification.
+  const domain = Object.freeze({ domainId: 'modeled-session-domain' });
+  const budget = { enabled: true, maxBytes: 300000000, maxForwardSeconds: 120 };
+  const { player, instances } = harness({ getDomain: core => core.options.eioSharedMediaDomain || domain });
+  await player.load('/stream.mkv', source, item, { fallbackUrl: '/master.m3u8', eioDualCache: budget });
+  assert.equal(instances[0].options.eioDualCache.enabled, true);
+  assert.notEqual(instances[0].options.eioDualCache, budget, 'caller options are not mutated');
+  assert.equal(instances[0].options.eioSharedMediaDomain, undefined);
+  instances[0].listeners.error(new Error('modeled rebuild'));
+  await waitFor(() => instances.length === 2 && player._recovering === false);
+  assert.equal(instances[0].destroyed, true);
+  assert.equal(instances[1].options.eioSharedMediaDomain, domain);
+  assert.equal(player._eioOwnershipDomain, domain);
+  await player.destroy();
+  assert.equal(player._eioOwnershipDomain, domain, 'destroy completion never resets shared ownership');
 });

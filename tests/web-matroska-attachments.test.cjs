@@ -14,7 +14,10 @@ const vm = require('node:vm');
 //    remaining count (never BigInt.asIntN(32) over the whole size, which wraps
 //    above 2 GiB). Each chunk is passed to the real `ioReader.skip` as a
 //    Number, its actual argument type; <= 16 MiB keeps that exact. The mock
-//    rejects any non-Number skip argument. Skip rejections propagate.
+//    rejects any non-Number skip argument. Skip rejections propagate. The
+//    binary read itself is now routed through the actual `e.eioMatroskaOwned`
+//    helper when it is installed; fixtures without an owned manager exercise
+//    the unchanged `readBuffer(Number(BigInt.asIntN(32, size)))` fallback.
 //
 // 2. module 25248 analyzeStreams, Attachments: `if (t.data)` copied
 //    t.data.data even when the payload was null, allocating a buffer for an
@@ -38,7 +41,7 @@ const count = (needle) => bundle.split(needle).length - 1;
 const CASE8_OLD =
   'case 8:n={pos:e.ioReader.getPos(),size:d,data:d<o?await e.ioReader.readBuffer(Number(BigInt.asIntN(32,d))):null};break;';
 const CASE8_NEW =
-  'case 8:{const p=e.ioReader.getPos();if(d<o)n={pos:p,size:d,data:await e.ioReader.readBuffer(Number(BigInt.asIntN(32,d)))};else{const q=BigInt(16777216);let s=d;for(n={pos:p,size:d,data:null};s>BigInt(0);){const u=s>q?q:s;await e.ioReader.skip(Number(u)),s-=u}}break}';
+  'case 8:{const p=e.ioReader.getPos();if(d<o){const eioApi=e.eioMatroskaOwned,eioMgr=eioApi&&eioApi.manager(),eioN=eioMgr?eioApi.safe(d):Number(BigInt.asIntN(32,d));if(eioMgr&&(null===eioN||eioN<0)){eioApi.error("EIO_OWNED_BINARY_SIZE_INVALID",{size:String(d)});const eioErr=new Error("EIO_OWNED_BINARY_SIZE_INVALID");throw eioErr.code="EIO_OWNED_BINARY_SIZE_INVALID",eioErr}let eioRead=null;if(eioMgr)try{eioRead=await eioApi.readBinary(eioN,"matroska-binary")}catch(err){if(err&&(err.eioCancelled||"EIO_OWNED_ADMISSION_CANCELLED"===err.code))throw err;const eioCode=err&&err.code||"EIO_OWNED_BINARY_READ_FAILED";eioApi.error(eioCode,{need:eioN,cause:eioCode});throw err}n={pos:p,size:d,data:eioRead?eioRead.data:await e.ioReader.readBuffer(eioN)};eioRead&&eioRead.handle&&(n.eioOwned=eioRead.handle)}else{const q=BigInt(16777216);let s=d;for(n={pos:p,size:d,data:null};s>BigInt(0);){const u=s>q?q:s;await e.ioReader.skip(Number(u)),s-=u}}break}';
 const ATTACH_OLD = ',t.data)if(p.xz[t.mime])';
 const ATTACH_NEW = ',t.data&&t.data.data)if(p.xz[t.mime])';
 
@@ -62,6 +65,13 @@ function extractParseEbml() {
   assert.ok(src.endsWith('c}'), 'parseEbmlSyntax must still return the accumulated syntax object');
   assert.ok(src.includes(CASE8_NEW), 'extracted parseEbmlSyntax must carry the patched BUFFER branch');
   assert.ok(!src.includes(CASE8_OLD), 'extracted parseEbmlSyntax must not carry the unadvanced BUFFER branch');
+  assert.ok(src.includes('const eioApi=e.eioMatroskaOwned'), 'BUFFER branch must use the actual owned-read helper');
+  assert.ok(src.includes('eioApi.readBinary(eioN,"matroska-binary")'), 'BUFFER branch must call the actual owned binary read');
+  assert.ok(src.includes('n.eioOwned=eioRead.handle'), 'owned binary reads must retain the returned handle');
+  assert.ok(
+    src.includes('eioRead?eioRead.data:await e.ioReader.readBuffer(eioN)'),
+    'fixtures without an owned manager must keep the original readBuffer fallback',
+  );
   return { name, src };
 }
 
@@ -216,6 +226,8 @@ function makeFixture(size, nextPayload = null) {
     reader.addSegment(nextStart, bytesOf([nextHeader, payload]));
     total = nextStart + BigInt(nextHeader.length + payload.length);
   }
+  // Deliberately no `eioMatroskaOwned` manager: the actual BUFFER branch must
+  // take its unchanged `readBuffer(eioN)` fallback for these fixtures.
   const format = {
     privateData: { header: { maxIdLength: 4, maxSizeLength: 8 } },
     ioReader: reader,
@@ -519,6 +531,10 @@ test('the bundle carries exactly the two patched attachment branches and keeps t
   assert.ok(
     parseEbml.src.includes('await e.ioReader.skip(Number(u))'),
     'oversized branch must await skip with a Number',
+  );
+  assert.ok(
+    parseEbml.src.includes('eioApi.readBinary(eioN,"matroska-binary")'),
+    'actual owned binary wrapper must be present in the executed BUFFER branch',
   );
   assert.ok(!parseEbml.src.includes('skip(u)'), 'oversized branch must not pass the raw BigInt chunk');
   assert.ok(!parseEbml.src.includes('BigInt.asIntN(32,d)):null'), 'skip must not wrap the size to 32 bit');

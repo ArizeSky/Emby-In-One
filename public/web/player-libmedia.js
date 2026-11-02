@@ -186,7 +186,29 @@
       this._engineWedged = { error, since: Date.now(), generation: this._engineGeneration, token: this._teardownToken };
     }
 
+    _captureSharedMediaDomain(core) {
+      if (typeof core?.getEioSharedMediaDomain !== 'function') {
+        if (this.options?.eioDualCache?.enabled === true) {
+          const error = new Error('Shared media ownership interface is unavailable');
+          error.code = 'EIO_SHARED_DOMAIN_INTERFACE_MISSING';
+          throw error;
+        }
+        return;
+      }
+      const domain = core.getEioSharedMediaDomain();
+      if (!domain) return;
+      if (this._eioOwnershipDomain && this._eioOwnershipDomain.domainId !== domain.domainId) {
+        const error = new Error('Playback rebuild attempted to replace the ownership domain');
+        error.code = 'EIO_SHARED_DOMAIN_CONFIG_CHANGED';
+        throw error;
+      }
+      // Keep the descriptor even after teardown: completion is not byte credit.
+      // The next core verifies the physical domain before reusing this table.
+      if (!this._eioOwnershipDomain) this._eioOwnershipDomain = domain;
+    }
+
     async _releaseCore(_core) {
+      this._captureSharedMediaDomain(_core);
       const timeout = Number(this.options?.destroyTimeout ?? this.options?.engineTeardownTimeout) || 4000;
       const token = {};
       this._teardownToken = token;
@@ -479,6 +501,10 @@
       const generation = this._bumpEngineGeneration();
       this.mode = 'libmedia';
       const core = this.core = new AVPlayer({
+        ...(this.options?.eioDualCache?.enabled === true ? {
+          eioDualCache: { ...this.options.eioDualCache },
+          ...(this._eioOwnershipDomain ? { eioSharedMediaDomain: this._eioOwnershipDomain } : {}),
+        } : {}),
         container: this.host,
         wasmBaseUrl: new URL('/web/vendor/web/libmedia/wasm', location.origin).href,
         enableWebCodecs: true,

@@ -4,7 +4,27 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
+const BUNDLE = path.join(__dirname, '../public/vendor/web/libmedia/26.avplayer.js');
+const BUNDLE_SRC = fs.readFileSync(BUNDLE, 'utf8');
+
+// Cut an actual class method out of the artifact and turn only its declaration
+// into a function. The body stays byte-for-byte the vendored implementation;
+// the harness supplies the instance it runs on.
+function extractActualMethod(bundle, startMarker, endMarker, name, isAsync) {
+  const start = bundle.indexOf(startMarker);
+  assert.ok(start >= 0, `${name} method not found in bundle`);
+  const end = bundle.indexOf(endMarker, start);
+  assert.ok(end > start, `method boundary after ${name} not found`);
+  const src = bundle.slice(start, end).trimEnd();
+  const prefix = `${isAsync ? 'async ' : ''}${name}`;
+  assert.ok(src.startsWith(`${prefix}(`), `${name} extraction must start at the actual method`);
+  assert.ok(src.endsWith('}'), `${name} extraction must end at a method boundary`);
+  return `${isAsync ? 'async ' : ''}function ${name}${src.slice(prefix.length)}`;
+}
+
 // Execute the vendored afterSeek itself, with synthetic packets and tracks.
+// Its actual helpers (eioAfterSeekWrite/eioAfterSeekFlush/eioAddQueue) are
+// extracted alongside it, so the non-owned branches run the real code.
 // AAC packets are shorter than video frames: one shared loop stopped too early.
 function pipeline(audio = true, video = true) {
   const memory = new Map();
@@ -19,6 +39,8 @@ function pipeline(audio = true, video = true) {
     stream.bufferQueue = { flush: () => stream.muxEnd };
     return stream;
   };
+  // No `eioOwned` field on the streams: the extracted helpers must take their
+  // non-owned branches, matching the original fake write/flush/queue order.
   const state = { audio: audio ? track(21) : null, video: video ? track(66) : null,
     cacheDuration: 500n, pausing: true, playRate: 100n, avpacketPool: { release() {} } };
   const instance = { tasks: new Map([['task', state]]),
@@ -41,10 +63,38 @@ function pipeline(audio = true, video = true) {
     x: { T9: (a, b) => a > b ? a : b }, Q: { bX() {} }, C: { A: () => 0 },
     P: { yw: ms => Number(ms) / 1000 }, T: { Yz() {} }, L: 'test',
   };
-  const bundle = fs.readFileSync(path.join(__dirname, '../public/vendor/web/libmedia/26.avplayer.js'), 'utf8');
-  const begin = bundle.indexOf('async afterSeek('), end = bundle.indexOf('async setPlayRate(', begin);
-  const method = bundle.slice(begin, end).replace(/^async afterSeek/, 'async function');
-  instance.afterSeek = vm.runInNewContext('(' + method + ')', context);
+  const afterSeekSrc = extractActualMethod(
+    BUNDLE_SRC,
+    'async afterSeek(',
+    'async setPlayRate(',
+    'afterSeek',
+    true,
+  );
+  const afterSeekWriteSrc = extractActualMethod(
+    BUNDLE_SRC,
+    'async eioAfterSeekWrite(',
+    'async eioAfterSeekFlush(',
+    'eioAfterSeekWrite',
+    true,
+  );
+  const afterSeekFlushSrc = extractActualMethod(
+    BUNDLE_SRC,
+    'async eioAfterSeekFlush(',
+    'async unregisterTask(',
+    'eioAfterSeekFlush',
+    true,
+  );
+  const addQueueSrc = extractActualMethod(
+    BUNDLE_SRC,
+    'eioAddQueue(t,e,i){',
+    'eioDiscardQueue(',
+    'eioAddQueue',
+    false,
+  );
+  instance.eioAfterSeekWrite = vm.runInNewContext('(' + afterSeekWriteSrc + ')', context);
+  instance.eioAfterSeekFlush = vm.runInNewContext('(' + afterSeekFlushSrc + ')', context);
+  instance.eioAddQueue = vm.runInNewContext('(' + addQueueSrc + ')', context);
+  instance.afterSeek = vm.runInNewContext('(' + afterSeekSrc + ')', context);
   return { instance, state };
 }
 
