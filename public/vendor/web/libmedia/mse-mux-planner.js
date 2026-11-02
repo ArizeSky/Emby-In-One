@@ -841,7 +841,7 @@ module.exports={
   EioMuxCountOnlyWriter,eioPlanDiagnosticScalar,eioPlanOverflowDetail,
   eioPlanUnsupported,eioPlanSite,eioPlanIsCount,eioPlanSum,eioPlanAdd,eioPlanMul,
   eioPlanOperation,eioPlanMux,eioPlanOperationWrite,
-  EIO_PLAN_METADATA_MAX_ENTRIES
+  EIO_PLAN_METADATA_MAX_ENTRIES,EIO_PLAN_ASSUMPTIONS
 };
 }
 }]);

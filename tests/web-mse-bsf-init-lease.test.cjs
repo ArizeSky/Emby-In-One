@@ -440,5 +440,5 @@ test('incomplete coverage explicitly includes persistent stream clones and repla
  const keys=source.match(/const EIO_MSE_INCOMPLETE=Object\.freeze\((\[[^;]+\])\);/);
  assert.ok(keys,'actual shipped incomplete-key list');
  assert.ok(JSON.parse(keys[1]).includes('stream-codecpar-clones'));
- assert.match(source,/"stream-codecpar-clones":"[^\"]*NATIVE input[^\"]*addStream\/reAddStream[^\"]*admitted and charged[^\"]*serialized-input clones, mux-output codecpar clones and in-place replacement lifetime remain uncovered/);
+ assert.match(source,/"stream-codecpar-clones":"[^\"]*NATIVE input[^\"]*addStream\/reAddStream[^\"]*admitted and charged[^\"]*initial serialization payload copies \(Wu\), mux-output codecpar clones and in-place replacement lifetime remain uncovered/);
 });

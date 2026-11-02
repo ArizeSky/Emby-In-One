@@ -64,11 +64,11 @@ test('main and actual generated Worker resolve identical named and upstream chun
   const context = vm.createContext({ console });
   vm.runInContext(exposed, context);
   for (const [id, file] of Object.entries(namedChunks)) {
-    assert.equal(runtime.require.u(Number(id)), file + '?v=eio-codecpar-1');
+    assert.equal(runtime.require.u(Number(id)), file + '?v=eio-codecpar-2');
     assert.equal(context.collected.u(Number(id)), runtime.require.u(Number(id)));
   }
   for (const id of [26, 573, 943]) {
-    assert.equal(runtime.require.u(id), id + '.avplayer.js?v=eio-codecpar-1');
+    assert.equal(runtime.require.u(id), id + '.avplayer.js?v=eio-codecpar-2');
     assert.equal(context.collected.u(id), runtime.require.u(id));
   }
 });

@@ -103,7 +103,11 @@ test('factory validates config, declares narrow coverage and stays inert until u
     });
     assert.equal(typeof callable, 'function', 'the factory result is the acquirer');
     assert.equal(callable.acquire, callable);
+    assert.equal(typeof callable.measured, 'function');
+    assert.equal(callable.acquireMeasured, callable.measured,
+      'the additive measured entry point is one function');
     assert.equal(typeof callable.snapshot, 'function');
+    assert.equal(callable.snapshot().measuredAcquireCount, 0);
 
     const text = fs.readFileSync(HELPER_PATH, 'utf8');
     assert.equal(/eioActiveOperation|eioMseNewClaim|eioMseDropClaim/.test(text), false,
@@ -201,6 +205,185 @@ test('malformed measurement fails before any admission, charge or pointer log',
       assert.equal(serialized.includes(needle), false,
         'scanner text/pointers must not be copied into diagnostics');
     }
+  });
+
+test('caller-measured admission shares the native gate without invoking the scanner',
+  { timeout: 5000 }, () => {
+    const SOURCE = 0x5100;
+    const f = makeFixture({ payloads: [[SOURCE, 5]] });
+    assert.equal(typeof f.manager.acquireMeasured, 'function');
+    assert.equal(f.manager.acquireMeasured, f.manager.measured);
+
+    const lease = f.manager.acquireMeasured(5, 1, 'mse-measured-codecpar');
+    assert.equal(lease.bytes, 5);
+    assert.deepEqual(f.measured, [], 'the measured entry point must not call the scanner');
+    assert.deepEqual([f.ctl.snapshot().heldBytes, f.ctl.snapshot().countBound], [5, 1]);
+    let snapshot = f.manager.snapshot();
+    assert.deepEqual([snapshot.acquiredCount, snapshot.measuredAcquireCount,
+      snapshot.liveBytes, snapshot.liveCount], [1, 1, 5, 1]);
+
+    assert.equal(lease.bind({ copiedBytes: 5 }), true);
+    assert.equal(lease.release(PROOF), true);
+    snapshot = f.manager.snapshot();
+    assert.deepEqual([snapshot.releasedCount, snapshot.measuredAcquireCount,
+      snapshot.liveBytes, f.ctl.snapshot().heldBytes], [1, 1, 0, 0]);
+
+    const native = f.manager.acquire(SOURCE, 1, 'mse-native-codecpar');
+    assert.equal(native.bytes, 5);
+    assert.deepEqual(f.measured, [SOURCE], 'the native entry point still measures');
+    assert.equal(f.manager.snapshot().measuredAcquireCount, 1,
+      'a scanner-measured claim is not a caller-measured claim');
+    assert.equal(native.release(PROOF), false, 'an unbound lease cannot be credited');
+    native.retainFailure({ code: 'EIO_CODECPAR_CLONE_UNPROVEN' });
+    assert.equal(f.ctl.snapshot().heldBytes, 5);
+  });
+
+test('caller-measured admission refuses invalid counts before any core call',
+  { timeout: 5000 }, () => {
+    const f = makeFixture();
+    const malformed = [-1, 1.5, NaN, Infinity, -Infinity, '5', null, undefined, true, {},
+      Number.MAX_SAFE_INTEGER + 1];
+    let expectedRefused = 0;
+    for (const value of malformed) {
+      const error = expectCode(() => f.manager.measured(value, 1, 'resident'),
+        'EIO_CODECPAR_LEASE_INVALID');
+      expectedRefused += 1;
+      assert.equal(error.bytes, undefined);
+      assert.equal(error.chargedBytes, undefined);
+      assert.equal(f.resources.snapshot().acquiredCount, 0,
+        'resources.acquire must not be reached for ' + String(value));
+      assert.equal(f.resources.snapshot().refusedCount, 0);
+      const snapshot = f.manager.snapshot();
+      assert.equal(snapshot.refusedCount, expectedRefused);
+      assert.equal(snapshot.acquiredCount, 0);
+      assert.equal(snapshot.measuredAcquireCount, 0);
+      assert.equal(snapshot.lastFault.code, 'EIO_CODECPAR_LEASE_INVALID');
+      assert.equal(snapshot.lastFault.bytes, 0);
+      assert.equal(f.ctl.snapshot().heldBytes, 0);
+      assert.equal(f.measured.length, 0,
+        'invalid measured input never reaches the scanner');
+    }
+    assert.equal(f.ctl.snapshot().countReserved, 0);
+    assert.equal(f.ctl.snapshot().countBound, 0);
+  });
+
+test('caller-measured refusal reads guarded diagnostic getters instead of escaping',
+  { timeout: 5000 }, () => {
+    let acquireCalls = 0;
+    let measureCalls = 0;
+    let next = null;
+    const manager = codecpar.createCodecparLeases({
+      resources: {
+        acquire() {
+          acquireCalls += 1;
+          return next;
+        }
+      },
+      measureNativePayload() {
+        measureCalls += 1;
+        throw new Error('the measured entry point must not measure');
+      }
+    });
+
+    next = { ok: false };
+    Object.defineProperty(next, 'code', {
+      get() {
+        throw null;
+      }
+    });
+    const codeError = expectCode(() => manager.measured(5, 1, 'resident'),
+      'EIO_CODECPAR_LEASE_REFUSED');
+    assert.deepEqual([codeError.bytes, codeError.chargedBytes], [5, 0]);
+    assert.equal(manager.snapshot().lastFault.code, 'EIO_CODECPAR_LEASE_REFUSED');
+
+    next = { ok: false, code: 'capacity-exceeded' };
+    Object.defineProperty(next, 'chargedBytes', {
+      get() {
+        throw new Error('chargedBytes getter exploded');
+      }
+    });
+    const chargedError = expectCode(() => manager.measured(6, 1, 'resident'),
+      'capacity-exceeded');
+    assert.deepEqual([chargedError.bytes, chargedError.chargedBytes], [6, 0]);
+    assert.equal(manager.snapshot().lastFault.code, 'capacity-exceeded');
+    assert.equal(manager.snapshot().strandedBytes, 0);
+
+    next = { code: 'capacity-exceeded' };
+    Object.defineProperty(next, 'ok', {
+      get() {
+        throw new Error('ok getter exploded');
+      }
+    });
+    const okError = expectCode(() => manager.measured(7, 1, 'resident'),
+      'capacity-exceeded');
+    assert.deepEqual([okError.bytes, okError.chargedBytes], [7, 0]);
+
+    assert.equal(acquireCalls, 3);
+    assert.equal(measureCalls, 0);
+    const snapshot = manager.snapshot();
+    assert.deepEqual([snapshot.acquiredCount, snapshot.measuredAcquireCount,
+      snapshot.refusedCount, snapshot.liveBytes, snapshot.strandedBytes],
+    [0, 0, 3, 0, 0]);
+  });
+
+test('caller-measured admission uses a core refusal without stranding credit',
+  { timeout: 5000 }, () => {
+    const f = makeFixture({ capacityBytes: 4 });
+    const error = expectCode(() => f.manager.measured(5, 1, 'resident'),
+      'capacity-exceeded');
+    assert.deepEqual([error.bytes, error.chargedBytes], [5, 0]);
+    assert.deepEqual([f.ctl.snapshot().heldBytes, f.ctl.snapshot().countBound], [0, 0]);
+    assert.deepEqual([f.resources.snapshot().refusedCount,
+      f.resources.snapshot().acquiredCount], [1, 0]);
+    const snapshot = f.manager.snapshot();
+    assert.deepEqual([snapshot.refusedCount, snapshot.acquiredCount,
+      snapshot.measuredAcquireCount, snapshot.strandedBytes, snapshot.liveBytes],
+    [1, 0, 0, 0, 0]);
+    assert.equal(snapshot.lastFault.code, 'capacity-exceeded');
+    assert.equal(f.measured.length, 0);
+  });
+
+test('caller-measured refusal surfaces a stranded charge without fabricating credit',
+  { timeout: 5000 }, () => {
+    let measureCalls = 0;
+    const manager = codecpar.createCodecparLeases({
+      resources: {
+        acquire() {
+          return { ok: false, code: 'bind-failed', chargedBytes: 3 };
+        }
+      },
+      measureNativePayload() {
+        measureCalls += 1;
+        throw new Error('the measured entry point must not measure');
+      }
+    });
+
+    const error = expectCode(() => manager.measured(5, 1, 'resident'), 'bind-failed');
+    assert.deepEqual([error.bytes, error.chargedBytes], [5, 3]);
+    assert.equal(measureCalls, 0);
+    const snapshot = manager.snapshot();
+    assert.deepEqual([snapshot.refusedCount, snapshot.acquiredCount,
+      snapshot.measuredAcquireCount, snapshot.strandedBytes, snapshot.liveBytes],
+    [1, 0, 0, 3, 0]);
+    assert.deepEqual([snapshot.lastFault.code, snapshot.lastFault.bytes,
+      snapshot.lastFault.chargedBytes], ['bind-failed', 5, 3]);
+  });
+
+test('caller-measured zero bytes admits and credits exactly one zero-size lease',
+  { timeout: 5000 }, () => {
+    const f = makeFixture({ capacityBytes: 64 });
+    const lease = f.manager.measured(0, 1, 'resident');
+    assert.equal(lease.bytes, 0);
+    assert.deepEqual([f.ctl.snapshot().heldBytes, f.ctl.snapshot().countBound], [0, 1]);
+    assert.equal(f.manager.snapshot().measuredAcquireCount, 1);
+    assert.equal(f.measured.length, 0);
+
+    assert.equal(lease.bind({ copiedBytes: 0 }), true, 'exact zero binds');
+    assert.equal(lease.bind({ copiedBytes: 0 }), false, 'bind remains single use');
+    assert.equal(lease.release(PROOF), true);
+    assert.deepEqual([f.ctl.snapshot().heldBytes, f.ctl.snapshot().countBound], [0, 0]);
+    assert.deepEqual([f.manager.snapshot().releasedCount,
+      f.manager.snapshot().liveCount], [1, 0]);
   });
 
 test('admission refusals are explicit, pre-charge, and leave no stranded credit',
@@ -408,6 +591,76 @@ test('core release refusal or throw retains with exactly one release attempt and
     snapshot = manager.snapshot();
     assert.deepEqual([snapshot.releaseFailedCount, snapshot.lastFault.code],
       [1, 'EIO_CODECPAR_LEASE_RELEASE_FAILED']);
+  });
+
+test('release guards a thrown result.ok getter or null result after one attempt',
+  { timeout: 5000 }, () => {
+    const SOURCE = 0x5100;
+    const badResults = [
+      () => {
+        const result = {};
+        Object.defineProperty(result, 'ok', {
+          get() {
+            throw new Error('ok getter for 0x5100 exploded');
+          }
+        });
+        return result;
+      },
+      () => {
+        const result = {};
+        Object.defineProperty(result, 'ok', {
+          get() {
+            throw null;
+          }
+        });
+        return result;
+      },
+      () => null,
+      () => undefined
+    ];
+
+    for (const makeResult of badResults) {
+      const real = core.create({ capacityBytes: 1024, maxEntries: 1 });
+      const ownedResources = owned.createOwnedResources(real);
+      let releaseCalls = 0;
+      const resources = {
+        acquire(bytes, label, generation) {
+          const acquired = ownedResources.acquire(bytes, label, generation);
+          if (!acquired.ok) return acquired;
+          return {
+            ok: true,
+            handle: {
+              release() {
+                releaseCalls += 1;
+                return makeResult();
+              }
+            }
+          };
+        },
+        snapshot: () => ownedResources.snapshot()
+      };
+      const manager = codecpar.createCodecparLeases({
+        resources,
+        measureNativePayload: () => 5
+      });
+      const lease = manager.acquire(SOURCE, 1, 'resident');
+      assert.equal(lease.bind({ copiedBytes: 5 }), true);
+      assert.equal(real.snapshot().heldBytes, 5);
+
+      assert.equal(lease.release(PROOF), false);
+      assert.equal(releaseCalls, 1);
+      assert.equal(lease.release(PROOF), false, 'the failed result read is not retried');
+      assert.equal(releaseCalls, 1, 'exactly one core release attempt');
+      assert.equal(real.snapshot().heldBytes, 5, 'no fabricated credit');
+
+      const snapshot = manager.snapshot();
+      assert.deepEqual([snapshot.releaseFailedCount, snapshot.releasedCount,
+        snapshot.retainedCount, snapshot.liveBytes, snapshot.liveCount],
+      [1, 0, 1, 5, 1]);
+      assert.equal(snapshot.lastFault.code, 'EIO_CODECPAR_LEASE_RELEASE_FAILED');
+      assert.equal(snapshot.lastFault.chargedBytes, 5);
+      assert.equal(JSON.stringify(snapshot).includes('0x5100'), false);
+    }
   });
 
 test('retained failures stay diagnosable in a bounded scalar log with no reset',

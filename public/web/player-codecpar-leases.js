@@ -2,11 +2,12 @@
  * player-codecpar-leases.js
  *
  * Stream-lifetime admission + lease wrapper for one persistent native codecpar
- * payload clone (extradata + side-data payloads). The caller measures the
- * source codecpar with a read-only scanner, this module charges the exact
- * measured bytes through the existing owned-resource/shared-media manager
- * BEFORE the native Gy()/copy, and returns the four-field lease that module
- * 67669's Yi()/dn() already accept:
+ * payload clone (extradata + side-data payloads). The native entry point
+ * measures the source codecpar with a read-only scanner; the additive measured
+ * entry point accepts an already-measured byte count. Both validate before any
+ * core call, charge the exact bytes through the existing owned-resource/
+ * shared-media manager BEFORE the native Gy()/copy, and return the four-field
+ * lease that module 67669's Yi()/dn() already accept:
  *
  *   { bytes, bind(summary), release(proof), retainFailure(error) }
  *
@@ -102,6 +103,23 @@
     return boundedCode(code, fallback);
   }
 
+  /* Guarded property read for untrusted admission/release results. A getter may
+   * throw any value, including null; a failed read is reported as !ok so the
+   * caller fails closed instead of letting the throw escape. */
+  function safeField(object, key) {
+    if (object === null || object === undefined) return { ok: false, value: undefined };
+    try {
+      return { ok: true, value: object[key] };
+    } catch (ignored) {
+      return { ok: false, value: undefined };
+    }
+  }
+
+  function safeChargedBytes(result) {
+    var field = safeField(result, 'chargedBytes');
+    return field.ok && isCount(field.value) ? field.value : 0;
+  }
+
   /* Config checks are argument errors, not accounting faults: nothing has been
    * measured or charged at this point. */
   function checkConfig(config) {
@@ -129,6 +147,7 @@
     this._liveBytes = 0;
     this._strandedBytes = 0;
     this._acquiredCount = 0;
+    this._measuredAcquireCount = 0;
     this._refusedCount = 0;
     this._boundCount = 0;
     this._releasedCount = 0;
@@ -272,7 +291,12 @@
       this._poison(record, 'EIO_CODECPAR_LEASE_RELEASE_FAILED');
       return false;
     }
-    if (!result || result.ok !== true) {
+    /* releaseAttempted is already set: read the core result ok flag through the
+     * guarded getter so a throwing ok accessor fails closed, poisons the lease
+     * and can never reach a second release attempt. */
+    var okField = safeField(result, 'ok');
+    var resultPoisoned = record.failed;
+    if (!okField.ok || okField.value !== true || resultPoisoned) {
       this._releaseFailedCount += 1;
       /* Poison before the core's diagnostic code is read, so a code getter can
        * neither escape with a still-creditable charge nor change the outcome. */
@@ -358,9 +382,18 @@
     return bytes;
   };
 
-  CodecparLeases.prototype.acquire = function acquire(sourcePtr, generation, label) {
+  /* Shared admission/record continuation for both entry points. The caller has
+   * already obtained an exact, safe byte count; this function validates it
+   * again before the one core call so the measured entry point cannot bypass
+   * the same gate. */
+  CodecparLeases.prototype._admit = function _admit(bytes, generation, label) {
     var displayLabel = boundedLabel(label);
-    var bytes = this._measureSource(sourcePtr, displayLabel);
+    if (!isCount(bytes)) {
+      this._refusedCount += 1;
+      this._noteFault('EIO_CODECPAR_LEASE_INVALID', displayLabel, 0, 0);
+      throw codedError('EIO_CODECPAR_LEASE_INVALID',
+        'codecpar payload admission requires a safe non-negative byte count');
+    }
 
     var acquired;
     /* Boolean sentinel: an admission that throws null/undefined is still a
@@ -378,10 +411,19 @@
         'owned-resource admission threw before publishing a handle');
     }
 
-    if (!acquired || acquired.ok !== true || !acquired.handle ||
-        typeof acquired.handle.release !== 'function') {
-      var code = boundedCode(acquired && acquired.code, 'EIO_CODECPAR_LEASE_REFUSED');
-      var charged = acquired && isCount(acquired.chargedBytes) ? acquired.chargedBytes : 0;
+    /* Guard every untrusted field: a throwing ok/handle/release/code getter
+     * must become an explicit refusal, never an exception that escapes with a
+     * still-charged admission. */
+    var okField = safeField(acquired, 'ok');
+    var handleField = safeField(acquired, 'handle');
+    var handle = handleField.value;
+    var releaseField = safeField(handle, 'release');
+    var admitted = okField.ok && okField.value === true && handleField.ok &&
+      handle !== null && handle !== undefined && releaseField.ok &&
+      typeof releaseField.value === 'function';
+    if (!admitted) {
+      var code = safeErrorCode(acquired, 'EIO_CODECPAR_LEASE_REFUSED');
+      var charged = safeChargedBytes(acquired);
       this._refusedCount += 1;
       this._noteFault(code, displayLabel, bytes, charged);
       /* A manager bind failure can publish a real charge without a handle.
@@ -399,7 +441,7 @@
     var record = {
       bytes: bytes,
       label: displayLabel,
-      handle: acquired.handle,
+      handle: handle,
       bound: false,
       failed: false,
       released: false,
@@ -412,6 +454,24 @@
     this._acquiredCount += 1;
     return makeLease(this, record);
   };
+
+  /* Native entry point: measure with the read-only scanner first, then use the
+   * exact same admission/record path as the caller-measured entry point. */
+  CodecparLeases.prototype.acquire = function acquire(sourcePtr, generation, label) {
+    var displayLabel = boundedLabel(label);
+    var bytes = this._measureSource(sourcePtr, displayLabel);
+    return this._admit(bytes, generation, label);
+  };
+
+  /* Additive caller-measured entry point. It never invokes the scanner and it
+   * validates the count before any core call; after that it shares admission,
+   * refusal, record shape, counters, poison and release rules with acquire(). */
+  CodecparLeases.prototype.acquireMeasured =
+    function acquireMeasured(bytes, generation, label) {
+      var lease = this._admit(bytes, generation, label);
+      this._measuredAcquireCount += 1;
+      return lease;
+    };
 
   function resourcesView(resources) {
     if (!resources || typeof resources.snapshot !== 'function') return null;
@@ -448,6 +508,7 @@
       liveBytes: this._liveBytes,
       strandedBytes: this._strandedBytes,
       acquiredCount: this._acquiredCount,
+      measuredAcquireCount: this._measuredAcquireCount,
       refusedCount: this._refusedCount,
       boundCount: this._boundCount,
       releasedCount: this._releasedCount,
@@ -469,13 +530,19 @@
   function createCodecparLeases(config) {
     var checked = checkConfig(config);
     var manager = new CodecparLeases(checked.resources, checked.measure);
-    /* The factory result is both the acquirer (leases(sourcePtr, generation,
-     * label)) and the diagnostic holder (leases.acquire / leases.snapshot).
-     * One manager, no second entry point and no extra lease fields. */
+    /* The factory result is both the native acquirer (leases(sourcePtr,
+     * generation, label)) and the diagnostic holder (leases.acquire /
+     * leases.measured / leases.snapshot). One manager, one ledger and no extra
+     * lease fields. */
     function acquire(sourcePtr, generation, label) {
       return manager.acquire(sourcePtr, generation, label);
     }
     acquire.acquire = acquire;
+    function acquireMeasured(bytes, generation, label) {
+      return manager.acquireMeasured(bytes, generation, label);
+    }
+    acquire.measured = acquireMeasured;
+    acquire.acquireMeasured = acquireMeasured;
     acquire.snapshot = function snapshot() {
       return manager.snapshot();
     };
