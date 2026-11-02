@@ -10,7 +10,8 @@ const namedChunks = Object.freeze({
   90201: 'shared-media-ownership.js',
   90202: 'shared-media-domain.js',
   90203: 'owned-media-resources.js',
-  90204: 'shared-media-release-registry.js'
+  90204: 'shared-media-release-registry.js',
+  90205: 'codecpar-leases.js'
 });
 
 function registeredRuntime() {
@@ -35,6 +36,7 @@ function registeredRuntime() {
 test('queued split factories register before the real entry boundary', () => {
   const runtime = registeredRuntime();
   for (const id of [90190, 90187, 90189, 90188]) assert.equal(typeof runtime.modules[id], 'function');
+  assert.equal(typeof runtime.require(90191).createCodecparLeases, 'function');
   assert.equal(runtime.require(90190).VERSION, 1);
   assert.equal(typeof runtime.require(90189).createOwnedResources, 'function');
   assert.equal(typeof runtime.require(90188).createReleaseRegistry, 'function');
@@ -45,6 +47,10 @@ test('actual generated Worker collector includes the split transitive factories'
   const code = runtime.require(39484).A(90187, { varName: 'collected' });
   for (const id of [90187, 90190, 90188]) assert.match(code, new RegExp('(?:"' + id + '"|' + id + ')\\s*:'));
   assert.match(code, /if \(chunkId === 26\) promises.push\(__webpack_require__\.e\(90200\)\)/);
+  assert.match(code, /if \(chunkId === 26\) promises.push\(__webpack_require__\.e\(90205\)\)/);
+  const shippedLease = fs.readFileSync(path.join(root, 'codecpar-leases.js'), 'utf8');
+  const canonicalLease = fs.readFileSync(path.join(__dirname, '../public/web/player-codecpar-leases.js'), 'utf8');
+  assert.equal(shippedLease.slice(shippedLease.indexOf('/*!'), shippedLease.lastIndexOf('\n}\n}]);')).trimEnd(), canonicalLease.trimEnd(), 'shipped 90191 body must match canonical helper byte-for-byte');
   assert.match(code, /const core=__webpack_require__\(90190\)/);
 });
 
@@ -58,11 +64,11 @@ test('main and actual generated Worker resolve identical named and upstream chun
   const context = vm.createContext({ console });
   vm.runInContext(exposed, context);
   for (const [id, file] of Object.entries(namedChunks)) {
-    assert.equal(runtime.require.u(Number(id)), file + '?v=eio-structure-2');
+    assert.equal(runtime.require.u(Number(id)), file + '?v=eio-codecpar-1');
     assert.equal(context.collected.u(Number(id)), runtime.require.u(Number(id)));
   }
   for (const id of [26, 573, 943]) {
-    assert.equal(runtime.require.u(id), id + '.avplayer.js?v=eio-structure-2');
+    assert.equal(runtime.require.u(id), id + '.avplayer.js?v=eio-codecpar-1');
     assert.equal(context.collected.u(id), runtime.require.u(id));
   }
 });
