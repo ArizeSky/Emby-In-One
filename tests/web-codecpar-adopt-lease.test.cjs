@@ -296,7 +296,7 @@ test('export is additive and adopt publishes the retained record before the untr
 
     const moduleText = module67669Text(avplayerSource);
     const start = moduleText.indexOf('function eioCodecparAdopt(');
-    const end = moduleText.indexOf('function c(eioDest,eioSource,eioLease)', start);
+    const end = moduleText.indexOf('\nfunction ', start + 1);
     assert.ok(start >= 0 && end > start, 'adopt is a separate function');
     const adoptText = moduleText.slice(start, end);
     assert.doesNotMatch(adoptText, /\.release\s*\(/,

@@ -1295,3 +1295,31 @@ test('baseline and strict serialized clones coexist: raw 2-arg T8 vs frozen 3-ar
     assert.equal(real.control.snapshot().heldBytes, SERIALIZED_BYTES);
     assert.equal(task.eioCodecparLeases.snapshot().acquiredCount, 1);
   });
+
+test('strict serialized CUSTOM and unknown layout ownership refuse before admission or allocation',
+  { timeout: 5000 }, () => {
+    for (const order of [2, -1, 4, undefined, '1']) {
+      const real = makeRealResources({ capacityBytes: 4096 });
+      const task = { eioOwnedResources: real.resources, eioOwnedGeneration: 9 };
+      const source = serializedSourceFixture();
+      source.chLayout.order = order;
+      let allocations = 0;
+      let writes = 0;
+      let managerLoads = 0;
+      const api = loadCloneMethod({
+        l: { Gy() { allocations += 1; return 0x9000; } },
+        y: { A: () => false },
+        g: { eioCodecparAdopt() { writes += 1; } },
+        p: { T8() { writes += 1; } },
+        i() { managerLoads += 1; return codecpar; }
+      });
+      assert.throws(() => api.eioCloneStreamCodecpar(task, source),
+        error => error.code === 'EIO_CODECPAR_LAYOUT_UNSUPPORTED');
+      assert.equal(allocations, 0);
+      assert.equal(writes, 0);
+      assert.equal(managerLoads, 0, 'ownership refusal precedes lease manager acquisition');
+      assert.equal(real.control.snapshot().heldBytes, 0);
+      assert.equal(real.control.snapshot().countBound, 0);
+      assert.equal(task.eioCodecparLeases, undefined);
+    }
+  });

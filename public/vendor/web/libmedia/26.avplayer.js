@@ -511,6 +511,10 @@ eioSerializedCodecparSnapshot(source){
   const eioSampleAspectRatio=this.eioSerializedPlainFields(eioRead.sampleAspectRatio,["den","num"]);
   const eioFramerate=this.eioSerializedPlainFields(eioRead.framerate,["den","num"]);
   const eioChLayout=this.eioSerializedPlainFields(eioRead.chLayout,["order","nbChannels","u"]);
+  /* CUSTOM (order 2) owns a native map. T8/raw native clones do not deep-copy
+     that ownership; refuse before claiming or allocating a strict input. */
+  if(eioChLayout.order!==0&&eioChLayout.order!==1&&eioChLayout.order!==3)
+    throw eioMseError("EIO_CODECPAR_LAYOUT_UNSUPPORTED");
   const eioSides=eioRead.codedSideData;
   if(!Array.isArray(eioSides))throw eioMseError("EIO_CODECPAR_LEASE_SHAPE_UNSUPPORTED");
   let eioCount=0;
