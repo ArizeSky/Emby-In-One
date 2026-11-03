@@ -1161,3 +1161,26 @@ test('nonce mismatch never authorizes a clock anchor', ASYNC, async () => {
   assert.ok(Array.isArray(tokens), 'mismatched nonce falls back to bootstrap span, not a fake clock');
   assert.equal(task.eioLedger.clockKnown, false);
 });
+test('a torn shared inspect (busy) is transient, not a protocol error, and retains the mirror', () => {
+  const env = buildTask({ demuxBytes: 10_000_000 });
+  const { task, helper } = env;
+  const token = helper.reserve(task, 100, { packet: 0 }, 2);
+  assert.ok(token, 'token reserved');
+  token.sharedBound = true;
+  token.sharedToken = { id: 1, offset: 0, bytes: 100, generation: 0 };
+  task.eioSharedController = {
+    inspectReservation() { return { ok: false, code: 'busy', reason: 'ownership record changed while inspecting' }; }
+  };
+  helper.reconcileShared(task);
+  assert.equal(task.eioLedger.protocolErrors, 0, 'torn read must not be counted as a protocol error');
+  assert.equal(task.eioLedger.sharedInspectBusy, 1, 'transient busy is counted separately');
+  assert.ok(task.eioLedger.t.get(token.id) === token, 'mirror retained: no release inferred from a torn read');
+  const snap = helper.snapshot(task);
+  assert.equal(snap.sharedInspectBusy, 1);
+  // A real failure (not busy) is still a protocol error.
+  task.eioSharedController = {
+    inspectReservation() { return { ok: false, code: 'invalid-token' }; }
+  };
+  helper.reconcileShared(task);
+  assert.equal(task.eioLedger.protocolErrors, 1, 'non-busy inspect failure stays a protocol error');
+});
