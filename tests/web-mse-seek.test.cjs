@@ -91,6 +91,10 @@ function pipeline(audio = true, video = true) {
     'eioAddQueue',
     false,
   );
+  const strictPredicateSrc = extractActualMethod(
+    BUNDLE_SRC, 'eioPullHasStrict(', 'seekSeconds(', 'eioPullHasStrict', false,
+  );
+  instance.eioPullHasStrict = vm.runInNewContext('(' + strictPredicateSrc + ')', context);
   instance.eioAfterSeekWrite = vm.runInNewContext('(' + afterSeekWriteSrc + ')', context);
   instance.eioAfterSeekFlush = vm.runInNewContext('(' + afterSeekFlushSrc + ')', context);
   instance.eioAddQueue = vm.runInNewContext('(' + addQueueSrc + ')', context);

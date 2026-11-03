@@ -11,10 +11,12 @@ const namedChunks = Object.freeze({
   90202: 'shared-media-domain.js',
   90203: 'owned-media-resources.js',
   90204: 'shared-media-release-registry.js',
-  90205: 'codecpar-leases.js'
+  90205: 'codecpar-leases.js',
+  90206: 'mse-pull-lifetime.js',
+  90207: 'mse-packet-ownership.js'
 });
 
-function registeredRuntime() {
+function registeredRuntime(skipId) {
   const context = vm.createContext({
     self: {}, console,
     document: {
@@ -23,7 +25,9 @@ function registeredRuntime() {
     }
   });
   for (const [id, file] of Object.entries(namedChunks)) {
-    if (Number(id) !== 90200) vm.runInContext(fs.readFileSync(path.join(root, file), 'utf8'), context);
+    if (Number(id) !== 90200 && Number(id) !== skipId) {
+      vm.runInContext(fs.readFileSync(path.join(root, file), 'utf8'), context);
+    }
   }
   const source = fs.readFileSync(path.join(root, 'avplayer.js'), 'utf8');
   const entry = 'var a=s(52989);return a.default';
@@ -37,9 +41,20 @@ test('queued split factories register before the real entry boundary', () => {
   const runtime = registeredRuntime();
   for (const id of [90190, 90187, 90189, 90188]) assert.equal(typeof runtime.modules[id], 'function');
   assert.equal(typeof runtime.require(90191).createCodecparLeases, 'function');
+  assert.equal(typeof runtime.require(90192).createMsePullLifetime, 'function');
+  assert.equal(typeof runtime.require(90193).createMsePacketOwnership, 'function');
   assert.equal(runtime.require(90190).VERSION, 1);
   assert.equal(typeof runtime.require(90189).createOwnedResources, 'function');
   assert.equal(typeof runtime.require(90188).createReleaseRegistry, 'function');
+  const ownership = fs.readFileSync(path.join(root, 'mse-packet-ownership.js'), 'utf8');
+  assert.match(ownership, /90193:\(module,exports,__webpack_require__\)=>\{/);
+  assert.match(ownership, /createMsePacketOwnership/);
+  assert.match(ownership, /EIO_MUX_PULL_OWNERSHIP_CONFLICT/);
+});
+
+test('strict pull module cannot load without the real ownership module', () => {
+  const runtime = registeredRuntime(90207);
+  assert.throws(() => runtime.require(90192));
 });
 
 test('actual generated Worker collector includes the split transitive factories', () => {
@@ -47,7 +62,13 @@ test('actual generated Worker collector includes the split transitive factories'
   const code = runtime.require(39484).A(90187, { varName: 'collected' });
   for (const id of [90187, 90190, 90188]) assert.match(code, new RegExp('(?:"' + id + '"|' + id + ')\\s*:'));
   assert.match(code, /if \(chunkId === 26\) promises.push\(__webpack_require__\.e\(90200\)\)/);
-  assert.match(code, /if \(chunkId === 26\) promises.push\(__webpack_require__\.e\(90205\)\)/);
+  assert.match(code, /if \(chunkId === 26\) promises.push\(__webpack_require__\.e\(90205\), __webpack_require__\.e\(90206\), __webpack_require__\.e\(90207\)\)/);
+  const pullCode = runtime.require(39484).A(90192, { varName: 'collectedPull' });
+  for (const id of [90192, 90193]) assert.match(pullCode, new RegExp('(?:"' + id + '"|' + id + ')\\s*:'));
+  assert.match(pullCode, /__webpack_require__\(90193\)/);
+  assert.match(pullCode, /createMsePacketOwnership/);
+  const mainSource = fs.readFileSync(path.join(root, 'avplayer.js'), 'utf8');
+  assert.match(mainSource, /s\.f\.eioDependencies=\(e,t\)=>\{26===e&&t\.push\(s\.e\(90200\),s\.e\(90205\),s\.e\(90206\),s\.e\(90207\)\)\}/);
   const shippedLease = fs.readFileSync(path.join(root, 'codecpar-leases.js'), 'utf8');
   const canonicalLease = fs.readFileSync(path.join(__dirname, '../public/web/player-codecpar-leases.js'), 'utf8');
   assert.equal(shippedLease.slice(shippedLease.indexOf('/*!'), shippedLease.lastIndexOf('\n}\n}]);')).trimEnd(), canonicalLease.trimEnd(), 'shipped 90191 body must match canonical helper byte-for-byte');
@@ -64,11 +85,11 @@ test('main and actual generated Worker resolve identical named and upstream chun
   const context = vm.createContext({ console });
   vm.runInContext(exposed, context);
   for (const [id, file] of Object.entries(namedChunks)) {
-    assert.equal(runtime.require.u(Number(id)), file + '?v=eio-codecpar-3');
+    assert.equal(runtime.require.u(Number(id)), file + '?v=eio-pull-lifetime-1');
     assert.equal(context.collected.u(Number(id)), runtime.require.u(Number(id)));
   }
   for (const id of [26, 573, 943]) {
-    assert.equal(runtime.require.u(id), id + '.avplayer.js?v=eio-codecpar-3');
+    assert.equal(runtime.require.u(id), id + '.avplayer.js?v=eio-pull-lifetime-1');
     assert.equal(context.collected.u(id), runtime.require.u(id));
   }
 });
@@ -82,4 +103,8 @@ test('page registers all ownership chunks before AVPlayer', () => {
     const at = html.indexOf('/web/vendor/web/libmedia/' + file + '?');
     assert.ok(at >= 0 && at < entry);
   }
+  const ownership = html.indexOf('/web/vendor/web/libmedia/mse-packet-ownership.js?');
+  const pull = html.indexOf('/web/vendor/web/libmedia/mse-pull-lifetime.js?');
+  assert.ok(ownership >= 0 && pull >= 0 && ownership < pull && pull < entry,
+    'ownership must register before the pull module, and the pull module before AVPlayer');
 });
