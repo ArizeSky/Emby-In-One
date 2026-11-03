@@ -1176,11 +1176,75 @@ test('a torn shared inspect (busy) is transient, not a protocol error, and retai
   assert.equal(task.eioLedger.sharedInspectBusy, 1, 'transient busy is counted separately');
   assert.ok(task.eioLedger.t.get(token.id) === token, 'mirror retained: no release inferred from a torn read');
   const snap = helper.snapshot(task);
-  assert.equal(snap.sharedInspectBusy, 1);
+  assert.equal(snap.sharedInspectBusy, 2, 'snapshot reconciles again without inferring a free');
   // A real failure (not busy) is still a protocol error.
   task.eioSharedController = {
     inspectReservation() { return { ok: false, code: 'invalid-token' }; }
   };
   helper.reconcileShared(task);
   assert.equal(task.eioLedger.protocolErrors, 1, 'non-busy inspect failure stays a protocol error');
+});
+test('sync inventories interval packets without excluding in-flight HANDED reservations', () => {
+  const env = buildTask({ demuxBytes: 10_000_000 });
+  const { task, helper, mem } = env;
+  // Absence from containers does not prove that an allocation has been freed.
+  const inFlight = helper.reserve(task, 400, { packet: 5000 }, 2);
+  helper.after(task, inFlight, { packet: 5000, data: 0, size: 400 });
+  const intervalPacket = 6000;
+  mem.set(intervalPacket + 28, 300);
+  const intervalTok = helper.reserve(task, 300, { packet: intervalPacket }, 2);
+  helper.after(task, intervalTok, { packet: intervalPacket, data: 0, size: 300 });
+  task.formatContext.interval = { packetBuffer: [intervalPacket] };
+  for (let j = 0; j < 3; j++) {
+    helper.sync(task, (p) => Math.max(mem.get(p + 28) || 0, 0));
+    assert.equal(task.eioLedger.intervalBytes, 300);
+    assert.equal(task.eioLedger.intervalPackets, 1);
+    assert.equal(task.eioIntervalInventoried, true);
+    assert.equal(inFlight.state, 'HANDED', 'sync cannot infer an ownership transition');
+    assert.equal(task.eioLedger.ghostSwept, 0);
+    assert.equal(task.eioLedger.unprovenBytes, 0);
+    assert.equal(task.eioLedger.admission, 700, 'both allocations retain admission');
+    assert.equal(task.eioLedger.held, 700, 'no bytes credited or double counted');
+  }
+});
+
+test('header inventory accounts extradata and attachedPic sizes', () => {
+  const env = buildTask({ demuxBytes: 10_000_000 });
+  const { task, helper, mem } = env;
+  const attached = 7000;
+  mem.set(attached + 28, 120);
+  task.formatContext.streams.push({
+    index: 1, codecpar: { extradataSize: 64 }, attachedPic: attached, timeBase: { num: 1, den: 1000 }
+  });
+  helper.sync(task, (p) => (p > 0 ? Math.max(mem.get(p + 28) || 0, 0) : 0));
+  assert.equal(task.eioLedger.headerBytes, 184, 'extradata(64) + attachedPic(120) inventoried');
+  assert.equal(task.eioHeaderInventoried, true);
+  const snap = helper.snapshot(task);
+  assert.equal(snap.headerBytes, 184);
+  assert.equal(snap.accounting.extradata, false);
+  assert.equal(snap.accounting.attachedPic, false);
+});
+
+test('ownership transitions remain distinct from complete sample release coverage', () => {
+  const env = buildTask({ demuxBytes: 10_000_000 });
+  const { task, helper } = env;
+  const tok = helper.reserve(task, 100, { packet: 9000 }, 2);
+  helper.after(task, tok, { packet: 9000, data: 0, size: 100 });
+  // QUEUED via add()
+  task.cacheAVPackets.set(0, [9000]);
+  helper.add(task, 'c', 0, 100, 9000);
+  assert.equal(tok.state, 'QUEUED');
+  assert.equal(task.eioLedger.ownershipTransitionCount, 0, 'nothing proven yet');
+  const moved = helper.outbound(task, 9000);
+  assert.equal(moved, 100);
+  assert.equal(tok.state, 'OUTBOUND');
+  assert.equal(task.eioLedger.ownershipTransitionCount, 1, 'handoff records ownership movement, not payload free');
+  // Verified pre-malloc release also counts.
+  const tok2 = helper.reserve(task, 50, { packet: 0 }, 2);
+  helper.releaseToken(task, tok2, { reason: 'cancelled' });
+  assert.equal(task.eioLedger.ownershipTransitionCount, 2);
+  const snap = helper.snapshot(task);
+  assert.equal(snap.releaseVerified, false, 'individual transitions cannot prove complete release coverage');
+  assert.equal(snap.accounting.sampleRelease, false);
+  assert.equal(snap.accounting.crossWorkerCopy, true, 'outbound bytes observed');
 });

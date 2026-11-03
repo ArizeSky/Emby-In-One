@@ -98,10 +98,6 @@ function demuxHarness(provisional) {
   const text = bundleText();
   const helperSource = sliceHelper(text, 'DEMUX');
   const region = demuxClassRegion(text);
-  const helper = vm.runInNewContext(`${helperSource}\n;__eioDualDemux;`, {
-    Map, Math, Number, isFinite, performance: { now: () => 0 }
-  });
-
   const mem = new Map();
   const i32 = (addr) => {
     const v = mem.get(addr);
@@ -113,6 +109,11 @@ function demuxHarness(provisional) {
   };
   const u32 = (addr) => i32(addr) >>> 0;
 
+  const helper = vm.runInNewContext(`${helperSource}\n;__eioDualDemux;`, {
+    Map, Math, Number, isFinite, performance: { now: () => 0 },
+    o: { f: { 15: i32, 17: i64, 20: u32, 25: u32 } }
+  });
+
   const releaseCalls = [];
   const demuxErrors = [];
   const replies = [];
@@ -122,7 +123,7 @@ function demuxHarness(provisional) {
   const streams = [{ index: 0, codecType: 0, codecId: 27, codepbar: null }];
   streams[0].codecpar = { codecType: 0, codecId: 27 };
 
-  const formatContext = { streams, destroy: async () => {} };
+  const formatContext = { streams, interval: { packetBuffer: [] }, destroy: async () => {} };
   const task = {
     taskId: 'probe-task',
     stats: 0,
@@ -347,6 +348,10 @@ test('createTask probe wiring installs the four formatContext hooks before any a
   assert.equal(before.releaseVerified, false);
   assert.equal(before.accounting.sampleAlloc, true);
   assert.equal(before.accounting.sampleRelease, false);
+  // Inventory visibility is not proof of complete admission/release coverage.
+  assert.equal(before.inventory.interval, true);
+  assert.equal(before.inventory.headers, true);
+  assert.equal(before.inventory.admissionAuthority, false);
   assert.equal(before.accounting.extradata, false);
   assert.equal(before.accounting.attachedPic, false);
   assert.equal(before.accounting.interval, false);
@@ -422,6 +427,7 @@ test('activate keeps probe-held tokens and the cache move does not double count'
   // HANDED_OFF and must remain counted through activate().
   const token = formatContext.eioBeforeSampleAlloc({ packet: 9100, size: 300 });
   formatContext.eioAfterSampleAlloc(token, { packet: 9100, data: 0xa000, size: 300 });
+  formatContext.interval.packetBuffer.push(9100);
   let snap = h.helper.snapshot(task);
   assert.equal(snap.held, 300);
   assert.equal(snap.admissionHeld, 300);

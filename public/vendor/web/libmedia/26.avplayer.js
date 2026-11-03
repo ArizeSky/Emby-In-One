@@ -301,6 +301,11 @@ async eioRestartInternal(t,eioMutation){const e=this.tasks.get(t);if(e){e.audio&
 let eioCodecparLeases=null;
 try{eioCodecparLeases=e.eioCodecparLeases&&"function"==typeof e.eioCodecparLeases.snapshot?e.eioCodecparLeases.snapshot():null}catch(t){}
 return{domainId:e.eioSharedMediaDomain.domainId,ownership:e.eioSharedController.snapshot(),release:i,owned:this.eioOwnedSnapshot(e),streams:this.eioStreamSnapshot(e),codecparLeases:eioCodecparLeases,nativePlaybackClock:eioReadNativePlaybackClock(e.eioSharedMediaDomain),incomplete:EIO_MSE_INCOMPLETE.slice(),incompleteReasons:EIO_MSE_INCOMPLETE.map((t=>EIO_MSE_INCOMPLETE_REASONS[t]||t)),conservativeWorkset:{label:EIO_MSE_PLAN_LABEL,bytes:EIO_MSE_FIXED_WINDOW,measured:!1},workset:this.eioWorksetSnapshot(e),complete:!1}}
+getEioDualCacheSnapshot(t){const e=this.tasks.get(t);if(!e)return null;
+  let shared=null;try{shared=this.getEioSharedMediaSnapshot(t)}catch(err){shared=null}
+  let transfer=null;try{const rec=e.eioPayloadTransferRecord;transfer=rec&&rec.manager&&"function"==typeof rec.manager.snapshot?rec.manager.snapshot():null}catch(err){transfer=null}
+  let mux=null;try{mux=e.eioMuxProducers?{gate:e.eioMuxProducers.snapshot(),transitionPending:!!e.eioMuxTransition}:null}catch(err){mux=null}
+  return{active:!!(e.eioSharedController&&e.eioSharedMediaDomain),shared:shared,transfer:transfer,mux:mux,complete:!1}}
 /* EOF can arrive with no backPacket (including an empty stream). It must
    acquire the final mux operation before stopping the consumer or writing boxes. */
 eioFinishLoop(t){
