@@ -1206,6 +1206,15 @@ test('sync inventories interval packets without excluding in-flight HANDED reser
     assert.equal(task.eioLedger.admission, 700, 'both allocations retain admission');
     assert.equal(task.eioLedger.held, 700, 'no bytes credited or double counted');
   }
+  // Later placement of the same allocation completes the queue transition,
+  // but does not add a second copy of the already admitted sample bytes.
+  mem.set(5000 + 28, 400);
+  task.cacheAVPackets.set(0, [5000]);
+  helper.sync(task, (p) => Math.max(mem.get(p + 28) || 0, 0));
+  assert.equal(inFlight.state, 'QUEUED');
+  assert.equal(task.eioLedger.local, 300);
+  assert.equal(task.eioLedger.held, 700);
+  assert.equal(task.eioLedger.admission, 700);
 });
 
 test('header inventory accounts extradata and attachedPic sizes', () => {
