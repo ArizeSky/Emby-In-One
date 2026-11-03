@@ -161,16 +161,17 @@ function buildTask(options = {}) {
 
   const text = bundleText();
   const demux = demuxText();
+  const clockApi = require('../public/web/player-native-clock.js');
   const helper = vm.runInNewContext(
     `${sliceHelper(text, 'DEMUX')}\n;__eioDualDemux;`,
-    { Map, Math, Number, isFinite, o: { f: { 15: i32 } }, performance: { now: () => clockMs } }
+    { Map, Math, Number, isFinite, BigInt, setTimeout, clearTimeout, o: { f: { 15: i32 } }, performance: { now: () => clockMs }, i: (id) => (id === 90194 ? clockApi : undefined) }
   );
   if (options.demuxBytes !== undefined) {
     task.eioLedger = helper.make({
       demuxBytes: options.demuxBytes + fixedBytes,
       maxPacketBytes: options.maxPacketBytes ?? 16e6,
       fixedBytes,
-      maxForwardSeconds: 120
+      maxForwardSeconds: options.maxForwardSeconds ?? 120
     });
   }
 
@@ -227,7 +228,7 @@ function buildTask(options = {}) {
   const runnable = vm.runInNewContext(`(function(){ return { ${methods} }; })()`, context);
   Object.assign(task, runnable);
   task.tasks.set(task, task);
-  return { task, helper, mem, scenario, releaseCalls, demuxErrors, replies, logs, i32, fakeClock, ipcRequests };
+  return { task, helper, mem, scenario, releaseCalls, demuxErrors, replies, logs, i32, fakeClock, ipcRequests, clockApi };
 }
 
 function ledgerSum(task) {
@@ -1036,4 +1037,127 @@ test('every demux container mutation point is hooked (source coverage)', () => {
   ];
   for (const hook of hooks) assert.ok(text.includes(hook), `missing hook: ${hook}`);
   assert.equal(text.includes('DEMUX_STARVED'), false, 'ordinary pressure must not invent a fatal demux error');
+});
+function meta(size, ptsMs) {
+  return { size, pts: BigInt(ptsMs), dts: BigInt(ptsMs), duration: 0n, timeBase: { num: 1, den: 1000 }, packet: 0 };
+}
+
+test('known native clock bounds batch allocation to the forward window and resumes on publish', ASYNC, async () => {
+  const env = buildTask({ demuxBytes: 10_000_000, maxForwardSeconds: 5 });
+  const { task, helper, clockApi } = env;
+  const nonce = [1, 2, 3, 4];
+  const clock = clockApi.create(nonce);
+  task.eioSharedMediaDomain = { domainId: 'eio:test', nativeClockSab: clock.sab, nonce };
+  const writer = clockApi.writer(clock.sab, nonce);
+  assert.equal(writer.publish(1000, 0, false), true);
+
+  const admitted = await helper.beforeBatch(task, [meta(100, 5000), meta(100, 6000)]);
+  assert.ok(Array.isArray(admitted), 'inside window admitted');
+  assert.equal(admitted.length, 2);
+
+  // Beyond clock(1000ms)+window(5000ms): must wait, not allocate.
+  let settled = false;
+  const pending = helper.beforeBatch(task, [meta(100, 6500)]).then((tokens) => { settled = true; return tokens; });
+  await new Promise((r) => setTimeout(r, 60));
+  assert.equal(settled, false, 'beyond window must not allocate');
+  assert.equal(task.eioLedger.temporalRejections >= 1, true);
+  assert.equal(task.eioLedger.clockKnown, true);
+  assert.equal(task.eioLedger.clockMs, 1000);
+
+  // Clock advance (native timeupdate) opens the window; pulse rechecks within ~25ms.
+  assert.equal(writer.publish(2000, 0, false), true);
+  const tokens = await Promise.race([
+    pending,
+    new Promise((_, rej) => setTimeout(() => rej(new Error('temporal wait never woke')), 2000))
+  ]);
+  assert.ok(Array.isArray(tokens) && tokens.length === 1, 'window advance admits the batch');
+  helper.stopClockPulse(task);
+});
+
+test('unknown clock keeps a bounded bootstrap span from the first allocation', ASYNC, async () => {
+  const env = buildTask({ demuxBytes: 10_000_000, maxForwardSeconds: 5 });
+  const { task, helper } = env;
+  // No eioSharedMediaDomain: clockRead returns null, bootstrap mode.
+  const first = await helper.beforeBatch(task, [meta(100, 3000)]);
+  assert.ok(Array.isArray(first), 'first bootstrap allocation anchors the span');
+  assert.equal(task.eioLedger.clockKnown, false);
+  assert.equal(task.eioLedger.bootstrapBaseMs, 3000);
+
+  const within = await helper.beforeBatch(task, [meta(100, 7900)]);
+  assert.ok(Array.isArray(within), 'inside bootstrap span admitted');
+
+  let settled = false;
+  const pending = helper.beforeBatch(task, [meta(100, 8100)]).then((t) => { settled = true; return t; });
+  await new Promise((r) => setTimeout(r, 60));
+  assert.equal(settled, false, 'beyond bootstrap span must stop production');
+  const snap = helper.snapshot(task);
+  assert.equal(snap.temporalComplete, false);
+  assert.equal(snap.clockKnown, false);
+  assert.equal(snap.bootstrapBaseMs, 3000);
+  assert.equal(snap.maxForwardMs, 5000);
+  helper.reset(task);
+});
+
+test('seek resets the bootstrap episode and releases temporal-blocked waiters', ASYNC, async () => {
+  const env = buildTask({ demuxBytes: 10_000_000, maxForwardSeconds: 5 });
+  const { task, helper } = env;
+  await helper.beforeBatch(task, [meta(100, 1000)]);
+  let settled = false;
+  const pending = helper.beforeBatch(task, [meta(100, 7000)]).then((t) => { settled = true; return t; });
+  await new Promise((r) => setTimeout(r, 40));
+  assert.equal(settled, false);
+
+  helper.seekWake(task);
+  const result = await Promise.race([
+    pending,
+    new Promise((r) => setTimeout(() => r('never'), 1000))
+  ]);
+  assert.equal(result, null, 'the temporal-blocked batch aborts so the in-flight tick can end');
+  helper.reset(task);
+  assert.equal(task.eioLedger.bootstrapBaseMs, null);
+  assert.equal(task.eioLedger.clockKnown, false);
+  const fresh = await helper.beforeBatch(task, [meta(100, 9000)]);
+  assert.ok(Array.isArray(fresh), 'a new episode anchors at the post-seek pts');
+  assert.equal(task.eioLedger.bootstrapBaseMs, 9000);
+});
+
+test('wake() rechecks the temporal window before reserving a byte waiter', ASYNC, async () => {
+  const env = buildTask({ demuxBytes: 10_000_000, maxForwardSeconds: 5 });
+  const { task, helper, clockApi } = env;
+  const nonce = [9, 8, 7, 6];
+  const clock = clockApi.create(nonce);
+  task.eioSharedMediaDomain = { domainId: 'eio:test2', nativeClockSab: clock.sab, nonce };
+  const writer = clockApi.writer(clock.sab, nonce);
+  assert.equal(writer.publish(1000, 0, false), true);
+  await helper.beforeBatch(task, [meta(100, 4000)]);
+
+  // Byte-full waiter (blocked on bytes) whose meta is ALSO beyond the window.
+  let settled = false;
+  const pending = helper.before(task, meta(100, 7000)).then((t) => { settled = true; return t; });
+  await new Promise((r) => setTimeout(r, 40));
+  assert.equal(settled, false, 'temporal-blocked waiter registered');
+  helper.wake(task);
+  await new Promise((r) => setTimeout(r, 40));
+  assert.equal(settled, false, 'wake() must not reserve beyond the temporal window');
+  assert.equal(writer.publish(3000, 0, false), true);
+  const token = await Promise.race([
+    pending,
+    new Promise((_, rej) => setTimeout(() => rej(new Error('never woke')), 2000))
+  ]);
+  assert.ok(token, 'clock advance lets wake() reserve');
+  helper.cancelWaiters(task, 'test-end');
+  helper.stopClockPulse(task);
+});
+
+test('nonce mismatch never authorizes a clock anchor', ASYNC, async () => {
+  const env = buildTask({ demuxBytes: 10_000_000, maxForwardSeconds: 5 });
+  const { task, helper, clockApi } = env;
+  const nonce = [4, 3, 2, 1];
+  const clock = clockApi.create(nonce);
+  task.eioSharedMediaDomain = { domainId: 'eio:test3', nativeClockSab: clock.sab, nonce: [0, 0, 0, 0] };
+  const writer = clockApi.writer(clock.sab, nonce);
+  assert.equal(writer.publish(1000, 0, false), true);
+  const tokens = await helper.beforeBatch(task, [meta(100, 40000)]);
+  assert.ok(Array.isArray(tokens), 'mismatched nonce falls back to bootstrap span, not a fake clock');
+  assert.equal(task.eioLedger.clockKnown, false);
 });
