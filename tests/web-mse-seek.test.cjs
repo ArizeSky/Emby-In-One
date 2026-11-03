@@ -22,7 +22,7 @@ function extractActualMethod(bundle, startMarker, endMarker, name, isAsync) {
   return `${isAsync ? 'async ' : ''}function ${name}${src.slice(prefix.length)}`;
 }
 
-// Execute the vendored afterSeek itself, with synthetic packets and tracks.
+// Execute the vendored afterSeek algorithm (eioAfterSeekInternal), with synthetic packets and tracks.
 // Its actual helpers (eioAfterSeekWrite/eioAfterSeekFlush/eioAddQueue) are
 // extracted alongside it, so the non-owned branches run the real code.
 // AAC packets are shorter than video frames: one shared loop stopped too early.
@@ -65,9 +65,9 @@ function pipeline(audio = true, video = true) {
   };
   const afterSeekSrc = extractActualMethod(
     BUNDLE_SRC,
-    'async afterSeek(',
+    'async eioAfterSeekInternal(',
     'async setPlayRate(',
-    'afterSeek',
+    'eioAfterSeekInternal',
     true,
   );
   const afterSeekWriteSrc = extractActualMethod(
@@ -80,7 +80,7 @@ function pipeline(audio = true, video = true) {
   const afterSeekFlushSrc = extractActualMethod(
     BUNDLE_SRC,
     'async eioAfterSeekFlush(',
-    'async unregisterTask(',
+    'async eioUnregisterInternal(',
     'eioAfterSeekFlush',
     true,
   );

@@ -1,0 +1,31 @@
+'use strict';
+const test=require('node:test');
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const path=require('node:path');
+const vm=require('node:vm');
+
+test('actual mux context waits for async mux destroy before destroying dependent streams',async()=>{
+  const source=fs.readFileSync(path.join(__dirname,'../public/vendor/web/libmedia/avplayer.js'),'utf8');
+  const begin=source.indexOf('88962:(e,t,i)=>{');
+  assert.ok(begin>0);
+  const rest=source.slice(begin+'88962:'.length);
+  const end=/},\d+:\(e,t,i\)=>/.exec(rest);
+  assert.ok(end);
+  const factory=vm.runInNewContext('('+rest.slice(0,end.index+1)+')');
+  const exported={};
+  const imports={19371:{A:(object,key,value)=>{object[key]=value}},86299:{},46564:{},62329:{}};
+  const requireModule=id=>{assert.ok(imports[id],`unexpected import ${id}`);return imports[id]};
+  requireModule.d=(target,definitions)=>{for(const key in definitions)Object.defineProperty(target,key,{get:definitions[key]})};
+  factory({},exported,requireModule);
+  const context=new exported.oD(),events=[];
+  let finish;
+  context.oformat={destroy:()=>new Promise(resolve=>{finish=()=>{events.push('mux');resolve()}})};
+  context.streams=[{destroy:()=>events.push('stream')}];
+  const destroying=context.destroy();
+  assert.deepEqual(events,[]);
+  assert.equal(context.streams.length,1);
+  finish();await destroying;
+  assert.deepEqual(events,['mux','stream']);
+  assert.equal(context.streams.length,0);
+});

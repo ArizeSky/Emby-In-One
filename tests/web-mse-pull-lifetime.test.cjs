@@ -93,6 +93,7 @@ function loadPullModule(ownership) {
 }
 
 const PULL = loadPullModule(OWNERSHIP);
+const MUX = require('./helpers/mux-lifecycle.cjs')();
 
 function fakePool() {
   const freed = [];
@@ -244,14 +245,15 @@ function actual26Pipeline(options) {
   const handler = slice(CHUNK26_SRC, 'getSourceOpenHandler(t){', 'getMimeType(t){');
   const swap = slice(CHUNK26_SRC, 'swap(t,e){', 'createLoop(t,e){');
   const pull = slice(CHUNK26_SRC, 'async pullAVPacket(t,e,eioTicket){', 'writeAVPacket(t,e){');
-  const startMux = slice(CHUNK26_SRC, 'async startMux(t,e){', 'resetResource(t,e){');
-  const source = '(class {' + helpers + sync + handler + swap + pull + startMux + '})';
+  const startMux = slice(CHUNK26_SRC, 'async startMux(t,e){', 'async resetResource(t,e,eioMutation){');
+  const mux = slice(CHUNK26_SRC, 'eioMuxGate(task){', 'async beforeSeek(taskId){');
+  const source = '(class {' + mux + helpers + sync + handler + swap + pull + startMux + '})';
   const memory = new Map();
   const pool = fakePool();
   const ops = { scale: 0, copy: 0, logs: [], pulls: [], dts: 0, pts: 0, nal: [] };
   const context = {
     BigInt, Math, Promise, Number, String, Uint8Array, Array, Object,
-    i: (id) => id === 90192 ? PULL : null,
+    i: (id) => id === 90192 ? PULL : id === 90198 ? MUX : null,
     eioMseError: (code) => Object.assign(new Error(code), { code }),
     E: { A: class FakeDelay { constructor(seconds) { this.seconds = seconds; } then(resolve) { resolve(); } } },
     C: { A: () => context.nowMs },
@@ -410,6 +412,7 @@ function sourceOpenFixture(options) {
     return next;
   };
   const task = actualTask(pool, memory, { audio: null, video: null });
+  task.eioOwnedResources = {};
   task.cacheDuration = 100n;
   task.tasks.set(task.taskId, task);
   let handler;
@@ -1271,6 +1274,77 @@ test('afterSeek revocation during sync cannot restart the old loop', { timeout: 
   assert.equal(ticket.state, 'settled');
 });
 
+test('strict seek callback waits cancel through the shipped lifecycle adapter without advancing state', { timeout: 5000 }, async () => {
+  for (const phase of ['remove', 'queue', 'insert']) {
+    const { pool, memory, controller } = makeController();
+    let callback;
+    let registered;
+    const ready = new Promise((resolve) => { registered = resolve; });
+    const calls = [];
+    const hold = (done) => { callback = done; registered(); };
+    const stream = strictStream({
+      type: 'audio', packetEnded: phase !== 'insert',
+      loop: { start() { calls.push('start'); }, stop() { calls.push('stop'); } },
+      track: {
+        reset() { calls.push('reset'); },
+        removeAllBuffer: hold,
+        insertEnqueueCallback: hold,
+        getBufferedStart() { return 0; },
+        getBufferedEnd() { return 1; }
+      }
+    });
+    const task = actualTask(pool, memory, { audio: stream });
+    task.eioOwnedResources = {};
+    task.cacheDuration = 0n;
+    task.seeking = true;
+    let pointer = 800;
+    const host = {
+      eioMuxWait: MUX.waitCallback,
+      eioCancelWake() {},
+      eioAfterSeekFlush: async () => {},
+      eioDiscardQueue() {},
+      removeAllBufferNeeded: () => true,
+      syncToKeyframe: async () => true,
+      pullAVPacket: async (s, t, ticket) => {
+        const value = pointer;
+        pointer += 200;
+        return controller.check(ticket, value);
+      },
+      eioAddQueue(track, s, done) {
+        if (done) { if (phase === 'queue') hold(done); else done(); }
+      },
+      seekSeconds: () => 0,
+      logSeekDone() { calls.push('done'); },
+      logSeekEnd() { calls.push('end'); }
+    };
+    const pending = MUX.run(task, 'seek-test', () => phase === 'remove'
+      ? controller.beforeSeek(task, host) : controller.afterSeek(task, host, 0n));
+    const rejected = assert.rejects(pending, { code: 'EIO_MUX_CALLBACK_CANCELLED' });
+    await ready;
+    assert.equal(task.eioMuxCallbackWaits.size, 1, phase + ': actual adapter owns the wait');
+    MUX.gate(task).close('test-cancel');
+    MUX.cancelWaits(task);
+    await rejected;
+    await MUX.gate(task).drain(100);
+    assert.equal(task.eioMuxCallbackWaits.size, 0);
+    assert.equal(task.seeking, true, phase + ': cancellation never reports seek completion');
+    assert.equal(stream.eioPullTickets.size, 0, phase + ': pull scope is finished');
+    assert.equal(calls.includes('done') || calls.includes('end') || calls.includes('reset'), false);
+    if (phase === 'insert') {
+      assert.deepEqual(calls, ['start', 'stop'], 'only the loop started by this run is stopped');
+      assert.equal(stream.backPacket, 800);
+      assert.equal(stream.frontPacket, 1000);
+      assert.deepEqual(pool.freed, [], 'cancellation does not free transferred slots');
+      assert.equal(controller.releaseSlot(stream, 'back', 'test-cleanup'), true);
+      assert.equal(controller.releaseSlot(stream, 'front', 'test-cleanup'), true);
+      assert.deepEqual(pool.freed, [800, 1000]);
+    }
+    callback();
+    await Promise.resolve();
+    assert.equal(task.seeking, true, phase + ': a late callback cannot resume the cancelled run');
+  }
+});
+
 function teardownFixture(pool, stream, calls) {
   const memory = new Map();
   const native = makeNative(memory, pool);
@@ -1351,7 +1425,7 @@ test('a retained packet record blocks unregister before any destructive cleanup'
 });
 
 test('unregister revocation/loop stop order and beforeSeek revoke-before-release are present in the actual source', { timeout: 5000 }, () => {
-  const beforeSeek = slice(CHUNK26_SRC, 'async beforeSeek(t){', 'async afterSeek(t,e){');
+  const beforeSeek = slice(CHUNK26_SRC, 'async eioBeforeSeekInternal(t){', 'async eioAfterSeekInternal(t,e){');
   assert.ok(beforeSeek.includes('try{await this.eioPullLifetime(e).beforeSeek(e,this)}catch(error){this.eioRecordPullError(e,"beforeSeek",error);throw error}return{eioAck:1,pullSettled:!0}'));
   assert.ok(beforeSeek.indexOf('if(!e)return;') < beforeSeek.indexOf('var i,a;const r=[];'));
 
@@ -1362,16 +1436,17 @@ test('unregister revocation/loop stop order and beforeSeek revoke-before-release
   const pull = slice(CHUNK26_SRC, 'async pullAVPacket(t,e,eioTicket){', 'writeAVPacket(t,e){');
   assert.ok(pull.startsWith('async pullAVPacket(t,e,eioTicket){if(t.eioOwned)return this.eioPullLifetime(e).pullAVPacket(t,e,this,eioTicket);'));
 
-  const afterSeek = slice(CHUNK26_SRC, 'async afterSeek(t,e){', 'async setPlayRate(t,e){');
-  assert.ok(afterSeek.startsWith('async afterSeek(t,e){const i=this.tasks.get(t);if(!i)return 0;if(this.eioPullHasStrict(i)){const l=await this.eioPullLifetime(i).afterSeek(i,this,e);'));
+  const afterSeek = slice(CHUNK26_SRC, 'async eioAfterSeekInternal(t,e){', 'async setPlayRate(t,e){');
+  assert.ok(afterSeek.startsWith('async eioAfterSeekInternal(t,e){const i=this.tasks.get(t);if(!i)return 0;if(this.eioPullHasStrict(i)){const l=await this.eioPullLifetime(i).afterSeek(i,this,e);'));
   assert.ok(afterSeek.includes('EIO_MUX_SEEK_RESULT_INVALID'));
   assert.ok(afterSeek.includes('return{eioAck:1,seekTime:l}'));
 
-  const unregister = slice(CHUNK26_SRC, 'async unregisterTask(t){', '}}},2633:');
-  assert.ok(unregister.startsWith('async unregisterTask(t){const e=this.tasks.get(t);if(!e)return;if(this.eioPullHasStrict(e))return this.eioPullLifetime(e).unregister(e,this);'));
+  const unregister = slice(CHUNK26_SRC, 'async eioUnregisterInternal(t){', '}}},2633:');
+  assert.ok(unregister.startsWith('async eioUnregisterInternal(t){const e=this.tasks.get(t);if(!e)return;if(this.eioPullHasStrict(e))return this.eioPullLifetime(e).unregister(e,this);'));
 
-  const reset = slice(CHUNK26_SRC, 'resetResource(t,e){', 'async addStream(');
-  assert.ok(reset.startsWith('resetResource(t,e){if(t&&t.eioOwned)this.eioPullLifetime(e).resetResource(t,e);'));
+  const reset = slice(CHUNK26_SRC, 'async resetResource(t,e,eioMutation){', 'async eioAddStreamInternal(');
+  assert.ok(reset.startsWith('async resetResource(t,e,eioMutation){if(t&&t.eioOwned){this.eioRequireMuxMutation(e,eioMutation);this.eioPullLifetime(e).resetResource(t,e);await t.oformatContext.oformat.destroy(t.oformatContext);this.eioRequireMuxMutation(e,eioMutation)}'),
+    'strict reset requires exclusive mutation ownership before release and after async format destruction');
 
   const handler = slice(CHUNK26_SRC, 'getSourceOpenHandler(t){', 'getMimeType(t){');
   assert.ok(handler.startsWith('getSourceOpenHandler(t){let e=arguments.length>1'));

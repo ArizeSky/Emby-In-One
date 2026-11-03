@@ -492,12 +492,19 @@ var __eioPacketOwnership = __webpack_require__(90193);
       host.logSeekEnd(task.taskId);
     }
 
+    function waitCallback(task, stream, host, registerCallback) {
+      if (isStrict(stream)) return host.eioMuxWait(task, registerCallback);
+      return new Promise(registerCallback);
+    }
+
     async function beforeSeekStream(task, stream, host, type) {
       if (!stream) return;
       if (!stream.enableRawMpeg) await host.eioAfterSeekFlush(stream);
       host.eioDiscardQueue(stream);
       if (host.removeAllBufferNeeded()) {
-        await new Promise(function (resolve) { stream.track.removeAllBuffer(function () { resolve(); }); });
+        await waitCallback(task, stream, host, function (resolve) {
+          stream.track.removeAllBuffer(function () { resolve(); });
+        });
       }
       stream.track.reset();
       if (isStrict(stream)) {
@@ -668,14 +675,14 @@ var __eioPacketOwnership = __webpack_require__(90193);
         if (task.audio) {
           if (!task.audio.enableRawMpeg) await host.eioAfterSeekFlush(task.audio);
           guard(owned, 'afterSeek-audio-flush-all');
-          callbacks.push(new Promise(function (resolve) {
+          callbacks.push(waitCallback(task, task.audio, host, function (resolve) {
             host.eioAddQueue(task.audio.track, task.audio, function () { resolve(); });
           }));
         }
         if (task.video) {
           if (!task.video.enableRawMpeg) await host.eioAfterSeekFlush(task.video);
           guard(owned, 'afterSeek-video-flush-all');
-          callbacks.push(new Promise(function (resolve) {
+          callbacks.push(waitCallback(task, task.video, host, function (resolve) {
             host.eioAddQueue(task.video.track, task.video, function () { resolve(); });
           }));
         }
@@ -756,10 +763,10 @@ var __eioPacketOwnership = __webpack_require__(90193);
           }
         }
         await Promise.all([
-          new Promise(function (resolve) {
+          waitCallback(task, task.audio, host, function (resolve) {
             if (task.audio) task.audio.track.insertEnqueueCallback(resolve); else resolve();
           }),
-          new Promise(function (resolve) {
+          waitCallback(task, task.video, host, function (resolve) {
             if (task.video) task.video.track.insertEnqueueCallback(resolve); else resolve();
           })
         ]);
@@ -1112,13 +1119,13 @@ var __eioPacketOwnership = __webpack_require__(90193);
         }
       }
       for (var poolIndex = 0; poolIndex < streams.length; poolIndex += 1) closePool(streams[poolIndex]);
-      if (task.audio && task.audio.loop) {
+      if (task.audio && task.audio.oformatContext) {
         await task.audio.oformatContext.destroy();
-        task.audio.loop.destroy();
+        if (task.audio.loop) task.audio.loop.destroy();
       }
-      if (task.video && task.video.loop) {
+      if (task.video && task.video.oformatContext) {
         await task.video.oformatContext.destroy();
-        task.video.loop.destroy();
+        if (task.video.loop) task.video.loop.destroy();
       }
       if (task.audio) await teardownStream(task, task.audio, host);
       if (task.video) await teardownStream(task, task.video, host);

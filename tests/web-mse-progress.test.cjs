@@ -36,6 +36,8 @@ function between(text, start, end) {
 
 const HELPERS = between(SOURCE, '/* EIO-MSE-PROGRESS:BEGIN', '/* EIO-MSE-PROGRESS:END */');
 const METHODS = between(SOURCE, 'eioRunLoopStep(t,run){', 'eioOwnedManager(){');
+const MUX_METHODS = between(SOURCE, 'eioMuxGate(task){', 'async beforeSeek(taskId){');
+const MUX = require('./helpers/mux-lifecycle.cjs')();
 
 /* Fake globals: an unmapped packet offset must be an observable read error, not
  * a zero DTS. The clock is a stub, so no real wallclock time is claimed. */
@@ -61,9 +63,10 @@ function fakeApi(options) {
       }
     },
     m: { i0: { num: 1, den: 1000 } },
-    C: { A: opts.clock || (() => 1234.5) }
+    C: { A: opts.clock || (() => 1234.5) },
+    i: (id) => { assert.equal(id, 90198); return MUX; }
   };
-  const api = vm.runInNewContext(HELPERS + ';(new (class {' + METHODS + '})())', globals);
+  const api = vm.runInNewContext(HELPERS + ';(new (class {' + MUX_METHODS + METHODS + '})())', globals);
   api.calls = calls;
   return api;
 }
@@ -114,7 +117,7 @@ test('strict loop step records code/planReason/planDetail, redacts URLs and reth
   { timeout: 5000 }, () => {
     const api = fakeApi();
     for (const detail of [0, false, null, undefined]) {
-      const stream = { eioOwned: {} };
+      const stream = { eioOwned: {}, eioMuxTask: { eioOwnedResources: {} } };
       const error = new Error('loop refused by https://upstream.invalid/path?token=secret');
       error.code = 'EIO_MSE_PLAN_UNSUPPORTED';
       error.planReason = 'plan-overflow';
@@ -143,7 +146,7 @@ test('strict loop step records code/planReason/planDetail, redacts URLs and reth
       assert.ok(stream.eioLoopError.message.length <= 240);
     }
 
-    const stream = { eioOwned: {} };
+    const stream = { eioOwned: {}, eioMuxTask: { eioOwnedResources: {} } };
     const plain = new Error('x'.repeat(400));
     assert.throws(() => api.eioRunLoopStep(stream, () => { throw plain; }),
       (raised) => raised === plain);
@@ -153,7 +156,7 @@ test('strict loop step records code/planReason/planDetail, redacts URLs and reth
     assert.equal(stream.eioLoopError.message.length, 240,
       'a long message must be bounded at 240 characters');
 
-    const rejected = { eioOwned: {} };
+    const rejected = { eioOwned: {}, eioMuxTask: { eioOwnedResources: {} } };
     assert.throws(() => api.eioRunLoopStep(rejected, () => { throw 'plain-string'; }),
       (raised) => raised === 'plain-string',
       'a thrown non-Error must be rethrown unchanged');
@@ -180,7 +183,7 @@ test('baseline loop step runs directly, returns the value, and never allocates d
     assert.equal(Object.prototype.hasOwnProperty.call(baseline, 'eioLoopError'), false,
       'a baseline throw must stay completely unobserved');
 
-    const strict = { eioOwned: {} };
+    const strict = { eioOwned: {}, eioMuxTask: { eioOwnedResources: {} } };
     const coded = Object.assign(new Error('first'), { code: 'EIO_MSE_PLAN_UNDERRUN' });
     assert.throws(() => api.eioRunLoopStep(strict, () => { throw coded; }),
       (raised) => raised === coded);
@@ -193,10 +196,10 @@ test('baseline loop step runs directly, returns the value, and never allocates d
 
 test('createLoop wraps only the existing synchronous callback body with the strict wrapper',
   { timeout: 5000 }, () => {
-    const head = between(SOURCE, 'createLoop(t,e){t.loop=new z.A((()=>{',
+    const head = between(SOURCE, 'createLoop(t,e){t.eioMuxTask=e;t.loop=new z.A((()=>{',
       'const i=t.track.getBufferedDuration(');
-    assert.equal(head, 'createLoop(t,e){t.loop=new z.A((()=>{return this.eioRunLoopStep(t,()=>{',
-      'the wrapper must be the only new prefix and the outer callback must return it');
+    assert.equal(head, 'createLoop(t,e){t.eioMuxTask=e;t.loop=new z.A((()=>{return this.eioRunLoopStep(t,()=>{',
+      'the stream must capture its task before the callback enters the real producer gate');
 
     const tail = between(SOURCE, 'this.eioOperationSeal(t),this.swap(t,e)}',
       'async startMux(t,e){');

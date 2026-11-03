@@ -15,7 +15,10 @@ const namedChunks = Object.freeze({
   90206: 'mse-pull-lifetime.js',
   90207: 'mse-packet-ownership.js',
   90208: 'native-playback-clock.js',
-  90209: 'native-playback-clock-source.js'
+  90209: 'native-playback-clock-source.js',
+  90210: 'payload-transfer.js',
+  90211: 'mux-producers.js',
+  90212: 'mux-producer-lifecycle.js'
 });
 
 function registeredRuntime(skipId) {
@@ -64,13 +67,13 @@ test('actual generated Worker collector includes the split transitive factories'
   const code = runtime.require(39484).A(90187, { varName: 'collected' });
   for (const id of [90187, 90190, 90188, 90194]) assert.match(code, new RegExp('(?:"' + id + '"|' + id + ')\\s*:'));
   assert.match(code, /if \(chunkId === 26\) promises.push\(__webpack_require__\.e\(90200\)\)/);
-  assert.match(code, /if \(chunkId === 26\) promises.push\(__webpack_require__\.e\(90205\), __webpack_require__\.e\(90206\), __webpack_require__\.e\(90207\), __webpack_require__\.e\(90208\), __webpack_require__\.e\(90209\)\)/);
+  assert.match(code, /if \(chunkId === 26\) promises.push\(__webpack_require__\.e\(90205\), __webpack_require__\.e\(90206\), __webpack_require__\.e\(90207\), __webpack_require__\.e\(90208\), __webpack_require__\.e\(90209\), __webpack_require__\.e\(90210\), __webpack_require__\.e\(90211\), __webpack_require__\.e\(90212\)\)/);
   const pullCode = runtime.require(39484).A(90192, { varName: 'collectedPull' });
   for (const id of [90192, 90193]) assert.match(pullCode, new RegExp('(?:"' + id + '"|' + id + ')\\s*:'));
   assert.match(pullCode, /__webpack_require__\(90193\)/);
   assert.match(pullCode, /createMsePacketOwnership/);
   const mainSource = fs.readFileSync(path.join(root, 'avplayer.js'), 'utf8');
-  assert.match(mainSource, /s\.f\.eioDependencies=\(e,t\)=>\{26===e&&t\.push\(s\.e\(90200\),s\.e\(90205\),s\.e\(90206\),s\.e\(90207\),s\.e\(90208\),s\.e\(90209\)\)\}/);
+  assert.match(mainSource, /s\.f\.eioDependencies=\(e,t\)=>\{26===e&&t\.push\(s\.e\(90200\),s\.e\(90205\),s\.e\(90206\),s\.e\(90207\),s\.e\(90208\),s\.e\(90209\),s\.e\(90210\),s\.e\(90211\),s\.e\(90212\)\)\}/);
   const shippedLease = fs.readFileSync(path.join(root, 'codecpar-leases.js'), 'utf8');
   const canonicalLease = fs.readFileSync(path.join(__dirname, '../public/web/player-codecpar-leases.js'), 'utf8');
   assert.equal(shippedLease.slice(shippedLease.indexOf('/*!'), shippedLease.lastIndexOf('\n}\n}]);')).trimEnd(), canonicalLease.trimEnd(), 'shipped 90191 body must match canonical helper byte-for-byte');

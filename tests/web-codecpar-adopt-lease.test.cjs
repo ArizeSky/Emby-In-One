@@ -556,6 +556,17 @@ function module26669Text(text) {
       }
       continue;
     }
+    if (character === '/' && text[index + 1] === '*') {
+      const end = text.indexOf('*/', index + 2);
+      assert.notEqual(end, -1, 'unterminated factory comment');
+      index = end + 1;
+      continue;
+    }
+    if (character === '/' && text[index + 1] === '/') {
+      index = text.indexOf('\n', index + 2);
+      assert.notEqual(index, -1, 'unterminated factory line comment');
+      continue;
+    }
     if (character === '"' || character === "'" || character === '`') {
       quote = character;
     } else if (character === '{') {
