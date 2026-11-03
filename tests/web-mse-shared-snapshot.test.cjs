@@ -249,6 +249,7 @@ function loadActualSnapshotClass(importBindings, domainApi) {
   });
   const code = [
     constants,
+    balancedMethod(MSE_SOURCE, 'function eioReadNativePlaybackClock(domain){'),
     'const __eioSharedMediaDomainApi=__actualEioSharedMediaDomainApi;',
     'class ActualMsePipeline {',
     methods,

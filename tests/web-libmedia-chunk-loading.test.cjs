@@ -13,7 +13,9 @@ const namedChunks = Object.freeze({
   90204: 'shared-media-release-registry.js',
   90205: 'codecpar-leases.js',
   90206: 'mse-pull-lifetime.js',
-  90207: 'mse-packet-ownership.js'
+  90207: 'mse-packet-ownership.js',
+  90208: 'native-playback-clock.js',
+  90209: 'native-playback-clock-source.js'
 });
 
 function registeredRuntime(skipId) {
@@ -60,15 +62,15 @@ test('strict pull module cannot load without the real ownership module', () => {
 test('actual generated Worker collector includes the split transitive factories', () => {
   const runtime = registeredRuntime();
   const code = runtime.require(39484).A(90187, { varName: 'collected' });
-  for (const id of [90187, 90190, 90188]) assert.match(code, new RegExp('(?:"' + id + '"|' + id + ')\\s*:'));
+  for (const id of [90187, 90190, 90188, 90194]) assert.match(code, new RegExp('(?:"' + id + '"|' + id + ')\\s*:'));
   assert.match(code, /if \(chunkId === 26\) promises.push\(__webpack_require__\.e\(90200\)\)/);
-  assert.match(code, /if \(chunkId === 26\) promises.push\(__webpack_require__\.e\(90205\), __webpack_require__\.e\(90206\), __webpack_require__\.e\(90207\)\)/);
+  assert.match(code, /if \(chunkId === 26\) promises.push\(__webpack_require__\.e\(90205\), __webpack_require__\.e\(90206\), __webpack_require__\.e\(90207\), __webpack_require__\.e\(90208\), __webpack_require__\.e\(90209\)\)/);
   const pullCode = runtime.require(39484).A(90192, { varName: 'collectedPull' });
   for (const id of [90192, 90193]) assert.match(pullCode, new RegExp('(?:"' + id + '"|' + id + ')\\s*:'));
   assert.match(pullCode, /__webpack_require__\(90193\)/);
   assert.match(pullCode, /createMsePacketOwnership/);
   const mainSource = fs.readFileSync(path.join(root, 'avplayer.js'), 'utf8');
-  assert.match(mainSource, /s\.f\.eioDependencies=\(e,t\)=>\{26===e&&t\.push\(s\.e\(90200\),s\.e\(90205\),s\.e\(90206\),s\.e\(90207\)\)\}/);
+  assert.match(mainSource, /s\.f\.eioDependencies=\(e,t\)=>\{26===e&&t\.push\(s\.e\(90200\),s\.e\(90205\),s\.e\(90206\),s\.e\(90207\),s\.e\(90208\),s\.e\(90209\)\)\}/);
   const shippedLease = fs.readFileSync(path.join(root, 'codecpar-leases.js'), 'utf8');
   const canonicalLease = fs.readFileSync(path.join(__dirname, '../public/web/player-codecpar-leases.js'), 'utf8');
   assert.equal(shippedLease.slice(shippedLease.indexOf('/*!'), shippedLease.lastIndexOf('\n}\n}]);')).trimEnd(), canonicalLease.trimEnd(), 'shipped 90191 body must match canonical helper byte-for-byte');
@@ -85,11 +87,11 @@ test('main and actual generated Worker resolve identical named and upstream chun
   const context = vm.createContext({ console });
   vm.runInContext(exposed, context);
   for (const [id, file] of Object.entries(namedChunks)) {
-    assert.equal(runtime.require.u(Number(id)), file + '?v=eio-pull-lifetime-1');
+    assert.equal(runtime.require.u(Number(id)), file + '?v=eio-native-clock-1');
     assert.equal(context.collected.u(Number(id)), runtime.require.u(Number(id)));
   }
   for (const id of [26, 573, 943]) {
-    assert.equal(runtime.require.u(id), id + '.avplayer.js?v=eio-pull-lifetime-1');
+    assert.equal(runtime.require.u(id), id + '.avplayer.js?v=eio-native-clock-1');
     assert.equal(context.collected.u(id), runtime.require.u(id));
   }
 });

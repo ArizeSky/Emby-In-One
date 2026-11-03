@@ -83,7 +83,8 @@ function createDomainDescriptor(options){
       domainId:domainId,
       wasmMemory:memory,
       proofPointer:proofPointer,
-      nonce:Array.from(nonce)
+      nonce:Array.from(nonce),
+      ...(options.nativeClock===true?{nativeClockSab:__webpack_require__(90194).create(Array.from(nonce)).sab}:{})
     }));
     eioDomainOwned.set(descriptor,{controller:controller,proofPointer:proofPointer,memory:memory,state:'owned'});
     return descriptor;
