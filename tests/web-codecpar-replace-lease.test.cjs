@@ -354,7 +354,7 @@ test('replace is an inert additive export and keeps the Yi/dn/copy/clear baselin
     assert.equal(chunk26Source.includes('eioCodecparReplace'), false,
       'chunk 26 does not call the replacement yet');
     assert.ok(moduleText.includes(
-      'eioCodecparAdopt:()=>eioCodecparAdopt,eioCodecparReplace:()=>eioCodecparReplace}'));
+      'eioCodecparAdopt:()=>eioCodecparAdopt,eioCodecparReplace:()=>eioCodecparReplace,'));
 
     const start = moduleText.indexOf('function eioCodecparReplace(eioDest, eioSource, eioNewLease) {');
     const end = moduleText.indexOf('function c(eioDest,eioSource,eioLease)', start);
@@ -380,10 +380,10 @@ test('replace is an inert additive export and keeps the Yi/dn/copy/clear baselin
     'the new copying record is published before any copy allocation');
   });
 
-test('the Yi, dn, original copy and original clear bodies stay byte-identical',
+test('codecpar entry points retain whole-lease gates and route native slot destruction explicitly',
   { timeout: 5000 }, () => {
     assert.ok(moduleText.includes(
-      'function c(eioDest,eioSource,eioLease){if(void 0===eioLease){if(eioCodecparLeases&&' +
+      'function c(eioDest,eioSource,eioLease){eioExtradataExclusive(eioDest);if(void 0===eioLease){if(eioCodecparLeases&&' +
       'eioCodecparLeases.has(eioDest))throw eioCodecparLeaseError("EIO_CODECPAR_LEASE_DEST_BUSY",' +
       '"codecpar destination already leased");return eioCodecparCopyOriginal(eioDest,eioSource)}'),
     'the two-argument Yi branch is unchanged');
@@ -399,9 +399,9 @@ test('the Yi, dn, original copy and original clear bodies stay byte-identical',
       'a.M[8](e+8,s.f[8](t+8)),'),
     'the original copy still starts with the unguarded scalar copy');
     assert.ok(moduleText.includes(
-      'function eioCodecparClearOriginal(e){e&&(function(e){s.f[20](e+12)&&(0,o.aI)(e+12),' +
+      'function eioCodecparClearOriginal(e){e&&(function(e){eioExtradataClear(e),' +
       '(0,n.bl)(e+112),(0,h.NZ)(e+20,e+24),(0,r.sO)(e,0,168),'),
-    'the original clear keeps its own inline payload-free sequence');
+    'the real clear routes extradata through slot-aware free and preserves other payload cleanup');
     assert.ok(moduleText.includes(
       'a.M[15](e+48,d.N_),a.M[15](e+52,d.N_),a.M[15](e+160,0)}(e),(0,o.Eb)(e))}}'),
     'the original clear still frees the struct itself');

@@ -307,7 +307,7 @@ test('export is additive and adopt publishes the retained record before the untr
     assert.ok(adoptText.indexOf('.bind(') >= 0, 'real lease bind remains present');
     assert.ok(adoptText.search(/eioCodecparLeases\.set\(eioDest,\s*eioRecord\)/) <
       adoptText.indexOf('.bind('), 'the record is registered before bind');
-    assert.ok(moduleText.includes('function c(eioDest,eioSource,eioLease){if(void 0===eioLease){'),
+    assert.ok(moduleText.includes('function c(eioDest,eioSource,eioLease){eioExtradataExclusive(eioDest);if(void 0===eioLease){'),
       'Yi baseline entry remains intact');
     assert.ok(moduleText.includes(
       'function l(eioPointer){if(!eioPointer||!eioCodecparLeases)return eioCodecparClearOriginal(eioPointer);'),
