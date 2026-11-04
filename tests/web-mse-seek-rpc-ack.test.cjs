@@ -32,6 +32,10 @@ const METHOD_HEADS = [
   'async seek(e){',
   'async selectVideo(e,t){',
   'async selectAudio(e,t){',
+  'async replayTo(e){',
+  'eioBeginMseStartup(){',
+  'async eioMsePreplay(pending){',
+  'async eioAwaitMseStartup(pending){',
   'async playUseMSE(e){'
 ];
 
@@ -134,6 +138,7 @@ function makeAttachPlayer(ack, domain = makeDomain()) {
       registerEioSharedMediaDomain: async () => ack,
       setPlayRate() {},
       getMediaSource: async () => null,
+      waitEioSourceOpen: async () => ({ok:true}),
       addStream: { transfer() { return { invoke: async () => undefined }; } }
     },
     DemuxerThread: {
@@ -636,4 +641,42 @@ test('selectVideo/selectAudio restore status 10 on failure and leave a newer run
     assert.equal(reentrant.player.status, 9, `${kind} older run must not restore over newer state`);
     assert.equal(reentrant.player.eioMseSeekRunToken, newer);
   }
+});
+
+test('actual main startup helpers reject a pending native play on worker failure and never report ready early', ASYNC, async()=>{
+  let reply;
+  const methods=loadMethods({Ue:{MSEThread:{waitEioSourceOpen:()=>new Promise(r=>{reply=r})}}});
+  const events=[];
+  const player=Object.assign({},methods,{taskId:7,status:5,eioMseStrictAttach:{},onError:e=>events.push(e.code)});
+  player.eioBeginMseStartup();
+  const wait=player.eioAwaitMseStartup(new Promise(()=>{}));
+  reply({ok:false,code:'EIO_PROBE_BUDGET_EXHAUSTED'});
+  await assert.rejects(wait,{code:'EIO_PROBE_BUDGET_EXHAUSTED'});
+  assert.deepEqual(events,['EIO_PROBE_BUDGET_EXHAUSTED']);
+});
+test('actual main startup helpers require both readiness and native play and reject obsolete continuation', ASYNC, async()=>{
+  let reply,native;
+  const methods=loadMethods({Ue:{MSEThread:{waitEioSourceOpen:()=>new Promise(r=>{reply=r})}}});
+  const player=Object.assign({},methods,{taskId:7,status:5,eioMseStrictAttach:{},onError(){}});
+  player.eioBeginMseStartup();
+  let complete=false;
+  const wait=player.eioAwaitMseStartup(new Promise(r=>{native=r})).then(()=>{complete=true});
+  reply({ok:true});await Promise.resolve();assert.equal(complete,false);
+  player.status=2;native();await assert.rejects(wait,/EIO_MSE_STARTUP_CANCELLED/);
+});
+test('actual replay re-arms startup for the replacement source and rejects its failure', ASYNC, async()=>{
+  let reply;
+  const methods=loadMethods({Ue:{DemuxerThread:{seek:async()=>0n},MSEThread:{restart:async()=>{},getMediaSource:async()=>({}),waitEioSourceOpen:()=>new Promise(r=>{reply=r})}},y:{A:{workerMSE:false}},URL:{revokeObjectURL(){},createObjectURL(){return 'blob:synthetic'}}});
+  const player=Object.assign({},methods,{taskId:7,status:7,useMSE:true,eioMseStrictAttach:{},video:{src:'blob:old',play:()=>new Promise(()=>{})},playRate:1,isDash:()=>false,isHls:()=>false,fire(){},onError(){}});
+  const replay=player.replayTo(0n);
+  while(!reply)await new Promise(r=>setTimeout(r,0));
+  reply({ok:false,code:'EIO_PROBE_BUDGET_EXHAUSTED'});
+  await assert.rejects(replay,{code:'EIO_PROBE_BUDGET_EXHAUSTED'});
+});
+test('startup cancellation still rejects the waiter without emitting a playback error', ASYNC, async()=>{
+  const methods=loadMethods({Ue:{MSEThread:{waitEioSourceOpen:async()=>({ok:false,code:'EIO_MSE_STARTUP_CANCELLED'})}}});
+  let errors=0;
+  const player=Object.assign({},methods,{taskId:7,status:5,eioMseStrictAttach:{},onError(){errors++}});
+  player.eioBeginMseStartup();await assert.rejects(player.eioAwaitMseStartup(new Promise(()=>{})),{code:'EIO_MSE_STARTUP_CANCELLED'});
+  assert.equal(errors,0);
 });

@@ -39,6 +39,8 @@
     if(task&&task.eioMuxCallbackWaits)for(const cancel of Array.from(task.eioMuxCallbackWaits))cancel();
   }
   function sourceHandler(task,callback){
+    const startup={result:null};
+    task.eioSourceStartup=startup;
     const source=task.mediaSource;
     let started=false;
     return (...args)=>{
@@ -46,8 +48,18 @@
       if(owner){
         if(task.mediaSource!==source||started||owner.snapshot().retired||owner.snapshot().closed)return;
         started=true;
+        startup.epoch=owner.snapshot().epoch;
       }
-      return callback(...args);
+      if(!owner)return callback(...args);
+      const failed=error=>{
+        if(task.mediaSource!==source||task.eioSourceStartup!==startup||owner.snapshot().retired||owner.snapshot().closed||owner.snapshot().epoch!==startup.epoch)return;
+        const code=error&&typeof error.code==='string'&&/^(?:EIO_[A-Z0-9_]+|capacity-exceeded|busy|entries-exhausted)$/.test(error.code)?error.code:'EIO_MSE_STARTUP_FAILED';
+        task.eioSourceOpenError={code,message:code};
+        owner.close('sourceOpen-failed');
+        startup.result={ok:false,code};
+      };
+      // DOM event dispatch does not observe a returned rejected promise.
+      try{return Promise.resolve(callback(...args)).then(()=>{if(task.mediaSource===source&&task.eioSourceStartup===startup&&!owner.snapshot().closed&&!owner.snapshot().retired&&owner.snapshot().epoch===startup.epoch)startup.result={ok:true}},failed)}catch(error){failed(error)}
     };
   }
   function transition(task,callback){
@@ -89,6 +101,22 @@
     if(!token||token!==task.eioMuxMutation){const error=new Error('EIO_MUX_MUTATION_REQUIRED');error.code=error.message;throw error}
     task.eioMuxMutation.guard();
   }
-  module.exports={gate,run,waitCallback,cancelWaits,sourceHandler,transition,quiesce,mutate,requireMutation};
+  async function waitSource(task,current,timeoutMs=30000){
+    const owner=gate(task),startup=task&&task.eioSourceStartup,source=task&&task.mediaSource;
+    if(!owner||!startup)return {ok:false,code:'EIO_MSE_STARTUP_MISSING'};
+    const epoch=owner.snapshot().epoch;
+    const deadline=Date.now()+timeoutMs;
+    for(;;){
+      if(current()!==task||task.mediaSource!==source||task.eioSourceStartup!==startup)
+        return {ok:false,code:'EIO_MSE_STARTUP_CANCELLED'};
+      if(startup.result&&startup.result.ok===false)return startup.result;
+      const state=owner.snapshot();
+      if(state.closed||state.retired||state.epoch!==epoch)return {ok:false,code:'EIO_MSE_STARTUP_CANCELLED'};
+      if(startup.result)return startup.result;
+      if(Date.now()>=deadline){owner.close('sourceOpen-timeout');return {ok:false,code:'EIO_MSE_STARTUP_TIMEOUT'}}
+      await new Promise(resolve=>setTimeout(resolve,25));
+    }
+  }
+  module.exports={gate,run,waitCallback,cancelWaits,sourceHandler,waitSource,transition,quiesce,mutate,requireMutation};
 }
 }]);

@@ -427,6 +427,7 @@ function sourceOpenFixture(options) {
   }
   pipeline.createSourceBuffer = () => ({});
   pipeline.eioHeaderOperation = () => {};
+  pipeline.eioCancelWake = () => {};
   pipeline.eioMuxFlushProbe = () => {};
   pipeline.eioAddQueue = () => {};
   pipeline.eioProbeWrite = () => {};
@@ -1532,4 +1533,21 @@ test('actual sourceOpen failure before/after a post-sync pull reclaims or retain
   assert.deepEqual(after.pool.freed.slice().sort((a, b) => a - b),
     [5001, 5201, 5401, 5601, 6001, 6201, 6401],
     'the retained identity is released exactly once by its slot owner');
+});
+
+test('sourceOpen video header failure observes and joins the already-started audio producer', {timeout:3000}, async()=>{
+  const f=sourceOpenFixture(),failure=Object.assign(new Error('header'),{code:'EIO_TEST_HEADER'});
+  f.video.enableRawMpeg=false;
+  let exit,started=false,settled=false;
+  f.pipeline.startMux=async()=>{started=true;await new Promise(r=>{exit=r})};
+  f.pipeline.eioHeaderOperation=stream=>{if(stream===f.video)throw failure};
+  const run=f.handler().then(()=>assert.fail('must reject'),error=>{assert.equal(error,failure);settled=true});
+  while(!started)await new Promise(r=>setTimeout(r,0));
+  await new Promise(r=>setTimeout(r,0));
+  assert.equal(settled,false,'failure cannot finish while sibling producer is still active');
+  exit();await run;
+  assert.equal(f.audio.eioPullTickets.size,0);assert.equal(f.video.eioPullTickets.size,0);
+  const lifetime=f.task.eioPullLifetime;
+  for(const stream of [f.audio,f.video])for(const slot of ['front','back'])lifetime.releaseSlot(stream,slot,'test-cleanup');
+  assert.equal(new Set(f.pool.freed).size,f.pool.freed.length,'real release has no duplicates');
 });

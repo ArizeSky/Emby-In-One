@@ -805,6 +805,13 @@ var __eioPacketOwnership = __webpack_require__(90193);
     async function sourceOpen(task, host, startTime) {
       var tickets = beginTickets(task, 'sourceOpen');
       var completed = false;
+      var startup=task.eioSourceStartup;
+      var writes = [];
+      function start(stream,time,ticket){
+        var producer=Promise.resolve(host.startMux(stream,task,time,ticket));
+        producer.catch(function(){}); // observe immediately, even if the next header throws
+        writes.push(producer);
+      }
       try {
         if ((isStrict(task.audio) && !tickets.audio) || (isStrict(task.video) && !tickets.video)) {
           throw codedError('EIO_MUX_PULL_STALE');
@@ -902,18 +909,17 @@ var __eioPacketOwnership = __webpack_require__(90193);
           }
         }
         guard(tickets, 'sourceOpen-sync-block');
-        var writes = [];
         if (task.audio) {
           task.audio.track.setSourceBuffer(host.createSourceBuffer(task.mediaSource,
             outputOf(task.audio).codecpar[native.timeBaseIndex]));
           if (!task.audio.enableRawMpeg) host.eioHeaderOperation(task.audio);
-          writes.push(host.startMux(task.audio, task, native.maxBig(u, p), tickets.audio));
+          start(task.audio,native.maxBig(u,p),tickets.audio);
         }
         if (task.video) {
           task.video.track.setSourceBuffer(host.createSourceBuffer(task.mediaSource,
             outputOf(task.video).codecpar[native.timeBaseIndex]));
           if (!task.video.enableRawMpeg) host.eioHeaderOperation(task.video);
-          writes.push(host.startMux(task.video, task, native.maxBig(u, p), tickets.video));
+          start(task.video,native.maxBig(u,p),tickets.video);
         }
         await Promise.all(writes);
         guard(tickets, 'sourceOpen-startMux');
@@ -1004,6 +1010,16 @@ var __eioPacketOwnership = __webpack_require__(90193);
           message: String(error && error.message || error)
             .replace(/https?:\/\/\S+/g, '[redacted-url]').slice(0, 240)
         };
+        if(startup&&task.eioSourceStartup===startup)startup.result={ok:false,code:error&&error.code||'EIO_MSE_STARTUP_FAILED'};
+        // Invalidate sibling pull tickets before joining; never finish their
+        // ownership while a real producer is still using packet references.
+        for (var stream of [task.audio,task.video]) {
+          if (!isStrict(stream)) continue;
+          revoke(stream,'sourceOpen-failed');
+          host.eioCancelWake(stream);
+          if (stream.loop) stream.loop.stop();
+        }
+        await Promise.allSettled(writes);
         throw error;
       } finally {
         if (completed) complete(tickets, 'sourceOpen');
