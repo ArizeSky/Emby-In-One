@@ -13,10 +13,10 @@ const end=source.indexOf('},27228:',start);
 assert.ok(start>=0&&end>start);
 const factory=vm.runInNewContext('('+source.slice(start+'25248:'.length,end+1)+')');
 
-function fixture(){
+function fixture(readGate){
   const controller=ownership.create({capacityBytes:1024,maxEntries:16});
   const resources=owned.createOwnedResources(controller);
-  const f={controller,cancel:false,reads:[]};
+  const f={controller,cancel:false,reads:[],gateUsed:false};
   const modules={
     19371:{A:(obj,key,value)=>{obj[key]=value;}},54568:{o9:'pointer'},
     29688:{N_:-1,Dh:-1n},34117:{z3:()=>{},R8:()=>{}},
@@ -27,7 +27,11 @@ function fixture(){
     req.r=()=>{};fn({},out,req);return out;};
   const Format=load(factory).default;
   f.format=new Format();
-  f.fc={ioReader:{setEndian(){},readBuffer:async size=>{f.reads.push(size);return new Uint8Array(size);}},
+  f.fc={ioReader:{setEndian(){},readBuffer:async size=>{
+    f.reads.push(size);
+    if(readGate&&!f.gateUsed){f.gateUsed=true;await readGate;}
+    return new Uint8Array(size);
+  }},
     eioOwnedResources:resources,
     eioAcquireOwnedResource:async(size,label)=>({
       ...resources.acquire(size,label,7),generation:7,isCancelled:()=>f.cancel
@@ -64,4 +68,95 @@ test('573 adapter cancellation and destroy release every adopted read',async()=>
   assert.equal(f.controller.snapshot().heldBytes,8);
   await f.format.destroy(f.fc);
   assert.equal(f.controller.snapshot().heldBytes,0);
+});
+
+test('573 pending read holds one retain lease; releaseAll skips it until settled',
+  {timeout:5000},async()=>{
+    let releaseRead;
+    const gate=new Promise(resolve=>{releaseRead=resolve;});
+    const f=fixture(gate);
+    const pending=f.api.readBinary(16,'pending');
+    await new Promise(resolve=>setImmediate(resolve));
+    let snap=f.api.snapshot();
+    assert.equal(snap.liveCount,1);
+    assert.equal(snap.liveBytes,16);
+    assert.equal(snap.retainedLeases,1,'the in-flight read holds exactly one lease');
+    assert.equal(f.api.releaseAll('destroy'),0,'releaseAll must not release a pending read');
+    snap=f.api.snapshot();
+    assert.equal(snap.liveCount,1);
+    assert.equal(f.controller.snapshot().heldBytes,16);
+
+    releaseRead();
+    const read=await pending;
+    assert.equal(read.data.length,16);
+    snap=f.api.snapshot();
+    assert.equal(snap.liveCount,1);
+    assert.equal(snap.retainedLeases,0,'a settled read drops its lease');
+    assert.equal(f.api.release(read.handle,'done'),1);
+    snap=f.api.snapshot();
+    assert.equal(snap.liveCount,0);
+    assert.equal(f.controller.snapshot().heldBytes,0);
+    assert.equal(snap.releaseFailedCount,0);
+  });
+
+test('573 explicit release wins over an outstanding lease (old pending/unproven semantics)',
+  {timeout:5000},async()=>{
+    let releaseRead;
+    const gate=new Promise(resolve=>{releaseRead=resolve;});
+    const f=fixture(gate);
+    const pending=f.api.readBinary(16,'lease-release');
+    await new Promise(resolve=>setImmediate(resolve));
+    let snap=f.api.snapshot();
+    assert.equal(snap.retainedLeases,1);
+
+    let settled=null;
+    pending.then(r=>{settled=r;},()=>{settled='rejected';});
+    assert.equal(f.api.releaseAll('destroy'),0);
+    releaseRead();
+    await pending.catch(()=>{});
+    await new Promise(resolve=>setImmediate(resolve));
+    snap=f.api.snapshot();
+    assert.equal(snap.liveCount,1,'releaseAll must not have released the leased read');
+
+    const handle=settled&&settled.handle;
+    assert.ok(handle,'the settled read still returns its handle');
+    assert.equal(f.api.release(handle,'explicit'),1,'explicit release drops the lease and releases');
+    assert.equal(f.controller.snapshot().heldBytes,0);
+    snap=f.api.snapshot();
+    assert.equal(snap.liveCount,0);
+    assert.equal(snap.retainedLeases,0);
+  });
+
+test('573 failed read keeps the charge and the handle stays inspectable',async()=>{
+  const f=fixture();
+  f.fc.ioReader.readBuffer=async()=>{throw new Error('io failed');};
+  await assert.rejects(f.api.readBinary(16,'io-fail'),/io failed/);
+  assert.equal(f.controller.snapshot().heldBytes,16,'an unproven read keeps its charge');
+  const snap=f.api.snapshot();
+  assert.equal(snap.liveCount,1);
+  assert.equal(snap.retainedLeases,1,'the unproven handle keeps its lease');
+  assert.equal(f.api.releaseAll('destroy'),0);
+  assert.equal(f.controller.snapshot().heldBytes,16);
+  await f.format.destroy(f.fc);
+  assert.equal(f.controller.snapshot().heldBytes,16,
+    'destroy retains an unproven read instead of faking a release');
+});
+
+test('573 destroy releases settled reads and retains leased ones',async()=>{
+  let releaseRead;
+  const gate=new Promise(resolve=>{releaseRead=resolve;});
+  const f=fixture(gate);
+  const pending=f.api.readBinary(8,'pending');
+  await new Promise(resolve=>setImmediate(resolve));
+  const settled=await f.api.readBinary(8,'settled');
+  assert.equal(f.controller.snapshot().heldBytes,16);
+  await f.format.destroy(f.fc);
+  assert.equal(f.controller.snapshot().heldBytes,8,'only the settled read was released');
+  releaseRead();
+  await pending.catch(()=>{});
+  assert.equal(f.controller.snapshot().heldBytes,0,
+    'a read settling after destroy releases through its own cancelled path');
+  const snap=f.api.snapshot();
+  assert.equal(snap.liveCount,0);
+  assert.equal(snap.retainedLeases,0);
 });

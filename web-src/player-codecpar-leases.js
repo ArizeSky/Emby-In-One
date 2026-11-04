@@ -550,6 +550,29 @@
     });
   }
 
+  function handlesView(handles) {
+    if (!handles || typeof handles.snapshot !== 'function') return null;
+    var snapshot;
+    try {
+      snapshot = handles.snapshot();
+    } catch (error) {
+      return null;
+    }
+    if (!snapshot || typeof snapshot !== 'object') return null;
+    return Object.freeze({
+      liveBytes: scalarOrNull(snapshot.liveBytes),
+      liveCount: scalarOrNull(snapshot.liveCount),
+      acquiredCount: scalarOrNull(snapshot.acquiredCount),
+      releasedCount: scalarOrNull(snapshot.releasedCount),
+      refusedCount: scalarOrNull(snapshot.refusedCount),
+      releaseFailedCount: scalarOrNull(snapshot.releaseFailedCount),
+      retainedLeases: scalarOrNull(snapshot.retainedLeases),
+      faultCount: scalarOrNull(snapshot.faultCount),
+      lastFault: snapshot.lastFault && typeof snapshot.lastFault === 'object' ?
+        snapshot.lastFault : null
+    });
+  }
+
   CodecparLeases.prototype.snapshot = function snapshot() {
     return Object.freeze({
       kind: KIND,
@@ -574,6 +597,7 @@
       faults: Object.freeze(this._faults.slice()),
       coverage: COVERAGE,
       resources: resourcesView(this._resources),
+      handles: handlesView(this._handles),
       measurement: 'caller-measured-native-payload+nontransactional-core-scan',
       exact: false
     });

@@ -362,3 +362,67 @@ test('invalid specs and forged handles are refused before any charge',
     assert.equal(sized.handle.finalRelease({ referencesDropped: true }).ok, true);
     assert.equal(held(controller), 0);
   });
+
+test('a failed owned release is retained and never retried', { timeout: 5000 }, () => {
+  const real = core.create({ capacityBytes: 1024, maxEntries: 8 });
+  let releaseCalls = 0;
+  const ledger = handles.createMediaResourceHandles({
+    controller: {
+      reserve: (bytes, generation) => real.reserve(bytes, generation),
+      bind: (token, payload) => real.bind(token, payload),
+      bindOwnedResource: (token) => real.bindOwnedResource(token),
+      reclaimUnused: (token) => real.reclaimUnused(token),
+      prepareFinalFree: (identity) => real.prepareFinalFree(identity),
+      commitFinalFree: (ticket, evidence) => real.commitFinalFree(ticket, evidence),
+      releaseOwnedResource() {
+        releaseCalls += 1;
+        throw new Error('injected release throw');
+      },
+      snapshot: () => real.snapshot()
+    }
+  });
+  const acquired = ledger.acquire({
+    kind: 'owned', size: 128, label: 'release-fault', generation: 1
+  });
+  assert.equal(acquired.ok, true);
+  const first = acquired.handle.finalRelease({ referencesDropped: true });
+  assert.equal(first.ok, false);
+  assert.equal(first.fault, true);
+  assert.equal(first.chargedBytes, 128);
+  assert.equal(held(real), 128);
+  const second = acquired.handle.finalRelease({ referencesDropped: true });
+  assert.equal(second.ok, false);
+  assert.equal(second.code, first.code);
+  assert.equal(releaseCalls, 1, 'exactly one core release attempt');
+  assert.equal(held(real), 128);
+  assert.equal(ledger.snapshot().releaseFailedCount, 1);
+  assert.equal(ledger.snapshot().liveCount, 1);
+});
+
+test('releaseOwned releases every unleased owned handle and reports refusals',
+  { timeout: 5000 }, () => {
+    const { controller, ledger } = make(4096);
+    const a = ledger.acquire({ kind: 'owned', size: 64, label: 'a', generation: 1 });
+    const b = ledger.acquire({ kind: 'owned', size: 64, label: 'b', generation: 1 });
+    const sample = ledger.acquire({ kind: 'sample', size: 32, label: 's', generation: 1 });
+    assert.equal(a.ok && b.ok && sample.ok, true);
+    assert.equal(b.handle.retain().ok, true);
+
+    let result = ledger.releaseOwned('test');
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'test');
+    assert.equal(result.released, 1);
+    assert.equal(result.refused, 1);
+    assert.equal(held(controller), 96);
+
+    assert.equal(b.handle.drop().ok, true);
+    result = ledger.releaseOwned();
+    assert.equal(result.ok, true);
+    assert.equal(result.released, 1);
+    assert.equal(result.refused, 0);
+    assert.equal(held(controller), 32);
+    assert.equal(sample.handle.discard('test').ok, true);
+    assert.equal(held(controller), 0);
+    assert.deepEqual(
+      [result.liveCount, result.liveBytes, result.retainedLeases], [1, 32, 0]);
+  });

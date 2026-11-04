@@ -117,6 +117,7 @@
     this._acquiredCount = 0;
     this._releasedCount = 0;
     this._refusedCount = 0;
+    this._releaseFailedCount = 0;
     this._temporalRejections = 0;
     this._faults = [];
     this._faultsEvicted = 0;
@@ -372,6 +373,7 @@
       closingTicket: null,
       released: false,
       fault: null,
+      releaseFailed: false,
       handle: null
     };
     record.handle = makeHandle(ledger, record);
@@ -781,6 +783,7 @@
     }
     if (!prepared || prepared.ok !== true) {
       var code = prepared && prepared.code || 'prepare-final-free-failed';
+      this._markReleaseFailed(record, code);
       this._noteFault(code, record, 0);
       return failure(code, 'shared ownership refused the final-free ticket');
     }
@@ -807,6 +810,7 @@
     }
     if (!committed || committed.ok !== true) {
       var code = committed && committed.code || 'commit-final-free-failed';
+      this._markReleaseFailed(record, code);
       this._noteFault(code, record, 0);
       return failure(code, 'shared ownership refused the final-free commit', {
         chargedBytes: record.bytes
@@ -817,11 +821,25 @@
       heldBytes: committed.heldBytes };
   };
 
+  Ledger.prototype._markReleaseFailed = function _markReleaseFailed(record, code) {
+    if (!record.releaseFailed) {
+      record.releaseFailed = true;
+      record.fault = record.fault || code;
+      this._releaseFailedCount += 1;
+    }
+  };
+
   Ledger.prototype._finalRelease = function _finalRelease(record, proof) {
     if (record.released) {
       return failure('already-released', 'release is single use', {
         releasedBytes: 0, chargedBytes: 0
       });
+    }
+    if (record.releaseFailed) {
+      return failure(record.fault || 'release-failed',
+        'a failed release keeps the charge and is never retried', {
+          fault: true, chargedBytes: record.bytes
+        });
     }
     if (!proof || proof.referencesDropped !== true) {
       return failure('not-dropped',
@@ -863,6 +881,7 @@
       if (!released || released.ok !== true) {
         var code = released && released.code || 'release-failed';
         record.fault = code;
+        this._markReleaseFailed(record, code);
         this._noteFault(code, record, record.bytes);
         return failure(code, 'core refused the owned release; the charge is retained', {
           fault: true, chargedBytes: record.bytes
@@ -883,6 +902,7 @@
       if (!reclaimed || reclaimed.ok !== true) {
         var reclaimCode = reclaimed && reclaimed.code || 'reclaim-failed';
         record.fault = reclaimCode;
+        this._markReleaseFailed(record, reclaimCode);
         this._noteFault(reclaimCode, record, record.bytes);
         return failure(reclaimCode,
           'core refused the unbound reservation reclaim; the charge is retained', {
@@ -921,6 +941,32 @@
     return result;
   };
 
+  Ledger.prototype.releaseOwned = function releaseOwned(reason) {
+    var released = 0;
+    var refused = 0;
+    var targets = [];
+    this._live.forEach(function (record, handle) {
+      if (record.kind === 'owned') targets.push(handle);
+    });
+    for (var index = 0; index < targets.length; index += 1) {
+      var result = this._finalRelease(this._live.get(targets[index]), {
+        referencesDropped: true
+      });
+      if (result.ok === true) released += 1;
+      else refused += 1;
+    }
+    return Object.freeze({
+      ok: refused === 0,
+      code: refused === 0 ? null : 'release-owned-refused',
+      reason: reason === undefined ? '' : String(reason),
+      released: released,
+      refused: refused,
+      liveCount: this._live.size,
+      liveBytes: this._liveBytes,
+      retainedLeases: this._retainedLeases
+    });
+  };
+
   Ledger.prototype.snapshot = function snapshot() {
     var core = null;
     if (this._controller) {
@@ -939,6 +985,7 @@
       acquiredCount: this._acquiredCount,
       releasedCount: this._releasedCount,
       refusedCount: this._refusedCount,
+      releaseFailedCount: this._releaseFailedCount,
       temporalRejections: this._temporalRejections,
       clockKnown: this._clockKnown,
       clockMs: this._clockMs,
@@ -996,5 +1043,6 @@
     createMediaResourceHandles: createMediaResourceHandles
   });
 });
+
 
 }}]);
