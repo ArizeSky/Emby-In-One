@@ -141,12 +141,25 @@
       throw codedError('invalid-argument',
         'createCodecparLeases requires a read-only measureNativePayload(sourcePtr)');
     }
-    return { resources: resources, measure: config.measureNativePayload };
+    var handles = config.handles;
+    if (handles !== undefined && handles !== null &&
+        (typeof handles !== 'object' || typeof handles.adopt !== 'function')) {
+      throw codedError('invalid-argument',
+        'createCodecparLeases handles must expose adopt({kind,size,label,generation,coreHandle})');
+    }
+    return {
+      resources: resources,
+      measure: config.measureNativePayload,
+      handles: handles === undefined ? null : handles
+    };
   }
 
-  function CodecparLeases(resources, measure) {
+  function CodecparLeases(resources, measure, handles) {
     this._resources = resources;
     this._measure = measure;
+    this._handles = handles;
+    this._handleAdoptions = 0;
+    this._handleAdoptFallbacks = 0;
     this._liveCount = 0;
     this._liveBytes = 0;
     this._strandedBytes = 0;
@@ -285,7 +298,9 @@
      * count as a failed release attempt, not as a completed call. */
     var releaseFailed = false;
     try {
-      result = record.handle.release({ referencesDropped: true });
+      result = record.commonHandle ?
+        record.handle.finalRelease({ referencesDropped: true }) :
+        record.handle.release({ referencesDropped: true });
     } catch (error) {
       releaseFailed = true;
     }
@@ -386,6 +401,39 @@
     return bytes;
   };
 
+  /* Optional alignment with the common media-resource Handle. The core handle
+   * remains the sole releaser; adoption only gives that same handle the common
+   * final-release path. If adoption refuses or throws, keep the direct core
+   * handle and record a bounded diagnostic instead of stranding the charge. */
+  CodecparLeases.prototype._adoptHandle = function _adoptHandle(record, bytes, generation, label) {
+    if (!this._handles) return;
+    var adopted = null;
+    try {
+      adopted = this._handles.adopt({
+        kind: 'owned',
+        size: bytes,
+        label: label,
+        generation: generation,
+        coreHandle: record.handle
+      });
+    } catch (error) {
+      adopted = null;
+    }
+    var okField = safeField(adopted, 'ok');
+    var handleField = safeField(adopted, 'handle');
+    var finalField = safeField(handleField.value, 'finalRelease');
+    if (okField.ok && okField.value === true && handleField.ok &&
+        handleField.value !== null && handleField.value !== undefined &&
+        finalField.ok && typeof finalField.value === 'function') {
+      record.handle = handleField.value;
+      record.commonHandle = true;
+      this._handleAdoptions += 1;
+      return;
+    }
+    this._handleAdoptFallbacks += 1;
+    this._noteFault('EIO_CODECPAR_LEASE_ADOPT_FALLBACK', label, bytes, 0);
+  };
+
   /* Shared admission/record continuation for both entry points. The caller has
    * already obtained an exact, safe byte count; this function validates it
    * again before the one core call so the measured entry point cannot bypass
@@ -446,6 +494,7 @@
       bytes: bytes,
       label: displayLabel,
       handle: handle,
+      commonHandle: false,
       bound: false,
       failed: false,
       released: false,
@@ -453,6 +502,7 @@
       inCall: false,
       fault: null
     };
+    this._adoptHandle(record, bytes, generation, displayLabel);
     this._liveCount += 1;
     this._liveBytes += bytes;
     this._acquiredCount += 1;
@@ -519,6 +569,8 @@
       retainedCount: this._retainedCount,
       releaseFailedCount: this._releaseFailedCount,
       reentrantCount: this._reentrantCount,
+      handleAdoptions: this._handleAdoptions,
+      handleAdoptFallbacks: this._handleAdoptFallbacks,
       faultCount: this._faultCount,
       faultChargedBytes: this._faultBytes,
       faultsEvicted: this._faultsEvicted,
@@ -533,7 +585,7 @@
 
   function createCodecparLeases(config) {
     var checked = checkConfig(config);
-    var manager = new CodecparLeases(checked.resources, checked.measure);
+    var manager = new CodecparLeases(checked.resources, checked.measure, checked.handles);
     /* The factory result is both the native acquirer (leases(sourcePtr,
      * generation, label)) and the diagnostic holder (leases.acquire /
      * leases.measured / leases.snapshot). One manager, one ledger and no extra

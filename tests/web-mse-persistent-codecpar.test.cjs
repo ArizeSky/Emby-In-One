@@ -32,6 +32,7 @@ const HELPER_PATH = path.join(ROOT, 'web-src', 'player-codecpar-leases.js');
 const core = require('../web-src/player-shared-media-ownership.js');
 const owned = require('../web-src/player-owned-media-resources.js');
 const codecpar = require('../web-src/player-codecpar-leases.js');
+const handlesModule = require('../web-src/player-media-resource-handles.js');
 
 const mseSource = fs.readFileSync(MSE_PATH, 'utf8');
 const avplayerSource = fs.readFileSync(AVPLAYER_PATH, 'utf8');
@@ -182,6 +183,7 @@ test('strict native pointer admits into the REAL core before Gy and binds at Yi 
         }
       },
       i(id) {
+        if (id === 90213) return handlesModule;
         requireCalls += 1;
         assert.equal(id, 90191);
         return codecpar;
@@ -246,6 +248,7 @@ test('strict native Gy(168) failure retains the REAL charge and never frees/rese
       },
       p: { T8() {} },
       i(id) {
+        if (id === 90213) return handlesModule;
         requireCalls += 1;
         assert.equal(id, 90191);
         return codecpar;
@@ -527,6 +530,7 @@ function nativeCloneHarness(memory) {
       }
     },
     i(id) {
+      if (id === 90213) return handlesModule;
       requireCalls += 1;
       assert.equal(id, 90191);
       return codecpar;
@@ -788,6 +792,7 @@ test('strict serialized clone measures before Gy, writes through the real T8 and
         }
       },
       i(id) {
+        if (id === 90213) return handlesModule;
         requireCalls += 1;
         assert.equal(id, 90191);
         return codecpar;
@@ -943,7 +948,7 @@ test('strict serialized shape and size refusals precede any charge or allocation
           eioCodecparAdopt() { adopts += 1; }
         },
         p: { T8() { t8 += 1; } },
-        i() { requireCalls += 1; return codecpar; }
+        i(id) { if (id === 90213) return handlesModule; requireCalls += 1; return codecpar; }
       });
       assert.throws(() => api.eioCloneStreamCodecpar(task, source),
         (error) => error.code === code, name);
@@ -991,7 +996,7 @@ test('strict serialized snapshot reads each live T8 field once and never re-read
           return dest;
         }
       },
-      i(id) { assert.equal(id, 90191); return codecpar; }
+      i(id) { if (id === 90213) return handlesModule; assert.equal(id, 90191); return codecpar; }
     });
 
     assert.equal(api.eioCloneStreamCodecpar(task, source), 0x5000);

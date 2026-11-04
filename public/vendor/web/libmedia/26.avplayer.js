@@ -582,9 +582,21 @@ eioCloneStreamCodecpar(task,source){
   }
   return eioDest
 }
+/* Adopt-only common Handle ledger for the task's codecpar leases. The ledger
+   never acquires or credits bytes itself; it only gives each 90191 core handle
+   the common final-release path. Chunk 90213 is loaded with this chunk. */
+eioCodecparLeaseHandles(task){
+  if(task.eioCodecparHandles)return task.eioCodecparHandles;
+  try{
+    const eioHandles=i(90213);
+    if(eioHandles&&"function"==typeof eioHandles.createMediaResourceHandles)
+      task.eioCodecparHandles=eioHandles.createMediaResourceHandles({adoptOnly:!0})
+  }catch(ignored){}
+  return task.eioCodecparHandles||null
+}
 /* One 90191 manager per task, shared by the native and the serialized branch. */
 eioCodecparLeasesFor(task){
-  return task.eioCodecparLeases||(task.eioCodecparLeases=i(90191).createCodecparLeases({resources:task.eioOwnedResources,measureNativePayload:g.eioPayloadBytes}))
+  return task.eioCodecparLeases||(task.eioCodecparLeases=i(90191).createCodecparLeases({resources:task.eioOwnedResources,measureNativePayload:g.eioPayloadBytes,handles:this.eioCodecparLeaseHandles(task)}))
 }
 /* Strict serialized input (module 26669 T8): exact read-only measurement of a
    frozen plain snapshot, admission BEFORE Gy(168), T8(snapshot,dest,exact),
