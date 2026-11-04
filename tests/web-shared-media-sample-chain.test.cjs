@@ -8,6 +8,8 @@ const vm = require('node:vm');
 // the 90187 reserve/bind/reclaim/inspect contract; fake o.f[15] models the
 // actual wasm U32 reads used to prove packet -> ref -> body -> data.
 const BUNDLE = path.join(__dirname, '../public/vendor/web/libmedia/avplayer.js');
+const CORE = require(path.join(__dirname, '../web-src/player-shared-media-ownership.js'));
+const HANDLES = require(path.join(__dirname, '../web-src/player-media-resource-handles.js'));
 const ASYNC = { timeout: 2000 };
 
 function bundleText() {
@@ -24,7 +26,7 @@ function helperSource() {
   return text.slice(start + begin.length, stop);
 }
 
-function loadHelper(mem) {
+function loadHelper(mem, modules) {
   const context = {
     Map,
     Math,
@@ -33,7 +35,8 @@ function loadHelper(mem) {
     performance: { now: () => 0 },
     o: { f: { 15: (addr) => (mem.get(addr) || 0) >>> 0 } },
     setTimeout,
-    clearTimeout
+    clearTimeout,
+    i: modules ? (id) => modules[id] : undefined
   };
   return vm.runInNewContext(`${helperSource()}\n;__eioDualDemux;`, context);
 }
@@ -225,4 +228,37 @@ test('before -> modeled packet pointers -> bind -> simulated final free -> recon
   mismatch.key = 1;
   assert.equal(h.reconcileShared(task), 1);
   assert.equal(ledger.held, 0);
+});
+
+test('the common handle owns reserve, bind and external final-free retirement', () => {
+  const mem = new Map();
+  wire(mem, 100, 200, 300, 400);
+  const ctrl = CORE.create({ capacityBytes: 1000, maxEntries: 16 });
+  const h = loadHelper(mem, { 90213: HANDLES });
+  const task = newTask(h, ctrl);
+  const ledger = task.eioLedger;
+
+  const queued = h.before(task, { size: 40, packet: 100 });
+  assert.ok(queued && queued.sharedHandle, 'the real controller uses a common Handle');
+  assert.equal(queued.sharedToken.id, queued.sharedHandle.token.id);
+  assert.equal(ledger.held, 40);
+  assert.equal(ctrl.snapshot().heldBytes, 40);
+
+  h.after(task, queued, { packet: 100, data: 400, size: 40 });
+  assert.equal(queued.sharedBound, true);
+  assert.equal(queued.sharedHandle.state, 'published');
+  h.add(task, 'c', 0, 40, 100);
+
+  const prepared = ctrl.prepareFinalFree({ data: 400, buffer: 300 });
+  assert.equal(prepared.ok, true);
+  assert.equal(ctrl.commitFinalFree(prepared.ticket, { dataFreed: true }).ok, true);
+  assert.equal(ctrl.snapshot().heldBytes, 0);
+
+  assert.equal(h.reconcileShared(task), 1);
+  assert.equal(ledger.held, 0);
+  assert.equal(ledger.sharedFreeCount, 1);
+  assert.equal(ledger.sharedFreedBytes, 40);
+  assert.equal(queued.sharedHandle.state, 'released');
+  assert.equal(ledger.t.has(queued.id), false);
+  assert.equal(h.reconcileShared(task), 0, 'the handle finishes exactly once');
 });

@@ -11,9 +11,8 @@
  * can be acquired directly (sample/owned) or adopted after another component
  * already obtained the core handle (owned).
  *
- * This module is deliberately not wired into a parser yet. It is the public
- * interface for the accounting convergence; the existing call sites keep their
- * signatures until each migration step moves them over.
+ * The demux sample hooks use it through module 90213; the other parsers keep
+ * their existing call sites until each migration step moves them over.
  *
  * UMD / CommonJS, pure JS, no environment, network or credential access.
  */
@@ -187,6 +186,12 @@
       label: { value: record.label, enumerable: true },
       kind: { value: record.kind, enumerable: true },
       generation: { value: record.generation, enumerable: true },
+      token: {
+        enumerable: true,
+        get: function () {
+          return record.token;
+        }
+      },
       state: {
         enumerable: true,
         get: function () {
@@ -822,6 +827,25 @@
       return failure('aliases-remain',
         'a retained local alias is still outstanding; release refused without credit',
         { leases: record.leases, chargedBytes: record.bytes });
+    }
+
+    /* The true Q7 final-free branch can retire the shared record without the
+     * handle's prepare/commit pair. Accept that path only when the controller
+     * confirms the reservation is already retired; the core credited the bytes
+     * there, so this finish must not credit them a second time. */
+    if (record.kind === 'sample' && record.identity !== null &&
+        proof.dataFreed === true &&
+        typeof this._controller.inspectReservation === 'function') {
+      var inspected = null;
+      try {
+        inspected = this._controller.inspectReservation(record.token);
+      } catch (error) {
+        inspected = null;
+      }
+      if (inspected && inspected.ok === true && inspected.retired === true) {
+        this._finish(record);
+        return { ok: true, releasedBytes: 0, retiredBytes: record.bytes, external: true };
+      }
     }
 
     if (record.kind === 'owned') {

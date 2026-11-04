@@ -120,6 +120,34 @@ test('sample reservation requires the real free evidence and commits the ticket 
       'already-released');
   });
 
+test('an externally retired sample finishes without a second core credit',
+  { timeout: 5000 }, () => {
+    const { controller, ledger } = make(4096);
+    const acquired = ledger.acquire({
+      kind: 'sample', size: 256, label: 'external-free', owner: 0x31, generation: 3
+    });
+    assert.equal(acquired.ok, true);
+    assert.ok(acquired.handle.token, 'the core reservation token stays inspectable');
+    assert.equal(acquired.handle.bindNative({ data: 0x3100, buffer: 0x4100 }).ok, true);
+    assert.equal(acquired.handle.publish().ok, true);
+
+    const prepared = controller.prepareFinalFree({ data: 0x3100, buffer: 0x4100 });
+    assert.equal(prepared.ok, true);
+    assert.equal(controller.commitFinalFree(prepared.ticket, { dataFreed: true }).ok, true);
+    assert.equal(held(controller), 0);
+
+    const finished = acquired.handle.finalRelease({
+      referencesDropped: true, dataFreed: true
+    });
+    assert.equal(finished.ok, true);
+    assert.equal(finished.external, true);
+    assert.equal(finished.releasedBytes, 0);
+    assert.equal(finished.retiredBytes, 256);
+    assert.equal(acquired.handle.state, 'released');
+    assert.equal(held(controller), 0);
+    assert.equal(ledger.snapshot().liveBytes, 0);
+  });
+
 test('unbound sample discard reclaims the reservation without native pointers',
   { timeout: 5000 }, () => {
     const { controller, ledger } = make(4096);
