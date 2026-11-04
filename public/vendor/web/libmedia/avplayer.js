@@ -459,7 +459,7 @@ async function eioExtradataAcquire(fc, pointer, size, label) {
   }
   if (typeof fc.eioAcquireOwnedResource !== "function") throw eioExtradataError("admission hook invalid");
   let result;
-  try { result = await fc.eioAcquireOwnedResource(size, ["mp4-hevc-hvcc-native", "mp4-av1-av1c-native", "mp4-opus-dops-native", "mp4-vvc-vvcc-native", "mp4-vp9-vpcc-native", "mp4-flac-dfla-native", "matroska-codec-private-native"].includes(label) ? label : "mp4-h264-avcc-native"); }
+  try { result = await fc.eioAcquireOwnedResource(size, ["mp4-hevc-hvcc-native", "mp4-av1-av1c-native", "mp4-opus-dops-native", "mp4-vvc-vvcc-native", "mp4-vp9-vpcc-native", "mp4-flac-dfla-native", "matroska-codec-private-native", "mp4-esds-native", "matroska-attachment-native"].includes(label) ? label : "mp4-h264-avcc-native"); }
   catch (error) { throw eioExtradataError("native admission failed: " + error.message); }
   if (!result || result.ok !== true || !result.handle ||
       typeof result.handle.release !== "function" || typeof result.isCancelled !== "function" ||

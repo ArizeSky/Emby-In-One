@@ -43,7 +43,7 @@ const CASE8_OLD =
 const CASE8_NEW =
   'case 8:{const p=e.ioReader.getPos();if(d<o){const eioApi=e.eioMatroskaOwned,eioMgr=eioApi&&eioApi.manager(),eioN=eioMgr?eioApi.safe(d):Number(BigInt.asIntN(32,d));if(eioMgr&&(null===eioN||eioN<0)){eioApi.error("EIO_OWNED_BINARY_SIZE_INVALID",{size:String(d)});const eioErr=new Error("EIO_OWNED_BINARY_SIZE_INVALID");throw eioErr.code="EIO_OWNED_BINARY_SIZE_INVALID",eioErr}let eioRead=null;if(eioMgr)try{eioRead=await eioApi.readBinary(eioN,"matroska-binary")}catch(err){if(err&&(err.eioCancelled||"EIO_OWNED_ADMISSION_CANCELLED"===err.code))throw err;const eioCode=err&&err.code||"EIO_OWNED_BINARY_READ_FAILED";eioApi.error(eioCode,{need:eioN,cause:eioCode});throw err}n={pos:p,size:d,data:eioRead?eioRead.data:await e.ioReader.readBuffer(eioN)};eioRead&&eioRead.handle&&(n.eioOwned=eioRead.handle)}else{const q=BigInt(16777216);let s=d;for(n={pos:p,size:d,data:null};s>BigInt(0);){const u=s>q?q:s;await e.ioReader.skip(Number(u)),s-=u}}break}';
 const ATTACH_OLD = ',t.data)if(p.xz[t.mime])';
-const ATTACH_NEW = ',t.data&&t.data.data)if(p.xz[t.mime])';
+const ATTACH_NEW = 'if(attachment.data&&attachment.data.data)';
 
 const PARSE_HEAD =
   /async function ([A-Za-z_$][\w$]*)\(e,t,a\)\{let c=arguments\.length>3&&void 0!==arguments\[3\]/;
@@ -329,8 +329,8 @@ test('a skip rejection propagates and does not continue parsing', async () => {
 
 // ---- analyzeStreams attachment branch ------------------------------------
 
-const ATTACH_START = 'this.context.attachments&&_.__(this.context.attachments.entry';
-const ATTACH_END = 't.data.data)}))';
+const ATTACH_START = 'if(this.context.attachments)for(';
+const ATTACH_END = '\nif(this.context.tags';
 
 function extractAttachmentBranch() {
   const start = bundle.indexOf(ATTACH_START);
@@ -343,7 +343,7 @@ function extractAttachmentBranch() {
   assert.equal(method.split(ATTACH_START).length - 1, 1, 'exactly one attachment branch in the method');
   const end = bundle.indexOf(ATTACH_END, start);
   assert.ok(end > start && end < methodEnd, 'attachment branch must end inside analyzeStreams');
-  const snippet = bundle.slice(start, end + ATTACH_END.length);
+  const snippet = bundle.slice(start, end);
   assert.ok(snippet.includes(ATTACH_NEW), 'extracted branch must carry the payload guard');
   assert.ok(!snippet.includes(ATTACH_OLD), 'extracted branch must not copy a null payload');
   return snippet;
@@ -355,7 +355,7 @@ const ATTACHMENT_BRANCH = extractAttachmentBranch();
 // binds `this` and supplies the real mocks. Wrapping the branch in a
 // zero-argument `return function(){...}()` factory would invoke it with no
 // arguments, freezing e/_/p/... to undefined before any test call.
-const runAttachmentBranch = new Function(
+const runAttachmentBranch = new (Object.getPrototypeOf(async function(){}).constructor)(
   'e',
   '_',
   'p',
@@ -364,6 +364,7 @@ const runAttachmentBranch = new Function(
   'r',
   'y',
   'n',
+  'eioNative', 'c',
   ATTACHMENT_BRANCH,
 );
 
@@ -374,7 +375,7 @@ function attachment({ mime, data, name = 'file.bin', description = 'desc' }) {
   return { name, mime, description, data };
 }
 
-function analyzeAttachments(entry) {
+async function analyzeAttachments(entry) {
   const calls = { malloc: [], copy: [], nx: [], writes: [], streams: [] };
   // The real branch runs with `this` bound to the IMatroskaFormat instance and
   // reads `this.context.attachments`; keep that exact shape so a wrong this
@@ -436,13 +437,23 @@ function analyzeAttachments(entry) {
   };
   const n = { f: { 15: () => 0 } };
 
-  runAttachmentBranch.call(context, e, _, p, d, I, r, y, n);
+  // Delegate stubs test the historical payload guard; real ownership/final-free
+  // is covered separately by web-matroska-native-attachments.test.cjs.
+  context.eioReadHeaderPicture=async(_fc,stream,size,source)=>{
+    const data=I.sY(size);r.lW(data,size,source);y.NX(stream.attachedPic,data,size);return 0;
+  };
+  const slots={eioExtradataReplaceBytes:async(_fc,cp,source)=>{
+    cp.extradataSize=source.length;cp.extradata=I.sY(source.length);
+    r.lW(cp.extradata,source.length,source);
+  }};
+  const create=e.createStream;e.createStream=()=>{const stream=create();stream.codecpar.pointer=stream.codecpar;return stream;};
+  await runAttachmentBranch.call(context, e, _, p, d, I, r, y, n, slots, {o9:'pointer'});
   return calls;
 }
 
-test('a null-payload image attachment keeps its stream/metadata but allocates nothing', () => {
+test('a null-payload image attachment keeps its stream/metadata but allocates nothing', async () => {
   const att = attachment({ mime: IMAGE_MIME, data: { pos: 10n, size: LIMIT + 1n, data: null } });
-  const calls = analyzeAttachments([att]);
+  const calls = await analyzeAttachments([att]);
   assert.equal(calls.streams.length, 1);
   const stream = calls.streams[0];
 
@@ -461,9 +472,9 @@ test('a null-payload image attachment keeps its stream/metadata but allocates no
   assert.equal(stream.metadata.description, 'desc');
 });
 
-test('a null-payload font attachment keeps metadata and skips extradata allocation', () => {
+test('a null-payload font attachment keeps metadata and skips extradata allocation', async () => {
   const att = attachment({ mime: FONT_MIME, data: { pos: 0n, size: LIMIT, data: null } });
-  const calls = analyzeAttachments([att]);
+  const calls = await analyzeAttachments([att]);
   const stream = calls.streams[0];
 
   assert.equal(stream.codecpar.codecType, 4);
@@ -474,9 +485,9 @@ test('a null-payload font attachment keeps metadata and skips extradata allocati
   assert.equal(stream.metadata.mime, FONT_MIME);
 });
 
-test('an attachment without a data node keeps its stream and allocates nothing', () => {
+test('an attachment without a data node keeps its stream and allocates nothing', async () => {
   const att = { name: 'note.txt', mime: 'text/plain', description: null };
-  const calls = analyzeAttachments([att]);
+  const calls = await analyzeAttachments([att]);
   const stream = calls.streams[0];
   assert.equal(stream.codecpar.codecType, 4);
   assert.equal(stream.privData, att);
@@ -485,10 +496,10 @@ test('an attachment without a data node keeps its stream and allocates nothing',
   assert.equal(stream.metadata.title, 'note.txt');
 });
 
-test('an ordinary image attachment still copies its payload and marks the cover', () => {
+test('an ordinary image attachment still copies its payload and marks the cover', async () => {
   const payload = Uint8Array.from([9, 8, 7]);
   const att = attachment({ mime: IMAGE_MIME, data: { pos: 5n, size: 3n, data: payload } });
-  const calls = analyzeAttachments([att]);
+  const calls = await analyzeAttachments([att]);
   const stream = calls.streams[0];
 
   assert.equal(stream.codecpar.codecId, 42);
@@ -505,17 +516,17 @@ test('an ordinary image attachment still copies its payload and marks the cover'
   assert.deepEqual(calls.writes, [[39, 0], [43, 1]], 'cover index and disposition are written at the AVFrame offsets');
 });
 
-test('an ordinary font attachment still copies its payload into extradata', () => {
+test('an ordinary font attachment still copies its payload into extradata', async () => {
   const payload = Uint8Array.from([1, 2]);
   const att = attachment({ mime: FONT_MIME, data: { pos: 1n, size: 2n, data: payload } });
-  const calls = analyzeAttachments([att]);
+  const calls = await analyzeAttachments([att]);
   const stream = calls.streams[0];
 
   assert.equal(stream.codecpar.extradataSize, 2);
   assert.equal(stream.codecpar.extradata.size, 2);
   assert.deepEqual(calls.malloc, [2]);
   assert.equal(calls.copy.length, 1);
-  assert.equal(calls.copy[0].src, payload);
+  assert.deepEqual(calls.copy[0].src, payload);
   assert.equal(calls.copy[0].len, 2);
   assert.deepEqual(calls.nx, [], 'fonts are not attached pictures');
 });
