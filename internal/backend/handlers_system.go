@@ -69,6 +69,16 @@ func (a *App) handleSystemEndpoint(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"IsLocal": false, "IsInNetwork": false})
 }
 
+// handlePlaybackFeatures reports the web-player feature flags derived from the
+// authoritative config. The dual-cache flag is opt-in: the default (absent
+// key) keeps baseline playback, and the client treats a missing field as off.
+func (a *App) handlePlaybackFeatures(w http.ResponseWriter, r *http.Request) {
+	cfg := a.ConfigStore.Snapshot()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"dualCache": cfg.Playback.DualCacheEnabled,
+	})
+}
+
 func (a *App) handleSystemPing(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte("Emby-In-One"))
 }

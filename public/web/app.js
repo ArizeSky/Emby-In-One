@@ -18,6 +18,19 @@
   // without api() needing the reactive toast store directly (plan §8.9).
   let notifyPartialResults = null;
 
+
+  // Server-side playback feature flags (/System/PlaybackFeatures). The
+  // dual-cache flag is opt-in and absent means off; a fetch failure keeps
+  // baseline playback and never blocks the player.
+  const playbackFeatures = { dualCache: false };
+  async function refreshPlaybackFeatures() {
+    try {
+      const res = await fetch(`${API}/System/PlaybackFeatures`, { headers: { 'X-Emby-Token': localStorage.getItem('eio_token') || '' } });
+      if (!res.ok) return;
+      const data = await res.json();
+      playbackFeatures.dualCache = data?.dualCache === true;
+    } catch (e) { /* keep baseline */ }
+  }
   // A startup resume can race a cold/transcoding engine and is not an
   // interactive drag. It gets its own bounded budget; this stays an internal
   // constant instead of a window/external setting.
@@ -1001,6 +1014,14 @@
         await instance.load(streamUrl, playSrc.value, item, {
           fallbackUrl,
           audioIndex: playAudioIndex.value, subtitleIndex: options.subtitleIndex,
+          ...(playbackFeatures.dualCache ? { eioDualCache: {
+            enabled: true,
+            maxBytes: 300000000,
+            ioBytes: 12000000,
+            demuxBytes: 48000000,
+            maxPacketBytes: 16000000,
+            maxForwardSeconds: 120,
+          } } : {}),
         });
         if (player !== instance || generation !== playbackGeneration) return;
         await syncStartupSubtitle(instance, generation);
@@ -1428,6 +1449,7 @@
               return;
             }
             currentUser.value = me;
+            refreshPlaybackFeatures();
             if (appearance) appearance.syncIdentity(localStorage.getItem('eio_user_id'));
             refreshAppearanceRemote();
             recentSearches.read();

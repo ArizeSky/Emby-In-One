@@ -35,6 +35,10 @@ type AdminConfig struct {
 
 type PlaybackConfig struct {
 	Mode string
+	// DualCacheEnabled turns on the strict dual-cache admission path for the
+	// web player (300,000,000-byte / 120-second forward budget). The zero
+	// value keeps the default baseline playback, so old configs keep working.
+	DualCacheEnabled bool
 }
 
 type TimeoutsConfig struct {
@@ -539,8 +543,11 @@ func assignSectionField(cfg *Config, section, key, value string) {
 			cfg.Admin.Password = parseStringValue(value)
 		}
 	case "playback":
-		if key == "mode" {
+		switch key {
+		case "mode":
 			cfg.Playback.Mode = parseStringValue(value)
+		case "dualCache":
+			cfg.Playback.DualCacheEnabled = parseBoolValue(value)
 		}
 	case "timeouts":
 		switch key {
@@ -661,7 +668,8 @@ func renderConfigYAML(cfg *Config) string {
 	fmt.Fprintf(&b, "  password: %s\n\n", yamlStr(cfg.Admin.Password))
 
 	b.WriteString("playback:\n")
-	fmt.Fprintf(&b, "  mode: %s\n\n", yamlStr(cfg.Playback.Mode))
+	fmt.Fprintf(&b, "  mode: %s\n", yamlStr(cfg.Playback.Mode))
+	fmt.Fprintf(&b, "  dualCache: %t\n\n", cfg.Playback.DualCacheEnabled)
 
 	b.WriteString("timeouts:\n")
 	fmt.Fprintf(&b, "  api: %d\n", cfg.Timeouts.API)

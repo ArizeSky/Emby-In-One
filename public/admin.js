@@ -22,7 +22,7 @@ createApp({
       ],
       stats: { upstreamCount: 0, upstreamOnline: 0, idMappings: { mappingCount: 0, persistent: true }, upstream: [] },
       upstreamList: [], proxyList: [],
-      settings: { serverName: '', playbackMode: 'proxy', adminUsername: '', adminPassword: '', currentPassword: '', timeouts: { api: 30000, global: 15000, login: 10000, healthCheck: 10000, healthInterval: 60000, searchGracePeriod: 3000, metadataGracePeriod: 3000, latestGracePeriod: 0 } },
+      settings: { serverName: '', playbackMode: 'proxy', dualCache: false, adminUsername: '', adminPassword: '', currentPassword: '', timeouts: { api: 30000, global: 15000, login: 10000, healthCheck: 10000, healthInterval: 60000, searchGracePeriod: 3000, metadataGracePeriod: 3000, latestGracePeriod: 0 } },
       settingsLoadState: 'loading', settingsLoadedOnce: false, settingsError: '', settingsRequestID: 0,
       listErrors: { upstream: '', proxies: '', users: '', logs: '' },
       adminUsernameOriginal: '',   // 服务端当前的管理员用户名，用于判断这次保存是否真的改了用户名
@@ -169,7 +169,7 @@ createApp({
         const s = await this.api('/admin/api/settings', { signal });
         if (requestID !== this.settingsRequestID) return;
         if (!s || typeof s !== 'object' || Array.isArray(s)) throw new Error('设置响应格式无效');
-        this.settings = { ...this.settings, ...s, adminPassword: '', currentPassword: '', timeouts: s.timeouts || this.settings.timeouts };
+        this.settings = { ...this.settings, ...s, adminPassword: '', currentPassword: '', timeouts: s.timeouts || this.settings.timeouts, dualCache: s.dualCache === true };
         this.adminUsernameOriginal = s.adminUsername || '';
         this.settingsLoadedOnce = true;
         this.settingsLoadState = 'loaded';

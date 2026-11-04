@@ -49,6 +49,7 @@ type adminIdentityBinding struct {
 type adminSettingsInput struct {
 	ServerName      *string                    `json:"serverName"`
 	PlaybackMode    *string                    `json:"playbackMode"`
+	DualCache       *bool                      `json:"dualCache"`
 	AdminUsername   *string                    `json:"adminUsername"`
 	AdminPassword   *string                    `json:"adminPassword"`
 	CurrentPassword *string                    `json:"currentPassword"`
@@ -609,6 +610,7 @@ func (a *App) handleAdminSettings(w http.ResponseWriter, r *http.Request) {
 		"serverName":    cfg.Server.Name,
 		"port":          cfg.Server.Port,
 		"playbackMode":  cfg.Playback.Mode,
+		"dualCache":     cfg.Playback.DualCacheEnabled,
 		"adminUsername": cfg.Admin.Username,
 		"timeouts": map[string]any{
 			"api":                 cfg.Timeouts.API,
@@ -647,6 +649,9 @@ func (a *App) handleAdminSettingsUpdate(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		nextCfg.Playback.Mode = mode
+	}
+	if body.DualCache != nil {
+		nextCfg.Playback.DualCacheEnabled = *body.DualCache
 	}
 	if body.AdminUsername != nil && strings.TrimSpace(*body.AdminUsername) != "" {
 		username := strings.TrimSpace(*body.AdminUsername)

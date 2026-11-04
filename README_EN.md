@@ -345,6 +345,7 @@ admin:
 
 playback:
   mode: "proxy"          # "proxy" or "redirect", global default
+  dualCache: false       # Web-player dual cache (experimental): true enables the 300,000,000-byte / 120-second budget; default off keeps baseline playback
 
 timeouts:
   api: 30000             # Single upstream API request timeout (ms)
@@ -392,6 +393,8 @@ upstream:
 ```
 
 Settings modified in the admin panel take effect hotly, no service restart required. The one exception is the global default playback mode, which is only the initial value for a new upstream — see Playback Modes.
+
+The "Player dual cache (experimental)" switch also lives in the admin panel's global settings; saving applies it to new playback sessions immediately (a session already playing keeps its original path until it ends), and turning it off returns to default baseline playback. The feature is experimental: controlled compressed-media holdings stop production at a byte / forward-duration dual cap, but accounting coverage is not fully closed yet (see `docs/web-payload-transfer-work-in-progress.md`).
 
 ### Reverse Proxy Trust (`trustProxy`)
 
