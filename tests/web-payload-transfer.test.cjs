@@ -2,9 +2,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { Worker } = require('node:worker_threads');
-const api = require('../public/web/player-payload-transfer.js');
-const core = require('../public/web/player-shared-media-ownership.js');
-const owned = require('../public/web/player-owned-media-resources.js');
+const api = require('../web-src/player-payload-transfer.js');
+const core = require('../web-src/player-shared-media-ownership.js');
+const owned = require('../web-src/player-owned-media-resources.js');
 function fixture(capacityBytes = 100) {
   const control = core.create({ capacityBytes, maxEntries: 32 });
   const resources = owned.createOwnedResources(control);
@@ -101,7 +101,7 @@ test('a real Node Worker transfers and explicitly detaches source buffers before
   const worker = new Worker(`const {parentPort,workerData}=require('node:worker_threads');
     const api=require(workerData);parentPort.on('message',message=>{
       parentPort.postMessage(api.receive(message.payloads,message.identity));
-    });`, { eval: true, workerData: require.resolve('../public/web/player-payload-transfer.js') });
+    });`, { eval: true, workerData: require.resolve('../web-src/player-payload-transfer.js') });
   t.after(() => worker.terminate());
   await item.send((payloads, buffers, identity) => new Promise((resolve, reject) => {
     worker.once('message', resolve); worker.once('error', reject);

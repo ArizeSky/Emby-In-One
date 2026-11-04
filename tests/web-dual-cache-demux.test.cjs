@@ -161,7 +161,7 @@ function buildTask(options = {}) {
 
   const text = bundleText();
   const demux = demuxText();
-  const clockApi = require('../public/web/player-native-clock.js');
+  const clockApi = require('../web-src/player-native-clock.js');
   const helper = vm.runInNewContext(
     `${sliceHelper(text, 'DEMUX')}\n;__eioDualDemux;`,
     { Map, Math, Number, isFinite, BigInt, setTimeout, clearTimeout, o: { f: { 15: i32 } }, performance: { now: () => clockMs }, i: (id) => (id === 90194 ? clockApi : undefined) }

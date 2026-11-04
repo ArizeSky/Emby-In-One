@@ -1,7 +1,7 @@
 'use strict';
 
 /*
- * Focused tests for public/web/player-codecpar-leases.js.
+ * Focused tests for web-src/player-codecpar-leases.js.
  *
  * The admission/credit assertions use the REAL owned-resource wrapper and the
  * REAL shared-media ownership core (one SharedArrayBuffer, one HELD counter).
@@ -24,10 +24,10 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const ROOT = path.join(__dirname, '..');
-const HELPER_PATH = path.join(ROOT, 'public', 'web', 'player-codecpar-leases.js');
-const core = require('../public/web/player-shared-media-ownership.js');
-const owned = require('../public/web/player-owned-media-resources.js');
-const codecpar = require('../public/web/player-codecpar-leases.js');
+const HELPER_PATH = path.join(ROOT, 'web-src', 'player-codecpar-leases.js');
+const core = require('../web-src/player-shared-media-ownership.js');
+const owned = require('../web-src/player-owned-media-resources.js');
+const codecpar = require('../web-src/player-codecpar-leases.js');
 
 const PROOF = Object.freeze({ referencesDropped: true });
 

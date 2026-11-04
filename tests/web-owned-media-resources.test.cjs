@@ -2,9 +2,9 @@
 
 /*
  * Focused tests for owned-resource accounting (FLAGS=1) in the changed paths:
- * public/web/player-shared-media-ownership.js (bindOwnedResource /
+ * web-src/player-shared-media-ownership.js (bindOwnedResource /
  * releaseOwnedResource / owned-resource snapshot scan) and
- * public/web/player-owned-media-resources.js (createOwnedResources).
+ * web-src/player-owned-media-resources.js (createOwnedResources).
  *
  * Every byte assertion reads the real SharedArrayBuffer created by the core
  * helper. No worker, server, browser, upstream or production instance is used.
@@ -20,8 +20,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const ROOT = path.join(__dirname, '..');
-const CORE_PATH = path.join(ROOT, 'public', 'web', 'player-shared-media-ownership.js');
-const WRAPPER_PATH = path.join(ROOT, 'public', 'web', 'player-owned-media-resources.js');
+const CORE_PATH = path.join(ROOT, 'web-src', 'player-shared-media-ownership.js');
+const WRAPPER_PATH = path.join(ROOT, 'web-src', 'player-owned-media-resources.js');
 const core = require(CORE_PATH);
 const owned = require(WRAPPER_PATH);
 const E = core.LAYOUT.entry;

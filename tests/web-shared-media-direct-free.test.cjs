@@ -5,9 +5,9 @@
  *
  * Scope of this file:
  *   - the embedded module 90188 (release registry, chunk 90204) is
- *     byte-identical to public/web/player-shared-media-release.js;
+ *     byte-identical to web-src/player-shared-media-release.js;
  *   - the embedded module 90190 (ownership core, chunk 90201) contains the
- *     standalone public/web/player-shared-media-ownership.js bytes;
+ *     standalone web-src/player-shared-media-ownership.js bytes;
  *   - module 90187 (chunk 90202) is the domain/release facade: it requires the
  *     ACTUAL module 90190 core first and module 90188 only lazily;
  *   - the ACTUAL vendor module 13486 factory is executed together with the
@@ -47,8 +47,8 @@ const { Worker } = require('node:worker_threads');
 const readLibmediaSourceGraph = require('./web-libmedia-source-graph.cjs');
 
 const ROOT = path.join(__dirname, '..');
-const OWNERSHIP_PATH = path.join(ROOT, 'public', 'web', 'player-shared-media-ownership.js');
-const RELEASE_PATH = path.join(ROOT, 'public', 'web', 'player-shared-media-release.js');
+const OWNERSHIP_PATH = path.join(ROOT, 'web-src', 'player-shared-media-ownership.js');
+const RELEASE_PATH = path.join(ROOT, 'web-src', 'player-shared-media-release.js');
 const OWNERSHIP = require(OWNERSHIP_PATH);
 const RELEASE_TEXT = fs.readFileSync(RELEASE_PATH, 'utf8');
 const OWNERSHIP_TEXT = fs.readFileSync(OWNERSHIP_PATH, 'utf8');

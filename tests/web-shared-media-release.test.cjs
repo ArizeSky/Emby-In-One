@@ -1,7 +1,7 @@
 'use strict';
 
 /*
- * Facade tests for public/web/player-shared-media-release.js.
+ * Facade tests for web-src/player-shared-media-release.js.
  *
  * Scope: this step verifies the standalone registry facade only. It does NOT
  * wire or prove the real Q7 / module 13486 last-free branch, and hand calls to
@@ -28,7 +28,7 @@ const sourceGraph = readLibmediaSourceGraph();
 const MODULE_ID = 90187;
 const CORE_MODULE_ID = 90190;
 const ROOT = path.join(__dirname, '..');
-const RELEASE_PATH = path.join(ROOT, 'public', 'web', 'player-shared-media-release.js');
+const RELEASE_PATH = path.join(ROOT, 'web-src', 'player-shared-media-release.js');
 const HEAP_BASE = 1024;
 const RELEASE = require(RELEASE_PATH);
 

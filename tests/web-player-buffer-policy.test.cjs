@@ -1,6 +1,6 @@
 'use strict';
 /* Unit coverage for the pure buffer policy in
- * public/web/player-buffer-policy.js.
+ * web-src/player-buffer-policy.js.
  *
  * These tests exercise the real module through require() (plus one sandbox load
  * to prove it needs no browser globals). They prove only the pure policy and
@@ -14,8 +14,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const policy = require('../public/web/player-buffer-policy.js');
-const FILE = path.join(__dirname, '../public/web/player-buffer-policy.js');
+const policy = require('../web-src/player-buffer-policy.js');
+const FILE = path.join(__dirname, '../web-src/player-buffer-policy.js');
 const MAX_SAFE = Number.MAX_SAFE_INTEGER;
 
 function empty(generation = 0, maxBytes = policy.DEFAULT_MAX_BYTES) {

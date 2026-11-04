@@ -7,7 +7,7 @@
  *
  * The REAL module 67669 factory is sliced out of the shipped bundle and run
  * over fake WASM memory and a fake allocator. Leases are REAL
- * public/web/player-codecpar-leases.js leases admitted by the REAL shared
+ * web-src/player-codecpar-leases.js leases admitted by the REAL shared
  * ownership core through the REAL owned-resource wrapper. Fake/proxy leases are
  * used only to inject release/bind faults and deliberate reentrancy.
  *
@@ -25,9 +25,9 @@ const vm = require('node:vm');
 const ROOT = path.join(__dirname, '..');
 const AVPLAYER_PATH = path.join(ROOT, 'public', 'vendor', 'web', 'libmedia', 'avplayer.js');
 const CHUNK26_PATH = path.join(ROOT, 'public', 'vendor', 'web', 'libmedia', '26.avplayer.js');
-const core = require('../public/web/player-shared-media-ownership.js');
-const owned = require('../public/web/player-owned-media-resources.js');
-const codecpar = require('../public/web/player-codecpar-leases.js');
+const core = require('../web-src/player-shared-media-ownership.js');
+const owned = require('../web-src/player-owned-media-resources.js');
+const codecpar = require('../web-src/player-codecpar-leases.js');
 
 const avplayerSource = fs.readFileSync(AVPLAYER_PATH, 'utf8');
 const chunk26Source = fs.readFileSync(CHUNK26_PATH, 'utf8');

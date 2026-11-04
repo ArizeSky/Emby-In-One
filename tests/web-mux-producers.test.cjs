@@ -3,7 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
-const { create } = require('../public/web/player-mux-producers.js');
+const { create } = require('../web-src/player-mux-producers.js');
 
 const code = (value) => ({ code: value });
 
@@ -11,7 +11,7 @@ test('close/drain waits for every delayed producer, not just pull', async () => 
   // Exercise the browser UMD entry as well as CommonJS in the other tests.
   const browser = vm.createContext({ setTimeout, clearTimeout });
   vm.runInContext(fs.readFileSync(require.resolve(
-    '../public/web/player-mux-producers.js'), 'utf8'), browser);
+    '../web-src/player-mux-producers.js'), 'utf8'), browser);
   const gate = browser.EioMuxProducers.create();
   await assert.rejects(gate.drain(10), code('ERR_MUX_PRODUCERS_NOT_CLOSED'));
   const pull = gate.enter('pull');

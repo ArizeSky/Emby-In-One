@@ -69,13 +69,38 @@ func (a *App) handleSystemEndpoint(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"IsLocal": false, "IsInNetwork": false})
 }
 
+// Dual-cache budget constants are the single source of truth for the web
+// player's strict-admission path. They mirror the vendor validation rules:
+// ioBytes + demuxBytes < maxBytes, and maxPacketBytes < demuxBytes. The MSE
+// byte budget is derived by the vendor as maxBytes - ioBytes - demuxBytes
+// (= 240,000,000). The web player falls back to these same values only when
+// an older backend omits the dualCacheBudget field.
+const (
+	dualCacheMaxBytes          = 300_000_000
+	dualCacheIOBytes           = 12_000_000
+	dualCacheDemuxBytes        = 48_000_000
+	dualCacheMaxPacketBytes    = 16_000_000
+	dualCacheMaxForwardSeconds = 120
+)
+
 // handlePlaybackFeatures reports the web-player feature flags derived from the
-// authoritative config. The dual-cache flag is opt-in: the default (absent
-// key) keeps baseline playback, and the client treats a missing field as off.
+// authoritative config. Like /System/Info, the route is registered behind
+// requireAuth, so the client must send its token. The dual-cache flag is
+// opt-in: the default (absent key) keeps baseline playback, and the client
+// treats a missing field as off.
+// dualCacheBudget is always reported alongside the flag so the client uses the
+// server-controlled budget instead of its own hardcoded copy.
 func (a *App) handlePlaybackFeatures(w http.ResponseWriter, r *http.Request) {
 	cfg := a.ConfigStore.Snapshot()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"dualCache": cfg.Playback.DualCacheEnabled,
+		"dualCacheBudget": map[string]any{
+			"maxBytes":          dualCacheMaxBytes,
+			"ioBytes":           dualCacheIOBytes,
+			"demuxBytes":        dualCacheDemuxBytes,
+			"maxPacketBytes":    dualCacheMaxPacketBytes,
+			"maxForwardSeconds": dualCacheMaxForwardSeconds,
+		},
 	})
 }
 

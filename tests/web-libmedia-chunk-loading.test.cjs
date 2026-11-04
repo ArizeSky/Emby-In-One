@@ -75,7 +75,7 @@ test('actual generated Worker collector includes the split transitive factories'
   const mainSource = fs.readFileSync(path.join(root, 'avplayer.js'), 'utf8');
   assert.match(mainSource, /s\.f\.eioDependencies=\(e,t\)=>\{26===e&&t\.push\(s\.e\(90200\),s\.e\(90205\),s\.e\(90206\),s\.e\(90207\),s\.e\(90208\),s\.e\(90209\),s\.e\(90210\),s\.e\(90211\),s\.e\(90212\)\)\}/);
   const shippedLease = fs.readFileSync(path.join(root, 'codecpar-leases.js'), 'utf8');
-  const canonicalLease = fs.readFileSync(path.join(__dirname, '../public/web/player-codecpar-leases.js'), 'utf8');
+  const canonicalLease = fs.readFileSync(path.join(__dirname, '../web-src/player-codecpar-leases.js'), 'utf8');
   assert.equal(shippedLease.slice(shippedLease.indexOf('/*!'), shippedLease.lastIndexOf('\n}\n}]);')).trimEnd(), canonicalLease.trimEnd(), 'shipped 90191 body must match canonical helper byte-for-byte');
   assert.match(code, /const core=__webpack_require__\(90190\)/);
 });

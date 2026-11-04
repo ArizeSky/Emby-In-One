@@ -8,8 +8,8 @@ const path=require('node:path');
 const vm=require('node:vm');
 const root=path.join(__dirname,'..');
 const source=fs.readFileSync(path.join(root,'public/vendor/web/libmedia/avplayer.js'),'utf8');
-const core=require('../public/web/player-shared-media-ownership.js');
-const owned=require('../public/web/player-owned-media-resources.js');
+const core=require('../web-src/player-shared-media-ownership.js');
+const owned=require('../web-src/player-owned-media-resources.js');
 function helper(){
   const b=source.indexOf('/*__EIO_DUAL_CACHE_DEMUX_BEGIN__*/');
   const e=source.indexOf('/*__EIO_DUAL_CACHE_DEMUX_END__*/',b);

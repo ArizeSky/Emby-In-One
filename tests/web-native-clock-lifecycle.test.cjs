@@ -4,8 +4,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
-const clock = require('../public/web/player-native-clock.js');
-const sources = require('../public/web/player-native-clock-source.js');
+const clock = require('../web-src/player-native-clock.js');
+const sources = require('../web-src/player-native-clock-source.js');
 const root = path.join(__dirname, '..');
 const bundle = fs.readFileSync(path.join(root, 'public/vendor/web/libmedia/avplayer.js'), 'utf8');
 
@@ -79,7 +79,7 @@ test('shipped clock modules contain identical canonical bodies and real webpack 
     ['player-native-clock.js', 'native-playback-clock.js', 90208, 90194],
     ['player-native-clock-source.js', 'native-playback-clock-source.js', 90209, 90195]
   ]) {
-    const source = fs.readFileSync(path.join(root, 'public/web', sourceName), 'utf8');
+    const source = fs.readFileSync(path.join(root, 'web-src', sourceName), 'utf8');
     const shipped = fs.readFileSync(path.join(root, 'public/vendor/web/libmedia', vendorName), 'utf8');
     assert.ok(shipped.includes(source), 'canonical body parity: ' + sourceName);
     const entries = [];

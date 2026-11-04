@@ -2,8 +2,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { Worker } = require('node:worker_threads');
-const clock = require('../public/web/player-native-clock.js');
-const sources = require('../public/web/player-native-clock-source.js');
+const clock = require('../web-src/player-native-clock.js');
+const sources = require('../web-src/player-native-clock-source.js');
 
 function fixture() {
   const descriptor = clock.create();
@@ -90,7 +90,7 @@ test('a structured-cloned reader in a real Node Worker sees publish and invalida
   const worker = new Worker(`const { parentPort, workerData } = require('node:worker_threads');
     const api = require(workerData.path);
     parentPort.on('message', () => parentPort.postMessage(api.read(workerData.sab)));`,
-    { eval: true, workerData: { path: require.resolve('../public/web/player-native-clock.js'), sab: f.descriptor.sab } });
+    { eval: true, workerData: { path: require.resolve('../web-src/player-native-clock.js'), sab: f.descriptor.sab } });
   t.after(() => worker.terminate());
   function receive() {
     return new Promise((resolve, reject) => {

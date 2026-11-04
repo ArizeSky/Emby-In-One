@@ -25,7 +25,7 @@ const { Worker } = require('node:worker_threads');
 const readLibmediaSourceGraph = require('./web-libmedia-source-graph.cjs');
 
 const sourceGraph = readLibmediaSourceGraph();
-const MODULE_PATH = path.join(__dirname, '..', 'public', 'web', 'player-shared-media-ownership.js');
+const MODULE_PATH = path.join(__dirname, '..', 'web-src', 'player-shared-media-ownership.js');
 const mod = require(MODULE_PATH);
 const CHUNK = 1024 * 1024;
 

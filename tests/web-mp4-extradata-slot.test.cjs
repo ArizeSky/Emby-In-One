@@ -4,8 +4,8 @@ const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const vm=require('node:vm');
-const ownershipCore=require('../public/web/player-shared-media-ownership.js');
-const ownedResources=require('../public/web/player-owned-media-resources.js');
+const ownershipCore=require('../web-src/player-shared-media-ownership.js');
+const ownedResources=require('../web-src/player-owned-media-resources.js');
 const base='public/vendor/web/libmedia/';
 function factory(file,id,next){
   const source=fs.readFileSync(base+file,'utf8');

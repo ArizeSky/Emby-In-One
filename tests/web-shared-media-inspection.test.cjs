@@ -3,7 +3,7 @@
 /*
  * Stage 3a tests for the non-mutating reservation-retirement observer
  * (Controller.prototype.inspectReservation) of
- * public/web/player-shared-media-ownership.js.
+ * web-src/player-shared-media-ownership.js.
  *
  * Scope of this file:
  *   - module 90187 must still begin with the EXACT standalone ownership bytes
@@ -38,7 +38,7 @@ const v8 = require('node:v8');
 const { Worker } = require('node:worker_threads');
 
 const ROOT = path.join(__dirname, '..');
-const OWNERSHIP_PATH = path.join(ROOT, 'public', 'web', 'player-shared-media-ownership.js');
+const OWNERSHIP_PATH = path.join(ROOT, 'web-src', 'player-shared-media-ownership.js');
 const OWNERSHIP_TEXT = fs.readFileSync(OWNERSHIP_PATH, 'utf8');
 const mod = require(OWNERSHIP_PATH);
 const readLibmediaSourceGraph = require('./web-libmedia-source-graph.cjs');

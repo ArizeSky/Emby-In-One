@@ -8,7 +8,7 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("GET /System/Info/Public", a.handleSystemInfoPublic)
 	mux.HandleFunc("GET /System/Info", a.withContext(a.requireAuth(a.handleSystemInfo)))
 	mux.HandleFunc("GET /System/Endpoint", a.withContext(a.handleSystemEndpoint))
-	mux.HandleFunc("GET /System/PlaybackFeatures", a.withContext(a.handlePlaybackFeatures))
+	mux.HandleFunc("GET /System/PlaybackFeatures", a.withContext(a.requireAuth(a.handlePlaybackFeatures)))
 	mux.HandleFunc("GET /System/Ping", a.withContext(a.handleSystemPing))
 	mux.HandleFunc("POST /System/Ping", a.withContext(a.handleSystemPing))
 

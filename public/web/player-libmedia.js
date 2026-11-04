@@ -188,10 +188,13 @@
 
     _captureSharedMediaDomain(core) {
       if (typeof core?.getEioSharedMediaDomain !== 'function') {
+        // Interface-missing is an environment/version mismatch, not a runtime
+        // failure of an existing domain: degrade to baseline playback instead
+        // of wedging the player. Only this branch degrades; a present
+        // interface that fails later is a real error and still throws.
         if (this.options?.eioDualCache?.enabled === true) {
-          const error = new Error('Shared media ownership interface is unavailable');
-          error.code = 'EIO_SHARED_DOMAIN_INTERFACE_MISSING';
-          throw error;
+          console.warn('[eio] EIO_SHARED_DOMAIN_INTERFACE_MISSING: shared media ownership interface is unavailable; dual-cache requested but unsupported, falling back to baseline playback');
+          this.options.eioDualCache = undefined;
         }
         return;
       }

@@ -7,6 +7,41 @@ import (
 	"testing"
 )
 
+// The budget the backend must publish alongside the dual-cache flag. The
+// values mirror the Go-side constants in handlers_system.go (single source
+// of truth) and satisfy the vendor rules: ioBytes+demuxBytes < maxBytes,
+// maxPacketBytes < demuxBytes, and the vendor derives mseBytes =
+// maxBytes - ioBytes - demuxBytes = 240,000,000.
+var wantDualCacheBudget = map[string]float64{
+	"maxBytes":          300_000_000,
+	"ioBytes":           12_000_000,
+	"demuxBytes":        48_000_000,
+	"maxPacketBytes":    16_000_000,
+	"maxForwardSeconds": 120,
+}
+
+// checkDualCacheBudget asserts the /System/PlaybackFeatures budget payload
+// matches the authoritative constants exactly (no missing or extra keys).
+func checkDualCacheBudget(t *testing.T, got map[string]float64) {
+	t.Helper()
+	if len(got) != len(wantDualCacheBudget) {
+		t.Fatalf("dualCacheBudget keys = %v, want exactly %v", keysOf(got), keysOf(wantDualCacheBudget))
+	}
+	for k, want := range wantDualCacheBudget {
+		if got[k] != want {
+			t.Fatalf("dualCacheBudget[%q] = %v, want %v", k, got[k], want)
+		}
+	}
+}
+
+func keysOf(m map[string]float64) []string {
+	ks := make([]string, 0, len(m))
+	for k := range m {
+		ks = append(ks, k)
+	}
+	return ks
+}
+
 // The dual-cache switch is a global admin setting that must survive the full
 // round trip: PUT /admin/api/settings persists it, GET reports it back, the
 // YAML round trip keeps it, and the authenticated web endpoint
@@ -36,7 +71,8 @@ func TestPlaybackDualCacheSwitchRoundTrip(t *testing.T) {
 			t.Fatalf("PlaybackFeatures status = %d, body=%s", webRR.Code, webRR.Body.String())
 		}
 		var webInitial struct {
-			DualCache bool `json:"dualCache"`
+			DualCache       bool               `json:"dualCache"`
+			DualCacheBudget map[string]float64 `json:"dualCacheBudget"`
 		}
 		if err := json.Unmarshal(webRR.Body.Bytes(), &webInitial); err != nil {
 			t.Fatalf("PlaybackFeatures body: %v", err)
@@ -44,6 +80,9 @@ func TestPlaybackDualCacheSwitchRoundTrip(t *testing.T) {
 		if webInitial.DualCache {
 			t.Fatalf("web dualCache default = true, want false")
 		}
+		// The budget is published even while the flag is off, so the client
+		// can rely on the server-controlled values the moment it opts in.
+		checkDualCacheBudget(t, webInitial.DualCacheBudget)
 
 		// Turn it on.
 		rr = doJSONRequest(t, handler, http.MethodPut, "/admin/api/settings", map[string]any{
@@ -77,7 +116,8 @@ func TestPlaybackDualCacheSwitchRoundTrip(t *testing.T) {
 		}
 		webRR = doJSONRequest(t, handler, http.MethodGet, "/System/PlaybackFeatures", nil, token)
 		var webAfter struct {
-			DualCache bool `json:"dualCache"`
+			DualCache       bool               `json:"dualCache"`
+			DualCacheBudget map[string]float64 `json:"dualCacheBudget"`
 		}
 		if err := json.Unmarshal(webRR.Body.Bytes(), &webAfter); err != nil {
 			t.Fatalf("PlaybackFeatures body: %v", err)
@@ -85,6 +125,7 @@ func TestPlaybackDualCacheSwitchRoundTrip(t *testing.T) {
 		if !webAfter.DualCache {
 			t.Fatalf("web dualCache after PUT = false, want true")
 		}
+		checkDualCacheBudget(t, webAfter.DualCacheBudget)
 
 		// Turn it back off.
 		rr = doJSONRequest(t, handler, http.MethodPut, "/admin/api/settings", map[string]any{

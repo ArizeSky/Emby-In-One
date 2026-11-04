@@ -34,7 +34,7 @@ const SIGNATURE = '90187:(module,exports,__webpack_require__)=>{';
 const CORE_MODULE_ID = 90190;
 const CORE_SIGNATURE = '90190:(module,exports,__webpack_require__)=>{';
 const ROOT = path.join(__dirname, '..');
-const HELPER_PATH = path.join(ROOT, 'public', 'web', 'player-shared-media-ownership.js');
+const HELPER_PATH = path.join(ROOT, 'web-src', 'player-shared-media-ownership.js');
 const HEAP_BASE = 1024;
 const ACTOR_SLOTS = 4;
 const HELPER = require(HELPER_PATH);

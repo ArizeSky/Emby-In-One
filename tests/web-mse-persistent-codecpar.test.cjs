@@ -6,7 +6,7 @@
  *
  * Every clone assertion executes the REAL shipped method sliced out of module
  * 26. The admission/credit assertions use the REAL canonical
- * public/web/player-codecpar-leases.js helper, the REAL owned-resource wrapper
+ * web-src/player-codecpar-leases.js helper, the REAL owned-resource wrapper
  * and the REAL shared-media ownership core. The native group also runs the REAL
  * vendored module 67669 Yi()/dn() over fake WASM memory and a fake allocator;
  * the serialized group runs the REAL module 26669 T8 (snapshot -> T8 write) and
@@ -28,10 +28,10 @@ const vm = require('node:vm');
 const ROOT = path.join(__dirname, '..');
 const MSE_PATH = path.join(ROOT, 'public', 'vendor', 'web', 'libmedia', '26.avplayer.js');
 const AVPLAYER_PATH = path.join(ROOT, 'public', 'vendor', 'web', 'libmedia', 'avplayer.js');
-const HELPER_PATH = path.join(ROOT, 'public', 'web', 'player-codecpar-leases.js');
-const core = require('../public/web/player-shared-media-ownership.js');
-const owned = require('../public/web/player-owned-media-resources.js');
-const codecpar = require('../public/web/player-codecpar-leases.js');
+const HELPER_PATH = path.join(ROOT, 'web-src', 'player-codecpar-leases.js');
+const core = require('../web-src/player-shared-media-ownership.js');
+const owned = require('../web-src/player-owned-media-resources.js');
+const codecpar = require('../web-src/player-codecpar-leases.js');
 
 const mseSource = fs.readFileSync(MSE_PATH, 'utf8');
 const avplayerSource = fs.readFileSync(AVPLAYER_PATH, 'utf8');

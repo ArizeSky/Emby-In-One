@@ -22,13 +22,39 @@
   // Server-side playback feature flags (/System/PlaybackFeatures). The
   // dual-cache flag is opt-in and absent means off; a fetch failure keeps
   // baseline playback and never blocks the player.
-  const playbackFeatures = { dualCache: false };
+  const playbackFeatures = { dualCache: false, dualCacheBudget: null };
+  // Fallback budget only for older backends that do not send
+  // dualCacheBudget; the server-controlled values are the primary source.
+  // These mirror the Go-side constants in handlers_system.go and satisfy the
+  // vendor rules (ioBytes+demuxBytes < maxBytes, maxPacketBytes < demuxBytes;
+  // mseBytes is derived by the vendor as maxBytes-ioBytes-demuxBytes).
+  const DEFAULT_DUAL_CACHE_BUDGET = {
+    maxBytes: 300000000,
+    ioBytes: 12000000,
+    demuxBytes: 48000000,
+    maxPacketBytes: 16000000,
+    maxForwardSeconds: 120,
+  };
+  // Resolve the server-delivered budget with per-field fallback so a partial
+  // or missing payload never disables the strict-admission limits.
+  function dualCacheBudget() {
+    const b = playbackFeatures.dualCacheBudget;
+    const num = (v, d) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : d);
+    return {
+      maxBytes: num(b?.maxBytes, DEFAULT_DUAL_CACHE_BUDGET.maxBytes),
+      ioBytes: num(b?.ioBytes, DEFAULT_DUAL_CACHE_BUDGET.ioBytes),
+      demuxBytes: num(b?.demuxBytes, DEFAULT_DUAL_CACHE_BUDGET.demuxBytes),
+      maxPacketBytes: num(b?.maxPacketBytes, DEFAULT_DUAL_CACHE_BUDGET.maxPacketBytes),
+      maxForwardSeconds: num(b?.maxForwardSeconds, DEFAULT_DUAL_CACHE_BUDGET.maxForwardSeconds),
+    };
+  }
   async function refreshPlaybackFeatures() {
     try {
       const res = await fetch(`${API}/System/PlaybackFeatures`, { headers: { 'X-Emby-Token': localStorage.getItem('eio_token') || '' } });
       if (!res.ok) return;
       const data = await res.json();
       playbackFeatures.dualCache = data?.dualCache === true;
+      playbackFeatures.dualCacheBudget = data?.dualCacheBudget ?? null;
     } catch (e) { /* keep baseline */ }
   }
   // A startup resume can race a cold/transcoding engine and is not an
@@ -1009,6 +1035,14 @@
             : '上一个播放器释放资源失败，请刷新页面释放资源后重试');
         }
 
+        // First-play race guard: the login-time refresh is not awaited and
+        // may not have landed yet. Give a bounded refresh a chance to run
+        // before reading the flag below; on timeout or failure the current
+        // value (baseline false) is kept and playback is never blocked.
+        await Promise.race([
+          refreshPlaybackFeatures(),
+          new Promise((resolve) => setTimeout(resolve, 800)),
+        ]);
         const instance = createPlaybackInstance(item, info, generation);
         playbackStarted = false;
         await instance.load(streamUrl, playSrc.value, item, {
@@ -1016,11 +1050,7 @@
           audioIndex: playAudioIndex.value, subtitleIndex: options.subtitleIndex,
           ...(playbackFeatures.dualCache ? { eioDualCache: {
             enabled: true,
-            maxBytes: 300000000,
-            ioBytes: 12000000,
-            demuxBytes: 48000000,
-            maxPacketBytes: 16000000,
-            maxForwardSeconds: 120,
+            ...dualCacheBudget(),
           } } : {}),
         });
         if (player !== instance || generation !== playbackGeneration) return;
