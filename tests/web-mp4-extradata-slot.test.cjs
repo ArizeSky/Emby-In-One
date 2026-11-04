@@ -6,6 +6,7 @@ const fs=require('node:fs');
 const vm=require('node:vm');
 const ownershipCore=require('../web-src/player-shared-media-ownership.js');
 const ownedResources=require('../web-src/player-owned-media-resources.js');
+const mediaHandles=require('../web-src/player-media-resource-handles.js');
 const base='public/vendor/web/libmedia/';
 function factory(file,id,next){
   const source=fs.readFileSync(base+file,'utf8');
@@ -51,7 +52,8 @@ function fixture(){
     46626:{sY:n=>{const p=bump;bump+=n+16;f.allocs.push({p,n});return p;},Eb:free,
       aI:p=>{free(reads[20](p));writes[20](p,0);}},
     57216:{bl:()=>{}},46564:{NZ:()=>{}},29688:{N_:-1},
-    34117:{z3:()=>{}},20642:{XC:()=>{}},54568:{o9:'pointer'}
+    34117:{z3:()=>{}},20642:{XC:()=>{}},54568:{o9:'pointer'},
+    90213:mediaHandles
   };
   function load(fn){
     const out={};const req=id=>{assert.ok(modules[id],`module ${id}`);return modules[id];};

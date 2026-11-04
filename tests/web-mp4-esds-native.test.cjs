@@ -7,6 +7,7 @@ const fs=require('node:fs');
 const vm=require('node:vm');
 const ownership=require('../web-src/player-shared-media-ownership.js');
 const resources=require('../web-src/player-owned-media-resources.js');
+const mediaHandles=require('../web-src/player-media-resource-handles.js');
 function source(file,id){
   const text=fs.readFileSync('public/vendor/web/libmedia/'+file,'utf8');
   const start=text.indexOf(id+':(');assert.ok(start>=0);
@@ -46,7 +47,7 @@ function fixture(){
       Eb:free,aI:p=>{free(reads[20](p));writes[20](p,0);}},
     57216:{bl:()=>{}},46564:{NZ:()=>{}},29688:{N_:-1},
     34117:{z3:(...args)=>f.logs.push(args),R8:(...args)=>f.logs.push(args)},
-    54568:{o9:'pointer'},54809:{},98901:{k:()=>3840},18528:{},
+    54568:{o9:'pointer'},54809:{},98901:{k:()=>3840},18528:{},90213:mediaHandles,
     19371:{A:(o,k,v)=>{o[k]=v;}},41662:{encode:s=>new TextEncoder().encode(s)},
     37766:{A:tag=>tag==='trak'?1:2}
   };

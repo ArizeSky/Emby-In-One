@@ -4,7 +4,7 @@
  * Source composition for the physically split libmedia webpack modules.
  *
  * This reads the ACTUAL shipped source text: public/vendor/web/libmedia/
- * avplayer.js plus the four synchronously loaded chunks 90201..90204. It only
+ * avplayer.js plus the synchronously loaded chunks 90201..90204 and 90213. It only
  * concatenates source bodies and cuts out real factory entries by their real
  * webpack keys; it does not rewrite, reconstruct, stub or evaluate a fake core.
  *
@@ -55,6 +55,12 @@ const SPLIT_MODULES = Object.freeze({
     file: 'shared-media-release-registry.js',
     signature: '90188:(module,exports,__webpack_require__)=>{',
     endMarker: '/*__EIO_SHARED_MEDIA_RELEASE_FACTORY_END__*/'
+  }),
+  90213: Object.freeze({
+    chunk: 90213,
+    file: 'media-resource-handles.js',
+    signature: '90213:(module,exports,__webpack_require__)=>{',
+    endMarker: null
   })
 });
 

@@ -8,6 +8,7 @@ const fs=require('node:fs');
 const vm=require('node:vm');
 const ownership=require('../web-src/player-shared-media-ownership.js');
 const owned=require('../web-src/player-owned-media-resources.js');
+const mediaHandles=require('../web-src/player-media-resource-handles.js');
 const base='public/vendor/web/libmedia/';
 const candidateArg=process.argv.find(a=>a.startsWith('--candidate='));
 let matroska=fs.readFileSync(base+'573.avplayer.js','utf8');
@@ -37,7 +38,7 @@ function fixture(codecId=27,payload=new Uint8Array([1,66,0,31,9,8])){
   const resources=owned.createOwnedResources(controller);
   f.controller=controller;
   const modules={
-    19371:{A:(obj,key,value)=>{obj[key]=value;}},54568:{o9:'pointer'},
+    19371:{A:(obj,key,value)=>{obj[key]=value;}},54568:{o9:'pointer'},90213:mediaHandles,
     80209:{s3:(p,n)=>buffer.subarray(p,p+n),JW:(p,n)=>buffer.subarray(p,p+n),
       lW:(p,n,bytes)=>{f.copies.push({p,n});buffer.set(bytes,p);if(f.onCopy)f.onCopy();},sO:(p,v,n)=>buffer.fill(v,p,p+n)},
     56238:{f:reads},6927:{M:writes},

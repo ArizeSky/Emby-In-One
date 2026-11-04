@@ -6,6 +6,7 @@ const fs=require('node:fs');
 const vm=require('node:vm');
 const ownership=require('../web-src/player-shared-media-ownership.js');
 const owned=require('../web-src/player-owned-media-resources.js');
+const mediaHandles=require('../web-src/player-media-resource-handles.js');
 const base='public/vendor/web/libmedia/';
 const matroska=fs.readFileSync(base+'573.avplayer.js','utf8');
 const native=fs.readFileSync(base+'avplayer.js','utf8');
@@ -28,7 +29,7 @@ function fixture(kind="font"){
   f.controller=controller;
   const alloc=n=>{const p=bump;bump+=n+16;f.allocs.push({p,n});return p;};
   const modules={
-    23902:{X$:Object.assign},19371:{A:(obj,key,value)=>{obj[key]=value;}},54568:{o9:'pointer'},
+    23902:{X$:Object.assign},19371:{A:(obj,key,value)=>{obj[key]=value;}},54568:{o9:'pointer'},90213:mediaHandles,
     80209:{s3:(p,n)=>buffer.subarray(p,p+n),JW:(p,n)=>buffer.subarray(p,p+n),
       lW:(p,n,bytes)=>{f.copies.push({p,n});buffer.set(bytes,p);if(f.onCopy)f.onCopy();},Mr:(to,from,n)=>buffer.copyWithin(to,from,from+n),sO:(p,v,n)=>buffer.fill(v,p,p+n)},
     56238:{f:reads},6927:{M:writes},

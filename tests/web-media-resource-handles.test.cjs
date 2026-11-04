@@ -254,6 +254,37 @@ test('adopted cancellation is delegated, not inferred from the generation',
     assert.equal(held(controller), 0);
   });
 
+test('adopt-only ledger wraps an existing charge without a second controller',
+  { timeout: 5000 }, () => {
+    const controller = core.create({ capacityBytes: 4096, maxEntries: 16 });
+    const manager = owned.createOwnedResources(controller);
+    const existing = manager.acquire(64, 'adopt-only', 4);
+    assert.equal(existing.ok, true);
+    assert.equal(held(controller), 64);
+
+    const ledger = handles.createMediaResourceHandles({ adoptOnly: true });
+    assert.equal(ledger.acquire({
+      kind: 'owned', size: 8, label: 'must-refuse'
+    }).code, 'controller-unavailable');
+    assert.equal(ledger.acquireBatch([{
+      kind: 'owned', size: 8, label: 'must-refuse'
+    }]).code, 'controller-unavailable');
+    assert.equal(ledger.snapshot().core, null);
+
+    const adopted = ledger.adopt({
+      kind: 'owned', size: 64, label: 'adopt-only', generation: 4,
+      coreHandle: existing.handle
+    });
+    assert.equal(adopted.ok, true);
+    assert.equal(adopted.handle.bindNative({ data: 0x8000 }).ok, true);
+    assert.equal(adopted.handle.publish().ok, true);
+    assert.equal(adopted.handle.finalRelease({ referencesDropped: true }).ok, true);
+    assert.equal(held(controller), 0);
+    assert.equal(ledger.snapshot().liveBytes, 0);
+    assert.throws(() => handles.createMediaResourceHandles({ adoptOnly: 'yes' }),
+      /adoptOnly must be a boolean/);
+  });
+
 test('snapshot reports local records plus the nontransactional core scan',
   { timeout: 5000 }, () => {
     const { controller, ledger } = make(4096);

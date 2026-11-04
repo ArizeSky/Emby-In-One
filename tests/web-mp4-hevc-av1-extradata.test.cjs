@@ -6,6 +6,7 @@ const fs=require('node:fs');
 const vm=require('node:vm');
 const ownership=require('../web-src/player-shared-media-ownership.js');
 const resources=require('../web-src/player-owned-media-resources.js');
+const mediaHandles=require('../web-src/player-media-resource-handles.js');
 function factory(file,id,next){
   const source=fs.readFileSync('public/vendor/web/libmedia/'+file,'utf8');
   const start=source.indexOf(id+':'),end=source.indexOf('},'+next+':',start);
@@ -38,7 +39,7 @@ function fixture(codec){
     46626:{sY:n=>{if(f.mallocFail)return 0;const p=bump;bump+=n+16;f.allocs.push({p,n});return p;},
       Eb:free,aI:p=>{free(reads[20](p));writes[20](p,0);}},
     57216:{bl:()=>{}},46564:{NZ:()=>{}},29688:{N_:-1},
-    34117:{z3:()=>{}},12062:{XC:()=>{}},47354:{XC:()=>{}},54568:{o9:'pointer'}
+    34117:{z3:()=>{}},12062:{XC:()=>{}},47354:{XC:()=>{}},54568:{o9:'pointer'},90213:mediaHandles
   };
   function load(fn){
     const out={},req=id=>{assert.ok(modules[id],`module ${id}`);return modules[id];};

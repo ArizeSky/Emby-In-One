@@ -377,6 +377,13 @@
       this._refusedCount += 1;
       return checked;
     }
+    if (!this._controller) {
+      this._refusedCount += 1;
+      return failure('controller-unavailable',
+        'an adopt-only ledger cannot acquire new bytes', {
+          bytes: checked.size, label: checked.label, chargedBytes: 0, retry: false
+        });
+    }
     if (checked.mediaTime !== undefined) {
       var temporal = this._admitTemporal([{ mediaTime: checked.mediaTime }]);
       if (!temporal.ok) {
@@ -508,6 +515,11 @@
         { field: 'specs' });
     }
     if (!specs.length) return { ok: true, handles: Object.freeze([]) };
+    if (!this._controller) {
+      this._refusedCount += 1;
+      return failure('controller-unavailable',
+        'an adopt-only ledger cannot acquire new bytes', { chargedBytes: 0, retry: false });
+    }
     var checked = [];
     var total = 0;
     for (var index = 0; index < specs.length; index += 1) {
@@ -882,10 +894,12 @@
 
   Ledger.prototype.snapshot = function snapshot() {
     var core = null;
-    try {
-      core = this._controller.snapshot();
-    } catch (error) {
-      core = null;
+    if (this._controller) {
+      try {
+        core = this._controller.snapshot();
+      } catch (error) {
+        core = null;
+      }
     }
     return Object.freeze({
       kind: KIND,
@@ -925,7 +939,7 @@
   function createMediaResourceHandles(options) {
     if (!options || typeof options !== 'object') {
       throw codedError('invalid-argument',
-        'createMediaResourceHandles requires { controller }');
+        'createMediaResourceHandles requires { controller } or { adoptOnly: true }');
     }
     if (options.maxForwardMs !== undefined &&
         (!isFiniteInteger(options.maxForwardMs) || options.maxForwardMs < 0)) {
@@ -935,7 +949,14 @@
     if (options.clockRead !== undefined && typeof options.clockRead !== 'function') {
       throw codedError('invalid-argument', 'clockRead must be a function');
     }
-    return new Ledger(checkController(options.controller), options);
+    if (options.adoptOnly !== undefined && typeof options.adoptOnly !== 'boolean') {
+      throw codedError('invalid-argument', 'adoptOnly must be a boolean');
+    }
+    /* An adopt-only ledger never acquires bytes of its own: every handle is
+       already charged by another component's shared-ownership controller.
+       It therefore needs no controller, but it also refuses acquire(). */
+    var controller = options.adoptOnly === true ? null : checkController(options.controller);
+    return new Ledger(controller, options);
   }
 
   return Object.freeze({

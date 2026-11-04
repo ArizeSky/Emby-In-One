@@ -18,7 +18,8 @@ const namedChunks = Object.freeze({
   90209: 'native-playback-clock-source.js',
   90210: 'payload-transfer.js',
   90211: 'mux-producers.js',
-  90212: 'mux-producer-lifecycle.js'
+  90212: 'mux-producer-lifecycle.js',
+  90213: 'media-resource-handles.js'
 });
 
 function registeredRuntime(skipId) {
@@ -51,6 +52,14 @@ test('queued split factories register before the real entry boundary', () => {
   assert.equal(runtime.require(90190).VERSION, 1);
   assert.equal(typeof runtime.require(90189).createOwnedResources, 'function');
   assert.equal(typeof runtime.require(90188).createReleaseRegistry, 'function');
+  assert.equal(typeof runtime.require(90213).createMediaResourceHandles, 'function');
+  const handles = fs.readFileSync(path.join(root, 'media-resource-handles.js'), 'utf8');
+  const canonicalHandles = fs.readFileSync(path.join(__dirname, '../web-src/player-media-resource-handles.js'), 'utf8');
+  assert.equal(
+    handles.slice(handles.indexOf('/*!'), handles.lastIndexOf('\n\n}}]);')).trimEnd(),
+    canonicalHandles.trimEnd(),
+    'shipped 90213 body must match canonical helper byte-for-byte',
+  );
   const ownership = fs.readFileSync(path.join(root, 'mse-packet-ownership.js'), 'utf8');
   assert.match(ownership, /90193:\(module,exports,__webpack_require__\)=>\{/);
   assert.match(ownership, /createMsePacketOwnership/);
@@ -72,6 +81,9 @@ test('actual generated Worker collector includes the split transitive factories'
   for (const id of [90192, 90193]) assert.match(pullCode, new RegExp('(?:"' + id + '"|' + id + ')\\s*:'));
   assert.match(pullCode, /__webpack_require__\(90193\)/);
   assert.match(pullCode, /createMsePacketOwnership/);
+  const extradataCode = runtime.require(39484).A(67669, { varName: 'collectedExtradata' });
+  assert.match(extradataCode, /(?:"90213"|90213)\s*:/);
+  assert.match(extradataCode, /createMediaResourceHandles/);
   const mainSource = fs.readFileSync(path.join(root, 'avplayer.js'), 'utf8');
   assert.match(mainSource, /s\.f\.eioDependencies=\(e,t\)=>\{26===e&&t\.push\(s\.e\(90200\),s\.e\(90205\),s\.e\(90206\),s\.e\(90207\),s\.e\(90208\),s\.e\(90209\),s\.e\(90210\),s\.e\(90211\),s\.e\(90212\)\)\}/);
   const shippedLease = fs.readFileSync(path.join(root, 'codecpar-leases.js'), 'utf8');
