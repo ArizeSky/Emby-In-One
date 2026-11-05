@@ -395,7 +395,7 @@ function handleRequest(req, res) {
       vendorRootKind: 'explicit-local-vendor-root',
     }));
   }
-  if (pathname === '/sample.mp4' || pathname === '/sample.mkv' || pathname === '/sample.php') return serveSample(req, res);
+  if (pathname === '/sample.mp4' || pathname === '/sample.mkv' || pathname === '/sample.php' || pathname === '/sample.ts' || pathname === '/sample.mpg') return serveSample(req, res);
   if (pathname.indexOf('/vendor/') === 0) return serveVendor(req, res, pathname.slice('/vendor/'.length));
   return sendText(res, 404, 'not found', req.method);
 }
@@ -1480,14 +1480,14 @@ const PAGE_HTML = String.raw`<!doctype html>
       // Match the real adapter: it normalizes every media URL with
       // new URL(url, location.origin).href before core.load. A relative path
       // resolves against blob: inside libmedia's worker and openStream fails.
-      st.loadUrl = new URL(options.ext === 'mkv' ? '/sample.mkv' : '/sample.mp4', location.origin).href;
+      st.loadUrl = new URL('/sample.' + (options.ext || 'mp4'), location.origin).href;
       st.events.push({
         at: now(),
         event: 'load-url',
         url: st.loadUrl,
         kind: 'absolute-http-url'
       });
-      await withDeadline(Promise.resolve(st.core.load(st.loadUrl, { ext: options.ext === 'mkv' ? 'mkv' : 'mp4', maxProbeDuration: 2 })), 'load');
+      await withDeadline(Promise.resolve(st.core.load(st.loadUrl, { ext: options.ext || 'mp4', maxProbeDuration: 2 })), 'load');
       ensureRunning();
       st.loadOk = true;
       await withDeadline(Promise.resolve(st.core.play({ audio: true, video: true, subtitle: true })), 'play');
@@ -1613,7 +1613,7 @@ const PAGE_HTML = String.raw`<!doctype html>
 
   var params = new URLSearchParams(location.search);
   if (params.get('autorun') === '1') {
-    setTimeout(function () { void start({}); }, 0);
+    setTimeout(function () { void start({ ext: params.get('ext') || undefined }); }, 0);
   }
 })();
 </script>

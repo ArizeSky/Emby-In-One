@@ -474,7 +474,11 @@ async function eioExtradataAcquire(fc, pointer, size, label) {
   if (typeof fc.eioAcquireOwnedResource !== "function") throw eioExtradataError("admission hook invalid");
   const eioLabels = ["mp4-hevc-hvcc-native", "mp4-av1-av1c-native", "mp4-opus-dops-native",
     "mp4-vvc-vvcc-native", "mp4-vp9-vpcc-native", "mp4-flac-dfla-native",
-    "matroska-codec-private-native", "mp4-esds-native", "matroska-attachment-native"];
+    "matroska-codec-private-native", "mp4-esds-native", "matroska-attachment-native",
+    "mpegts-aac-native", "mpegts-h264-native", "mpegts-hevc-native",
+    "mpegts-vvc-native", "mpegts-opus-native", "mpegps-aac-native",
+    "mpegps-h264-native", "mpegps-hevc-native", "mpegps-vvc-native",
+    "mpegps-opus-native"];
   const eioLabel = eioLabels.includes(label) ? label : "mp4-h264-avcc-native";
   let result;
   try { result = await fc.eioAcquireOwnedResource(size, eioLabel); }
