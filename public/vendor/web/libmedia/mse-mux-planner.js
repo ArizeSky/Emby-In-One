@@ -127,10 +127,28 @@ class EioMuxCountOnlyWriter{
 }
 /* EIO-DUAL-MUX-STEP1:END count-only writer */
 /* EIO-DUAL-MUX-STEP2:BEGIN mux plan helpers (copied from proven B surfaces) */
+/* The plan codec table mirrors the muxer's declared Capabilities (module
+   90197/90198): every codec the muxer can write is plannable, because the
+   plan measures the real box writers through the count-only writer factory.
+   codecType must match the stream's codecpar.codecType (0 video, 1 audio,
+   3 subtitle). A codec outside this set is refused with codec-unsupported. */
 const EIO_PLAN_CODECS={
   27:{label:"h264-avcc",codecType:0},
+  173:{label:"hevc-hvc1",codecType:0},
+  196:{label:"vvc-vvc1",codecType:0},
+  12:{label:"mpeg4-mp4v",codecType:0},
+  167:{label:"vp9-vp09",codecType:0},
+  225:{label:"av1-av01",codecType:0},
   86018:{label:"aac",codecType:1},
-  86017:{label:"mp3",codecType:1}
+  86017:{label:"mp3",codecType:1},
+  86028:{label:"flac",codecType:1},
+  86076:{label:"opus",codecType:1},
+  86021:{label:"vorbis",codecType:1},
+  86051:{label:"speex",codecType:1},
+  86019:{label:"ac-3",codecType:1},
+  86056:{label:"ec-3",codecType:1},
+  94226:{label:"wvtt",codecType:3},
+  94213:{label:"tx3g",codecType:3}
 };
 const EIO_PLAN_METADATA_MAX_ENTRIES=1<<16;
 const EIO_PLAN_MAX_FLUSHES=1<<16;
