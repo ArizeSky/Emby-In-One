@@ -42,7 +42,7 @@ func (c *UpstreamClient) probeStreamBases(ctx context.Context) {
 	client := &http.Client{
 		Transport:     c.transport,
 		Timeout:       c.streamProbeTimeout(),
-		CheckRedirect: redirectPolicy(c.Config.FollowRedirects),
+		CheckRedirect: c.redirectPolicyFor(c.ConfigSnapshot().FollowRedirects, authModeNormal),
 	}
 	for _, base := range bases {
 		select {

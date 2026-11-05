@@ -193,7 +193,8 @@ func TestUpstreamConnectFailureDoesNotLeakToken(t *testing.T) {
 // The refused redirect stays identifiable through the redaction wrapper, and the
 // wrapper keeps errors.Is working for the cancellation checks handlers rely on.
 func TestUpstreamRedirectPolicyShape(t *testing.T) {
-	follow := redirectPolicy(true)
+	client := newUpstreamClient(Config{}, UpstreamConfig{URL: "http://up.test", FollowRedirects: true}, 0, nil)
+	follow := client.redirectPolicyFor(true, authModeNormal)
 	if follow == nil {
 		t.Fatalf("following must install a CheckRedirect so cross-origin credentials can be stripped")
 	}
@@ -227,7 +228,7 @@ func TestUpstreamRedirectPolicyShape(t *testing.T) {
 		t.Fatalf("cross-origin redirect leaked api_key: %s", cross.URL.RawQuery)
 	}
 
-	check := redirectPolicy(false)
+	check := client.redirectPolicyFor(false, authModeNormal)
 	if check == nil {
 		t.Fatalf("not following must install a CheckRedirect")
 	}

@@ -98,6 +98,13 @@ func preparationErrorBody(err error) map[string]any {
 // already includes the original request URL.
 var errUpstreamRedirectNotFollowed = errors.New("upstream redirect not followed (followRedirects is off)")
 
+// errUpstreamLoginRedirectUntrusted is returned instead of following a redirect
+// that would resend a password-login body outside the origin the login started
+// from. It deliberately carries no URL and no body: it reaches LastError, the
+// admin API and the log, and neither the request body nor the external target
+// belongs there.
+var errUpstreamLoginRedirectUntrusted = errors.New("password login redirect left the configured API origin (login-redirect-untrusted)")
+
 // redactedError replaces an error's message with a version whose embedded URLs
 // have their credentials removed, while keeping the original error reachable
 // through Unwrap so errors.Is and errors.As still work.

@@ -215,7 +215,7 @@ func TestFinalReviewRedirectRejectsUnconfiguredPlaintext(t *testing.T) {
 	}))
 	defer up.Close()
 	c := &UpstreamClient{BaseURL: strings.Replace(up.URL, "http://", "https://", 1), AccessToken: "up-secret", transport: http.DefaultTransport}
-	resp, err := c.fetchRedirectTarget(context.Background(), up.URL+"/file", nil)
+	resp, err := c.fetchRedirectTarget(context.Background(), nil, up.URL+"/file", c.resolveIdentitySnapshot(nil, nil, nil), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +239,7 @@ func TestFinalReviewRedirectConcurrentAuth(t *testing.T) {
 		}
 	}()
 	for i := 0; i < 10; i++ {
-		resp, err := c.fetchRedirectTarget(context.Background(), up.URL+"/file", nil)
+		resp, err := c.fetchRedirectTarget(context.Background(), nil, up.URL+"/file", c.resolveIdentitySnapshot(nil, nil, nil), nil)
 		if err == nil {
 			resp.Body.Close()
 		}

@@ -1,46 +1,25 @@
 package backend
 
 import (
-	"fmt"
 	"net/http"
 	"time"
 )
 
-// redirectPolicy returns the redirect handling for an upstream. Following is the
-// default; the returned CheckRedirect still caps the chain at 10 hops (net/http's
-// own limit) and, crucially, strips credentials before a redirect that leaves the
-// original origin. net/http only drops Authorization/Cookie on a cross-host hop;
-// this proxy carries its upstream credential in custom headers (X-Emby-Token,
-// X-Emby-Authorization) and in the api_key query, which net/http would otherwise
-// forward verbatim to whatever host the upstream points at. When the
-// administrator turns following off, the request stops at the upstream's redirect
-// and is reported as an upstream failure: the proxy never hands an upstream
-// redirect target to the client as a successful response.
-func redirectPolicy(follow bool) func(*http.Request, []*http.Request) error {
-	return func(req *http.Request, via []*http.Request) error {
-		if !follow {
-			return errUpstreamRedirectNotFollowed
-		}
-		if len(via) >= 10 {
-			return fmt.Errorf("stopped after 10 redirects")
-		}
-		origin := via[0].URL
-		if req.URL.Host != origin.Host || req.URL.Scheme != origin.Scheme {
-			for _, header := range []string{
-				"X-Emby-Token", "X-Emby-Authorization", "X-MediaBrowser-Token",
-				"Authorization", "Cookie", "Cookie2",
-			} {
-				req.Header.Del(header)
-			}
-			if req.URL.RawQuery != "" {
-				query := req.URL.Query()
-				query.Del("api_key")
-				query.Del("ApiKey")
-				req.URL.RawQuery = query.Encode()
-			}
-		}
-		return nil
-	}
+// identitySnapshot is the client identity one fetch chain is pinned to. It is
+// resolved once, before the first request of the chain, and reused for every
+// subsequent hop so a capture update cannot change identity mid-fetch. It never
+// carries a credential: authentication is re-read from the current auth snapshot
+// for each send.
+type identitySnapshot struct {
+	Source  string
+	Headers http.Header
+}
+
+// resolveIdentitySnapshot resolves this request's client identity once, using
+// exactly the existing source priority for the upstream's identity mode.
+func (c *UpstreamClient) resolveIdentitySnapshot(reqCtx *RequestContext, identity *ClientIdentityService, override http.Header) identitySnapshot {
+	source, headers := c.resolveIdentityHeaders(reqCtx, identity, override)
+	return identitySnapshot{Source: source, Headers: headers}
 }
 
 // getAccessToken returns the upstream's access token in a thread-safe manner.

@@ -526,7 +526,11 @@ func (a *App) handleItemImage(w http.ResponseWriter, r *http.Request) {
 			imageQuery.Del("tag")
 		}
 		var err error
-		resp, err = client.Stream(r.Context(), reqCtx, a.Identity, imagePath, imageQuery)
+		// The image handler follows redirects itself, so it pins one identity for
+		// the first hop and every follow: a candidate fallback or a concurrent
+		// capture update must not change the client between hops.
+		snapshot := client.resolveIdentitySnapshot(reqCtx, a.Identity, nil)
+		resp, err = client.StreamWithIdentity(r.Context(), reqCtx, imagePath, imageQuery, snapshot)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return
@@ -554,7 +558,7 @@ func (a *App) handleItemImage(w http.ResponseWriter, r *http.Request) {
 			if rerr != nil || abs == nil {
 				break
 			}
-			followed, ferr := client.fetchRedirectTarget(r.Context(), abs.String(), nil)
+			followed, ferr := client.fetchRedirectTarget(r.Context(), reqCtx, abs.String(), snapshot, nil)
 			if ferr != nil {
 				resp.Body.Close()
 				if errors.Is(ferr, context.Canceled) || errors.Is(ferr, context.DeadlineExceeded) {

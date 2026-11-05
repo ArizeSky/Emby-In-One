@@ -278,43 +278,17 @@ func streamResourceHandleID(raw string) string {
 }
 
 // fetchResourceRedirectTarget is the method-preserving variant of
-// UpstreamClient.fetchRedirectTarget: resource requests keep HEAD and Range
-// semantics instead of always issuing a GET. Credential rules are identical —
-// the upstream's own token is attached only on a canonical self-origin hop.
-func (c *UpstreamClient) fetchResourceRedirectTarget(ctx context.Context, method, rawURL string, extraHeaders http.Header) (*http.Response, error) {
-	if c.Config.SpoofClient == "resident" && c.residentIdentity == nil {
-		return nil, newResidentIdentityMissingError()
-	}
-	req, err := http.NewRequestWithContext(ctx, method, rawURL, nil)
-	if err != nil {
-		return nil, err
-	}
-	// Resource URLs bypass doRequestOnce, but self-origin media still needs the
-	// same configured identity and consistent credential snapshot as API calls.
-	// On a CDN hop retain the public UA and transport headers only.
-	headers := http.Header{}
-	if c.isSelfURL(rawURL) {
-		headers = cloneHeader(extraHeaders)
-		c.applyResidentIdentity(headers)
-		headers = prepareOutboundHeaders(headers, requestContextFrom(ctx), c.authSnapshot(), authModeNormal)
-	} else {
-		for _, name := range []string{"User-Agent", "Range", "Accept", "Accept-Encoding", "Accept-Language"} {
-			if values := extraHeaders.Values(name); len(values) > 0 {
-				headers[name] = append([]string(nil), values...)
-			}
-		}
-	}
-	for key, values := range headers {
-		for _, value := range values {
-			req.Header.Add(key, value)
-		}
-	}
-	client := &http.Client{Transport: c.transport, Timeout: 0, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	resp, doErr := client.Do(req)
-	if doErr != nil {
-		return nil, &redactedError{err: doErr}
-	}
-	return resp, nil
+// fetchRedirectTarget: resource requests keep HEAD and Range semantics instead of
+// always issuing a GET. Credential rules are shared with every other hop — the
+// upstream's own identity and this request's current token on a canonical
+// self-origin target, the public header set and no credential anywhere else —
+// and a credential already present in the URL is refreshed from the same auth
+// snapshot as the headers, so the two carriers can never disagree.
+func (c *UpstreamClient) fetchResourceRedirectTarget(ctx context.Context, method, rawURL string, headers http.Header) (*http.Response, error) {
+	return c.sendOutboundHop(ctx, requestContextFrom(ctx), rawURL, outboundHop{
+		Method:  method,
+		Headers: headers,
+	})
 }
 
 // fetchResourceFollowingRedirects follows bounded redirects and only attaches

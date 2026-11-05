@@ -329,13 +329,17 @@ func newUpstreamClient(cfg Config, upstream UpstreamConfig, index int, logger *L
 		httpClient: &http.Client{
 			Transport:     transport,
 			Timeout:       time.Duration(timeouts.API) * time.Millisecond,
-			CheckRedirect: redirectPolicy(upstream.FollowRedirects),
+			CheckRedirect: nil,
 		},
 		transport:      transport,
 		logger:         logger,
 		timeouts:       timeouts,
 		streamFailures: make(map[string]time.Time),
 	}
+	// The template client never follows a redirect without projection. Every
+	// request rebuilds its own policy from the purpose it is sent for, so this
+	// default only covers a caller that reaches the template directly.
+	client.httpClient.CheckRedirect = client.redirectPolicyFor(upstream.FollowRedirects, authModeNormal)
 	if upstream.SpoofClient == "resident" {
 		client.residentIdentity = residentSnapshotFromLibrary(upstream.UAProfileID)
 	}
@@ -758,13 +762,20 @@ func (c *UpstreamClient) RequestJSON(ctx context.Context, reqCtx *RequestContext
 }
 
 func (c *UpstreamClient) Stream(ctx context.Context, reqCtx *RequestContext, identity *ClientIdentityService, path string, params url.Values, extraHeaders ...http.Header) (*http.Response, error) {
-	headers := c.identityHeaders(reqCtx, identity)
+	snapshot := c.resolveIdentitySnapshot(reqCtx, identity, nil)
+	return c.StreamWithIdentity(ctx, reqCtx, path, params, snapshot, extraHeaders...)
+}
+
+// StreamWithIdentity sends a media read with an identity resolved once for this
+// playback request. The same snapshot must be passed to every manual follow of
+// the response, so the upstream sees one client identity for the whole fetch
+// instead of a captured value that may have moved in between.
+func (c *UpstreamClient) StreamWithIdentity(ctx context.Context, reqCtx *RequestContext, path string, params url.Values, snapshot identitySnapshot, extraHeaders ...http.Header) (*http.Response, error) {
+	headers := cloneHeader(snapshot.Headers)
+	// Transport headers are merged through the public allow-list: a Range or
+	// Accept header may never replace the identity fields of the snapshot.
 	for _, extra := range extraHeaders {
-		for key, values := range extra {
-			for _, v := range values {
-				headers.Set(key, v)
-			}
-		}
+		mergePublicOutboundHeaders(headers, extra)
 	}
 	return c.doRequest(ctx, reqCtx, http.MethodGet, path, params, nil, headers, true)
 }
@@ -799,45 +810,24 @@ func (c *UpstreamClient) resolveStreamRedirectTarget(resp *http.Response, proxyH
 	return abs.String(), false
 }
 
-// fetchRedirectTarget retrieves an upstream redirect target through this proxy's
-// own line. The target is taken as issued: the upstream built it for exactly this
-// request, so no identity rewrite happens here. Single hop on purpose: each
-// response is returned as-is (ErrUseLastResponse), so the stream handler can
-// re-evaluate every hop — an internal hop that bounces to an external CDN must
-// still reach the player instead of being silently relayed from here.
-// fetchRedirectTarget retrieves an upstream redirect target through this proxy's
-// own line. The target is taken as issued: the upstream built it for exactly this
-// request, so no identity rewrite happens here. Single hop on purpose: each
-// response is returned as-is (ErrUseLastResponse), so the stream handler can
-// re-evaluate every hop — an internal hop that bounces to an external CDN must
-// still reach the player instead of being silently relayed from here.
-func (c *UpstreamClient) fetchRedirectTarget(ctx context.Context, rawURL string, extraHeaders http.Header) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
-	if err != nil {
-		return nil, err
-	}
-	for key, values := range extraHeaders {
-		for _, value := range values {
-			req.Header.Add(key, value)
-		}
-	}
-	// A same-origin hop is served by this upstream itself, so it expects the
-	// upstream's own credentials. Carry them from one consistent auth snapshot
-	// (setOnline writes the token under c.mu, so a bare field read here is a
-	// data race); a foreign target (a CDN) must never receive them (plan §7.3).
-	// Trust is decided on the full origin — scheme, host and effective port —
-	// never on the host alone: an HTTPS-configured upstream must not extend
-	// credential trust to a plaintext URL that merely shares its host:port.
-	auth := c.authSnapshot()
-	if auth.AccessToken != "" && c.isSelfURL(rawURL) {
-		req.Header.Set("X-Emby-Token", auth.AccessToken)
-	}
-	client := &http.Client{Transport: c.transport, Timeout: 0, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	resp, doErr := client.Do(req)
-	if doErr != nil {
-		return nil, &redactedError{err: doErr}
-	}
-	return resp, nil
+// fetchRedirectTarget retrieves one upstream redirect target through this
+// proxy's own line. The target is taken as issued — the upstream built it for
+// exactly this request — so the path and query stay as they are apart from a
+// credential parameter that has to be refreshed from this hop's auth snapshot.
+// Single hop on purpose: each response is returned as-is (ErrUseLastResponse),
+// so the stream handler can re-evaluate every hop — an internal hop that
+// bounces to an external CDN must still reach the player instead of being
+// silently relayed from here.
+//
+// snapshot is the identity resolved once for the whole fetch. Reusing it is what
+// keeps a same-origin follow from degrading to the Go default User-Agent after
+// the first hop.
+func (c *UpstreamClient) fetchRedirectTarget(ctx context.Context, reqCtx *RequestContext, rawURL string, snapshot identitySnapshot, transport http.Header) (*http.Response, error) {
+	return c.sendOutboundHop(ctx, reqCtx, rawURL, outboundHop{
+		Method:    http.MethodGet,
+		Headers:   snapshot.Headers,
+		Transport: transport,
+	})
 }
 
 // isSelfURL reports whether rawURL points at one of this upstream's own
@@ -1135,23 +1125,30 @@ func (c *UpstreamClient) doRequestOnce(ctx context.Context, reqCtx *RequestConte
 			request.Header.Add(key, value)
 		}
 	}
-	client := c.httpClient
+	config := c.ConfigSnapshot()
+	// Every request carries the purpose it is sent for, because the redirect
+	// policy has to refuse a password-login body that would cross origins. The
+	// policy also decides per hop whether the target may see this upstream's
+	// identity and credential at all, so it is rebuilt from the current
+	// configuration instead of a client built before an admin change.
+	redirectPolicy := c.redirectPolicyFor(config.FollowRedirects, mode)
+	timeout := c.httpClient.Timeout
 	if stream {
 		// Timeout stays 0 on purpose: a stream is supposed to stay open for the length of a
 		// film, and the overall deadline would cut long playback short. What is bounded is
 		// the wait for response headers (transport-level, see upstreamHeaderTimeout)
 		// and the request's own lifetime — the request carries the client's context, so a
 		// client that goes away takes the upstream call with it.
-		policy := redirectPolicy(c.Config.FollowRedirects)
-		if c.Config.DirectRedirect {
+		timeout = 0
+		if config.DirectRedirect {
 			// The stream handler decides per response what a redirect means: an
 			// external target goes to the client, an internal one is fetched here.
 			// The probe must therefore see the 3xx itself instead of net/http
 			// following it transparently.
-			policy = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+			redirectPolicy = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 		}
-		client = &http.Client{Transport: c.transport, Timeout: 0, CheckRedirect: policy}
 	}
+	client := &http.Client{Transport: c.transport, Timeout: timeout, CheckRedirect: redirectPolicy}
 	if c.logger != nil {
 		changed := preparedURL.changed
 		if bodyOutcome.changed {
@@ -1169,6 +1166,12 @@ func (c *UpstreamClient) doRequestOnce(ctx context.Context, reqCtx *RequestConte
 		if c.logger != nil {
 			c.logger.Errorf("[%s] Request failed: %s %s: %s", c.Name, method,
 				formatOutboundURLForLog(preparedURL.url.String()), redactURLInError(doErr))
+		}
+		// A refused password-login hop must not carry the target URL: net/http
+		// wraps it in a *url.Error built from the external Location, and this
+		// error reaches LastError, the admin API and the log.
+		if errors.Is(doErr, errUpstreamLoginRedirectUntrusted) {
+			return nil, errUpstreamLoginRedirectUntrusted
 		}
 		// net/http builds this error from the request URL, which for a stream
 		// request carries the upstream token. Handlers surface upstream errors to

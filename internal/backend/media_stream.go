@@ -163,7 +163,12 @@ func (a *App) forwardStream(w http.ResponseWriter, r *http.Request, client *Upst
 	if strings.HasSuffix(strings.ToLower(rest), ".m3u8") {
 		reqHeaders.Set("Accept-Encoding", "identity")
 	}
-	resp, err := client.Stream(r.Context(), reqCtx, a.Identity, upstreamPath, query, reqHeaders)
+	// Resolve the client identity once for this fetch. The first hop and every
+	// manual follow below present the same snapshot, so a capture update or a
+	// last-success fallback change cannot rename the client mid-stream; only the
+	// credential is re-read per hop from the current auth snapshot.
+	snapshot := client.resolveIdentitySnapshot(reqCtx, a.Identity, nil)
+	resp, err := client.StreamWithIdentity(r.Context(), reqCtx, upstreamPath, query, snapshot, reqHeaders)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return // client disconnected or timed out — not a server error
@@ -214,7 +219,7 @@ func (a *App) forwardStream(w http.ResponseWriter, r *http.Request, client *Upst
 					writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Upstream redirect without a target"})
 					return
 				}
-				followed, ferr := client.fetchRedirectTarget(r.Context(), target, streamRequestHeaders(r))
+				followed, ferr := client.fetchRedirectTarget(r.Context(), reqCtx, target, snapshot, streamRequestHeaders(r))
 				if ferr != nil {
 					if errors.Is(ferr, context.Canceled) || errors.Is(ferr, context.DeadlineExceeded) {
 						return
@@ -252,7 +257,7 @@ func (a *App) forwardStream(w http.ResponseWriter, r *http.Request, client *Upst
 					writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Upstream redirect without a target"})
 					return
 				}
-				followed, ferr := client.fetchRedirectTarget(r.Context(), target, streamRequestHeaders(r))
+				followed, ferr := client.fetchRedirectTarget(r.Context(), reqCtx, target, snapshot, streamRequestHeaders(r))
 				if ferr != nil {
 					if errors.Is(ferr, context.Canceled) || errors.Is(ferr, context.DeadlineExceeded) {
 						return
