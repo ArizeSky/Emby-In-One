@@ -27,10 +27,10 @@ function fixture(readGate){
     req.r=()=>{};fn({},out,req);return out;};
   const Format=load(factory).default;
   f.format=new Format();
-  f.fc={ioReader:{setEndian(){},readBuffer:async size=>{
+  f.fc={ioReader:{setEndian(){},readBuffer:async (size,destination)=>{
     f.reads.push(size);
     if(readGate&&!f.gateUsed){f.gateUsed=true;await readGate;}
-    return new Uint8Array(size);
+    return destination||new Uint8Array(size);
   }},
     eioOwnedResources:resources,
     eioAcquireOwnedResource:async(size,label)=>({
@@ -127,19 +127,25 @@ test('573 explicit release wins over an outstanding lease (old pending/unproven 
     assert.equal(snap.retainedLeases,0);
   });
 
-test('573 failed read keeps the charge and the handle stays inspectable',async()=>{
+test('573 rejected owned read drops its explicit destination after the reader settles',async()=>{
   const f=fixture();
-  f.fc.ioReader.readBuffer=async()=>{throw new Error('io failed');};
-  await assert.rejects(f.api.readBinary(16,'io-fail'),/io failed/);
-  assert.equal(f.controller.snapshot().heldBytes,16,'an unproven read keeps its charge');
-  const snap=f.api.snapshot();
-  assert.equal(snap.liveCount,1);
-  assert.equal(snap.retainedLeases,1,'the unproven handle keeps its lease');
+  let rejectRead, destination;
+  f.fc.ioReader.readBuffer=(size, target)=>{
+    assert.equal(target.byteLength,size);
+    destination=target;
+    return new Promise((resolve,reject)=>{rejectRead=reject;});
+  };
+  const pending=f.api.readBinary(16,'io-fail');
+  await new Promise(resolve=>setImmediate(resolve));
   assert.equal(f.api.releaseAll('destroy'),0);
-  assert.equal(f.controller.snapshot().heldBytes,16);
+  assert.equal(f.controller.snapshot().heldBytes,16,'a running reader still holds its destination');
+  destination=null;
+  rejectRead(new Error('io failed'));
+  await assert.rejects(pending,/io failed/);
+  assert.equal(f.controller.snapshot().heldBytes,0);
+  assert.equal(f.api.snapshot().retainedLeases,0);
   await f.format.destroy(f.fc);
-  assert.equal(f.controller.snapshot().heldBytes,16,
-    'destroy retains an unproven read instead of faking a release');
+  assert.equal(f.controller.snapshot().heldBytes,0);
 });
 
 test('573 destroy releases settled reads and retains leased ones',async()=>{

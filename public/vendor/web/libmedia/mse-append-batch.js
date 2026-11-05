@@ -39,7 +39,7 @@
     }
     const originals=[{buffer:input.buffer,eioClaim:input.eioClaim},...queue.splice(0,count)];
     let released=false;
-    input.buffer=merged;
+    input.buffer=merged;merged=null;
     input.eioClaim={drop(){
       if(released)return;
       released=true;
@@ -53,7 +53,13 @@
     }
     return true;
   }
-  return Object.freeze({batchInput,MAX_ITEMS});
+  function dropInput(input){
+    if(!input)return;
+    const claim=input.eioClaim;
+    input.buffer=null;input.eioClaim=null;
+    if(claim)claim.drop();
+  }
+  return Object.freeze({batchInput,dropInput,MAX_ITEMS});
 });
 
 }}]);

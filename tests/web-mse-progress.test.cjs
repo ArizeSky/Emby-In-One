@@ -103,10 +103,10 @@ function fakeStream(overrides) {
 }
 
 const STREAM_KEYS = [
-  'backPacketDtsMs', 'backPacketPresent', 'bufferedRanges', 'eioLoopError',
-  'ended', 'frontBuffered', 'frontPacketPresent', 'lastDtsMs', 'loopStarted',
+  'appendFault', 'appendQueueLength', 'appendQuotaExceeded', 'backPacketDtsMs', 'backPacketPresent', 'bufferedRanges', 'eioLoopError',
+  'ended', 'frontBuffered', 'frontPacketPresent', 'lastDtsMs', 'loopClockStarted', 'loopStarted',
   'packetEnded', 'pullQueueLength', 'rangesError', 'sourceUpdating',
-  'startTimestampMs', 'type'
+  'startTimestampMs', 'type', 'wakePending'
 ];
 
 /* ------------------------------------------------------------------ */
@@ -344,7 +344,7 @@ test('missing task, absent stream, unknown values and a throwing getter degrade 
 
     const blank = api.eioMseProgressStream({ track: { getSourceBuffer: () => null } });
     assert.deepEqual(Object.keys(blank).sort(), STREAM_KEYS);
-    for (const key of ['type', 'ended', 'packetEnded', 'frontBuffered',
+    for (const key of ['appendFault', 'appendQueueLength', 'appendQuotaExceeded', 'loopClockStarted', 'wakePending', 'type', 'ended', 'packetEnded', 'frontBuffered',
       'backPacketPresent', 'frontPacketPresent', 'pullQueueLength', 'loopStarted',
       'lastDtsMs', 'startTimestampMs', 'backPacketDtsMs', 'eioLoopError',
       'bufferedRanges', 'rangesError', 'sourceUpdating']) {

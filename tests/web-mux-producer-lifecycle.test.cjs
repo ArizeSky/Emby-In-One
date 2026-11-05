@@ -61,3 +61,20 @@ test('source identity and one-shot initialization reject old queued and duplicat
   assert.equal(api.sourceHandler(task,()=>assert.fail('closed'))(),undefined);
   api.gate(task).retire();assert.equal(api.sourceHandler(task,()=>assert.fail('retired'))(),undefined);
 });
+
+test('quiescence revokes ownership before cancelling a pending remote pull, then joins it',async()=>{
+  const api=load(),reply=deferred(),events=[];
+  const stream={eioOwned:{},loop:{stop:()=>events.push('stop')},pullIPC:{request:async method=>{
+    assert.equal(method,'eioCancelPull');assert.ok(events.includes('revoke'));
+    events.push('remote-cancel');reply.resolve();return 1;
+  }}};
+  const task={eioOwnedResources:{},audio:stream};
+  const host={eioCancelWake(){},eioPullLifetime:()=>({revoke:()=>events.push('revoke'),drain:async()=>{await reply.promise;events.push('settled');return{ok:true}}})};
+  const producer=api.run(task,'pull',()=>reply.promise);
+  await api.quiesce(host,task,'beforeSeek');await producer;
+  assert.deepEqual(events,['stop','revoke','remote-cancel','settled']);
+  stream.pullIPC.request=async()=>0;
+  await assert.rejects(api.quiesce(host,task,'unregister'),{code:'EIO_MUX_PULL_CANCEL_UNVERIFIED'});
+  assert.equal(api.gate(task).snapshot().closed,true);
+  assert.equal(task.eioPullLastError.code,'EIO_MUX_PULL_CANCEL_UNVERIFIED');
+});

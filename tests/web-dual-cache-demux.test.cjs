@@ -178,6 +178,7 @@ function buildTask(options = {}) {
   const methods = [
     sliceMethod(demux, 'drainCacheRequests(e){'),
     sliceMethod(demux, 'async doDemux(e,t){'),
+    sliceMethod(demux, 'async eioSeekInternal(e,t,i){'),
     sliceMethod(demux, 'doAttachedPicture(e){'),
     sliceMethod(demux, 'async croppingAVPacketQueue(e,t){'),
     sliceMethod(demux, 'async changeConnectStream(e,t,i){'),
@@ -197,6 +198,7 @@ function buildTask(options = {}) {
     __eioDualDemux: helper,
     o: { f: { 15: i32, 17: i64, 20: () => 0, 25: () => 0 } },
     E: {
+      jF: async()=>0n,
       Cj: async (formatContext, packet) => {
         const spec = scenario.queue.shift();
         if (!spec) return scenario.error || -1;
@@ -1256,4 +1258,19 @@ test('ownership transitions remain distinct from complete sample release coverag
   assert.equal(snap.releaseVerified, false, 'individual transitions cannot prove complete release coverage');
   assert.equal(snap.accounting.sampleRelease, false);
   assert.equal(snap.accounting.crossWorkerCopy, true, 'outbound bytes observed');
+});
+
+test('strict demux seek returns the real first-packet failure instead of the requested time', ASYNC, async()=>{
+  const env=buildTask({demuxBytes:48e6,maxPacketBytes:16e6});
+  env.task.cacheAVPackets.set(0,[]);
+  env.scenario.error=-1048574;
+  const result=await env.task.eioSeekInternal(env.task,165000n,8,0);
+  assert.equal(result,-1048574n);
+  assert.equal(env.task.demuxEnded,true);
+  assert.equal(env.releaseCalls.length,1);
+  assert.equal(env.task.cacheAVPackets.get(0).length,0);
+  const baseline=buildTask();
+  baseline.task.cacheAVPackets.set(0,[]);
+  baseline.scenario.error=-1048574;
+  assert.equal(await baseline.task.eioSeekInternal(baseline.task,165000n,8,0),165000n);
 });

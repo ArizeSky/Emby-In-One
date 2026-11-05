@@ -433,8 +433,9 @@ test('strict afterSeek accepts only {eioAck:1, seekTime: finite non-negative num
   });
   await assert.rejects(
     negativeDemux.player.doSeek(0n, -1, { onBeforeSeek: async () => { negativeDemux.calls.onBefore += 1; } }),
-    { code: 'EIO_MSE_PULL_AFTERSEEK_UNVERIFIED' }
+    { code: 'EIO_DEMUX_SEEK_FAILED', demuxCode: '-1' }
   );
+  assert.equal(negativeDemux.calls.after, 0, 'failed demux must not enter afterSeek packet waits');
   assert.equal(negativeDemux.player.video.currentTime, 7, 'a<0 branch still never writes media');
 
   const zero = makeDoSeekPlayer({

@@ -70,6 +70,12 @@
     return current;
   }
   async function quiesce(host,task,label){
+    try{return await quiesceInternal(host,task,label)}catch(error){
+      if(task)task.eioPullLastError={stage:label,code:error&&error.code||'EIO_MUX_QUIESCE_FAILED',message:'mux quiescence failed'};
+      throw error;
+    }
+  }
+  async function quiesceInternal(host,task,label){
     const owner=gate(task);
     if(!owner)return;
     owner.close(label);
@@ -82,6 +88,17 @@
       if(stream.loop)stream.loop.stop();
       if(stream.eioOwned){lifetime.revoke(stream,label);streams.push(stream)}
     }
+    // Revocation alone does not settle an IPC pull waiting on demux IO or
+    // admission. Cancel that exact outstanding request at its owner; a late
+    // positive result still goes through the packet ownership reclaim path.
+    await Promise.all(streams.map(async stream=>{
+      if(!stream.pullIPC)return;
+      let timer;
+      try{
+        const ack=await Promise.race([stream.pullIPC.request('eioCancelPull'),new Promise(resolve=>{timer=setTimeout(()=>resolve(0),2000)})]);
+        if(ack!==1){const error=new Error('EIO_MUX_PULL_CANCEL_UNVERIFIED');error.code=error.message;throw error}
+      }finally{clearTimeout(timer)}
+    }));
     // Pull settlement cannot stand in for completion of sourceOpen/startMux or
     // afterSeek. Keep admission closed until their entire promises have exited.
     const pulled=await lifetime.drain(streams,5000);

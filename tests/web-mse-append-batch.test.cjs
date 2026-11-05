@@ -55,7 +55,7 @@ test('strict loop backs off before planning and resumes the same packet after qu
   const fs=require('node:fs'),vm=require('node:vm');
   const source=fs.readFileSync('public/vendor/web/libmedia/26.avplayer.js','utf8');
   const start=source.indexOf('createLoop(t,e){'),end=source.indexOf('async startMux(t,e)',start);
-  let tick,queued=32,pressure=false,plans=0,writes=0,wakes=0,swaps=0;
+  let tick,queued=32,pressure=false,plans=0,writes=0,wakes=0,swaps=0,retries=0;
   const api=vm.runInNewContext('({'+source.slice(start,end)+'})',{
     EIO_MSE_APPEND_QUEUE_LIMIT:32,eioMseBufferedDuration:()=>0,eioMseBufferScale:()=>1,
     z:{A:class{constructor(run){tick=run}emptyTask(){}}},C:{A:()=>0},
@@ -65,9 +65,9 @@ test('strict loop backs off before planning and resumes the same packet after qu
     eioScheduleWake(){wakes++},writeAVPacket(){writes++},eioAddQueue(){},eioOperationSeal(){},swap(){swaps++}});
   const stream={eioOwned:{},backPacket:100,frontPacket:200,lastDTS:-1n,startTimestamp:0n,
     oformatContext:{streams:[{index:0,codecpar:{codecType:2}}]},
-    track:{getBufferedDuration:()=>0,getQueueLength:()=>queued,isPaused:()=>false}};
+    track:{getBufferedDuration:()=>0,getQueueLength:()=>queued,isPaused:()=>queued>=32,enqueue:()=>{retries++}}};
   api.createLoop(stream,{maxBuffer:120,minBuffer:120,currentTime:0,currentTimeNTP:0,playRate:100n,targetRate:100n});
-  tick();assert.equal(plans,0);assert.equal(writes,0);assert.equal(stream.backPacket,100);
+  tick();assert.equal(retries,1,"a full paused Track retries before producer backpressure");assert.equal(plans,0);assert.equal(writes,0);assert.equal(stream.backPacket,100);
   queued=0;pressure=true;tick();assert.equal(plans,1);assert.equal(writes,0);assert.equal(stream.backPacket,100);
   pressure=false;tick();assert.equal(writes,1);assert.equal(swaps,1);assert.equal(wakes,2);
 });
