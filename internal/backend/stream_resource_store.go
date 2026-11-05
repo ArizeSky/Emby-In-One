@@ -20,15 +20,18 @@ type streamResourceEntry struct {
 	OriginalID      string
 	ResourceURL     string
 	TimelineSession string
-	ExpiresAt       time.Time
-	pinned          bool
-	retireAt        time.Time
+	// AttemptID scopes strict playback deduplication and rolling windows. Empty
+	// denotes the independently routed historical/native protocol only.
+	AttemptID string
+	ExpiresAt time.Time
+	pinned    bool
+	retireAt  time.Time
 }
 
-type resourceSessionKey struct{ user, item, server, original, timeline string }
+type resourceSessionKey struct{ user, item, server, original, timeline, attempt string }
 
 func (e streamResourceEntry) sessionKey() resourceSessionKey {
-	return resourceSessionKey{e.UserID, e.VirtualItemID, e.ServerID, e.OriginalID, e.TimelineSession}
+	return resourceSessionKey{e.UserID, e.VirtualItemID, e.ServerID, e.OriginalID, e.TimelineSession, e.AttemptID}
 }
 
 type resourceSession struct {
