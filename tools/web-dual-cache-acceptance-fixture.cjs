@@ -1452,6 +1452,7 @@ const PAGE_HTML = String.raw`<!doctype html>
     try {
       if (typeof AVPlayer !== 'function') throw new Error('AVPlayer global missing');
       st.engine.created += 1;
+      var preLoadParam = Number(params.get('preLoadTime'));
       var playerOptions = {
         container: st.container,
         wasmBaseUrl: location.origin + '/vendor/wasm',
@@ -1459,7 +1460,7 @@ const PAGE_HTML = String.raw`<!doctype html>
         enableHardware: true,
         enableWorker: true,
         checkUseMSE: function () { return true; },
-        preLoadTime: 2
+        preLoadTime: isFinite(preLoadParam) && preLoadParam > 0 ? preLoadParam : 2
       };
       // Baseline is the control run: it must not receive the dual-cache option
       // at all, otherwise its accepted flags would still be rate-limited.

@@ -1036,10 +1036,35 @@ test('the aggregate snapshot never claims a complete probe ledger', async () => 
   assert.ok(reasons.includes('SAMPLE_RELEASE_UNVERIFIED'), reasons.join(','));
   assert.ok(!reasons.includes('HEADER_UNACCOUNTED'),
     'extradata/attachedPic accounting is wired for MP4/MKV/TS/PS');
-  assert.ok(reasons.includes('INTERVAL_UNACCOUNTED'), reasons.join(','));
+  assert.ok(reasons.includes('INTERVAL_UNACCOUNTED'),
+    'this harness has no shared controller, so interval release reconcile is absent');
   assert.equal(JSON.stringify(snapshot).includes('probeFullyAccounted'), false);
   assert.equal(demuxSnapshot.releaseVerified, false);
   assert.equal(demuxSnapshot.accounting.sampleRelease, false);
   assert.equal(demuxSnapshot.accounting.extradata, true);
   assert.equal(demuxSnapshot.accounting.attachedPic, true);
+  assert.equal(demuxSnapshot.accounting.interval, false,
+    'no shared controller in this harness');
 });
+
+test('interval accounting turns true only with hooks, inventory and the shared controller', async () => {
+  const h = demuxHarness(PROBE_CFG);
+  // Without the shared controller the release reconcile cannot run.
+  const withoutController = await snapshotWithController(h, null);
+  assert.equal(withoutController.intervalPacketsAccounted, false);
+  assert.equal(withoutController.accounting.interval, false);
+
+  const withController = await snapshotWithController(h, {
+    inspectReservation: () => ({ ok: true, retired: true })
+  });
+  assert.equal(withController.intervalPacketsAccounted, true,
+    'hooks + inventoried interval + shared controller = accounted');
+  assert.equal(withController.accounting.interval, true);
+});
+
+async function snapshotWithController(h, controller) {
+  h.task.eioSharedController = controller;
+  h.task.eioIntervalInventoried = true;
+  h.task.eioLedger.sampleAllocHooked = true;
+  return await h.task.getEioDualCacheSnapshot(h.task.taskId);
+}
