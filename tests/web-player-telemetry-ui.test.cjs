@@ -6,8 +6,9 @@
  * position vs seek preview, generation/epoch ownership, unknown vs 0, reset),
  * the geometry handed to the template, the HUD/seek markup contract in
  * web.html (single visibility source, unchanged native range semantics), the
- * player-scoped palette defaults in player-progress.css, and the thin app.js
- * hooks through the shared VM harness with a fake engine.
+ * player-scoped palette defaults in player-progress.css, and the thin HUD hooks
+ * in playback-session.js (destructured back into app.js) through the shared VM
+ * harness with a fake engine.
  *
  * Not covered here (reported separately, never claimed by this file): real
  * browser hover/touch matrices, real media buffering, real receive-rate
@@ -640,10 +641,13 @@ test('web.html: module and stylesheet order is progress -> buffer -> telemetry -
   const bufferAt = HTML_SRC.indexOf('/web/web/player-buffer.js');
   const telemetryAt = HTML_SRC.indexOf('/web/web/player-telemetry-ui.js');
   const libmediaAt = HTML_SRC.indexOf('/web/web/player-libmedia.js');
+  const sessionAt = HTML_SRC.indexOf('/web/web/playback-session.js');
   const appAt = HTML_SRC.indexOf('/web/web/app.js');
   assert.ok(progressAt >= 0 && bufferAt > progressAt);
   assert.ok(telemetryAt > bufferAt, 'telemetry loads after its data modules');
   assert.ok(libmediaAt > telemetryAt, 'all three load before player-libmedia.js');
+  assert.ok(sessionAt > telemetryAt, 'the playback session can probe the telemetry module');
+  assert.ok(appAt > sessionAt, 'playback-session.js loads before app.js creates it');
   assert.ok(appAt > libmediaAt);
   assert.ok(HTML_SRC.includes('/web/web/theme-player-controls.js'), 'the existing theme hook stays loaded');
 });
@@ -749,31 +753,44 @@ test('player-progress.css never hides the HUD on its own and stays out of the pa
   assert.match(UI_CSS_SRC, /\.eio-play-layer\.hidden \.eio-play-bottom/);
 });
 
-/* ------------------------------------------------------------------ app.js */
+/* ------------------------------------------------- playback session ---- */
 
-test('app.js wires the HUD with three thin hooks and no new state', () => {
+// The player region of app.js (playerUI / rateUI / telemetry adapters, the
+// /play entry point, track switching and the transport controls) is a pure
+// factory in playback-session.js; app.js only injects its deps and re-exports
+// the destructured identifiers. Source assertions that used to read app.js
+// now read the module, and the export/order assertions still read app.js /
+// web.html — no assertion was dropped.
+const SESSION_PATH = path.join(WEB_DIR, 'playback-session.js');
+const SESSION_SRC = fs.readFileSync(SESSION_PATH, 'utf8');
+
+test('the playback session wires the HUD with three thin hooks and no new state', () => {
   const APP_SRC = fs.readFileSync(path.join(WEB_DIR, 'app.js'), 'utf8');
-  const creates = APP_SRC.match(/EIOPlayerTelemetry\.create\(\{ reactive \}\)/g) || [];
+  const creates = SESSION_SRC.match(/EIOPlayerTelemetry\.create\(\{ reactive \}\)/g) || [];
   assert.equal(creates.length, 1, 'one telemetry view model per app setup');
   // The factory is probed with typeof first: a missing script must not throw.
-  assert.match(APP_SRC, /typeof EIOPlayerTelemetry === 'object'/);
-  assert.match(APP_SRC, /typeof EIOPlayerTelemetry\.create === 'function'/);
-  assert.match(APP_SRC, /const playerTelemetry = \(typeof EIOPlayerTelemetry/);
-  assert.match(APP_SRC, /update\(\) \{\}, reset\(\) \{\}, layers: null/, 'the fallback is a static unknown HUD');
+  assert.match(SESSION_SRC, /typeof EIOPlayerTelemetry === 'object'/);
+  assert.match(SESSION_SRC, /typeof EIOPlayerTelemetry\.create === 'function'/);
+  assert.match(SESSION_SRC, /const playerTelemetry = \(typeof EIOPlayerTelemetry/);
+  assert.match(SESSION_SRC, /update\(\) \{\}, reset\(\) \{\}, layers: null/, 'the fallback is a static unknown HUD');
   // Created next to playerUI, before the first playback entry point.
-  assert.ok(APP_SRC.indexOf('EIOPlayerTelemetry.create') < APP_SRC.indexOf('async function playItem'));
-  const updates = APP_SRC.match(/playerTelemetry\.update\(/g) || [];
-  const resets = APP_SRC.match(/playerTelemetry\.reset\(/g) || [];
+  assert.ok(SESSION_SRC.indexOf('EIOPlayerTelemetry.create') < SESSION_SRC.indexOf('async function playItem'));
+  const updates = SESSION_SRC.match(/playerTelemetry\.update\(/g) || [];
+  const resets = SESSION_SRC.match(/playerTelemetry\.reset\(/g) || [];
   assert.equal(updates.length, 1, 'one update call site');
   assert.equal(resets.length, 1, 'one reset call site');
   // The snapshot is forwarded only after the instance/generation guard.
-  const onStateAt = APP_SRC.indexOf('instance.onState = (state) => {');
+  const onStateAt = SESSION_SRC.indexOf('instance.onState = (state) => {');
   assert.ok(onStateAt > 0);
-  const guardAt = APP_SRC.indexOf('if (player !== instance || generation !== playbackGeneration) return;', onStateAt);
-  const updateAt = APP_SRC.indexOf('playerTelemetry.update(state);', onStateAt);
+  const guardAt = SESSION_SRC.indexOf('if (player !== instance || generation !== playbackGeneration) return;', onStateAt);
+  const updateAt = SESSION_SRC.indexOf('playerTelemetry.update(state);', onStateAt);
   assert.ok(guardAt > onStateAt && updateAt > guardAt, 'ownership is checked before the HUD sees data');
   // Reset lives in stopPlayer, which every new load / stop / leave goes through.
-  assert.ok(APP_SRC.indexOf('playerTelemetry.reset();') > APP_SRC.indexOf('function stopPlayer()'));
+  assert.ok(SESSION_SRC.indexOf('playerTelemetry.reset();') > SESSION_SRC.indexOf('function stopPlayer()'));
+  // app.js owns no copy of the HUD: it creates the session and destructures
+  // the view model back into the name the template binds to.
+  assert.equal((APP_SRC.match(/EIOPlayerTelemetry\.create/g) || []).length, 0, 'the HUD is created once, in the session');
+  assert.match(APP_SRC, /EIOPlaybackSession\.create\(/);
   assert.match(APP_SRC, /playerContainer, playerUI, playerTelemetry,/);
 });
 
@@ -847,6 +864,7 @@ test('harness: the real telemetry module is loaded before app.js', () => {
   assert.equal(typeof env.telemetry.create, 'function');
   assert.equal(typeof env.progress.progressLayers, 'function');
   assert.equal(typeof env.bufferModule.snapshot, 'function');
+  assert.equal(typeof env.context.EIOPlaybackSession.create, 'function', 'playback-session.js loads before app.js');
   assert.ok(env.app.playerTelemetry, 'app exposes the view model to the template');
   assert.equal(env.app.playerTelemetry.receiveText, UNKNOWN);
   assert.equal(env.app.playerTelemetry.layers, null);
