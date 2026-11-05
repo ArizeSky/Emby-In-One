@@ -46,7 +46,7 @@ func hopStreamConfig(url string, directRedirect bool) string {
 // the transport headers, but no device identity, compound authorization, token
 // or cookie — and it must not re-encode a signed query it only had to clean.
 func TestAutomaticCrossOriginFollowProjectsPublicHeaders(t *testing.T) {
-	signed := "z=last&api_key=" + hopUpstreamToken + "&signature=fixture%2fopaque&label=a%20b&a=first"
+	signed := "z=last&signature=fixture%2fopaque&label=a%20b&a=first"
 	var gotHeaders http.Header
 	var gotQuery string
 	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -81,7 +81,7 @@ func TestAutomaticCrossOriginFollowProjectsPublicHeaders(t *testing.T) {
 	}
 	// The credential parameter is gone; every other byte of the signature
 	// material — order, lowercase escapes, %20 — is exactly as issued.
-	if want := strings.Replace(signed, "api_key="+hopUpstreamToken+"&", "", 1); gotQuery != want {
+	if want := signed; gotQuery != want {
 		t.Errorf("CDN query = %q, want the untouched signature %q", gotQuery, want)
 	}
 }

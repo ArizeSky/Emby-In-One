@@ -201,6 +201,7 @@ func TestUpstreamRedirectPolicyShape(t *testing.T) {
 
 	// A same-origin hop keeps the credential headers and query untouched.
 	sameVia := []*http.Request{httptest.NewRequest(http.MethodGet, "http://up.test/start", nil)}
+	sameVia[0].Header.Set("X-Emby-Token", redirectUpstreamToken)
 	sameOrigin := httptest.NewRequest(http.MethodGet, "http://up.test/Items", nil)
 	sameOrigin.Header.Set("X-Emby-Token", redirectUpstreamToken)
 	if err := follow(sameOrigin, sameVia); err != nil {

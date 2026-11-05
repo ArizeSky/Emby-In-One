@@ -573,6 +573,8 @@ V1.4 新增多用户支持，允许管理员创建多个普通用户，每个用
  > **注**：V1.2 中的 `official` 模式已在 V1.3 中自动迁移为 `custom`，使用原 Emby Web 官方客户端的默认值。V1.4.4 起内置的 `none`（Emby Aggregator）与 `infuse`（Infuse 伪造）模式已移除，存量配置自动迁移为 `passthrough`。
  >
  > **当前行为**：`custom` 模式下配置的 `User-Agent`、`X-Emby-Client`、`X-Emby-Client-Version`、`X-Emby-Device-Name`、`X-Emby-Device-Id` 会同时应用于上游登录认证、常规 API 请求、健康检查、图片代理和流媒体代理；管理面板保存后会持久化到配置文件，并在再次编辑时正确回填。`customUserAgent` 为必填项——没有 User-Agent 的自定义身份会退化成无 UA 出站请求，这正是被移除的行为。
+
+ > **重定向边界**：携带已保存上游账号密码的登录请求，不能通过重定向向当前 API origin（scheme、host、有效端口）之外重发请求体；需要跨源统一认证的上游可能因此登录失败。媒体 GET/HEAD 的合法跳转不受这一限制影响。代理获取链的外部目标仅接收公共 UA/传输头，不接收设备私有头或上游认证头。需要修改凭据但包含签名材料、或无法确认认证参数归属的资源 URL 会明确失败并要求重新协商，而不是猜测删改参数。直连到浏览器后的 UA 不受代理控制；播放尝试级跨请求绑定仍未启用。
  
 #### Passthrough 模式工作原理
  

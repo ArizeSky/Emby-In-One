@@ -85,6 +85,9 @@ func mergePublicOutboundHeaders(dst, src http.Header) {
 		return
 	}
 	for _, name := range outboundPublicHeaderNames {
+		if name == "User-Agent" {
+			continue // public for a CDN, but never a transport override
+		}
 		if values := src.Values(name); len(values) > 0 {
 			dst[http.CanonicalHeaderKey(name)] = append([]string(nil), values...)
 		}
@@ -224,6 +227,9 @@ func (c *UpstreamClient) sendOutboundHop(ctx context.Context, reqCtx *RequestCon
 	if method == "" {
 		method = http.MethodGet
 	}
+	if method != http.MethodGet && method != http.MethodHead {
+		return nil, errUnsupportedOutboundTarget
+	}
 	if reqCtx == nil {
 		reqCtx = requestContextFrom(ctx)
 	}
@@ -235,14 +241,11 @@ func (c *UpstreamClient) sendOutboundHop(ctx context.Context, reqCtx *RequestCon
 	switch class {
 	case outboundTargetTrusted:
 		headers = c.applyOutboundHopAuth(headers, reqCtx, auth)
-		if rewritten, changed := rewriteRawQueryCredentials(target.RawQuery, auth.AccessToken); changed {
-			target.RawQuery = rewritten
-		}
 	case outboundTargetExternal:
 		headers = projectPublicOutboundHeaders(headers)
-		if rewritten, changed := rewriteRawQueryCredentials(target.RawQuery, ""); changed {
-			target.RawQuery = rewritten
-		}
+	}
+	if err := prepareHopQuery(target, class == outboundTargetTrusted, auth.AccessToken, auth.AccessToken, hop.Headers.Get("X-Emby-Token")); err != nil {
+		return nil, err
 	}
 
 	request, err := http.NewRequestWithContext(ctx, method, target.String(), nil)
@@ -285,22 +288,34 @@ func (c *UpstreamClient) redirectPolicyFor(follow bool, mode outboundAuthMode) f
 		if len(via) >= 10 {
 			return fmt.Errorf("stopped after 10 redirects")
 		}
-		origin := (*url.URL)(nil)
-		if len(via) > 0 && via[0] != nil {
-			origin = via[0].URL
+		if req == nil || req.URL == nil || len(via) == 0 || via[0] == nil {
+			return errUnsupportedOutboundTarget
 		}
-		trusted := req.URL != nil && origin != nil &&
-			canonicalURLOrigin(req.URL) != "" && canonicalURLOrigin(req.URL) == canonicalURLOrigin(origin)
-		if !trusted && outboundRedirectCarriesSensitiveBody(mode, req) {
+		class := c.classifyOutboundTarget(req.URL)
+		if class == outboundTargetRejected {
+			return errUnsupportedOutboundTarget
+		}
+		api, err := url.Parse(c.BaseURL)
+		loginTrusted := err == nil && canonicalURLOrigin(api) != "" && canonicalURLOrigin(req.URL) == canonicalURLOrigin(api)
+		if !loginTrusted && outboundRedirectCarriesSensitiveBody(mode, req) {
 			return errUpstreamLoginRedirectUntrusted
 		}
-		if trusted || req.URL == nil {
+		token := via[0].Header.Get("X-Emby-Token")
+		if err := prepareHopQuery(req.URL, class == outboundTargetTrusted, token, token); err != nil {
+			return err
+		}
+		if class == outboundTargetTrusted {
+			// Go copies the initial header map for redirects but may strip
+			// Authorization after an external hop. Re-project the original,
+			// already-prepared identity rather than trusting the previous hop.
+			req.Header = cloneHeader(via[0].Header)
+			if req.Body == nil || req.Body == http.NoBody {
+				req.Header.Del("Content-Type")
+				req.Header.Del("Content-Length")
+			}
 			return nil
 		}
-		req.Header = projectPublicOutboundHeaders(req.Header)
-		if rewritten, changed := rewriteRawQueryCredentials(req.URL.RawQuery, ""); changed {
-			req.URL.RawQuery = rewritten
-		}
+		req.Header = projectPublicOutboundHeaders(via[0].Header)
 		return nil
 	}
 }
@@ -312,10 +327,6 @@ func (c *UpstreamClient) redirectPolicyFor(follow bool, mode outboundAuthMode) f
 // already converted the method to a bodyless GET is not blocked by it.
 func outboundRedirectCarriesSensitiveBody(mode outboundAuthMode, req *http.Request) bool {
 	if mode != authModePasswordLogin {
-		return false
-	}
-	switch req.Method {
-	case http.MethodGet, http.MethodHead:
 		return false
 	}
 	if req.Body != nil && req.Body != http.NoBody {

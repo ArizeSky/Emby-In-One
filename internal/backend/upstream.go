@@ -614,11 +614,7 @@ func (c *UpstreamClient) loginWithHeaders(ctx context.Context, reqCtx *RequestCo
 		if isPassthrough {
 			mode = "passthrough"
 		}
-		c.logger.Infof("[%s] Authenticating: user=%q mode=%s source=%s", c.Name, c.Config.Username, mode, resolvedSource)
-		c.logger.Infof("[%s] Login identity: Client=%q Device=%q DeviceId=%q Version=%q",
-			c.Name, headers.Get("X-Emby-Client"), headers.Get("X-Emby-Device-Name"),
-			headers.Get("X-Emby-Device-Id"), headers.Get("X-Emby-Client-Version"))
-		c.logger.Debugf("[%s] Login User-Agent: %s", c.Name, headers.Get("User-Agent"))
+		c.logger.Infof("[%s] Authenticating: mode=%s source=%s", c.Name, mode, diagnosticIdentitySource(resolvedSource))
 	}
 	headers.Set("Content-Type", "application/json")
 	// A username/password login authenticates with the body and presents no user
@@ -636,10 +632,7 @@ func (c *UpstreamClient) loginWithHeaders(ctx context.Context, reqCtx *RequestCo
 		if c.logger != nil {
 			c.logger.Errorf("[%s] Login failed: %s", c.Name, resp.Status)
 			if c.Config.SpoofClient == "passthrough" && (resp.StatusCode == 401 || resp.StatusCode == 403) {
-				c.logger.Warnf("[%s] Passthrough %d — sent identity: Client=%q, Device=%q, DeviceId=%q, UA=%q",
-					c.Name, resp.StatusCode, headers.Get("X-Emby-Client"), headers.Get("X-Emby-Device-Name"),
-					headers.Get("X-Emby-Device-Id"), headers.Get("User-Agent"))
-				c.logger.Warnf("[%s] Passthrough %d — header source: %q", c.Name, resp.StatusCode, resolvedSource)
+				c.logger.Warnf("[%s] Passthrough authentication rejected: status=%d source=%s", c.Name, resp.StatusCode, diagnosticIdentitySource(resolvedSource))
 			}
 		}
 		c.setOffline(resp.Status)
@@ -664,7 +657,7 @@ func (c *UpstreamClient) loginWithHeaders(ctx context.Context, reqCtx *RequestCo
 		return
 	}
 	if c.logger != nil {
-		c.logger.Infof("[%s] Login success, userId=%s", c.Name, userID)
+		c.logger.Infof("[%s] Login success", c.Name)
 	}
 	c.setOnline(accessToken, userID)
 	c.recordSuccessfulIdentity(identity, resolvedSource, headers)
@@ -679,8 +672,7 @@ func (c *UpstreamClient) loginWithHeaders(ctx context.Context, reqCtx *RequestCo
 func (c *UpstreamClient) validateAPIKey(ctx context.Context, reqCtx *RequestContext, identity *ClientIdentityService, override http.Header) {
 	source, resolved := c.resolveIdentityHeaders(reqCtx, identity, override)
 	if c.logger != nil {
-		c.logger.Infof("[%s] API key validation identity source=%s Client=%q DeviceId=%q",
-			c.Name, source, resolved.Get("X-Emby-Client"), resolved.Get("X-Emby-Device-Id"))
+		c.logger.Infof("[%s] API key validation: source=%s", c.Name, diagnosticIdentitySource(source))
 	}
 	resp, err := c.doRequestForMode(ctx, reqCtx, http.MethodGet, "/Users/Me", nil, nil, c.requestHeadersWithOverride(reqCtx, identity, override), false, authModeAPIKeyValidation)
 	if err != nil {
@@ -715,7 +707,7 @@ func (c *UpstreamClient) validateAPIKey(ctx context.Context, reqCtx *RequestCont
 		return
 	}
 	if c.logger != nil {
-		c.logger.Infof("[%s] API key auth success, userId=%s", c.Name, userID)
+		c.logger.Infof("[%s] API key auth success", c.Name)
 	}
 	c.setOnline(strings.TrimSpace(c.Config.APIKey), userID)
 	// A successful API-key validation is a passthrough login success too:
@@ -796,8 +788,8 @@ func (c *UpstreamClient) resolveStreamRedirectTarget(resp *http.Response, proxyH
 		base = resp.Request.URL
 	}
 	abs, err := resolveRedirectTarget(base, location)
-	if err != nil || (abs.Scheme != "http" && abs.Scheme != "https") || abs.Host == "" {
-		return location, true
+	if err != nil || abs == nil || c.classifyOutboundTarget(abs) == outboundTargetRejected {
+		return "", true
 	}
 	if proxyHost != "" && strings.EqualFold(abs.Host, proxyHost) {
 		return abs.String(), true
@@ -860,7 +852,9 @@ func (c *UpstreamClient) isSelfURL(rawURL string) bool {
 // API base and its live stream bases. The proxy's own address is per-request and
 // is passed to the redirect classifier separately.
 func (c *UpstreamClient) selfOrigins() []string {
-	bases := append([]string{c.BaseURL}, c.streamBaseCandidates()...)
+	c.mu.RLock()
+	bases := append([]string{c.BaseURL, c.StreamBaseURL}, c.StreamBaseURLs...)
+	c.mu.RUnlock()
 	origins := make([]string, 0, len(bases))
 	seen := map[string]bool{}
 	for _, base := range bases {
@@ -1163,6 +1157,11 @@ func (c *UpstreamClient) doRequestOnce(ctx context.Context, reqCtx *RequestConte
 	// User-controlled path segments are inherent to proxy functionality.
 	resp, doErr := client.Do(request) // CodeQL: intentional proxy forwarding to admin-configured upstream
 	if doErr != nil {
+		// net/http's redirect error includes the Location URL. Replace it before
+		// any diagnostic output, not merely before returning it to the caller.
+		if errors.Is(doErr, errUpstreamLoginRedirectUntrusted) {
+			doErr = errUpstreamLoginRedirectUntrusted
+		}
 		if c.logger != nil {
 			c.logger.Errorf("[%s] Request failed: %s %s: %s", c.Name, method,
 				formatOutboundURLForLog(preparedURL.url.String()), redactURLInError(doErr))
