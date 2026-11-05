@@ -71,6 +71,37 @@ test('real control listener replies once; real IPC rejects and removes its pendi
   } finally { ipc.destroy(); control.destroy(); }
 });
 
+test('a missing observer replies undefined so the worker skips optional cover decode', { timeout: 2000 }, async () => {
+  const replies = [];
+  function channel() {
+    const a = { start() {}, close() {}, postMessage(message) { queueMicrotask(() => b.onmessage?.({ data: message })); } };
+    const b = { start() {}, close() {}, postMessage(message) {
+      if (message.type === 'reply') replies.push(message);
+      queueMicrotask(() => a.onmessage?.({ data: message }));
+    } };
+    return { port1: a, port2: b };
+  }
+  class Events {
+    constructor() { this.handlers = {}; }
+    on(type, fn) { this.handlers[type] = fn; }
+    fire(type, data) { this.handlers[type]?.(data); }
+  }
+  const req = loader({ ...base, 27745: { A: Events }, 72034: { A: v => v !== undefined },
+    31088: { A: channel } }, { document: { visibilityState: 'visible', addEventListener() {}, removeEventListener() {} } });
+  // No onGetDecoderResource at all: the control listener must resolve
+  // undefined (worker `if(!t)continue` skips the cover) instead of
+  // rejecting with EIO_DECODER_RESOURCE_FAILED and failing analyzeStreams.
+  const control = new (req(80327).A)({ isPictureInPicture: () => false });
+  const ipc = new (req(15716).Ay)(control.getDemuxerControlPort());
+  try {
+    assert.deepEqual(await ipc.request('getDecoderResource', { mediaType: 0, codecId: 7 }), undefined);
+    assert.equal(ipc.requestMap.size, 0);
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0].data.result, undefined, 'a defined undefined result, not an error reply');
+    assert.equal(Object.hasOwn(replies[0].data, 'error'), false);
+  } finally { ipc.destroy(); control.destroy(); }
+});
+
 test('real streaming loader terminates synthetic 404 before reading or transforming', { timeout: 2000 }, async () => {
   let gets = 0;
   const req = loader(base, { fetch: async () => ({ ok: false, status: 404,
