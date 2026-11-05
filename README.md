@@ -345,7 +345,7 @@ admin:
 
 playback:
   mode: "proxy"          # "proxy" 或 "redirect"，全局默认值
-  dualCache: false       # 网页播放器双缓存（实验性）：true 启用受控字节预算 300,000,000 / 向前 120 秒，严格 MSE 主动填充、消费后补充；默认关闭
+  dualCache: false       # Web 大缓存（测试中）：true 启用 300MB / 120 秒大缓存，严格 MSE 主动填充、消费后补充；关闭时为默认行为，较成熟但缓存仅约 2 秒，对网络环境要求较高；默认关闭
 
 timeouts:
   api: 30000             # 单次上游 API 请求超时（ms）
@@ -394,7 +394,7 @@ upstream:
 
 在管理面板修改的设置会热生效，无需重启服务。唯一例外是顶部的「默认播放模式」——它只是**新增上游时的初始值**，不影响已存在的上游，详见「播放模式详解」。
 
-「播放器双缓存（实验性）」开关同样在管理面板的全局设置中，保存后立即对新的播放会话生效（正在播放的会话保持原路径直到结束）；关闭即回到默认基准播放。该开关为实验性功能：受控压缩媒体持有量按字节与向前时长双上限停止生产，但计账覆盖尚未全部闭合（详见 `docs/web-payload-transfer-work-in-progress.md`）。
+「Web 大缓存（测试中）」开关同样在管理面板的全局设置中，保存后立即对新的播放会话生效（正在播放的会话保持原路径直到结束）。关闭时为默认行为，较成熟，但缓存仅有 2 秒，对网络环境要求较高；开启后启用大缓存（300MB / 120 秒），对用户侧设备性能要求较高。该功能处于测试中，遇到问题请回退关闭；计账覆盖尚未全部闭合（详见 `docs/web-payload-transfer-work-in-progress.md`）。
 
 严格路径现在会把 MSE 初始化／重播失败传回播放调用；启动等待超过 30 秒时报告失败，而不是假定成功。暂停不再取消在途 seek 的准入等待。MP4 HEVC／AV1／Opus／VVC／VP9／FLAC／ESDS native extradata、Matroska track CodecPrivate 及非图片附件已接入槽位准入与最终释放计账（FLAC 在 native 分配前选定最终 payload）。Matroska 图片附件采用分配前准入与真实 AVBuffer 最后引用释放，不走 extradata 槽位。这不代表每种 codec 均支持严格 MSE 播放，也不代表 header／side-data 已全部覆盖；AV1／Opus 合成素材仍会因 mux planner 能力不足明确失败。
 

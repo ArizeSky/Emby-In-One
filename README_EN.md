@@ -345,7 +345,7 @@ admin:
 
 playback:
   mode: "proxy"          # "proxy" or "redirect", global default
-  dualCache: false       # Web-player dual cache (experimental): true enables the 300,000,000-byte / 120-second forward budget with active strict-MSE filling and replenishment; default off
+  dualCache: false       # Web large cache (in testing): true enables the 300MB / 120-second large cache with active strict-MSE filling and replenishment; off keeps the mature default behaviour with only ~2s of buffering, which demands a stronger network; default off
 
 timeouts:
   api: 30000             # Single upstream API request timeout (ms)
@@ -394,7 +394,7 @@ upstream:
 
 Settings modified in the admin panel take effect hotly, no service restart required. The one exception is the global default playback mode, which is only the initial value for a new upstream — see Playback Modes.
 
-The "Player dual cache (experimental)" switch also lives in the admin panel's global settings; saving applies it to new playback sessions immediately (a session already playing keeps its original path until it ends), and turning it off returns to default baseline playback. The feature is experimental: controlled compressed-media holdings stop production at a byte / forward-duration dual cap, but accounting coverage is not fully closed yet (see `docs/web-payload-transfer-work-in-progress.md`).
+The "Web large cache (in testing)" switch also lives in the admin panel's global settings; saving applies it to new playback sessions immediately (a session already playing keeps its original path until it ends). When off, the default behaviour is more mature but buffers only about 2 seconds, which demands a stronger network; when on, the large cache (300MB / 120 seconds) raises requirements on client-side device performance. The feature is under testing — if you hit problems, turn it back off. Accounting coverage is not fully closed yet (see `docs/web-payload-transfer-work-in-progress.md`).
 
 The strict path now propagates MSE startup/replay failures to the playback call; a startup wait exceeding 30 seconds reports failure, never assumed success. Pausing no longer cancels in-flight seek admission. MP4 HEVC/AV1/Opus/VVC/VP9/FLAC/ESDS native extradata, Matroska track CodecPrivate and non-image attachments now use slot admission/final-release accounting (FLAC selects its final payload before native allocation). Matroska image attachments use pre-allocation admission and real AVBuffer last-reference release, not an extradata slot. This does not establish strict MSE playback support for every codec, nor complete header/side-data coverage; synthetic AV1/Opus samples still fail explicitly on unsupported mux-planner capabilities.
 
