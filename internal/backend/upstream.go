@@ -61,15 +61,19 @@ type UpstreamClient struct {
 	LastError        string
 	Config           UpstreamConfig
 	residentIdentity *residentIdentitySnapshot
-	serverKey        string
-	httpClient       *http.Client
-	transport        http.RoundTripper // per-client transport (shared or proxy-specific)
-	logger           *Logger
-	timeouts         TimeoutsConfig
-	recoveryMu       sync.Mutex
-	loginMu          sync.Mutex
-	lastRecovery     time.Time
-	onAuthError      func(c *UpstreamClient)
+	// Published atomically with token/UserID. Unknown legacy/test credentials
+	// have zero compatibility metadata and cannot authenticate a strict attempt.
+	authCompatibility playbackIdentityAuth
+	authGeneration    uint64
+	serverKey         string
+	httpClient        *http.Client
+	transport         http.RoundTripper // per-client transport (shared or proxy-specific)
+	logger            *Logger
+	timeouts          TimeoutsConfig
+	recoveryMu        sync.Mutex
+	loginMu           sync.Mutex
+	lastRecovery      time.Time
+	onAuthError       func(c *UpstreamClient)
 	// streamFailures tracks per-stream-base connect-level failure times for
 	// liveness marking; guarded by mu. A base marked dead is skipped by
 	// streamBaseCandidates until streamFailureCooldown passes.
@@ -597,6 +601,8 @@ func (c *UpstreamClient) loginWithHeaders(ctx context.Context, reqCtx *RequestCo
 			c.logger.Infof("[%s] Authenticating with API key", c.Name)
 		}
 		c.mu.Lock()
+		c.authGeneration++
+		c.authCompatibility = playbackIdentityAuth{}
 		c.AccessToken = strings.TrimSpace(c.Config.APIKey)
 		c.mu.Unlock()
 		c.validateAPIKey(ctx, reqCtx, identity, override)
@@ -659,7 +665,7 @@ func (c *UpstreamClient) loginWithHeaders(ctx context.Context, reqCtx *RequestCo
 	if c.logger != nil {
 		c.logger.Infof("[%s] Login success", c.Name)
 	}
-	c.setOnline(accessToken, userID)
+	c.setOnlineWithIdentity(accessToken, userID, identitySnapshot{Source: resolvedSource, Headers: headers})
 	c.recordSuccessfulIdentity(identity, resolvedSource, headers)
 }
 
@@ -674,7 +680,7 @@ func (c *UpstreamClient) validateAPIKey(ctx context.Context, reqCtx *RequestCont
 	if c.logger != nil {
 		c.logger.Infof("[%s] API key validation: source=%s", c.Name, diagnosticIdentitySource(source))
 	}
-	resp, err := c.doRequestForMode(ctx, reqCtx, http.MethodGet, "/Users/Me", nil, nil, c.requestHeadersWithOverride(reqCtx, identity, override), false, authModeAPIKeyValidation)
+	resp, err := c.doRequestForMode(ctx, reqCtx, http.MethodGet, "/Users/Me", nil, nil, resolved, false, authModeAPIKeyValidation)
 	if err != nil {
 		if c.logger != nil {
 			c.logger.Errorf("[%s] API key validation failed: %s", c.Name, err.Error())
@@ -709,28 +715,12 @@ func (c *UpstreamClient) validateAPIKey(ctx context.Context, reqCtx *RequestCont
 	if c.logger != nil {
 		c.logger.Infof("[%s] API key auth success", c.Name)
 	}
-	c.setOnline(strings.TrimSpace(c.Config.APIKey), userID)
+	c.setOnlineWithIdentity(strings.TrimSpace(c.Config.APIKey), userID, identitySnapshot{Source: source, Headers: resolved})
 	// A successful API-key validation is a passthrough login success too:
 	// persist the resolved identity so every later request (web clients
 	// included) resolves it from last-success / captured-latest instead of
 	// leaving with no client identity at all.
 	c.recordSuccessfulIdentity(identity, source, resolved)
-}
-
-func (c *UpstreamClient) setOnline(token, userID string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.AccessToken = token
-	c.UserID = userID
-	c.Online = true
-	c.LastError = ""
-}
-
-func (c *UpstreamClient) setOffline(message string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.Online = false
-	c.LastError = message
 }
 
 func (c *UpstreamClient) RequestJSON(ctx context.Context, reqCtx *RequestContext, identity *ClientIdentityService, method, path string, params url.Values, body any) (any, error) {
@@ -975,6 +965,9 @@ func (c *UpstreamClient) BuildURLForMode(path string, params url.Values, stream 
 	fullURL.RawQuery = query.Encode()
 
 	auth := c.authSnapshot()
+	if err := c.validatePlaybackAuth(reqCtx, auth); err != nil {
+		return "", err
+	}
 	businessPath := strings.TrimPrefix(fullURL.Path, urlPathPrefix(base))
 	if businessPath == "" {
 		businessPath = "/"
@@ -1050,6 +1043,14 @@ func (c *UpstreamClient) doRequestOnce(ctx context.Context, reqCtx *RequestConte
 		return nil, newResidentIdentityMissingError()
 	}
 	auth := c.authSnapshot()
+	if err := c.validatePlaybackAuth(reqCtx, auth); err != nil {
+		return nil, err
+	}
+	if reqCtx != nil && reqCtx.Playback != nil {
+		pinned := cloneHeader(reqCtx.Playback.Identity.Headers)
+		mergePublicOutboundHeaders(pinned, headers)
+		headers = pinned
+	}
 	policy := resolveOutboundPolicy(path, method, stream, mode, base)
 
 	fullURL, err := url.Parse(base + path)

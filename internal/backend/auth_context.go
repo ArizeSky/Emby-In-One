@@ -14,6 +14,9 @@ type RequestContext struct {
 	Headers    http.Header
 	ProxyToken string
 	ProxyUser  *tokenInfo
+	// Set only by the strict playback ingress after local-session ownership
+	// and route association checks. Native/metadata requests leave it nil.
+	Playback *playbackIdentityBinding
 	// LegacyProxyUserID is the single global virtual user ID that older responses
 	// handed to every client. It is kept only so requests that still carry it are
 	// recognised as the current user; the identity of the request itself always

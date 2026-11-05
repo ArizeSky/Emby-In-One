@@ -5,15 +5,17 @@ package backend
 // them separately can pair the user ID of one login with the token of another.
 // Every outbound request that needs both must take one snapshot instead.
 type upstreamAuthSnapshot struct {
-	UserID      string
-	AccessToken string
+	UserID        string
+	AccessToken   string
+	Compatibility playbackIdentityAuth
+	Generation    uint64
 }
 
 // authSnapshot reads UserID and AccessToken under a single RLock.
 func (c *UpstreamClient) authSnapshot() upstreamAuthSnapshot {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return upstreamAuthSnapshot{UserID: c.UserID, AccessToken: c.AccessToken}
+	return upstreamAuthSnapshot{UserID: c.UserID, AccessToken: c.AccessToken, Compatibility: c.authCompatibility, Generation: c.authGeneration}
 }
 
 // clientUserID returns the upstream's real user ID for single-field reads in
@@ -29,4 +31,23 @@ func (c *UpstreamClient) clientUserID() string {
 // once at construction and never mutated, so no lock is needed.
 func (c *UpstreamClient) serverIndexValue() int {
 	return c.ServerIndex
+}
+func (c *UpstreamClient) setOnline(token, userID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.authGeneration++
+	c.authCompatibility = playbackIdentityAuth{}
+	c.AccessToken = token
+	c.UserID = userID
+	c.Online = true
+	c.LastError = ""
+}
+
+func (c *UpstreamClient) setOffline(message string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.authGeneration++
+	c.authCompatibility = playbackIdentityAuth{}
+	c.Online = false
+	c.LastError = message
 }

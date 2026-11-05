@@ -47,6 +47,9 @@ func (c *UpstreamClient) identityHeaders(reqCtx *RequestContext, identity *Clien
 }
 
 func (c *UpstreamClient) resolveIdentityHeaders(reqCtx *RequestContext, identity *ClientIdentityService, override http.Header) (string, http.Header) {
+	if reqCtx != nil && reqCtx.Playback != nil {
+		return reqCtx.Playback.Identity.Source, cloneHeader(reqCtx.Playback.Identity.Headers)
+	}
 	if c.Config.SpoofClient == "resident" {
 		// A resident client presents its fixed identity for every request. It
 		// never consults live request headers, captured tokens, the latest global

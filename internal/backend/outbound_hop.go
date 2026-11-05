@@ -235,6 +235,14 @@ func (c *UpstreamClient) sendOutboundHop(ctx context.Context, reqCtx *RequestCon
 	}
 
 	auth := c.authSnapshot()
+	if err := c.validatePlaybackAuth(reqCtx, auth); err != nil {
+		return nil, err
+	}
+	if reqCtx != nil && reqCtx.Playback != nil {
+		pinned := cloneHeader(reqCtx.Playback.Identity.Headers)
+		mergePublicOutboundHeaders(pinned, hop.Headers)
+		hop.Headers = pinned
+	}
 	headers := cloneHeader(hop.Headers)
 	c.applyResidentIdentity(headers)
 	mergePublicOutboundHeaders(headers, hop.Transport)

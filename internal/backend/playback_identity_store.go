@@ -708,7 +708,6 @@ var playbackIdentityFingerprintHeaders = [...]string{
 func playbackIdentityFingerprint(snapshot identitySnapshot) string {
 	digest := sha256.New()
 	writePlaybackIdentityFingerprintField(digest, playbackIdentityFingerprintVersion)
-	writePlaybackIdentityFingerprintField(digest, snapshot.Source)
 	for _, name := range playbackIdentityFingerprintHeaders {
 		writePlaybackIdentityFingerprintField(digest, name)
 		writePlaybackIdentityFingerprintField(digest, snapshot.Headers.Get(name))
