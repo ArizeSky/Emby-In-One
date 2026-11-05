@@ -345,7 +345,7 @@ admin:
 
 playback:
   mode: "proxy"          # "proxy" or "redirect", global default
-  dualCache: false       # Web-player dual cache (experimental): true enables the 300,000,000-byte / 120-second budget; default off keeps baseline playback
+  dualCache: false       # Web-player dual cache (experimental): true enables the 300,000,000-byte / 120-second forward budget with active strict-MSE filling and replenishment; default off
 
 timeouts:
   api: 30000             # Single upstream API request timeout (ms)

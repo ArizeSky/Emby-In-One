@@ -345,7 +345,7 @@ admin:
 
 playback:
   mode: "proxy"          # "proxy" 或 "redirect"，全局默认值
-  dualCache: false       # 网页播放器双缓存（实验性）：true 开启 300,000,000 字节 / 120 秒受控预算；默认关闭走基准播放
+  dualCache: false       # 网页播放器双缓存（实验性）：true 启用受控字节预算 300,000,000 / 向前 120 秒，严格 MSE 主动填充、消费后补充；默认关闭
 
 timeouts:
   api: 30000             # 单次上游 API 请求超时（ms）

@@ -19,7 +19,8 @@ const namedChunks = Object.freeze({
   90210: 'payload-transfer.js',
   90211: 'mux-producers.js',
   90212: 'mux-producer-lifecycle.js',
-  90213: 'media-resource-handles.js'
+  90213: 'media-resource-handles.js',
+  90214: 'mse-append-batch.js'
 });
 
 function registeredRuntime(skipId) {
@@ -76,7 +77,7 @@ test('actual generated Worker collector includes the split transitive factories'
   const code = runtime.require(39484).A(90187, { varName: 'collected' });
   for (const id of [90187, 90190, 90188, 90194]) assert.match(code, new RegExp('(?:"' + id + '"|' + id + ')\\s*:'));
   assert.match(code, /if \(chunkId === 26\) promises.push\(__webpack_require__\.e\(90200\)\)/);
-  assert.match(code, /if \(chunkId === 26\) promises.push\(__webpack_require__\.e\(90205\), __webpack_require__\.e\(90206\), __webpack_require__\.e\(90207\), __webpack_require__\.e\(90208\), __webpack_require__\.e\(90209\), __webpack_require__\.e\(90210\), __webpack_require__\.e\(90211\), __webpack_require__\.e\(90212\), __webpack_require__\.e\(90213\)\)/);
+  assert.match(code, /if \(chunkId === 26\) promises.push\(__webpack_require__\.e\(90205\), __webpack_require__\.e\(90206\), __webpack_require__\.e\(90207\), __webpack_require__\.e\(90208\), __webpack_require__\.e\(90209\), __webpack_require__\.e\(90210\), __webpack_require__\.e\(90211\), __webpack_require__\.e\(90212\), __webpack_require__\.e\(90213\), __webpack_require__\.e\(90214\)\)/);
   const pullCode = runtime.require(39484).A(90192, { varName: 'collectedPull' });
   for (const id of [90192, 90193]) assert.match(pullCode, new RegExp('(?:"' + id + '"|' + id + ')\\s*:'));
   assert.match(pullCode, /__webpack_require__\(90193\)/);
@@ -85,7 +86,10 @@ test('actual generated Worker collector includes the split transitive factories'
   assert.match(extradataCode, /(?:"90213"|90213)\s*:/);
   assert.match(extradataCode, /createMediaResourceHandles/);
   const mainSource = fs.readFileSync(path.join(root, 'avplayer.js'), 'utf8');
-  assert.match(mainSource, /s\.f\.eioDependencies=\(e,t\)=>\{26===e&&t\.push\(s\.e\(90200\),s\.e\(90205\),s\.e\(90206\),s\.e\(90207\),s\.e\(90208\),s\.e\(90209\),s\.e\(90210\),s\.e\(90211\),s\.e\(90212\),s\.e\(90213\)\)\}/);
+  assert.match(mainSource, /s\.f\.eioDependencies=\(e,t\)=>\{26===e&&t\.push\(s\.e\(90200\),s\.e\(90205\),s\.e\(90206\),s\.e\(90207\),s\.e\(90208\),s\.e\(90209\),s\.e\(90210\),s\.e\(90211\),s\.e\(90212\),s\.e\(90213\),s\.e\(90214\)\)\}/);
+  const batch = fs.readFileSync(path.join(root, 'mse-append-batch.js'), 'utf8');
+  const canonicalBatch = fs.readFileSync(path.join(__dirname, '../web-src/player-mse-append-batch.js'), 'utf8');
+  assert.equal(batch.slice(batch.indexOf('/*!'), batch.lastIndexOf('\n}}]);')).trimEnd(), canonicalBatch.trimEnd());
   const mseSource = fs.readFileSync(path.join(root, '26.avplayer.js'), 'utf8');
   assert.match(mseSource, /eioCodecparLeaseHandles\(task\)/);
   assert.match(mseSource, /createMediaResourceHandles\(\{adoptOnly:!0\}\)/);
@@ -120,7 +124,7 @@ test('page registers all ownership chunks before AVPlayer', () => {
   const entry = html.indexOf('/web/vendor/web/libmedia/avplayer.js?');
   assert.ok(entry >= 0);
   for (const [id, file] of Object.entries(namedChunks)) {
-    if (Number(id) === 90200) continue;
+    if (Number(id) === 90200 || Number(id) === 90214) continue;
     const at = html.indexOf('/web/vendor/web/libmedia/' + file + '?');
     assert.ok(at >= 0 && at < entry);
   }

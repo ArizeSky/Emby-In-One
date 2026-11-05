@@ -516,7 +516,7 @@
         // libmedia checks MIME support before this callback. Prefer browser
         // playback whenever possible, leaving decoded canvas for other codecs.
         checkUseMSE: () => true,
-        preLoadTime: 2,
+        preLoadTime: 2, // The selected strict MSE path raises its own fill target.
       });
       core.setVolume?.(this._volume);
       let resolveFrame, rejectFrame;

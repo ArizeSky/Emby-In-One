@@ -197,7 +197,7 @@ test('baseline loop step runs directly, returns the value, and never allocates d
 test('createLoop wraps only the existing synchronous callback body with the strict wrapper',
   { timeout: 5000 }, () => {
     const head = between(SOURCE, 'createLoop(t,e){t.eioMuxTask=e;t.loop=new z.A((()=>{',
-      'const i=t.track.getBufferedDuration(');
+      'const i=eioMseBufferedDuration(');
     assert.equal(head, 'createLoop(t,e){t.eioMuxTask=e;t.loop=new z.A((()=>{return this.eioRunLoopStep(t,()=>{',
       'the stream must capture its task before the callback enters the real producer gate');
 
