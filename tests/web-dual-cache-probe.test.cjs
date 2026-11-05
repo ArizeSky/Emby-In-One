@@ -352,8 +352,8 @@ test('createTask probe wiring installs the four formatContext hooks before any a
   assert.equal(before.inventory.interval, true);
   assert.equal(before.inventory.headers, true);
   assert.equal(before.inventory.admissionAuthority, false);
-  assert.equal(before.accounting.extradata, false);
-  assert.equal(before.accounting.attachedPic, false);
+  assert.equal(before.accounting.extradata, true);
+  assert.equal(before.accounting.attachedPic, true);
   assert.equal(before.accounting.interval, false);
   assert.equal(before.accounting.crossWorkerCopy, false);
 });
@@ -1034,11 +1034,12 @@ test('the aggregate snapshot never claims a complete probe ledger', async () => 
     .filter((entry) => entry.domain === 'demux')
     .map((entry) => entry.reason);
   assert.ok(reasons.includes('SAMPLE_RELEASE_UNVERIFIED'), reasons.join(','));
-  assert.ok(reasons.includes('HEADER_UNACCOUNTED'), reasons.join(','));
+  assert.ok(!reasons.includes('HEADER_UNACCOUNTED'),
+    'extradata/attachedPic accounting is wired for MP4/MKV/TS/PS');
   assert.ok(reasons.includes('INTERVAL_UNACCOUNTED'), reasons.join(','));
   assert.equal(JSON.stringify(snapshot).includes('probeFullyAccounted'), false);
   assert.equal(demuxSnapshot.releaseVerified, false);
   assert.equal(demuxSnapshot.accounting.sampleRelease, false);
-  assert.equal(demuxSnapshot.accounting.extradata, false);
-  assert.equal(demuxSnapshot.accounting.attachedPic, false);
+  assert.equal(demuxSnapshot.accounting.extradata, true);
+  assert.equal(demuxSnapshot.accounting.attachedPic, true);
 });
