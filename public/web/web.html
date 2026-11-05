@@ -510,8 +510,8 @@
               <svg v-if="wasmPlaying" viewBox="0 0 24 24" class="w-5 h-5" fill="currentColor" aria-hidden="true"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
               <svg v-else viewBox="0 0 24 24" class="w-5 h-5" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
             </button>
-            <button class="eio-play-btn" aria-label="上一集" :disabled="!previousEpisode || trackBusy || episodeQueueLoading" @click="playItem(previousEpisode)"><i data-lucide="skip-back" class="w-5 h-5"></i></button>
-            <button class="eio-play-btn" aria-label="下一集" :disabled="!nextEpisode || trackBusy || episodeQueueLoading" @click="playItem(nextEpisode)"><i data-lucide="skip-forward" class="w-5 h-5"></i></button>
+            <button class="eio-play-btn" aria-label="上一集" :disabled="!previousEpisode || trackBusy || episodeQueueLoading" @click="playItem(previousEpisode)"><svg viewBox="0 0 24 24" class="w-5 h-5" fill="currentColor" aria-hidden="true"><path d="M6 4H4v16h2zM20 4 8 12l12 8z"/></svg></button>
+            <button class="eio-play-btn" aria-label="下一集" :disabled="!nextEpisode || trackBusy || episodeQueueLoading" @click="playItem(nextEpisode)"><svg viewBox="0 0 24 24" class="w-5 h-5" fill="currentColor" aria-hidden="true"><path d="M18 4h2v16h-2zM4 4l12 8-12 8z"/></svg></button>
             <span class="eio-time">{{ wasmTimeHuman }} / {{ wasmDurationHuman }}</span>
 
             <eio-track-menu v-if="playVersions.length > 1" label="版本" menu-id="eio-menu-version" :options="versionOptions"
