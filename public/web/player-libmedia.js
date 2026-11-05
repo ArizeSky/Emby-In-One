@@ -278,7 +278,7 @@
       const guard = new Promise((_, reject) => {
         timer = setTimeout(() => {
           if (attempt) attempt.timedOut = true;
-          const error = new Error('跳转超时');
+          const error = new Error(label === 'play' || label === 'pause' ? '播放控制超时' : '跳转超时');
           error.name = 'TimeoutError';
           error.label = label;
           error.timeoutMs = timeoutMs;
@@ -296,9 +296,9 @@
       }
     }
 
-    // Every engine seek, including subtitle cue repopulation, goes through
-    // this per-generation serial queue. Jobs read current engine state when
-    // they execute, not when they are queued.
+    // Seeks and transport controls share this per-generation queue. A control
+    // requested during load waits for that bounded startup before touching the
+    // engine; jobs read current state when they execute.
     _coordinateSeek(job, options = {}) {
       const queue = this._seekQueue;
       if (!queue || this._destroyed) return Promise.reject(abortError());
@@ -307,7 +307,9 @@
         normalizeSeekTimeout(this.options?.seekTimeout, DEFAULT_SEEK_TIMEOUT_MS));
       const label = normalizeSeekLabel(options.label);
       const run = async () => {
+        if (queue.startup) await queue.startup;
         if (!this._isCurrentQueue(queue, generation)) throw abortError();
+        if (this._startupError) throw this._startupError;
         const attempt = {
           core: this.core,
           video: this.video,
@@ -315,7 +317,15 @@
           signal: queue.controller.signal,
           timedOut: false,
         };
-        const result = job(attempt);
+        // An adapter timeout does not settle the underlying native operation.
+        // Keep joining that operation before another control touches the core.
+        const previous = queue.active;
+        const result = (async () => {
+          if (previous) await previous;
+          if (attempt.timedOut || !this._isCurrentQueue(queue, generation)) throw abortError();
+          return job(attempt);
+        })();
+        queue.active = result.then(() => {}, () => {});
         return this._awaitBounded(result, timeout, queue.controller.signal, { label, attempt });
       };
       const result = queue.tail.then(run, run);
@@ -428,26 +438,33 @@
     async _attempt(url) {
       this._checkAlive();
       this._assertEngineUsable();
+      this._startupError = null;
       this._emitState({ loading: true, message: this._fallbackUsed ? '正在加载转码流…' : '正在加载媒体…' });
       const pending = this._canNativePlay(url) ? this._native(url) : this._libmedia(url);
       const attemptGeneration = this._engineGeneration;
       // A timed-out or failed attempt must invalidate its own generation: the
       // old core.load()/play() continuation may settle later and must not
       // resurrect an engine that the user or watchdog already abandoned.
-      const invalidate = () => {
-        if (!this._destroyed && attemptGeneration === this._engineGeneration) this._bumpEngineGeneration();
+      const invalidate = (error) => {
+        if (!this._destroyed && attemptGeneration === this._engineGeneration) {
+          this._startupError = error;
+          this._bumpEngineGeneration();
+        }
       };
       let timer, onAbort;
       const cancelled = new Promise((_, reject) => {
         timer = setTimeout(() => {
-          invalidate();
-          reject(new Error('媒体加载超时'));
+          const error = new Error('媒体加载超时');
+          invalidate(error);
+          reject(error);
         }, this.options.loadTimeout || 20000);
         onAbort = () => reject(abortError());
         this._abort.signal.addEventListener('abort', onAbort, { once: true });
       });
-      try { await Promise.race([pending, cancelled]); }
-      catch (error) { invalidate(); throw error; }
+      const startup = Promise.race([pending, cancelled]);
+      this._seekQueue.startup = startup;
+      try { await startup; }
+      catch (error) { invalidate(error); throw error; }
       finally {
         clearTimeout(timer);
         this._abort.signal.removeEventListener('abort', onAbort);
@@ -809,35 +826,34 @@
 
     async play() {
       this._checkAlive();
-      const generation = this._engineGeneration;
-      const core = this.core;
-      const video = this.video;
-      if (core) {
-        await core.resume();
-        if (!this._isCurrentEngine(core, null, generation)) throw abortError();
-        await core.play();
-      } else if (video) {
-        await video.play();
-      } else {
-        throw new Error('播放器尚未就绪');
-      }
-      if (!this._isCurrentEngine(core, video, generation)) throw abortError();
-      this._pauseRequested = false;
-      this.playing = true;
-      this._emitState();
+      return this._coordinateSeek(async ({ core, video, generation }) => {
+        if (core) {
+          await core.resume();
+          if (!this._isCurrentEngine(core, null, generation)) throw abortError();
+          await core.play();
+        } else if (video) {
+          await video.play();
+        } else {
+          throw new Error('播放器尚未就绪');
+        }
+        if (!this._isCurrentEngine(core, video, generation)) throw abortError();
+        this._pauseRequested = false;
+        this.playing = true;
+        this._emitState();
+      }, { label: 'play' });
     }
 
     async pause() {
       this._pauseRequested = true;
-      const generation = this._engineGeneration;
-      const core = this.core;
-      const video = this.video;
-      if (core) await core.pause();
-      else if (video) video.pause();
-      else return;
-      if (!this._isCurrentEngine(core, video, generation)) throw abortError();
-      this.playing = false;
-      this._emitState();
+      return this._coordinateSeek(async ({ core, video, generation }) => {
+        if (core) await core.pause();
+        else if (video) video.pause();
+        else return;
+        if (!this._isCurrentEngine(core, video, generation)) throw abortError();
+        this._pauseRequested = true;
+        this.playing = false;
+        this._emitState();
+      }, { label: 'pause' });
     }
 
     async seek(seconds, options = {}) {

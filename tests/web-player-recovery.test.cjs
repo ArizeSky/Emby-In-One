@@ -52,6 +52,7 @@ function harness(options = {}) {
     async load(url) {
       this.url = url;
       if (url.includes('slow')) await new Promise(resolve => { this.finishLoad = resolve; });
+      if (options.loadFailure) throw options.loadFailure;
     }
     async play() {
       this.playCalls = (this.playCalls || 0) + 1;
@@ -122,6 +123,84 @@ const source = { Id: 'source', Container: 'mkv', MediaStreams: [
   { Index: 3, Type: 'Audio', Codec: 'aac' },
 ] };
 const item = { Id: 'item', RunTimeTicks: 3000000000 };
+
+test('play and pause during startup wait for the actual loaded engine', { timeout: 3000 }, async () => {
+  const { player, instances } = harness();
+  const loading = player.load('/slow.mkv', source, item);
+  const core = instances[0];
+  const playing = player.play();
+  const paused = player.pause();
+  await delay(0);
+  assert.equal(core.playCalls, undefined, 'transport play reached a loading core');
+  assert.equal(core.pauseCalls, undefined, 'transport pause reached a loading core');
+  core.finishLoad();
+  await Promise.all([loading, playing, paused]);
+  assert.equal(core.playCalls, 2, 'startup play and queued user play both settled');
+  assert.equal(core.pauseCalls, 1);
+  assert.equal(player.playing, false);
+  assert.equal(player._pauseRequested, true);
+});
+
+test('a queued play cannot reach a core destroyed during startup', { timeout: 3000 }, async () => {
+  const { player, instances } = harness();
+  const loading = player.load('/slow.mkv', source, item);
+  const playing = player.play();
+  const stoppedLoad = assert.rejects(loading, error => error.name === 'AbortError');
+  const stoppedPlay = assert.rejects(playing, error => error.name === 'AbortError');
+  await player.destroy();
+  await Promise.all([stoppedLoad, stoppedPlay]);
+  instances[0].finishLoad();
+  await delay(0);
+  assert.equal(instances[0].playCalls, undefined);
+});
+
+test('failed startup preserves its actual failure for queued and later play controls', { timeout: 3000 }, async () => {
+  const failure = Object.assign(new Error('media request failed'), { code: 'fixture-http-500' });
+  const { player, instances } = harness({ loadFailure: failure });
+  const loading = player.load('/slow.mkv', source, item);
+  const playing = player.play();
+  const failedLoad = assert.rejects(loading, error => error === failure);
+  const failedPlay = assert.rejects(playing, error => error === failure);
+  instances[0].finishLoad();
+  await Promise.all([failedLoad, failedPlay]);
+  await assert.rejects(player.play(), error => error === failure);
+  assert.equal(instances[0].playCalls, undefined);
+});
+
+test('transport play joins an active seek before resuming its core', { timeout: 3000 }, async () => {
+  const { player, instances } = harness();
+  await player.load('/stream.mkv', source, item);
+  const core = instances[0];
+  let finishSeek, resumes = 0;
+  core.seekImpl = () => new Promise(resolve => { finishSeek = resolve; });
+  core.resume = async () => { resumes++; };
+  const seeking = player.seek(60);
+  await waitFor(() => finishSeek);
+  const playing = player.play();
+  await delay(0);
+  assert.equal(resumes, 0, 'play crossed the in-flight seek');
+  finishSeek();
+  await Promise.all([seeking, playing]);
+  assert.equal(resumes, 1);
+  assert.equal(player.playing, true);
+});
+
+test('a seek deadline cannot let play cross a still-pending core seek', { timeout: 3000 }, async () => {
+  const { player, instances } = harness();
+  await player.load('/stream.mkv', source, item, { seekTimeout: 20 });
+  const core = instances[0];
+  let finishSeek, resumes = 0;
+  core.seekImpl = () => new Promise(resolve => { finishSeek = resolve; });
+  core.resume = async () => { resumes++; };
+  await assert.rejects(player.seek(60), error => error.name === 'TimeoutError');
+  await assert.rejects(player.play(), error => error.name === 'TimeoutError' && error.label === 'play');
+  assert.equal(resumes, 0);
+  finishSeek();
+  await delay(0);
+  assert.equal(resumes, 0, 'a timed-out queued play must not execute late');
+  await player.play();
+  assert.equal(resumes, 1, 'a settled native seek permits a fresh user request');
+});
 
 test('runtime fallback preserves an explicitly paused user and volume', { timeout: 3000 }, async () => {
   const { player, instances } = harness();
