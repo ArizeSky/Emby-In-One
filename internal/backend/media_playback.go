@@ -199,24 +199,16 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 				for _, rawStream := range rawStreams {
 					if stream, ok := rawStream.(map[string]any); ok {
 						if deliveryURL, ok := stream["DeliveryUrl"].(string); ok && deliveryURL != "" {
-							deliveryURL = strings.ReplaceAll(deliveryURL, inst.OriginalID, r.PathValue("itemId"))
-							if originalMSID != "" && originalMSID != inst.OriginalID {
-								deliveryURL = strings.ReplaceAll(deliveryURL, originalMSID, virtualMSID)
+							token := ""
+							if reqCtx != nil {
+								token = reqCtx.ProxyToken
 							}
-							if parsed, err := url.Parse(deliveryURL); err == nil {
-								queryValues := parsed.Query()
-								stripProxyCredentialQuery(queryValues)
-								if reqCtx != nil && reqCtx.ProxyToken != "" {
-									setQueryValue(queryValues, "api_key", reqCtx.ProxyToken)
-								}
-								parsed.RawQuery = queryValues.Encode()
-								// Subtitles are served by this proxy, never by an upstream host.
-								parsed.Scheme, parsed.Host, parsed.User = "", "", nil
-								parsed.Path = replacePathItemID(parsed.Path, "videos", r.PathValue("itemId"), r.PathValue("itemId"))
-								parsed.Path = replacePathItemID(parsed.Path, "audio", r.PathValue("itemId"), r.PathValue("itemId"))
-								deliveryURL = parsed.String()
+							local := rewriteSubtitleDeliveryURL(deliveryURL, inst.OriginalID, r.PathValue("itemId"), originalMSID, virtualMSID, token)
+							if local == "" {
+								delete(stream, "DeliveryUrl")
+							} else {
+								stream["DeliveryUrl"] = local
 							}
-							stream["DeliveryUrl"] = deliveryURL
 						}
 					}
 				}

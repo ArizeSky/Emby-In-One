@@ -89,6 +89,9 @@ func (a *App) proxyStream(w http.ResponseWriter, r *http.Request, route streamRo
 			}
 		}
 	}
+	if !a.requireSubtitleSource(w, r, resolved, rest, query) {
+		return
+	}
 
 	client, originalID, ok := a.resolveStreamTarget(w, r, resolved, virtualItemID, query)
 	if !ok {
