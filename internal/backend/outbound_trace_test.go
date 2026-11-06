@@ -30,7 +30,9 @@ func TestOutboundDiagnosticsCorrelatesRedirectAndMediaDenialWithoutSecrets(t *te
 	c.setOnline(token, "fixture-private-user")
 	app := &App{Logger: logger}
 	handler := app.loggingMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		resp, err := c.Stream(r.Context(), nil, nil, "/Videos/item/stream.mkv", nil)
+		// Ordinary API redirects still strip private credentials. Media-specific
+		// delegation is covered separately with a gateway that requires its URL.
+		resp, err := c.doRequest(r.Context(), nil, http.MethodGet, "/System/Info", nil, nil, c.identityHeaders(nil, nil), false)
 		if err != nil {
 			t.Fatal(err)
 		}

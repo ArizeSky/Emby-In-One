@@ -241,7 +241,7 @@ func (a *App) forwardStream(w http.ResponseWriter, r *http.Request, client *Upst
 					writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Upstream redirect without a target"})
 					return
 				}
-				followed, ferr := client.fetchRedirectTarget(r.Context(), reqCtx, target, snapshot, streamRequestHeaders(r))
+				followed, ferr := client.fetchMediaRedirectTarget(r.Context(), reqCtx, target, snapshot, streamRequestHeaders(r), resp.Request)
 				if ferr != nil {
 					if errors.Is(ferr, context.Canceled) || errors.Is(ferr, context.DeadlineExceeded) {
 						return
@@ -279,7 +279,7 @@ func (a *App) forwardStream(w http.ResponseWriter, r *http.Request, client *Upst
 					writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Upstream redirect without a target"})
 					return
 				}
-				followed, ferr := client.fetchRedirectTarget(r.Context(), reqCtx, target, snapshot, streamRequestHeaders(r))
+				followed, ferr := client.fetchMediaRedirectTarget(r.Context(), reqCtx, target, snapshot, streamRequestHeaders(r), resp.Request)
 				if ferr != nil {
 					if errors.Is(ferr, context.Canceled) || errors.Is(ferr, context.DeadlineExceeded) {
 						return

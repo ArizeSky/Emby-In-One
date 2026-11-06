@@ -1137,7 +1137,7 @@ func (c *UpstreamClient) doRequestOnce(ctx context.Context, reqCtx *RequestConte
 	// policy also decides per hop whether the target may see this upstream's
 	// identity and credential at all, so it is rebuilt from the current
 	// configuration instead of a client built before an admin change.
-	redirectPolicy := c.redirectPolicyFor(config.FollowRedirects, mode)
+	redirectPolicy := c.redirectPolicyForMedia(config.FollowRedirects, mode, stream && isMediaFetchPath(path))
 	if reqCtx != nil && reqCtx.Playback != nil && mode == authModeNormal {
 		redirectPolicy = c.strictPlaybackRedirectPolicy(redirectPolicy, reqCtx)
 	}

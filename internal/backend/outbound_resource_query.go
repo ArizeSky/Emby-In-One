@@ -19,8 +19,8 @@ func prepareHopQuery(target *url.URL, trusted bool, token string, known ...strin
 // authority. Provenance only applies to the exact URL it was bound to, so an
 // external query can preserve the target's own same-name credential while a
 // client-supplied or redirected-away URL stays conservative. Known private
-// values are still removed (or, on a managed trusted route, refreshed) even
-// when the registration is authoritative.
+// values are still removed (or, on a managed trusted route, refreshed), except
+// for an exact media URL credential explicitly delegated by a trusted response.
 func prepareHopQueryWithProvenance(target *url.URL, trusted bool, token string, provenance *resourceQueryProvenance, known ...string) error {
 	if target.RawQuery == "" {
 		return nil
@@ -56,6 +56,12 @@ func prepareHopQueryWithProvenance(target *url.URL, trusted bool, token string, 
 			return hopQueryError("invalid-resource-query")
 		}
 		if trusted && val == token && token != "" {
+			kept = append(kept, field)
+			continue
+		}
+		if !trusted && provenance != nil && provenance.delegated != "" && val == provenance.delegated {
+			// The trusted media response explicitly delegated this URL credential.
+			// Keep its original bytes, including signatures; never install a header.
 			kept = append(kept, field)
 			continue
 		}

@@ -28,8 +28,8 @@ const (
 	// identity and this request's current credential snapshot.
 	outboundTargetTrusted outboundTargetClass = "trusted-origin"
 	// outboundTargetExternal is every other http(s) target, a CDN included. It
-	// receives the public header set only: no device identity, no compound
-	// authorization, no token, no cookie.
+	// receives public headers only: no device identity, compound authorization,
+	// token header or cookie. Explicit media URL delegation is independently scoped.
 	outboundTargetExternal outboundTargetClass = "external"
 	// outboundTargetRejected is a target that must not be requested at all.
 	outboundTargetRejected outboundTargetClass = "rejected"
@@ -292,15 +292,19 @@ func (c *UpstreamClient) sendOutboundHop(ctx context.Context, reqCtx *RequestCon
 }
 
 // redirectPolicyFor builds the CheckRedirect for a fetch this proxy follows on
-// its own. Every hop is projected for its target: a hop on the origin the chain
-// started from keeps the full identity and credential set, every other hop gets
-// the public header set and no upstream credential.
+// its own. Trusted targets keep the prepared identity and credential headers;
+// external targets only receive public headers. The media-specific variant may
+// preserve an explicit URL credential delegated by the trusted media response.
 //
 // mode identifies the purpose of the request. A password login carries the
 // administrator's saved upstream credentials in its body; those bytes cannot be
 // removed by deleting a header, so such a request is refused before a hop that
 // would resend the body to a target outside the origin the login started from.
 func (c *UpstreamClient) redirectPolicyFor(follow bool, mode outboundAuthMode) func(*http.Request, []*http.Request) error {
+	return c.redirectPolicyForMedia(follow, mode, false)
+}
+
+func (c *UpstreamClient) redirectPolicyForMedia(follow bool, mode outboundAuthMode, media bool) func(*http.Request, []*http.Request) error {
 	return func(req *http.Request, via []*http.Request) error {
 		if !follow {
 			return errUpstreamRedirectNotFollowed
@@ -323,7 +327,7 @@ func (c *UpstreamClient) redirectPolicyFor(follow bool, mode outboundAuthMode) f
 		token := via[0].Header.Get("X-Emby-Token")
 		reqCtx := requestContextFrom(req.Context())
 		private := resourceQueryPrivateTokens(reqCtx, token)
-		provenance := requestContextResourceQueryProvenance(reqCtx).deriveRedirect(req.URL.String(), private...)
+		provenance := c.mediaRedirectProvenance(requestContextResourceQueryProvenance(reqCtx), via[len(via)-1], req.URL, reqCtx, media && mode == authModeNormal)
 		beforeQuery := req.URL.RawQuery
 		queryErr := prepareHopQueryWithProvenance(req.URL, class == outboundTargetTrusted, token, provenance, private...)
 		c.logHopQueryPolicy(req.Context(), req.URL, class, beforeQuery, queryErr)

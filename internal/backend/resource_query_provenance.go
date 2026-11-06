@@ -48,6 +48,9 @@ type resourceQueryProvenance struct {
 	origin  string
 	rawURL  string
 	private []string
+	// delegated is an upstream credential explicitly issued in this exact media
+	// redirect URL by a trusted origin, never an automatically copied header.
+	delegated string
 }
 
 // newResourceQueryProvenance builds an authoritative binding for one exact URL.

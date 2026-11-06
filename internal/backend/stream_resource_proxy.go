@@ -319,10 +319,10 @@ func streamResourceHandleID(raw string) string {
 // fetchResourceRedirectTarget is the method-preserving variant of
 // fetchRedirectTarget: resource requests keep HEAD and Range semantics instead of
 // always issuing a GET. Credential rules are shared with every other hop — the
-// upstream's own identity and this request's current token on a canonical
-// self-origin target, the public header set and no credential anywhere else —
-// and a credential already present in the URL is refreshed from the same auth
-// snapshot as the headers, so the two carriers can never disagree.
+// upstream's own identity and current token on a canonical self-origin target,
+// public headers everywhere else. URL credentials are independently governed by
+// provenance, including exact media redirect delegation; external credentials
+// are never automatically installed or refreshed.
 func (c *UpstreamClient) fetchResourceRedirectTarget(ctx context.Context, method, rawURL string, headers http.Header) (*http.Response, error) {
 	return c.fetchResourceRedirectTargetWithProvenance(ctx, method, rawURL, headers, nil)
 }
@@ -336,7 +336,8 @@ func (c *UpstreamClient) fetchResourceRedirectTargetWithProvenance(ctx context.C
 }
 
 // fetchResourceFollowingRedirects follows bounded redirects and only attaches
-// upstream credentials on same-origin hops. Range headers are preserved.
+// upstream credential headers on trusted hops. Explicit media URL delegation
+// remains single-hop. Range headers are preserved.
 func (a *App) fetchResourceFollowingRedirects(r *http.Request, client *UpstreamClient, rawURL string) (*http.Response, error) {
 	headers := client.identityHeaders(requestContextFrom(r.Context()), a.Identity)
 	for key, values := range streamRequestHeaders(r) {
@@ -367,13 +368,7 @@ func (a *App) fetchResourceFollowingRedirects(r *http.Request, client *UpstreamC
 		if rerr != nil || abs == nil {
 			break
 		}
-		previousToken := ""
-		if resp.Request != nil {
-			previousToken = resp.Request.Header.Get("X-Emby-Token")
-		}
-		private := resourceQueryPrivateTokens(reqCtx, previousToken)
-		private = append(private, client.authSnapshot().AccessToken)
-		provenance = provenance.deriveRedirect(abs.String(), private...)
+		provenance = client.mediaRedirectProvenance(provenance, resp.Request, abs, reqCtx, true)
 		followed, ferr := client.fetchResourceRedirectTargetWithProvenance(r.Context(), method, abs.String(), headers, provenance)
 		if ferr != nil {
 			resp.Body.Close()
