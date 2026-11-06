@@ -90,6 +90,8 @@
       this.playing = false;
       this.duration = 0;
       this.positionTicks = 0;
+      this.subtitleIndex = -1;
+      this._subtitleStateKnown = true;
       this._abort = new AbortController();
       this._destroyed = false;
       this._fallbackUsed = false;
@@ -491,6 +493,8 @@
       video.addEventListener('pause', () => {
         if (current()) { this.playing = false; this._emitState(); }
       }, { signal });
+      video.addEventListener('volumechange', () => { if (current()) this._emitState(); }, { signal });
+      video.addEventListener('ratechange', () => { if (current()) this._emitState(); }, { signal });
       video.addEventListener('ended', () => { if (current()) this.onEnded?.(); }, { signal });
       return new Promise((resolve, reject) => {
         let ready = false;
@@ -638,6 +642,7 @@
       const paused = this._pauseRequested;
       this._cancelSubtitleWork();
       this.subtitles?.clear();
+      this._subtitleStateKnown = this.subtitleIndex < 0;
       await this._resetEngine();
       this._checkAlive();
       await this._attempt(this.fallbackUrl);
@@ -657,6 +662,7 @@
           // Re-select subtitles in the background. A slow or broken subtitle
           // must not keep a recovered picture in the loading/error path.
           if (this.subtitleIndex >= 0) this._startDefaultSubtitle(this.subtitleIndex);
+          this._recovering = false;
           this._emitState({ loading: false });
           return;
         } catch (fallbackError) { error = fallbackError; }
@@ -681,6 +687,7 @@
       const normalized = Number(index);
       const generation = this._engineGeneration;
       const requestSerial = ++this._subtitleSerial;
+      this._subtitleStateKnown = false;
       this._subtitleAbort?.abort();
       const controller = new AbortController();
       this._subtitleAbort = controller;
@@ -712,6 +719,7 @@
           return false;
         }
         this.subtitleIndex = normalized;
+        this._subtitleStateKnown = true;
         this._emitState({ subtitleIndex: normalized });
         return true;
       } catch (error) {
@@ -752,7 +760,40 @@
       this.audioIndex = index;
       this.options.audioIndex = index;
       this.audioError = null;
+      this._emitState();
       return true;
+    }
+
+    // Emby progress describes the engine we are actually using, independently
+    // of the client identity selected for the upstream. Unknown track mappings
+    // are omitted rather than treating a requested index as an applied one.
+    get playbackState() {
+      const core = this.core;
+      const video = this.video;
+      const live = this.mediaSource?.IsInfiniteStream === true
+        || video?.duration === Infinity || core?.isLive?.() === true;
+      const state = {
+        PositionTicks: this.positionTicks, IsPaused: !this.playing,
+        CanSeek: Number.isFinite(this.duration) && this.duration > 0 && !live,
+        PlayMethod: this._fallbackUsed || this.options?.playMethod === 'Transcode' ? 'Transcode' : 'DirectStream',
+        PlaybackRate: core?.getPlaybackRate?.() ?? video?.playbackRate ?? this.playbackRate,
+        SubtitleStreamIndex: this._subtitleStateKnown ? this.subtitleIndex : undefined,
+      };
+      if (Number.isFinite(this.duration) && this.duration > 0) state.RunTimeTicks = Math.round(this.duration * 10000000);
+      const volume = core?.getVolume?.() ?? video?.volume ?? this._volume;
+      if (typeof volume === 'number' && Number.isFinite(volume)) {
+        state.VolumeLevel = Math.round(Math.max(0, Math.min(1, volume)) * 100);
+        state.IsMuted = video?.muted === true || volume === 0;
+      }
+      if (core && !core.isHls?.()) {
+        const selected = core.getSelectedAudioStreamId?.();
+        const audio = core.getStreams?.().find(s => s.id === selected && s.mediaType?.toLowerCase() === 'audio');
+        if (audio) state.AudioStreamIndex = audio.index;
+      } else if (video && state.PlayMethod !== 'Transcode') {
+        const tracks = this.mediaSource?.MediaStreams?.filter(s => s.Type === 'Audio') || [];
+        if (tracks.length === 1) state.AudioStreamIndex = tracks[0].Index;
+      }
+      return state;
     }
 
     get playbackRate() {
@@ -897,6 +938,7 @@
       this._volume = Number.isFinite(value) ? value : 1;
       if (this.core) this.core.setVolume?.(this._volume);
       else if (this.video) this.video.volume = this._volume;
+      this._emitState();
     }
 
     async _resetEngine() {

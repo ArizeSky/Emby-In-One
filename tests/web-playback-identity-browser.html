@@ -19,6 +19,8 @@
 <script src="/web/web/subtitle-controller.js"></script>
 <script src="/web/web/player-libmedia.js"></script>
 <script src="/web/web/playback-identity.js"></script>
+<script src="/web/web/playback-reporting.js"></script>
+<script src="/web/web/data.js"></script>
 <script>
 (async () => {
   const identity = window.EIOPlaybackIdentity;
@@ -27,13 +29,13 @@
   let stage = 'negotiation';
   let liveEngine;
   const deadline = (promise, ms = 30000) => Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error('fixture deadline')), ms))]);
-  const event = (attempt, source, name) => identity.postSessionEvent({attempt, event:name, payload:{ItemId:'__ITEM_ID__',MediaSourceId:source.Id,PositionTicks:10000000}});
+  const event = (attempt, source, name, extra = {}) => identity.postSessionEvent({attempt, event:name, payload:{ItemId:'__ITEM_ID__',MediaSourceId:source.Id,...EIOPlaybackReporting.payload(liveEngine,name,extra)}});
   try {
     if (!crossOriginIsolated) throw new Error('fixture is not isolated');
     await fetch('/fixture/reset',{method:'POST'});
     const candidates = [];
     for (let i = 0; i < 1; i++) {
-      const response = await fetch(identity.negotiationPath('__ITEM_ID__'),{method:'POST',headers:{'X-Emby-Token':'__LOCAL_TOKEN__','Content-Type':'application/json'},body:'{}'});
+      const response = await fetch(identity.negotiationPath('__ITEM_ID__'),{method:'POST',headers:{'X-Emby-Token':'__LOCAL_TOKEN__','Content-Type':'application/json'},body:JSON.stringify({DeviceProfile:EIOData.deviceProfile()})});
       if (!response.ok) throw new Error('negotiation HTTP ' + response.status);
       const source = (await response.json()).MediaSources[0];
       const resolved = identity.attemptFromMediaSource(source,{itemId:'__ITEM_ID__'});
@@ -44,8 +46,6 @@
     for (const index of [selectedIndex]) {
       const {source,attempt,url} = candidates[0];
       stage = ['native','libmedia-main','libmedia-worker'][index];
-      const payload = await event(attempt,source,'Playing');
-      if (!payload.ok) throw new Error('Playing unconfirmed');
       const beforeWorkers = window.fixtureWorkers;
       if (index === 0) {
         const engine = liveEngine = new EIOPlayer(document.getElementById('host'));
@@ -53,7 +53,6 @@
         engine.setVolume(0);
         await deadline(engine.load(url,source,{Id:'__ITEM_ID__',RunTimeTicks:80000000}));
         if (engine.mode !== 'native') throw new Error('native path not reached');
-        await deadline(engine.destroy());
       } else {
         // Exercise the production EIO adapter as well as the actual generated
         // Worker. Force libmedia for the synthetic MP4, which normally selects
@@ -70,11 +69,33 @@
         const core = engine.core;
         if (!core.isMSE()) throw new Error('synthetic MSE path not reached');
         if (index === 2 && window.fixtureWorkers <= beforeWorkers) throw new Error('generated Worker was not constructed');
-        await deadline(engine.destroy());
       }
-      liveEngine = null;
-      if (!(await event(attempt,source,'Progress')).ok) throw new Error('Progress unconfirmed');
+      const engine = liveEngine;
+      if (!(await event(attempt,source,'Playing')).ok) throw new Error('Playing unconfirmed');
+      const reports = [], changes = [];
+      const watcher = EIOPlaybackReporting.watch(engine, extra => {
+        changes.push(extra.EventName);
+        reports.push(event(attempt,source,'Progress',extra));
+      });
+      engine.onState = () => watcher.observe();
+      watcher.start();
+      stage = mode+' pause';
+      await deadline(engine.pause());
+      stage = mode+' rate';
+      await deadline(engine.setPlaybackRate(1.5));
+      stage = mode+' resume';
+      await deadline(engine.play());
+      stage = mode+' seek';
+      await deadline(engine.seek(1));
+      if (!(await event(attempt,source,'Progress',{EventName:'TimeUpdate'})).ok) throw new Error('Progress unconfirmed');
+      if (!(await Promise.all(reports)).every(r => r.ok)) throw new Error('State progress unconfirmed');
+      for (const change of ['Pause','Unpause','PlaybackRateChange']) {
+        if (!changes.includes(change)) throw new Error('missing state change '+change);
+      }
+      watcher.stop();
       if (!(await event(attempt,source,'Stopped')).ok) throw new Error('Stopped unconfirmed');
+      await deadline(engine.destroy());
+      liveEngine = null;
       if (!(await identity.deleteActiveEncodings({attempt})).ok) throw new Error('encoding cleanup unconfirmed');
     }
     document.getElementById('result').textContent = JSON.stringify({result:'pass',paths:[mode],workers:window.fixtureWorkers});

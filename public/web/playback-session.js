@@ -195,10 +195,11 @@
       if (!attempt) return Promise.reject(new Error('播放尝试缺失，无法上报播放事件'));
       let identity;
       try { identity = protocol(); } catch (error) { return Promise.reject(error); }
+      if (event === 'Stopped') instance.eioReporting?.stop();
       const payload = {
         ItemId: instance.eioItemId ?? playerItemId,
         MediaSourceId: instance.mediaSource?.Id ?? attempt.mediaSourceId,
-        ...extra,
+        ...EIOPlaybackReporting.payload(instance, event, extra),
       };
       return identity.postSessionEvent({
         attempt, event, payload,
@@ -433,7 +434,7 @@
           UserId: localStorage.getItem('eio_user_id'),
           MediaSourceId: mediaSourceId || item.MediaSources?.[0]?.Id,
           DeviceProfile: EIOData.deviceProfile(), AutoOpenLiveStream: true,
-          MaxStreamingBitrate: 120000000, MaxWidth: 1920, MaxHeight: 1080,
+          MaxStreamingBitrate: 120000000,
           AudioStreamIndex: options.audioIndex >= 0 ? options.audioIndex : undefined,
           SubtitleStreamIndex: options.subtitleIndex,
           EnableDirectPlay: options.forceTranscode ? false : undefined,
@@ -454,6 +455,11 @@
       instance.eioItemId = item.Id;
       instance.eioGeneration = generation;
       instance.sessionId = attempt.playSessionId;
+      instance.eioReporting = EIOPlaybackReporting.watch(instance, extra => {
+        if (player !== instance || generation !== playbackGeneration) return;
+        reportPlaybackEvent(instance, 'Progress', extra)
+          .catch(error => reportEventFailure(instance, error));
+      });
       playSessionId = attempt.playSessionId;
       playerItemId = item.Id;
       startupSubtitleError = null;
@@ -480,9 +486,10 @@
         if (state.audioError) handleAudioError(instance, generation, state.audioError);
         if (state.subtitleError) handleSubtitleError(instance, generation, state.subtitleError);
         playerUI.acceptState(state);
+        instance.eioReporting.observe();
       };
       instance.onProgress = (ticks) => {
-        if (player !== instance || generation !== playbackGeneration) return;
+        if (player !== instance || generation !== playbackGeneration || !playbackStarted) return;
         reportPlaybackEvent(instance, 'Progress',
           { PositionTicks: ticks, IsPaused: !instance.playing })
           .catch(error => reportEventFailure(instance, error));
@@ -584,6 +591,7 @@
       playbackStarted = false;
       await instance.load(streamUrl, playSrc.value, item, {
         fallbackUrl,
+        playMethod: options.forceTranscode ? 'Transcode' : 'DirectStream',
         audioIndex: playAudioIndex.value, subtitleIndex: options.subtitleIndex,
         ...(playbackFeatures.dualCache ? { eioDualCache: {
           enabled: true,
@@ -629,6 +637,7 @@
         { PositionTicks: instance.positionTicks, IsPaused: !instance.playing }, { signal });
       if (player === instance && generation === playbackGeneration) {
         playbackStarted = true;
+        instance.eioReporting.start();
         playerUI.end();
         playerUI.acceptState({ playing: instance.playing, loading: false });
       }
@@ -911,6 +920,8 @@
       }, seekWatchdogMs);
       try {
         await instance.seek(target);
+        if (current() && playbackStarted) reportPlaybackEvent(instance, 'Progress', { EventName: 'TimeUpdate' })
+          .catch(error => reportEventFailure(instance, error));
       } catch (e) {
         if (current() && e?.name !== 'AbortError') toasts.push({ message: '跳转失败：' + safeError(e), kind: 'error' });
       } finally {

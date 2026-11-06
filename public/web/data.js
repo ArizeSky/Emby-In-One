@@ -116,11 +116,14 @@
     return source?.DefaultSubtitleStreamIndex ?? source?.MediaStreams?.find(s => s.Type === 'Subtitle' && s.IsDefault)?.Index ?? -1;
   }
   function deviceProfile() {
-    return { MaxStreamingBitrate: 120000000, MaxStaticBitrate: 120000000,
+    // Emby PlaybackInfoRequest / Dlna.DeviceProfile. Identity headers do not
+    // change these actual playback capabilities. Output dimensions belong to
+    // TranscodingProfile, not undeclared top-level PlaybackInfoRequest fields.
+    return { MaxStreamingBitrate: 120000000,
       DirectPlayProfiles: [{ Container: 'mp4,m4v', Type: 'Video', VideoCodec: 'h264,avc', AudioCodec: 'aac,mp3' }],
       TranscodingProfiles: [
-        { Container: 'mp4', Type: 'Video', VideoCodec: 'h264', AudioCodec: 'aac', Protocol: 'hls' },
-        { Container: 'ts', Type: 'Video', VideoCodec: 'h264', AudioCodec: 'aac', Protocol: 'hls' } ],
+        { Container: 'mp4', Type: 'Video', VideoCodec: 'h264', AudioCodec: 'aac', Protocol: 'hls', MaxWidth: 1920, MaxHeight: 1080 },
+        { Container: 'ts', Type: 'Video', VideoCodec: 'h264', AudioCodec: 'aac', Protocol: 'hls', MaxWidth: 1920, MaxHeight: 1080 } ],
       CodecProfiles: [], SubtitleProfiles: [{ Format: 'vtt', Method: 'External' }, { Format: 'ass', Method: 'External' }] };
   }
   window.EIOData = { items, query, all, PartialResultsError, episodeOrder, defaultAudio, defaultSubtitle, deviceProfile };

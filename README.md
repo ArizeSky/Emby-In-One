@@ -578,6 +578,8 @@ V1.4 新增多用户支持，允许管理员创建多个普通用户，每个用
 
 > **Web 严格播放身份**：`/web` 为每次协商的每个候选创建独立 attempt 和播放 capability；媒体、HLS 派生资源、字幕及会话事件共用该候选的冻结身份。相容的上游 token 刷新不会冻结旧凭据，但账号/身份/配置不相容、撤权、绑定过期或进程重启会明确拒绝旧请求；界面停止旧尝试，重试必须重新协商，不会退回普通 token 播放。播放 capability 不能用于元数据/legacy API，绑定创建它的本地登录会话，父 token 被撤销后失效。
 >
+> Web 同样遵循每台上游的 `spoofClient`：透传使用既有捕获解析，自定义使用配置值，常驻使用绑定身份；不会固定成某个 Hills 版本。DeviceProfile 独立声明保守的 Web 播放能力，转码宽高限制放在 TranscodingProfile。Playing/Progress 上报实际播放状态，暂停、继续、倍速、音量和轨道变化及时发送 Progress；未知轨道索引省略，Stopped 使用独立的停止 DTO。规范来源和验证边界见 [Web 上报协议记录](docs/web-playback-reporting.md)。
+>
 > 严格 Web 播放始终由代理获取（即使 native 配置为 `redirect`），以保留上游身份与授权边界；native/legacy 路径仍保持原模式。已注册资源使用不透明 URL，原始签名查询不改写；无法证明归属或必须破坏签名才能去除私有凭据时明确失败。停止与转码清理各自等待上游确认；开始清理即停止接纳新播放操作，失败后只允许有界清理重试。关闭聚合不阻止仍有实例授权的清理；页面卸载仅尽力发送，不保证送达，服务端以容量/TTL 回收兜底。实现边界、错误码和隔离验证见[实施记录](docs/web-playback-identity-repair-progress.md)。
  
 #### Passthrough 模式工作原理

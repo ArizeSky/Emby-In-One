@@ -58,6 +58,27 @@ func TestStrictPlaybackBrowserFixture(t *testing.T) {
 			w.WriteHeader(204)
 		case strings.HasPrefix(r.URL.Path, "/Sessions/Playing"):
 			events++
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Error(err)
+			}
+			if strings.HasSuffix(r.URL.Path, "/Stopped") {
+				for _, key := range []string{"IsPaused", "CanSeek", "PlayMethod", "EventName", "PlaybackRate"} {
+					if _, present := body[key]; present {
+						t.Errorf("Stopped carried progress field %s", key)
+					}
+				}
+			} else {
+				if _, ok := body["IsPaused"].(bool); !ok {
+					t.Error("missing actual pause state")
+				}
+				if body["CanSeek"] != true || body["PlayMethod"] != "DirectStream" || body["IsMuted"] != true || body["VolumeLevel"] != float64(0) {
+					t.Errorf("invalid measured playback state: %v", body)
+				}
+				if rate, ok := body["PlaybackRate"].(float64); !ok || rate != 1 && rate != 1.5 {
+					t.Error("missing confirmed playback rate")
+				}
+			}
 			if r.UserAgent() != "synthetic-identity-A" || r.Header.Get("X-Emby-Token") != token {
 				t.Error("browser event identity/auth drifted")
 			}
