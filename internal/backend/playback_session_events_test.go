@@ -277,8 +277,8 @@ func TestStrictSessionEventRejectsForeignAssociations(t *testing.T) {
 }
 
 // TestStrictStoppedRetiresOnlyAfterUpstreamConfirmation pins the stop lifecycle: a
-// forward that did not succeed leaves the attempt intact and never answers with the
-// idempotent acknowledgment, while a confirmed stop ends it.
+// forward that did not succeed closes playback admission without an acknowledgment,
+// leaves cleanup retryable, and only a confirmed stop retires it.
 func TestStrictStoppedRetiresOnlyAfterUpstreamConfirmation(t *testing.T) {
 	withStrictEventFixture(t, func(f *strictEventFixture) {
 		body := f.eventBody()
@@ -297,8 +297,8 @@ func TestStrictStoppedRetiresOnlyAfterUpstreamConfirmation(t *testing.T) {
 		if payload["kind"] != strictPlaybackKindStopUnconfirmed {
 			t.Fatalf("unconfirmed stop kind = %v, want %s", payload["kind"], strictPlaybackKindStopUnconfirmed)
 		}
-		if _, err := f.app.PlaybackIdentities.resolve(f.binding.AttemptID, f.owner); err != nil {
-			t.Fatalf("a stop the upstream refused ended the attempt: %v", err)
+		if _, err := f.app.PlaybackIdentities.resolve(f.binding.AttemptID, f.owner); !errors.Is(err, ErrPlaybackIdentityStopping) {
+			t.Fatalf("a refused stop must keep cleanup retryable and reject playback: %v", err)
 		}
 
 		f.upstream.setStatus(0)

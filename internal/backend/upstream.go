@@ -151,6 +151,10 @@ func (p *UpstreamPool) Reload(cfg Config) {
 				newClient.UserID = old.UserID
 				newClient.Online = old.Online
 				newClient.LastError = old.LastError
+				// Login attestation belongs to the inherited credential. Keep the
+				// tuple atomic; strict senders still reject a changed configuration.
+				newClient.authCompatibility = old.authCompatibility
+				newClient.authGeneration = old.authGeneration
 				old.mu.RUnlock()
 			}
 		}

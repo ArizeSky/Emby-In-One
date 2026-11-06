@@ -289,29 +289,6 @@ func (s *playbackCapabilityStore) removeLocked(digest string, entry *playbackCap
 	s.byAttempt[entry.attemptID] = digests
 }
 
-// terminalSnapshot returns the immutable snapshot of a finished attempt for its
-// owner without taking a lease, for the one case where the binding store refuses a
-// lease but an idempotent stop answer still has to be checked against the caller's
-// live grants. It never renews, revives or leaks a foreign attempt; a miss forces
-// the caller to fail closed.
-func (s *playbackIdentityStore) terminalSnapshot(attemptID string, owner playbackIdentityOwner) (playbackIdentityBinding, bool) {
-	if s == nil || attemptID == "" {
-		return playbackIdentityBinding{}, false
-	}
-	now := s.now()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.pruneLocked(now)
-	entry := s.entries[attemptID]
-	if entry == nil || s.expiredLocked(entry, now) {
-		return playbackIdentityBinding{}, false
-	}
-	if !samePlaybackIdentityOwner(entry.owner, owner) || !entry.state.terminal() {
-		return playbackIdentityBinding{}, false
-	}
-	return entry.snapshot(), true
-}
-
 // issuePlaybackCapability mints the capability handed to the client for one
 // reserved candidate. An empty result means the attempt must not be published:
 // callers fail the negotiation instead of exposing an unauthenticated URL.
@@ -490,56 +467,20 @@ func (a *App) withStrictPlayback(next http.HandlerFunc) http.HandlerFunc {
 		// itself proves that this capability belongs to the user and local session
 		// that negotiated the attempt.
 		owner := newPlaybackIdentityOwner(streamResourceUserID(reqCtx), parentToken)
-		lease, err := a.PlaybackIdentities.lease(attemptID, owner)
+		cleanup := strictPlaybackStopRequest(r)
+		var lease *playbackIdentityLease
+		var err error
+		if cleanup {
+			lease, err = a.PlaybackIdentities.leaseCleanup(attemptID, owner)
+		} else {
+			lease, err = a.PlaybackIdentities.lease(attemptID, owner)
+		}
 		if err != nil {
-			if strictPlaybackStopRequest(r) {
-				if errors.Is(err, ErrPlaybackIdentityTerminal) {
-					// A finished attempt is answered idempotently only while the caller
-					// still holds live access to the server it played from. Without a
-					// readable snapshot the stop fails closed instead of being reported
-					// as done.
-					if snapshot, ok := a.PlaybackIdentities.terminalSnapshot(attemptID, owner); ok {
-						if !a.strictBindingAssociationsMatch(r, snapshot) {
-							writeStrictPlaybackError(w, &strictPlaybackError{Status: 409, Kind: "playback-association-conflict", Message: "conflicting playback associations"})
-							return
-						}
-						if snapshot.State == playbackIdentityFailed {
-							writeStrictPlaybackError(w, &strictPlaybackError{Status: 409, Kind: "playback-failed", Message: "attempt ended locally without upstream stop confirmation"})
-							return
-						}
-						if !a.strictPlaybackServerAllowed(reqCtx, snapshot.ServerID) {
-							writeStrictPlaybackError(w, errStrictServerForbidden)
-							return
-						}
-						operation := playbackCleanupOperation(r)
-						if snapshot.CleanupConfirmed&operation != 0 {
-							if !a.validateStrictCleanupReplay(w, r, snapshot) {
-								return
-							}
-							writeStrictPlaybackStopAcknowledged(w)
-							return
-						}
-						cleanupLease, cleanupErr := a.PlaybackIdentities.leaseCleanup(attemptID, owner)
-						if cleanupErr != nil {
-							writeStrictPlaybackError(w, strictPlaybackErrorFor(cleanupErr))
-							return
-						}
-						defer cleanupLease.Release()
-						binding := cleanupLease.Binding()
-						reqCtx.Playback = &binding
-						next(w, r.WithContext(context.WithValue(r.Context(), requestContextKey{}, reqCtx)))
-						return
-					}
-				}
-				if errors.Is(err, ErrPlaybackIdentityStopping) {
-					// The upstream stop is not yet confirmed (only the session worker
-					// moves an attempt to stopping after a real 2xx), so this stop is
-					// still retryable rather than silently reported as done.
-					writeStrictPlaybackError(w, errStrictStopPending)
-					return
-				}
+			if cleanup && errors.Is(err, ErrPlaybackIdentityTerminal) {
+				writeStrictPlaybackError(w, &strictPlaybackError{Status: 409, Kind: "playback-failed", Message: "attempt ended locally without upstream stop confirmation"})
+			} else {
+				writeStrictPlaybackError(w, strictPlaybackErrorFor(err))
 			}
-			writeStrictPlaybackError(w, strictPlaybackErrorFor(err))
 			return
 		}
 		defer lease.Release()
@@ -548,7 +489,7 @@ func (a *App) withStrictPlayback(next http.HandlerFunc) http.HandlerFunc {
 			writeStrictPlaybackError(w, &strictPlaybackError{Status: 409, Kind: "playback-association-conflict", Message: "conflicting playback associations"})
 			return
 		}
-		if !a.strictPlaybackServerAllowed(reqCtx, binding.ServerID) {
+		if !a.isServerAllowed(reqCtx, binding.ServerID) || !cleanup && !a.strictPlaybackServerAllowed(reqCtx, binding.ServerID) {
 			writeStrictPlaybackError(w, errStrictServerForbidden)
 			return
 		}
@@ -560,14 +501,14 @@ func (a *App) withStrictPlayback(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		client := a.Upstream.ClientByID(binding.ServerID)
-		if client == nil && !strictPlaybackStopRequest(r) {
+		if client == nil && !cleanup {
 			writeStrictPlaybackError(w, errStrictSourceUnavailable)
 			return
 		}
 		boundContext := *reqCtx
 		boundContext.Playback = &binding
 		if authErr := func() error {
-			if strictPlaybackStopRequest(r) {
+			if cleanup {
 				return nil
 			}
 			return client.validatePlaybackAuth(&boundContext, client.authSnapshot())
@@ -575,7 +516,7 @@ func (a *App) withStrictPlayback(next http.HandlerFunc) http.HandlerFunc {
 			writePreparationError(w, authErr)
 			return
 		}
-		if binding.State == playbackIdentityPending {
+		if binding.State == playbackIdentityPending && !cleanup {
 			// Candidates are published pending and only become active on their first
 			// strict request, so a candidate the client never used can never hold an
 			// active idle slot. The live grant check runs before the activation, so a
@@ -584,15 +525,15 @@ func (a *App) withStrictPlayback(next http.HandlerFunc) http.HandlerFunc {
 				writeStrictPlaybackError(w, errStrictServerForbidden)
 				return
 			}
-			// A stop must not acquire the playback slot: it only ends an attempt,
-			// and the frozen reservation belongs to the start path. The claim binds
-			// that reservation to this attempt before the activation, so the pending
-			// window never holds a live concurrency unit.
-			if !strictPlaybackStopRequest(r) && !a.claimStrictPlaybackSlotForRequest(w, r, reqCtx, binding) {
+			// Cleanup never activates a candidate or acquires a playback slot.
+			if !a.claimStrictPlaybackSlotForRequest(w, r, reqCtx, binding) {
 				return
 			}
 			activated, activateErr := a.PlaybackIdentities.activate(attemptID, owner, "")
 			if activateErr != nil {
+				// A concurrent cleanup can prevent activation after the slot claim.
+				// Release only this candidate's unit, never another attempt's slot.
+				a.finishStrictPlaybackAttemptLocally(r.WithContext(context.WithValue(r.Context(), requestContextKey{}, reqCtx)), binding)
 				writeStrictPlaybackError(w, strictPlaybackErrorFor(activateErr))
 				return
 			}
@@ -606,7 +547,7 @@ func (a *App) withStrictPlayback(next http.HandlerFunc) http.HandlerFunc {
 // strictPlaybackServerAllowed is the live access predicate for a strict attempt's
 // server: the account grant (re-read from the user store above) and the current
 // aggregation switch. It is checked before activating a pending candidate and
-// before answering an idempotent stop.
+// for new playback operations. Cleanup checks the account grant alone.
 func (a *App) strictPlaybackServerAllowed(reqCtx *RequestContext, serverID string) bool {
 	if serverID == "" {
 		return false

@@ -98,6 +98,20 @@ func (a *App) handleStrictUserPlayingItem(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusForbidden, map[string]any{"message": "Access denied"})
 		return
 	}
+	if a.rejectStrictSupersededWrite(w, r, binding, !start) {
+		return
+	}
+	if !start {
+		release, ok := a.beginStrictPlaybackCleanup(w, r, binding)
+		if !ok {
+			return
+		}
+		defer release()
+		defer a.finishStrictPlaybackAttemptLocally(r, binding)
+	} else if _, err := a.PlaybackIdentities.resolve(binding.AttemptID, binding.Owner); err != nil {
+		writeStrictPlaybackError(w, strictPlaybackErrorFor(err))
+		return
+	}
 	client := a.Upstream.ClientByID(binding.ServerID)
 	if client == nil || !client.IsOnline() {
 		writeStrictPlaybackError(w, &strictPlaybackError{
@@ -125,9 +139,6 @@ func (a *App) handleStrictUserPlayingItem(w http.ResponseWriter, r *http.Request
 	if !start {
 		method, kind = http.MethodDelete, strictPlaybackKindStopFailed
 	}
-	if a.rejectStrictSupersededWrite(w, r, binding, !start) {
-		return
-	}
 	path := "/Users/" + client.clientUserID() + "/PlayingItems/" + originalItem
 	if err := a.forwardNoContent(r, client, method, path, query, nil); err != nil {
 		if status, ok := preparationErrorStatus(err); ok {
@@ -147,8 +158,6 @@ func (a *App) handleStrictUserPlayingItem(w http.ResponseWriter, r *http.Request
 	}
 	if !start {
 		a.confirmStrictPlaybackCleanup(r, binding)
-		a.stopStrictPlaybackBinding(binding)
-		a.finishStrictPlaybackAttemptLocally(r, binding)
 		a.retireStrictPlaybackBinding(binding)
 	}
 	w.WriteHeader(http.StatusNoContent)

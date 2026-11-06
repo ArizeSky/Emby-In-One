@@ -75,6 +75,15 @@ func TestStrictPlaybackNegotiationResourcesEventsAndRefresh(t *testing.T) {
 		if attempt == "" || cap == "" || !strings.HasPrefix(media, "/eio/playback/v1/"+attempt+"/") {
 			t.Fatal("source was not bound")
 		}
+		// A settings-only rebuild must preserve both an already published attempt
+		// and the login attestation needed to negotiate another candidate.
+		if err := app.commitConfigSettingsOnly(app.ConfigStore.Snapshot()); err != nil {
+			t.Fatal(err)
+		}
+		c = app.Upstream.ClientByID(c.ID)
+		if response := doAuthJSON(t, handler, "GET", "/eio/playback/v1/Items/"+item+"/PlaybackInfo", nil, token); response.Code != 200 {
+			t.Fatalf("negotiation after settings reload: status=%d body=%s", response.Code, response.Body.String())
+		}
 		blocked := doAuthJSON(t, handler, "GET", "/Videos/"+item+"/stream.ts?api_key="+url.QueryEscape(cap), nil, token)
 		if blocked.Code != 401 || mediaHits != 0 {
 			t.Fatal("capability downgraded to legacy")

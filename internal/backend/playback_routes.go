@@ -31,11 +31,6 @@ func (a *App) handleStrictActiveEncodings(w http.ResponseWriter, r *http.Request
 	if a.rejectStrictSupersededWrite(w, r, *req.Playback, true) {
 		return
 	}
-	client := a.Upstream.ClientByID(req.Playback.ServerID)
-	if client == nil {
-		w.WriteHeader(409)
-		return
-	}
 	query := strictPlaybackRequestQuery(r)
 	query.Del(queryKey(query, "DeviceId"))
 	if device := req.Playback.Identity.Headers.Get("X-Emby-Device-Id"); device != "" {
@@ -50,6 +45,17 @@ func (a *App) handleStrictActiveEncodings(w http.ResponseWriter, r *http.Request
 		writeJSON(w, 409, map[string]any{"kind": "playback-session-unavailable"})
 		return
 	}
+	release, ok := a.beginStrictPlaybackCleanup(w, r, *req.Playback)
+	if !ok {
+		return
+	}
+	defer release()
+	defer a.finishStrictPlaybackAttemptLocally(r, *req.Playback)
+	client := a.Upstream.ClientByID(req.Playback.ServerID)
+	if client == nil {
+		writeStrictPlaybackError(w, errStrictSourceUnavailable)
+		return
+	}
 	if err := a.forwardNoContent(r, client, http.MethodDelete, "/Videos/ActiveEncodings", query, nil); err != nil {
 		if !writePreparationError(w, err) {
 			writeJSON(w, 502, map[string]any{"kind": "playback-stop-failed"})
@@ -57,8 +63,6 @@ func (a *App) handleStrictActiveEncodings(w http.ResponseWriter, r *http.Request
 		return
 	}
 	a.confirmStrictPlaybackCleanup(r, *req.Playback)
-	a.stopStrictPlaybackBinding(*req.Playback)
-	a.finishStrictPlaybackAttemptLocally(r, *req.Playback)
 	a.retireStrictPlaybackBinding(*req.Playback)
 	w.WriteHeader(http.StatusNoContent)
 }

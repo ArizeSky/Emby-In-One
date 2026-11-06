@@ -30,9 +30,8 @@ import (
 //     session value can be reused by several sources and by a later attempt;
 //   - reuses the existing authorization, WatchStore, limiter and upstream-activity
 //     semantics unchanged;
-//   - transitions the binding to stopping/retired only after the upstream really
-//     accepted the stop, so a failed forward never looks like an acknowledged
-//     stop. The strict ingress deliberately does not stop the attempt on its own.
+//   - closes admission before sending a validated stop, and records retirement
+//     and its independent ACK only after the upstream accepts that cleanup.
 //
 // The legacy handlers keep their behaviour byte for byte; this module is reached
 // only when the ingress published a binding.
@@ -256,7 +255,7 @@ func strictPlaybackEventLabel(kind playbackEventKind) string {
 }
 
 // writeStrictPlaybackStopUnconfirmed reports a stop whose upstream forward did not
-// succeed. The attempt stays usable so the client can retry the idempotent stop;
+// succeed. The attempt admits cleanup retries only;
 // the answer never claims an accepted stop.
 func writeStrictPlaybackStopUnconfirmed(w http.ResponseWriter) {
 	w.Header().Set("Cache-Control", "no-store")
@@ -292,12 +291,22 @@ func (a *App) handleStrictSessionEvent(w http.ResponseWriter, r *http.Request, b
 		writeJSON(w, http.StatusForbidden, map[string]any{"message": "Access denied"})
 		return
 	}
+	if a.rejectStrictSupersededWrite(w, r, binding, kind == playbackEventStopped) {
+		return
+	}
+	if kind == playbackEventStopped {
+		release, ok := a.beginStrictPlaybackCleanup(w, r, binding)
+		if !ok {
+			return
+		}
+		defer release()
+	} else if _, err := a.PlaybackIdentities.resolve(binding.AttemptID, binding.Owner); err != nil {
+		writeStrictPlaybackError(w, strictPlaybackErrorFor(err))
+		return
+	}
 	client := a.Upstream.ClientByID(binding.ServerID)
 	if client == nil || !client.IsOnline() {
 		a.finishStrictPlaybackWithoutUpstream(w, r, event)
-		return
-	}
-	if a.rejectStrictSupersededWrite(w, r, binding, kind == playbackEventStopped) {
 		return
 	}
 	activityEvent := a.beginUpstreamActivityEvent(r, binding.ServerID, client, map[string]any{"PlaySessionId": binding.AttemptID})
@@ -307,11 +316,7 @@ func (a *App) handleStrictSessionEvent(w http.ResponseWriter, r *http.Request, b
 		return
 	}
 	if kind == playbackEventStopped {
-		// The upstream accepted the stop, so the attempt may drain now. Transitioning
-		// earlier would let a failed forward look acknowledged: the sender only
-		// re-checks authentication, not the lifecycle state.
 		a.confirmStrictPlaybackCleanup(r, binding)
-		a.stopStrictPlaybackBinding(binding)
 	}
 	verdict := a.applyStrictPlaybackEvent(r, event)
 	a.recordUpstreamActivityEvent(r, activityEvent, binding.ServerID, binding.VirtualItemID, event.Local, kind, true, verdict)
@@ -342,6 +347,11 @@ func (a *App) applyStrictPlaybackEvent(r *http.Request, event *strictPlaybackEve
 		// finishStoppedSession applies the ownership-checked release itself.
 		return a.finishStoppedSession(r, event.Binding.VirtualItemID, event.Binding.ServerID, event.Local, event.Identity, true)
 	}
+	// A report already in flight when stop began may complete, but may not
+	// reclaim a released slot or overwrite the final local position.
+	if _, err := a.PlaybackIdentities.resolve(event.Binding.AttemptID, event.Binding.Owner); err != nil {
+		return playbackSessionVerdict{}
+	}
 	verdict := a.applySessionEvent(r, event.Binding.ServerID, event.Binding.VirtualItemID, event.Identity, event.Kind)
 	if verdict.LocalProgress {
 		a.recordSessionToWatchStore(r, event.Binding.VirtualItemID, event.Local, event.Binding.ServerID, false)
@@ -362,8 +372,8 @@ func (a *App) applyStrictPlaybackEvent(r *http.Request, event *strictPlaybackEve
 // upstream, so no watch state is written for a start/progress and a refused stop
 // does not store the position (legacy parity). A transport failure may still have
 // been delivered, so the local record is kept. In every case the local concurrency
-// unit must not be stranded by a stop, while the binding is left untouched: only a
-// confirmed stop may retire the attempt.
+// unit must not be stranded by a stop. Its stopping binding admits only cleanup
+// retries; only a confirmed cleanup may retire it.
 func (a *App) finishStrictPlaybackFailedForward(w http.ResponseWriter, r *http.Request, event *strictPlaybackEvent, err error) {
 	status, isPreparation := preparationErrorStatus(err)
 	_, refused := asUpstreamHTTPError(err)
@@ -419,17 +429,6 @@ func (a *App) finishStrictPlaybackWithoutUpstream(w http.ResponseWriter, r *http
 		Message:   "the playback source is not available; renegotiate",
 		Retryable: true,
 	})
-}
-
-// stopStrictPlaybackBinding moves the attempt into the draining state. It only
-// runs for a stop the upstream confirmed.
-func (a *App) stopStrictPlaybackBinding(binding playbackIdentityBinding) {
-	if a.PlaybackIdentities == nil || binding.AttemptID == "" {
-		return
-	}
-	if err := a.PlaybackIdentities.stop(binding.AttemptID, binding.Owner); err != nil && a.Logger != nil {
-		a.Logger.Debugf("strict playback stop for attempt was not recorded: %v", err)
-	}
 }
 
 // retireStrictPlaybackBinding finalizes a drained attempt. Terminal states are

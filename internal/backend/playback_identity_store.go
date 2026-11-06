@@ -208,6 +208,8 @@ type playbackIdentityEntry struct {
 	upstreamPlaySessionID string
 	slotReservation       playbackSlotReservation
 	cleanupConfirmed      uint8
+	cleanupInFlight       uint8
+	activationSequence    uint64
 
 	state          playbackIdentityState
 	createdAt      time.Time
@@ -261,10 +263,11 @@ type playbackIdentityAliasKey struct {
 // playbackIdentityStore is a bounded, mutex-protected in-memory store, never
 // persisted: after a restart strict bindings are gone and the player renegotiates.
 type playbackIdentityStore struct {
-	mu      sync.Mutex
-	entries map[string]*playbackIdentityEntry
-	aliases map[playbackIdentityAliasKey]string
-	perUser map[string]int
+	mu                 sync.Mutex
+	entries            map[string]*playbackIdentityEntry
+	aliases            map[playbackIdentityAliasKey]string
+	perUser            map[string]int
+	activationSequence uint64
 
 	maxEntries int
 	maxPerUser int
@@ -361,7 +364,12 @@ func (s *playbackIdentityStore) activate(attemptID string, owner playbackIdentit
 	if err := s.bindAliasLocked(entry, upstreamPlaySessionID, now); err != nil {
 		return playbackIdentityBinding{}, err
 	}
+	if s.aliasCleanupInFlightLocked(entry) {
+		return playbackIdentityBinding{}, ErrPlaybackIdentityStopping
+	}
 	if entry.state == playbackIdentityPending {
+		s.activationSequence++
+		entry.activationSequence = s.activationSequence
 		entry.state = playbackIdentityActive
 		entry.stateChangedAt = now
 		entry.lastUsedAt = now
