@@ -152,14 +152,11 @@ func (a *App) handleShowsSeasons(w http.ResponseWriter, r *http.Request) {
 	merged := map[int]*indexedItem{}
 	unknown := []indexedItem{}
 	identities := map[string]string{}
+	availability := showListAvailability{}
 	for _, inst := range instances {
 		query := cloneValues(r.URL.Query())
 		query.Set("UserId", inst.Client.clientUserID())
-		rows, err := a.fetchShowItems(r.Context(), requestContextFrom(r.Context()), inst, "/Shows/"+inst.OriginalID+"/Seasons", query)
-		if err != nil {
-			writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Failed to load complete show list; please retry"})
-			return
-		}
+		rows := a.fetchAvailableShowItems(r, inst, "/Shows/"+inst.OriginalID+"/Seasons", query, &availability)
 		a.registerShowIdentities(rows, inst.ServerID, false, identities)
 		rows = a.parentalFilterServerItems(r, inst.Client, rows)
 		for _, item := range rows {
@@ -224,13 +221,7 @@ func (a *App) handleShowsSeasons(w http.ResponseWriter, r *http.Request) {
 		entry.Item["Id"] = preservedID
 		items = append(items, entry.Item)
 	}
-	if !a.strictSanitizedUserDataItems(w, r, items) {
-		return
-	}
-	payload := paginateItems(items, r.URL.Query())
-	if a.parentalResponseReady(w, r, payload) {
-		writeJSON(w, http.StatusOK, payload)
-	}
+	a.writeAvailableShowItems(w, r, items, availability)
 }
 
 func (a *App) handleShowsEpisodes(w http.ResponseWriter, r *http.Request) {
@@ -247,6 +238,7 @@ func (a *App) handleShowsEpisodes(w http.ResponseWriter, r *http.Request) {
 	merged := map[string]*indexedItem{}
 	var unkeyed []indexedItem
 	identities := map[string]string{}
+	availability := showListAvailability{}
 	for _, inst := range instances {
 		query := cloneValues(r.URL.Query())
 		query.Set("UserId", inst.Client.clientUserID())
@@ -270,11 +262,7 @@ func (a *App) handleShowsEpisodes(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		rows, err := a.fetchShowItems(r.Context(), requestContextFrom(r.Context()), inst, "/Shows/"+inst.OriginalID+"/Episodes", query)
-		if err != nil {
-			writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Failed to load complete show list; please retry"})
-			return
-		}
+		rows := a.fetchAvailableShowItems(r, inst, "/Shows/"+inst.OriginalID+"/Episodes", query, &availability)
 		a.registerShowIdentities(rows, inst.ServerID, true, identities)
 		rows = a.parentalFilterServerItems(r, inst.Client, rows)
 		for _, item := range rows {
@@ -343,13 +331,7 @@ func (a *App) handleShowsEpisodes(w http.ResponseWriter, r *http.Request) {
 		entry.Item["Id"] = preservedID
 		items = append(items, entry.Item)
 	}
-	if !a.strictSanitizedUserDataItems(w, r, items) {
-		return
-	}
-	payload := paginateItems(items, r.URL.Query())
-	if a.parentalResponseReady(w, r, payload) {
-		writeJSON(w, http.StatusOK, payload)
-	}
+	a.writeAvailableShowItems(w, r, items, availability)
 }
 
 func (a *App) handleSearchHints(w http.ResponseWriter, r *http.Request) {

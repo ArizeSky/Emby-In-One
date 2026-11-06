@@ -712,6 +712,10 @@ emby-in-one --reset-password <new-password|-> [--force]
 
 ### Log Configuration
 
+HTTP responses return a server-generated `X-Eio-Trace-Id`; ingress, outbound-hop and query-credential policy logs share this correlation ID. Default INFO files retain outbound redirects and credential-policy actions, while WARN retains upstream denials and transport errors. Diagnostics report target class, an origin digest, status, timing and the presence of authentication/identity carriers, without credential values, complete device identities or signed URLs. Successful request details remain DEBUG; the administrator's bounded in-memory log retains all levels.
+
+When one show instance fails, aggregation retains confirmed seasons/episodes from other instances and marks `X-EIO-Results-Incomplete: true` / `EioIncompleteResults`; its total is a lower bound. If every instance fails, the response is explicitly 502. See the [playback diagnostics and show availability record](docs/playback-diagnostics-and-show-availability.md).
+
 Default log level is `info`. Enable full debug logging via environment variables when troubleshooting:
 
 ```bash

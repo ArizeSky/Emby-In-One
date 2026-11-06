@@ -712,6 +712,10 @@ emby-in-one --reset-password <new-password|-> [--force]
 
 ### 日志配置
 
+HTTP 响应通过 `X-Eio-Trace-Id` 返回服务端生成的排障关联号；入口日志、出站逐跳日志和查询凭据处理日志使用同一关联号。默认 INFO 文件保留出站重定向和凭据处理动作，WARN 保留上游拒绝及传输错误。记录目标类别、origin 摘要、状态码、耗时及认证/身份载体是否存在，不记录凭据值、完整设备身份或签名 URL。正常成功请求的详细记录仍为 DEBUG，管理员内存日志保留各级别的有界缓冲。
+
+剧集聚合中一个实例失败时，仍返回其他实例已确认的季/集并标记 `X-EIO-Results-Incomplete: true` / `EioIncompleteResults`；总数是已确认结果的下界。全部实例都失败时明确返回 502。详见 [播放排障与剧集可用性记录](docs/playback-diagnostics-and-show-availability.md)。
+
 默认日志级别为 `info`。排查故障时通过环境变量开启完整调试日志：
 
 ```bash

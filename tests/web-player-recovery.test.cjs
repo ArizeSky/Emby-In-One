@@ -218,6 +218,20 @@ test('runtime fallback preserves an explicitly paused user and volume', { timeou
   await player.destroy();
 });
 
+test('an emitted startup error interrupts a pending load without waiting for the watchdog', { timeout: 3000 }, async () => {
+  const { player, instances } = harness();
+  const failure = Object.assign(new Error('upstream media HTTP 401'), { status: 401 });
+  const loading = player.load('/slow.mkv', source, item, { loadTimeout: 20000 });
+  const rejected = assert.rejects(loading, error => error === failure);
+  const core = instances[0];
+  core.listeners.error(failure);
+  await rejected;
+  core.finishLoad();
+  await delay(0);
+  assert.equal(core.playCalls, undefined, 'late load revived an engine after its emitted failure');
+  await player.destroy();
+});
+
 test('runtime fallback keeps a playing stream playing with the saved volume', { timeout: 3000 }, async () => {
   const { player, instances } = harness();
   await player.load('/stream.mkv', source, item, { fallbackUrl: '/master.m3u8' });

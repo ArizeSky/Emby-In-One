@@ -539,6 +539,11 @@
       let resolveFrame, rejectFrame;
       const firstFrame = new Promise((resolve, reject) => { resolveFrame = resolve; rejectFrame = reject; });
       firstFrame.catch(() => {});
+      // A core can emit an error while load()/play() is still pending. Waiting
+      // for that operation first hid the real error behind our 20s watchdog.
+      let rejectStartup;
+      const startupFailure = new Promise((_, reject) => { rejectStartup = reject; });
+      startupFailure.catch(() => {});
       const current = () => this._isCurrentEngine(core, null, generation);
       let started = false;
       core.on('firstVideoRendered', () => { if (current()) { started = true; resolveFrame(); } });
@@ -547,7 +552,7 @@
       });
       core.on('error', error => {
         if (!current()) return;
-        if (!started) rejectFrame(error); else this._runtimeError(error);
+        if (!started) { rejectFrame(error); rejectStartup(error); } else this._runtimeError(error);
       });
       core.on('time', ms => { if (current()) this._updateTime(Number(ms) / 1000); });
       core.on('played', () => { if (current()) { this.playing = true; this._emitState(); } });
@@ -558,11 +563,11 @@
       });
       this._resize.observe(this.host);
       const ext = /\.m3u8(?:\?|$)/i.test(url) ? 'm3u8' : (this.mediaSource.Container || 'mkv');
-      await core.load(url, { ext, maxProbeDuration: 2 });
+      await Promise.race([core.load(url, { ext, maxProbeDuration: 2 }), startupFailure]);
       if (!current()) return;
       const duration = Number(core.getDuration()) / 1000;
       if (duration > 0) this.duration = duration;
-      await core.play({ audio: true, video: true, subtitle: true });
+      await Promise.race([core.play({ audio: true, video: true, subtitle: true }), startupFailure]);
       if (!current()) return;
       if (this.playbackRate !== 1) {
         await this.setPlaybackRate(this.playbackRate);

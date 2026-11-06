@@ -210,9 +210,7 @@ type outboundHop struct {
 // headers and credentials its target may receive, and never following a
 // redirect (the caller re-evaluates every hop).
 func (c *UpstreamClient) sendOutboundHop(ctx context.Context, reqCtx *RequestContext, rawURL string, hop outboundHop) (*http.Response, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
+	ctx = withOutboundTrace(ctx)
 	if c == nil {
 		return nil, errUnsupportedOutboundTarget
 	}
@@ -263,7 +261,10 @@ func (c *UpstreamClient) sendOutboundHop(ctx context.Context, reqCtx *RequestCon
 	case outboundTargetExternal:
 		headers = projectPublicOutboundHeaders(headers)
 	}
-	if err := prepareHopQueryWithProvenance(target, class == outboundTargetTrusted, auth.AccessToken, provenance, auth.AccessToken, hop.Headers.Get("X-Emby-Token")); err != nil {
+	beforeQuery := target.RawQuery
+	err = prepareHopQueryWithProvenance(target, class == outboundTargetTrusted, auth.AccessToken, provenance, auth.AccessToken, hop.Headers.Get("X-Emby-Token"))
+	c.logHopQueryPolicy(ctx, target, class, beforeQuery, err)
+	if err != nil {
 		return nil, err
 	}
 
@@ -279,7 +280,7 @@ func (c *UpstreamClient) sendOutboundHop(ctx context.Context, reqCtx *RequestCon
 	// One hop on purpose: the caller decides what the next hop means. It may be
 	// answered here (an internal line) or handed to the player (a CDN link).
 	client := &http.Client{
-		Transport:     c.transport,
+		Transport:     c.diagnosticTransport(ctx, "resource"),
 		Timeout:       0,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
@@ -323,8 +324,11 @@ func (c *UpstreamClient) redirectPolicyFor(follow bool, mode outboundAuthMode) f
 		reqCtx := requestContextFrom(req.Context())
 		private := resourceQueryPrivateTokens(reqCtx, token)
 		provenance := requestContextResourceQueryProvenance(reqCtx).deriveRedirect(req.URL.String(), private...)
-		if err := prepareHopQueryWithProvenance(req.URL, class == outboundTargetTrusted, token, provenance, private...); err != nil {
-			return err
+		beforeQuery := req.URL.RawQuery
+		queryErr := prepareHopQueryWithProvenance(req.URL, class == outboundTargetTrusted, token, provenance, private...)
+		c.logHopQueryPolicy(req.Context(), req.URL, class, beforeQuery, queryErr)
+		if queryErr != nil {
+			return queryErr
 		}
 		if class == outboundTargetTrusted {
 			// Go copies the initial header map for redirects but may strip

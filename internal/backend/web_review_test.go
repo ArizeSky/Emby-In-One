@@ -174,8 +174,15 @@ func TestLibraryDetailDiscoversOtherCopyAndPagesCompleteEpisodes(t *testing.T) {
 		}
 		failPage.Store(true)
 		rr = doJSONRequest(t, handler, "GET", "/Shows/"+series+"/Episodes", nil, token)
-		if rr.Code != 502 {
-			t.Fatalf("failed page must not masquerade as a complete list: %d %s", rr.Code, rr.Body.String())
+		var partial map[string]any
+		if rr.Code != 200 || json.Unmarshal(rr.Body.Bytes(), &partial) != nil ||
+			rr.Header().Get("X-EIO-Results-Incomplete") != "true" || partial["EioIncompleteResults"] != true ||
+			partial["TotalRecordCount"] != float64(2) || len(asItems(partial)) != 2 {
+			t.Fatalf("failed page must retain confirmed episodes with an explicit incomplete lower bound: %d %s", rr.Code, rr.Body.String())
+		}
+		first := app.IDStore.ResolveVirtualID(playbackStringField(asItems(partial)[0], "Id"))
+		if first == nil || len(first.OtherInstances) != 1 {
+			t.Fatal("retained prefix lost its cross-server episode association")
 		}
 	})
 }

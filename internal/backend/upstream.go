@@ -1046,6 +1046,7 @@ func (c *UpstreamClient) doRequestForMode(ctx context.Context, reqCtx *RequestCo
 // body of the pre-fallback doRequestForMode; every identity rule it applies is
 // unchanged.
 func (c *UpstreamClient) doRequestOnce(ctx context.Context, reqCtx *RequestContext, method, path string, params url.Values, body any, headers http.Header, stream bool, mode outboundAuthMode, base string) (*http.Response, error) {
+	ctx = withOutboundTrace(ctx)
 	if c.Config.SpoofClient == "resident" && c.residentIdentity == nil {
 		return nil, newResidentIdentityMissingError()
 	}
@@ -1156,7 +1157,7 @@ func (c *UpstreamClient) doRequestOnce(ctx context.Context, reqCtx *RequestConte
 			redirectPolicy = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 		}
 	}
-	client := &http.Client{Transport: c.transport, Timeout: timeout, CheckRedirect: redirectPolicy}
+	client := &http.Client{Transport: c.diagnosticTransport(ctx, string(mode)), Timeout: timeout, CheckRedirect: redirectPolicy}
 	if c.logger != nil {
 		changed := preparedURL.changed
 		if bodyOutcome.changed {

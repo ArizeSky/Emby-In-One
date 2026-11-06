@@ -1,6 +1,7 @@
 package backend
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -73,6 +74,9 @@ func clientIP(r *http.Request, trustProxy bool) string {
 
 func (a *App) loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		trace := newOutboundTrace()
+		w.Header().Set("X-Eio-Trace-Id", trace.id)
+		r = r.WithContext(context.WithValue(r.Context(), outboundTraceKey{}, trace))
 		if a.Logger == nil || r.URL.Path == "/favicon.ico" {
 			next.ServeHTTP(w, r)
 			return
@@ -88,10 +92,10 @@ func (a *App) loggingMiddleware(next http.Handler) http.Handler {
 		start := time.Now()
 		tokenSource := identifyTokenSource(r)
 		sc := &statusCapture{ResponseWriter: w, status: http.StatusOK}
-		a.Logger.Debugf("→ %s %s [auth:%s]", r.Method, r.URL.Path, tokenSource)
+		a.Logger.Debugf("→ %s %s [auth:%s] [trace:%s]", r.Method, r.URL.Path, tokenSource, trace.id)
 		next.ServeHTTP(sc, r)
 		ms := time.Since(start).Milliseconds()
-		msg := fmt.Sprintf("%s %s → %d (%dms) [auth:%s]", r.Method, r.URL.Path, sc.status, ms, tokenSource)
+		msg := fmt.Sprintf("%s %s → %d (%dms) [auth:%s] [trace:%s]", r.Method, r.URL.Path, sc.status, ms, tokenSource, trace.id)
 		switch {
 		case sc.status >= 500:
 			a.Logger.Errorf("%s", msg)
@@ -121,8 +125,12 @@ func (a *App) serveAdminAPIWithAudit(next http.Handler, w http.ResponseWriter, r
 			actor += " (role:" + info.Role + ")"
 		}
 	}
-	a.Logger.Infof("admin %q: %s %s → %d (%dms)",
-		actor, r.Method, r.URL.Path, sc.status, time.Since(start).Milliseconds())
+	trace := "none"
+	if requestTrace, _ := r.Context().Value(outboundTraceKey{}).(*outboundTrace); requestTrace != nil {
+		trace = requestTrace.id
+	}
+	a.Logger.Infof("admin %q: %s %s → %d (%dms) [trace:%s]",
+		actor, r.Method, r.URL.Path, sc.status, time.Since(start).Milliseconds(), trace)
 }
 
 func identifyTokenSource(r *http.Request) string {

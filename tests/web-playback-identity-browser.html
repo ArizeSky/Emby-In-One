@@ -55,13 +55,22 @@
         if (engine.mode !== 'native') throw new Error('native path not reached');
         await deadline(engine.destroy());
       } else {
-        const core = liveEngine = new AVPlayer({container:document.getElementById('host'),wasmBaseUrl:new URL('/web/vendor/web/libmedia/wasm',location.origin).href,enableWorker:index===2,enableWebCodecs:true,enableHardware:true,checkUseMSE:()=>true,preLoadTime:2});
-        core.setVolume(0);
-        await deadline(core.load(new URL(url,location.origin).href,{ext:'mp4',maxProbeDuration:2}));
-        await deadline(core.play({audio:true,video:true,subtitle:false}));
+        // Exercise the production EIO adapter as well as the actual generated
+        // Worker. Force libmedia for the synthetic MP4, which normally selects
+        // native playback; the wrapper only selects this fixture's worker mode.
+        const NativeAVPlayer = window.AVPlayer;
+        window.AVPlayer = class extends NativeAVPlayer {
+          constructor(options) { super({...options,enableWorker:index===2}); }
+        };
+        const engine = liveEngine = new EIOPlayer(document.getElementById('host'));
+        engine.eioAttempt = attempt;
+        engine._canNativePlay = () => false;
+        engine.setVolume(0);
+        await deadline(engine.load(url,source,{Id:'__ITEM_ID__',RunTimeTicks:80000000}));
+        const core = engine.core;
         if (!core.isMSE()) throw new Error('synthetic MSE path not reached');
         if (index === 2 && window.fixtureWorkers <= beforeWorkers) throw new Error('generated Worker was not constructed');
-        await deadline(core.destroy());
+        await deadline(engine.destroy());
       }
       liveEngine = null;
       if (!(await event(attempt,source,'Progress')).ok) throw new Error('Progress unconfirmed');
