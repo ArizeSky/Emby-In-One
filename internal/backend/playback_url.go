@@ -47,6 +47,9 @@ type playbackDirectStream struct {
 	// empty when the upstream URL cannot be mapped; the MediaSource then loses
 	// its DirectStreamUrl and is marked unavailable instead of being rebuilt.
 	resourceURL string
+	// provenance binds resourceURL to the validated PlaybackInfo answer and the
+	// auth snapshot that was current when it was registered.
+	provenance *resourceQueryProvenance
 	// container is the client-visible extension hint.
 	container string
 	// routeRoot is the canonical upstream stream root ("Videos" or "Audio") the
@@ -72,6 +75,11 @@ func planPlaybackDirectStream(mediaSource map[string]any, directURL string, clie
 	}
 	plan.resourceURL = resourceURL
 	plan.routeRoot = root
+	authToken := ""
+	if client != nil {
+		authToken = client.authSnapshot().AccessToken
+	}
+	plan.provenance = newResourceQueryProvenance(resourceQueryProvenancePlaybackInfo, resourceURL, authToken)
 	return plan
 }
 
@@ -328,6 +336,9 @@ func directStreamBasePathPrefixes(client *UpstreamClient) [][]string {
 // scope as forwardStream. An upstream-issued URL is authoritative; a request's
 // virtual session is translated only for its own serving server.
 func (a *App) directStreamTimelineSession(plan playbackDirectStream, virtualItemID, requestSession string) string {
+	if attempt := playbackStringField(plan.mediaSource, "EioAttemptId"); attempt != "" {
+		return plan.serverID + "\x00" + virtualItemID + "\x00" + attempt
+	}
 	var session string
 	if target, err := url.Parse(plan.resourceURL); err == nil {
 		session = queryValue(target.Query(), "PlaySessionId")
@@ -380,6 +391,8 @@ func (a *App) applyPlaybackDirectStreams(w http.ResponseWriter, virtualItemID, p
 			ServerID:        plan.serverID,
 			OriginalID:      plan.originalID,
 			ResourceURL:     plan.resourceURL,
+			Provenance:      plan.provenance.withKnownPrivate(proxyToken),
+			AttemptID:       playbackStringField(plan.mediaSource, "EioAttemptId"),
 			TimelineSession: a.directStreamTimelineSession(plan, virtualItemID, timelineSession),
 		})
 		order = append(order, i)

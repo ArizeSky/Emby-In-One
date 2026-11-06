@@ -54,6 +54,9 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if reqCtx != nil && reqCtx.PlaybackNegotiation != nil {
+		reqCtx.PlaybackNegotiation.reservation = reservation
+	}
 	instances := a.collectAllowedInstances(reqCtx, resolved)
 	if a.Logger != nil {
 		a.Logger.Debugf("PlaybackInfo: itemId=%s → server=[%s] originalId=%s, instances=%d",
@@ -115,8 +118,14 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 		setQueryValue(instQuery, "UserId", inst.Client.clientUserID())
 		instBody := deepCloneMap(body)
 		instBody["UserId"] = inst.Client.clientUserID()
-		payload, err := inst.Client.RequestJSON(r.Context(), requestContextFrom(r.Context()), a.Identity, r.Method, "/Items/"+inst.OriginalID+"/PlaybackInfo", instQuery, instBody)
+		payload, err := a.requestPlaybackCandidate(r, inst.Client, inst.OriginalID, instQuery, instBody)
 		if err != nil {
+			if reqCtx != nil && reqCtx.PlaybackNegotiation != nil {
+				if writePreparationError(w, err) {
+					releaseSlot()
+					return
+				}
+			}
 			if a.Logger != nil {
 				a.Logger.Warnf("PlaybackInfo: server=[%s] originalId=%s failed: %s", inst.Client.Name, inst.OriginalID, redactURLInError(err))
 			}
@@ -133,6 +142,11 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 		for _, raw := range asItems(map[string]any{"Items": data["MediaSources"]}) {
 			mediaSource := deepCloneMap(raw)
 			annotateMediaSource(mediaSource, inst.Client)
+			if err := a.captureStrictPlaybackFields(r, mediaSource, inst.Client, inst.OriginalID); err != nil {
+				releaseSlot()
+				writePreparationError(w, err)
+				return
+			}
 			originalMSID, _ := mediaSource["Id"].(string)
 			virtualMSID := originalMSID
 			if originalMSID != "" {
@@ -268,8 +282,23 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 			a.PlaybackLimiter.BindReservationPlaySession(reservation, playSessionID)
 		}
 	}
+	if reqCtx != nil && reqCtx.PlaybackNegotiation != nil {
+		if err := a.registerStrictPlaybackFields(r, allMediaSources); err != nil {
+			releaseSlot()
+			writePreparationError(w, err)
+			return
+		}
+	}
+	allMediaSources = privacyPlaybackMediaSources(r, allMediaSources, r.PathValue("itemId"))
+	if err := a.commitPlaybackNegotiation(r, allMediaSources); err != nil {
+		releaseSlot()
+		if !writePreparationError(w, err) {
+			writeJSON(w, http.StatusBadGateway, map[string]any{"kind": "playback-negotiation-failed"})
+		}
+		return
+	}
 	base["MediaSources"] = make([]any, 0, len(allMediaSources))
-	for _, mediaSource := range privacyPlaybackMediaSources(r, allMediaSources, r.PathValue("itemId")) {
+	for _, mediaSource := range allMediaSources {
 		base["MediaSources"] = append(base["MediaSources"].([]any), mediaSource)
 	}
 	writeJSON(w, http.StatusOK, base)

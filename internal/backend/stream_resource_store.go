@@ -14,11 +14,15 @@ const (
 )
 
 type streamResourceEntry struct {
-	UserID          string
-	VirtualItemID   string
-	ServerID        string
-	OriginalID      string
-	ResourceURL     string
+	UserID        string
+	VirtualItemID string
+	ServerID      string
+	OriginalID    string
+	ResourceURL   string
+	// Provenance is the immutable registration authority for ResourceURL. It is
+	// copied by pointer with the entry and never edited; request-scoped additions
+	// derive a new value.
+	Provenance      *resourceQueryProvenance
 	TimelineSession string
 	// AttemptID scopes strict playback deduplication and rolling windows. Empty
 	// denotes the independently routed historical/native protocol only.

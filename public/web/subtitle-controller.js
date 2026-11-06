@@ -8,6 +8,11 @@
     font: 16 * 1024 * 1024,
   });
 
+  // Frozen strict playback prefix. A URL under it is bound to one playback
+  // attempt and authenticates with that attempt's capability, not with the
+  // local metadata session.
+  const STRICT_PLAYBACK_PREFIX = '/eio/playback/v1/';
+
   function abortError() {
     return new DOMException('Subtitle cancelled', 'AbortError');
   }
@@ -140,11 +145,29 @@
 
     _url(track, ext) {
       const { item, mediaSource } = this.player;
-      const path = track.DeliveryUrl || `/Videos/${item.Id}/${mediaSource.Id}/Subtitles/${track.Index}/Stream.${ext}`;
+      let path = track.DeliveryUrl;
+      const attempt = this.player.eioAttempt;
+      if (!path) {
+        const resource = `/Videos/${encodeURIComponent(item.Id)}/${encodeURIComponent(mediaSource.Id)}/Subtitles/${track.Index}/Stream.${ext}`;
+        if (attempt) {
+          path = `/eio/playback/v1/${encodeURIComponent(attempt.attemptId)}${resource}?api_key=${encodeURIComponent(attempt.token)}`;
+        } else if (mediaSource.EioAttemptId) {
+          throw new Error('严格字幕缺少播放尝试，已拒绝旧版路径');
+        } else { path = resource; }
+      }
+      if (attempt) path = window.EIOPlaybackIdentity.strictResourceUrl(attempt, path);
       const url = new URL(path, location.origin);
       // All subtitle URLs stay on the authenticated proxy.
       if (url.origin !== location.origin) throw new Error('字幕地址未经过代理');
-      url.searchParams.set('api_key', localStorage.getItem('eio_token') || '');
+      // A strict playback URL already carries the attempt-bound playback
+      // capability in api_key. Replacing it with the local metadata token would
+      // break the attempt identity, so a strict-prefixed URL keeps its own
+      // credential (and fails visibly if the server sent none).
+      if (url.pathname.startsWith(STRICT_PLAYBACK_PREFIX)) {
+        if (!url.searchParams.get('api_key')) throw new Error('严格字幕地址缺少播放能力凭据');
+      } else {
+        url.searchParams.set('api_key', localStorage.getItem('eio_token') || '');
+      }
       url.searchParams.set('MediaSourceId', mediaSource.Id);
       return url.href;
     }

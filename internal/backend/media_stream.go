@@ -61,6 +61,10 @@ func (a *App) proxyStream(w http.ResponseWriter, r *http.Request, route streamRo
 		a.serveStreamResource(w, r, virtualItemID, strings.TrimPrefix(rest, "eio-resource/"))
 		return
 	}
+	if reqCtx := requestContextFrom(r.Context()); reqCtx != nil && reqCtx.Playback != nil {
+		a.proxyStrictPlaybackStream(w, r, route)
+		return
+	}
 	resolved, routeStatus := a.resolveRouteForRequest(requestContextFrom(r.Context()), virtualItemID)
 	if routeStatus != 0 {
 		if routeStatus == http.StatusNotFound && a.Logger != nil {
@@ -152,6 +156,9 @@ func (a *App) forwardStream(w http.ResponseWriter, r *http.Request, client *Upst
 	if session := queryValue(query, "PlaySessionId"); session != "" {
 		timelineSession = client.ID + "\x00" + virtualItemID + "\x00" + session
 	}
+	if reqCtx != nil && reqCtx.Playback != nil {
+		timelineSession = client.ID + "\x00" + virtualItemID + "\x00" + reqCtx.Playback.AttemptID
+	}
 	if a.Logger != nil {
 		a.Logger.Debugf("Stream request headers: Range=%q, Accept=%q, AE=%q",
 			r.Header.Get("Range"), r.Header.Get("Accept"), r.Header.Get("Accept-Encoding"))
@@ -173,11 +180,23 @@ func (a *App) forwardStream(w http.ResponseWriter, r *http.Request, client *Upst
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return // client disconnected or timed out — not a server error
 		}
+		if reqCtx != nil && reqCtx.Playback != nil && writePreparationError(w, err) {
+			return
+		}
 		if a.Logger != nil {
 			a.Logger.Errorf("Stream error: itemId=%s upstream=%s: %s", virtualItemID, upstreamPath, redactURLInError(err))
 		}
+		if reqCtx != nil && reqCtx.Playback != nil {
+			writeJSON(w, 502, map[string]any{"kind": "playback-media-unavailable", "message": "upstream media request failed"})
+			return
+		}
 		writeJSON(w, http.StatusBadGateway, map[string]any{"message": err.Error()})
 		return
+	}
+	if reqCtx != nil && resp.Request != nil {
+		copyCtx := *reqCtx
+		copyCtx.ResourceQueryProvenance = requestContextResourceQueryProvenance(reqCtx).deriveRedirect(resp.Request.URL.String(), resourceQueryPrivateTokens(reqCtx, resp.Request.Header.Get("X-Emby-Token"))...)
+		reqCtx = &copyCtx
 	}
 	defer func() {
 		if resp != nil {
@@ -192,6 +211,9 @@ func (a *App) forwardStream(w http.ResponseWriter, r *http.Request, client *Upst
 	maxR, blockUnrated := a.parentalPolicyFor(r)
 	restricted := maxR > 0 || blockUnrated
 	directEffective := client.Config.DirectRedirect && !restricted
+	if reqCtx != nil && reqCtx.Playback != nil {
+		directEffective = false
+	}
 	followEffective := client.Config.FollowRedirects
 	if isRedirectStatus(resp.StatusCode) {
 		if directEffective {
@@ -337,6 +359,8 @@ func (a *App) forwardStream(w http.ResponseWriter, r *http.Request, client *Upst
 				ServerID:        client.ID,
 				OriginalID:      originalID,
 				TimelineSession: timelineSession,
+				AttemptID:       playbackAttemptFromContext(reqCtx),
+				Capability:      playbackCapabilityFromContext(reqCtx),
 				ManifestKey:     streamManifestWindowKey(upstreamPath, query),
 			})
 			if rerr != nil {

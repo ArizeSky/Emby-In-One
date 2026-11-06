@@ -546,23 +546,25 @@ func (c *UpstreamClient) snapshot() UpstreamClient {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return UpstreamClient{
-		ID:               c.ID,
-		ServerIndex:      c.ServerIndex,
-		Name:             c.Name,
-		BaseURL:          c.BaseURL,
-		StreamBaseURL:    c.StreamBaseURL,
-		StreamBaseURLs:   append([]string(nil), c.StreamBaseURLs...),
-		Online:           c.Online,
-		UserID:           c.UserID,
-		AccessToken:      c.AccessToken,
-		LastError:        c.LastError,
-		Config:           c.Config,
-		serverKey:        c.serverKey,
-		httpClient:       c.httpClient,
-		transport:        c.transport,
-		logger:           c.logger,
-		timeouts:         c.timeouts,
-		residentIdentity: c.residentIdentity,
+		ID:                c.ID,
+		ServerIndex:       c.ServerIndex,
+		Name:              c.Name,
+		BaseURL:           c.BaseURL,
+		StreamBaseURL:     c.StreamBaseURL,
+		StreamBaseURLs:    append([]string(nil), c.StreamBaseURLs...),
+		Online:            c.Online,
+		UserID:            c.UserID,
+		AccessToken:       c.AccessToken,
+		authCompatibility: c.authCompatibility,
+		authGeneration:    c.authGeneration,
+		LastError:         c.LastError,
+		Config:            c.Config,
+		serverKey:         c.serverKey,
+		httpClient:        c.httpClient,
+		transport:         c.transport,
+		logger:            c.logger,
+		timeouts:          c.timeouts,
+		residentIdentity:  c.residentIdentity,
 	}
 }
 
@@ -806,9 +808,10 @@ func (c *UpstreamClient) resolveStreamRedirectTarget(resp *http.Response, proxyH
 // the first hop.
 func (c *UpstreamClient) fetchRedirectTarget(ctx context.Context, reqCtx *RequestContext, rawURL string, snapshot identitySnapshot, transport http.Header) (*http.Response, error) {
 	return c.sendOutboundHop(ctx, reqCtx, rawURL, outboundHop{
-		Method:    http.MethodGet,
-		Headers:   snapshot.Headers,
-		Transport: transport,
+		Method:     http.MethodGet,
+		Headers:    snapshot.Headers,
+		Transport:  transport,
+		Provenance: requestContextResourceQueryProvenance(reqCtx).deriveRedirect(rawURL, resourceQueryPrivateTokens(reqCtx, c.authSnapshot().AccessToken)...),
 	})
 }
 
@@ -1099,6 +1102,9 @@ func (c *UpstreamClient) doRequestOnce(ctx context.Context, reqCtx *RequestConte
 		reader = bytes.NewReader(encoded)
 		bodyContentType = "application/json"
 	}
+	if reqCtx != nil {
+		ctx = context.WithValue(ctx, requestContextKey{}, reqCtx)
+	}
 	request, err := http.NewRequestWithContext(ctx, method, preparedURL.url.String(), reader)
 	if err != nil {
 		return nil, err
@@ -1127,6 +1133,9 @@ func (c *UpstreamClient) doRequestOnce(ctx context.Context, reqCtx *RequestConte
 	// identity and credential at all, so it is rebuilt from the current
 	// configuration instead of a client built before an admin change.
 	redirectPolicy := c.redirectPolicyFor(config.FollowRedirects, mode)
+	if reqCtx != nil && reqCtx.Playback != nil && mode == authModeNormal {
+		redirectPolicy = c.strictPlaybackRedirectPolicy(redirectPolicy, reqCtx)
+	}
 	timeout := c.httpClient.Timeout
 	if stream {
 		// Timeout stays 0 on purpose: a stream is supposed to stay open for the length of a

@@ -10,6 +10,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { harness, makeStorage } = require('./web-ui-harness.cjs');
+const { playbackInfo: strictPlaybackInfo, isSessionEvent } = require('./web-playback-fixture.cjs');
 const TICKS = 10000000;
 
 function mediaSource(overrides = {}) {
@@ -88,12 +89,12 @@ function makeReply(options = {}) {
     if (/\/PlaybackInfo$/.test(p)) {
       return typeof options.playbackInfo === 'function'
         ? options.playbackInfo(body)
-        : { MediaSources: options.sources || [mediaSource()], PlaySessionId: 'sess' };
+        : strictPlaybackInfo(options.sources || [mediaSource()], 'sess');
     }
     if (/\/Episodes$/.test(p) || /\/NextUp$/.test(p)) return { Items: [] };
     const detail = p.match(/\/Items\/([^/]+)$/);
     if (detail) return options.item || episode(decodeURIComponent(detail[1]));
-    if (p.startsWith('/Sessions/Playing')) return {};
+    if (isSessionEvent(p)) return {};
     if (p.startsWith('/Users/')) return { Policy: {} };
     return { Items: [] };
   };

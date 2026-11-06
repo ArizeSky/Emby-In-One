@@ -437,6 +437,12 @@ func (a *App) finishStoppedSession(r *http.Request, virtualItemID, serverID stri
 }
 
 func (a *App) handleSessionPlaying(w http.ResponseWriter, r *http.Request) {
+	// A request the strict playback ingress published a binding for is answered by
+	// the attempt-scoped path only; the legacy translation below never sees it.
+	if binding, strict := strictPlaybackBindingFor(requestContextFrom(r.Context())); strict {
+		a.handleStrictSessionEvent(w, r, binding, playbackEventStarted)
+		return
+	}
 	payload, err := decodeOptionalJSON(r)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "Invalid JSON body"})
@@ -515,6 +521,10 @@ func (a *App) handleSessionPlaying(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleSessionPlayingProgress(w http.ResponseWriter, r *http.Request) {
+	if binding, strict := strictPlaybackBindingFor(requestContextFrom(r.Context())); strict {
+		a.handleStrictSessionEvent(w, r, binding, playbackEventProgress)
+		return
+	}
 	payload, err := decodeOptionalJSON(r)
 	if err != nil {
 		w.WriteHeader(http.StatusNoContent)
@@ -576,6 +586,10 @@ func (a *App) handleSessionPlayingProgress(w http.ResponseWriter, r *http.Reques
 }
 
 func (a *App) handleSessionPlayingStopped(w http.ResponseWriter, r *http.Request) {
+	if binding, strict := strictPlaybackBindingFor(requestContextFrom(r.Context())); strict {
+		a.handleStrictSessionEvent(w, r, binding, playbackEventStopped)
+		return
+	}
 	payload, err := decodeOptionalJSON(r)
 	if err != nil {
 		w.WriteHeader(http.StatusNoContent)
@@ -674,10 +688,20 @@ func (a *App) broadcastCapabilities(w http.ResponseWriter, r *http.Request, path
 }
 
 func (a *App) handleUserPlayingItemStart(w http.ResponseWriter, r *http.Request) {
+	// The strict ingress publishes a binding for /eio/playback/v1 attempts; such a
+	// request is attributed to that attempt's own server and item only.
+	if binding, strict := strictPlaybackBindingFor(requestContextFrom(r.Context())); strict {
+		a.handleStrictUserPlayingItem(w, r, binding, true)
+		return
+	}
 	a.handleUserPlayingItem(w, r, http.MethodPost)
 }
 
 func (a *App) handleUserPlayingItemStop(w http.ResponseWriter, r *http.Request) {
+	if binding, strict := strictPlaybackBindingFor(requestContextFrom(r.Context())); strict {
+		a.handleStrictUserPlayingItem(w, r, binding, false)
+		return
+	}
 	a.handleUserPlayingItemCleanup(w, r)
 }
 

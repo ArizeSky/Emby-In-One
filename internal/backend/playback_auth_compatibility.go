@@ -18,7 +18,15 @@ func playbackAuthPrincipal(config UpstreamConfig, userID string) string {
 }
 
 func (c *UpstreamClient) playbackConfigRevision() string {
-	cfg := c.ConfigSnapshot()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return playbackConfigRevisionLocked(c)
+}
+
+// Caller holds c.mu. Configuration and credential permission are linearized at
+// authSnapshot: sends already authorized there may finish; later snapshots fail.
+func playbackConfigRevisionLocked(c *UpstreamClient) string {
+	cfg := c.Config
 	revision := uint64(0)
 	if c.residentIdentity != nil {
 		revision = c.residentIdentity.IdentityVersion
@@ -32,12 +40,12 @@ func (c *UpstreamClient) playbackConfigRevision() string {
 // credential. Recording metadata separately from setOnline would allow a sender
 // to observe token B with login A's fingerprint, so publication uses one lock.
 func (c *UpstreamClient) setOnlineWithIdentity(token, userID string, identity identitySnapshot) {
-	cfg := c.ConfigSnapshot()
-	compatibility := playbackIdentityAuth{Principal: playbackAuthPrincipal(cfg, userID), ConfigRevision: c.playbackConfigRevision(), IdentityFingerprint: playbackIdentityFingerprint(identity)}
+	c.mu.Lock()
+	cfg := c.Config
+	compatibility := playbackIdentityAuth{Principal: playbackAuthPrincipal(cfg, userID), ConfigRevision: playbackConfigRevisionLocked(c), IdentityFingerprint: playbackIdentityFingerprint(identity)}
 	if !validPlaybackIdentityUserAgent(identity.Headers.Get("User-Agent")) {
 		compatibility = playbackIdentityAuth{}
 	}
-	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.authGeneration++
 	c.AccessToken, c.UserID = token, userID
@@ -53,7 +61,8 @@ func (c *UpstreamClient) validatePlaybackAuth(reqCtx *RequestContext, auth upstr
 		return nil
 	}
 	binding := reqCtx.Playback
-	if binding.ServerID != c.ID || binding.Auth.ConfigRevision != c.playbackConfigRevision() ||
+	if binding.ServerID != c.ID || binding.Auth.ConfigRevision != auth.ConfigRevision ||
+		auth.Compatibility.Principal != auth.ConfiguredPrincipal ||
 		!binding.compatibleAuth(auth.Compatibility) || auth.AccessToken == "" ||
 		playbackIdentityFingerprint(binding.Identity) != auth.Compatibility.IdentityFingerprint {
 		return &outboundPreparationError{Status: 409, Kind: "playback-auth-incompatible", Field: "attempt", Message: "playback identity requires renegotiation"}

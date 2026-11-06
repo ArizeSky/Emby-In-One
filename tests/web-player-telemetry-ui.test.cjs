@@ -797,6 +797,7 @@ test('the playback session wires the HUD with three thin hooks and no new state'
 /* ------------------------------------------------- harness + fake engine ---- */
 
 const { harness, makeStorage, delay } = require('./web-ui-harness.cjs');
+const { playbackInfo: strictPlaybackInfo, isSessionEvent } = require('./web-playback-fixture.cjs');
 
 function makePlayerClass() {
   const instances = [];
@@ -846,8 +847,8 @@ function setup(extra = {}) {
       // carries no MediaSources (same shape as the recovery suite).
       const detail = url.pathname.match(/\/Items\/([^/]+)$/);
       if (detail) return episode(decodeURIComponent(detail[1]));
-      if (url.pathname.endsWith('/PlaybackInfo')) return { MediaSources: [mediaSource()], PlaySessionId: 'sess' };
-      if (url.pathname.startsWith('/Sessions/Playing')) return {};
+      if (url.pathname.endsWith('/PlaybackInfo')) return strictPlaybackInfo([mediaSource()], 'sess');
+      if (isSessionEvent(url.pathname)) return {};
       if (url.pathname.startsWith('/Users/')) return { Policy: {} };
       return { Items: [] };
     },

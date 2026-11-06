@@ -1,0 +1,81 @@
+<!doctype html><meta charset="utf-8"><title>Isolated strict playback fixture</title>
+<style>body{background:#111;color:white}.host{position:relative;width:320px;height:180px}</style>
+<pre id="result">running</pre><div class="host" id="host"></div>
+<script>window.fixtureWorkers=0;const FixtureNativeWorker=window.Worker;window.Worker=class extends FixtureNativeWorker {constructor(...args){super(...args);window.fixtureWorkers++;}};</script>
+<script src="/web/vendor/web/libmedia/shared-media-ownership.js"></script>
+<script src="/web/vendor/web/libmedia/shared-media-domain.js"></script>
+<script src="/web/vendor/web/libmedia/owned-media-resources.js"></script>
+<script src="/web/vendor/web/libmedia/shared-media-release-registry.js"></script>
+<script src="/web/vendor/web/libmedia/media-resource-handles.js"></script>
+<script src="/web/vendor/web/libmedia/codecpar-leases.js"></script>
+<script src="/web/vendor/web/libmedia/mse-packet-ownership.js"></script>
+<script src="/web/vendor/web/libmedia/native-playback-clock.js"></script>
+<script src="/web/vendor/web/libmedia/native-playback-clock-source.js"></script>
+<script src="/web/vendor/web/libmedia/payload-transfer.js"></script>
+<script src="/web/vendor/web/libmedia/mux-producers.js"></script>
+<script src="/web/vendor/web/libmedia/mux-producer-lifecycle.js"></script>
+<script src="/web/vendor/web/libmedia/mse-pull-lifetime.js"></script>
+<script src="/web/vendor/web/libmedia/avplayer.js"></script>
+<script src="/web/web/subtitle-controller.js"></script>
+<script src="/web/web/player-libmedia.js"></script>
+<script src="/web/web/playback-identity.js"></script>
+<script>
+(async () => {
+  const identity = window.EIOPlaybackIdentity;
+  const mode = new URL(location.href).searchParams.get('mode') || 'native';
+  const selectedIndex = ['native','libmedia-main','libmedia-worker'].indexOf(mode);
+  let stage = 'negotiation';
+  let liveEngine;
+  const deadline = (promise, ms = 30000) => Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error('fixture deadline')), ms))]);
+  const event = (attempt, source, name) => identity.postSessionEvent({attempt, event:name, payload:{ItemId:'__ITEM_ID__',MediaSourceId:source.Id,PositionTicks:10000000}});
+  try {
+    if (!crossOriginIsolated) throw new Error('fixture is not isolated');
+    await fetch('/fixture/reset',{method:'POST'});
+    const candidates = [];
+    for (let i = 0; i < 1; i++) {
+      const response = await fetch(identity.negotiationPath('__ITEM_ID__'),{method:'POST',headers:{'X-Emby-Token':'__LOCAL_TOKEN__','Content-Type':'application/json'},body:'{}'});
+      if (!response.ok) throw new Error('negotiation HTTP ' + response.status);
+      const source = (await response.json()).MediaSources[0];
+      const resolved = identity.attemptFromMediaSource(source,{itemId:'__ITEM_ID__'});
+      if (!resolved.ok) throw resolved.error;
+      candidates.push({source,attempt:resolved.attempt,url:identity.strictResourceUrl(resolved.attempt,source.DirectStreamUrl)});
+    }
+    await fetch('/fixture/refresh',{method:'POST'});
+    for (const index of [selectedIndex]) {
+      const {source,attempt,url} = candidates[0];
+      stage = ['native','libmedia-main','libmedia-worker'][index];
+      const payload = await event(attempt,source,'Playing');
+      if (!payload.ok) throw new Error('Playing unconfirmed');
+      const beforeWorkers = window.fixtureWorkers;
+      if (index === 0) {
+        const engine = liveEngine = new EIOPlayer(document.getElementById('host'));
+        engine.eioAttempt = attempt;
+        engine.setVolume(0);
+        await deadline(engine.load(url,source,{Id:'__ITEM_ID__',RunTimeTicks:80000000}));
+        if (engine.mode !== 'native') throw new Error('native path not reached');
+        await deadline(engine.destroy());
+      } else {
+        const core = liveEngine = new AVPlayer({container:document.getElementById('host'),wasmBaseUrl:new URL('/web/vendor/web/libmedia/wasm',location.origin).href,enableWorker:index===2,enableWebCodecs:true,enableHardware:true,checkUseMSE:()=>true,preLoadTime:2});
+        core.setVolume(0);
+        await deadline(core.load(new URL(url,location.origin).href,{ext:'mp4',maxProbeDuration:2}));
+        await deadline(core.play({audio:true,video:true,subtitle:false}));
+        if (!core.isMSE()) throw new Error('synthetic MSE path not reached');
+        if (index === 2 && window.fixtureWorkers <= beforeWorkers) throw new Error('generated Worker was not constructed');
+        await deadline(core.destroy());
+      }
+      liveEngine = null;
+      if (!(await event(attempt,source,'Progress')).ok) throw new Error('Progress unconfirmed');
+      if (!(await event(attempt,source,'Stopped')).ok) throw new Error('Stopped unconfirmed');
+      if (!(await identity.deleteActiveEncodings({attempt})).ok) throw new Error('encoding cleanup unconfirmed');
+    }
+    document.getElementById('result').textContent = JSON.stringify({result:'pass',paths:[mode],workers:window.fixtureWorkers});
+    await fetch('/fixture/report?result=pass-'+mode,{method:'POST'});
+  } catch (error) {
+    const detail = {result:'fail',stage,error:String(error?.kind || error?.message || error)};
+    document.getElementById('result').textContent = JSON.stringify(detail);
+    console.error('synthetic identity fixture',detail);
+    try {await liveEngine?.destroy();} catch (_) {}
+    await fetch('/fixture/report?result='+encodeURIComponent(JSON.stringify(detail)),{method:'POST'});
+  }
+})();
+</script>

@@ -12,8 +12,21 @@ import (
 // Known token values provide evidence for safe filtering of unsigned external
 // queries; signed credential mutations always require renegotiation.
 func prepareHopQuery(target *url.URL, trusted bool, token string, known ...string) error {
+	return prepareHopQueryWithProvenance(target, trusted, token, nil, known...)
+}
+
+// prepareHopQueryWithProvenance is prepareHopQuery plus explicit registration
+// authority. Provenance only applies to the exact URL it was bound to, so an
+// external query can preserve the target's own same-name credential while a
+// client-supplied or redirected-away URL stays conservative. Known private
+// values are still removed (or, on a managed trusted route, refreshed) even
+// when the registration is authoritative.
+func prepareHopQueryWithProvenance(target *url.URL, trusted bool, token string, provenance *resourceQueryProvenance, known ...string) error {
 	if target.RawQuery == "" {
 		return nil
+	}
+	if !provenance.matches(target) {
+		provenance = nil
 	}
 	fields := strings.Split(target.RawQuery, "&")
 	signed := false
@@ -46,15 +59,22 @@ func prepareHopQuery(target *url.URL, trusted bool, token string, known ...strin
 			kept = append(kept, field)
 			continue
 		}
-		private := strings.EqualFold(decoded, "x-emby-token")
+		private := strings.EqualFold(decoded, "x-emby-token") || provenance.knowsPrivate(val)
 		for _, secret := range known {
 			if secret != "" && secret == val {
 				private = true
 			}
 		}
 		if !trusted && !private {
-			// Without registration provenance this cannot safely be stripped OR sent.
-			return hopQueryError("resource-query-provenance-required")
+			if !provenance.attested() {
+				// Without registration provenance this cannot safely be stripped OR sent.
+				return hopQueryError("resource-query-provenance-required")
+			}
+			// The URL was issued by the authoritative resource answer itself, so
+			// this is the target's own credential. Keep every byte, including a
+			// signature that covers it.
+			kept = append(kept, field)
+			continue
 		}
 		if signed {
 			return hopQueryError("signed-credential-query")

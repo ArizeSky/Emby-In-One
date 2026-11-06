@@ -8,9 +8,15 @@
  * `create(deps)` is pure with respect to the page module: it receives the Vue
  * reactive factories, the api helpers, the page refs, the data/orchestrator
  * helpers and the toast sink, and returns the exact identifiers app.js
- * destructures. It reads no module-level page state; every guard, catch and
- * generation check below is a byte-identical move of the previous inlined
- * implementation (no behaviour change).
+ * destructures. It reads no module-level page state; the guards, catches and
+ * generation checks keep the previous inlined ownership semantics.
+ *
+ * Playback identity is strict (parent-frozen protocol; the wire contract lives
+ * in public/web/playback-identity.js). Negotiation, media / subtitle /
+ * fallback / transcode URLs and Playing / Progress / Stopped are bound to the
+ * selected MediaSource's own attempt. There is no legacy URL rebuild and no
+ * local-token fallback, and an identity protocol failure is observable instead
+ * of being swallowed by an empty catch.
  */
 (function () {
   'use strict';
@@ -18,7 +24,7 @@
   function create(deps = {}) {
     const {
       ref, computed, reactive, nextTick,
-      api, apiRaw, safeError,
+      api, safeError,
       allItems, episodeOrder, defaultAudio, audioTrackLabel, fmtTicks,
       isPartialResults, createPendingSelection, createEpisodeQueue,
       compatibleStream, createCleanupGate,
@@ -149,6 +155,106 @@
       typeof EIOPlayerTelemetry.create === 'function')
       ? EIOPlayerTelemetry.create({ reactive })
       : { update() {}, reset() {}, layers: null, receiveText: '\u2014', sourceText: '\u2014', bufferText: '\u2014' };
+
+    /* ---- strict playback identity ---- */
+    // playback-identity.js owns the wire contract (paths, attempt fields, the
+    // capability and the error shape). A missing module is a hard, observable
+    // failure: this session never rebuilds a legacy URL or a local-token
+    // request to keep playing.
+    function protocol() {
+      const mod = typeof EIOPlaybackIdentity === 'object' && EIOPlaybackIdentity !== null
+        ? EIOPlaybackIdentity : null;
+      if (!mod
+        || typeof mod.negotiationPath !== 'function'
+        || typeof mod.attemptFromMediaSource !== 'function'
+        || typeof mod.strictResourceUrl !== 'function'
+        || typeof mod.strictMediaSource !== 'function'
+        || typeof mod.postSessionEvent !== 'function'
+        || typeof mod.deleteActiveEncodings !== 'function'
+        || typeof mod.isPlaybackProtocolError !== 'function'
+        || typeof mod.createError !== 'function') {
+        throw new Error('播放身份协议模块不可用，已拒绝旧版播放路径');
+      }
+      return mod;
+    }
+
+    function isIdentityFailure(error) {
+      const mod = typeof EIOPlaybackIdentity === 'object' && EIOPlaybackIdentity !== null
+        ? EIOPlaybackIdentity : null;
+      if (mod && typeof mod.isPlaybackProtocolError === 'function') return mod.isPlaybackProtocolError(error);
+      return !!(error && (error.name === 'PlaybackProtocolError'
+        || (typeof error.kind === 'string' && error.kind.startsWith('playback-'))));
+    }
+
+    // One strict session event for the instance's own attempt. The module
+    // stamps PlaySessionId (the candidate's own session, not the shared
+    // top-level one) and EioAttemptId, so a late or conflicting attempt cannot
+    // be sent by mistake.
+    function reportPlaybackEvent(instance, event, extra, options = {}) {
+      const attempt = instance.eioAttempt;
+      if (!attempt) return Promise.reject(new Error('播放尝试缺失，无法上报播放事件'));
+      let identity;
+      try { identity = protocol(); } catch (error) { return Promise.reject(error); }
+      const payload = {
+        ItemId: instance.eioItemId ?? playerItemId,
+        MediaSourceId: instance.mediaSource?.Id ?? attempt.mediaSourceId,
+        ...extra,
+      };
+      return identity.postSessionEvent({
+        attempt, event, payload,
+        signal: options.signal,
+        keepalive: options.keepalive === true,
+      });
+    }
+
+    // An identity protocol failure while reporting is never an empty catch: it
+    // becomes exactly one observable failure per attempt (the existing error
+    // card, with the existing retry context) and never a false ACK. Ordinary
+    // transient reporting failures keep the previous best-effort semantics.
+    function reportEventFailure(instance, error) {
+      if (!isIdentityFailure(error)) return;
+      if (instance.eioIdentityFailureReported) return;
+      instance.eioIdentityFailureReported = true;
+      handlePlaybackFailure(error, instance.eioGeneration,
+        buildRetryContext(playingItem.value, playMediaSourceId.value, {},
+          instance.positionTicks / 10000000, !instance.playing));
+    }
+
+    // A rejected stop has no retry path (the player is already being torn
+    // down): record it without credentials and leave reclamation to the
+    // server's bounded schedule instead of resurrecting the attempt.
+    function reportStopFailure(error) {
+      if (!isIdentityFailure(error)) return;
+      console.warn('[EIO] playback stop rejected by identity protocol',
+        { kind: String(error.kind || ''), retryable: error.retryable === true });
+    }
+
+    // Unload stop: the browser guarantees no delivery, so this is a single
+    // keepalive POST carrying the instance's own capability + attempt. Failure
+    // is reported once and never retried; the server still reclaims.
+    function cleanupEncodings(instance, keepalive = false) {
+      if (!instance?.eioAttempt?.playSessionId || instance.eioEncodingStopSent) return;
+      instance.eioEncodingStopSent = true;
+      protocol().deleteActiveEncodings({attempt:instance.eioAttempt,keepalive})
+        .catch(reportStopFailure);
+    }
+    function sendUnloadStop() {
+      const instance = player;
+      if (!instance || instance.eioUnloadStopSent) return;
+      instance.eioUnloadStopSent = true;
+      cleanupEncodings(instance, true);
+      reportPlaybackEvent(instance, 'Stopped',
+        { PositionTicks: instance.positionTicks }, { keepalive: true })
+        .catch(error => {
+          if (!isIdentityFailure(error)) return;
+          console.warn('[EIO] unload playback stop rejected by identity protocol',
+            { kind: String(error.kind || '') });
+        });
+    }
+
+    if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+      window.addEventListener('pagehide', sendUnloadStop);
+    }
 
     /* ---- playback entry ---- */
     let playItemSerial = 0; // bumped per playItem call to detect a superseded Series resolution
@@ -318,8 +424,10 @@
     }
 
     // A browser DeviceProfile lets the upstream choose direct vs transcode.
+    // The strict entry path is the protocol marker; local api() auth stays the
+    // existing one.
     function requestPlaybackInfo(item, mediaSourceId, signal, options) {
-      return api(`/Items/${item.Id}/PlaybackInfo`, {
+      return api(protocol().negotiationPath(item.Id), {
         method: 'POST', signal,
         body: JSON.stringify({
           UserId: localStorage.getItem('eio_user_id'),
@@ -335,12 +443,18 @@
       });
     }
 
-    function createPlaybackInstance(item, info, generation) {
+    function createPlaybackInstance(item, generation, attempt) {
       const instance = new EIOPlayer(playerContainer.value);
       player = instance;
       playerAlive.value = true;
-      instance.sessionId = info.PlaySessionId;
-      playSessionId = info.PlaySessionId;
+      // The selected candidate's own attempt and session. Never the top-level
+      // info.PlaySessionId (which belongs to whichever candidate the server
+      // picked first) and never a shared/global session.
+      instance.eioAttempt = attempt;
+      instance.eioItemId = item.Id;
+      instance.eioGeneration = generation;
+      instance.sessionId = attempt.playSessionId;
+      playSessionId = attempt.playSessionId;
       playerItemId = item.Id;
       startupSubtitleError = null;
       reportedSubtitleIndex = null;
@@ -368,11 +482,10 @@
         playerUI.acceptState(state);
       };
       instance.onProgress = (ticks) => {
-        api('/Sessions/Playing/Progress', {
-          method: 'POST',
-          body: JSON.stringify({ ItemId: item.Id, MediaSourceId: instance.mediaSource.Id,
-            PlaySessionId: instance.sessionId, PositionTicks: ticks, IsPaused: !instance.playing }),
-        }).catch(() => {});
+        if (player !== instance || generation !== playbackGeneration) return;
+        reportPlaybackEvent(instance, 'Progress',
+          { PositionTicks: ticks, IsPaused: !instance.playing })
+          .catch(error => reportEventFailure(instance, error));
       };
       instance.onEnded = () => { if (player === instance) exitPlayer(); };
       instance.onError = (msg) => {
@@ -405,32 +518,48 @@
     }
 
     async function startPlayback(item, mediaSourceId, generation, signal, options = {}) {
+      const identity = protocol();
       const info = await requestPlaybackInfo(item, mediaSourceId, signal, options);
       if (generation !== playbackGeneration) return;
-      playSrc.value = info.MediaSources?.find(s => s.Id === mediaSourceId) || info.MediaSources?.[0];
-      playMediaSourceId.value = playSrc.value?.Id;
-      if (!playSrc.value) throw new Error('No media sources');
+      if (!info || !Array.isArray(info.MediaSources) || !info.MediaSources.length) {
+        throw identity.createError('playback-info-invalid', '播放信息服务未返回可用媒体源', true);
+      }
+      const selected = info.MediaSources.find(s => s.Id === mediaSourceId) || info.MediaSources[0];
+      const resolved = identity.attemptFromMediaSource(selected,
+        { itemId: item.Id, mediaSourceId: selected.Id });
+      if (!resolved.ok) throw resolved.error;
+      const attempt = resolved.attempt;
+      playMediaSourceId.value = selected.Id;
+      playSrc.value = identity.strictMediaSource(attempt, selected);
       playAudioIndex.value = options.audioIndex >= 0 ? options.audioIndex : defaultAudio(playSrc.value);
 
       // A forced compatibility retry must come from the transcode URL of this
       // PlaybackInfo response; the original stream is never used instead.
+      // Every URL below is server-issued for this attempt: a missing URL is a
+      // visible protocol failure, never a rebuilt legacy path.
       let streamUrl;
       let fallbackUrl = null;
       if (options.forceTranscode) {
         const compatible = compatibleStream(playSrc.value);
-        if (!compatible.ok) throw new Error(compatible.message);
-        streamUrl = apiRaw(compatible.url);
+        if (!compatible.ok) throw identity.createError('playback-url-missing', compatible.message, false);
+        streamUrl = identity.strictResourceUrl(attempt, compatible.url);
       } else {
-        const container = (playSrc.value.Container || 'mp4').split(',')[0].trim() || 'mp4';
-        const directStreamUrl = playSrc.value.DirectStreamUrl;
-        // A rejected upstream URL must not become a guessed legacy route.
-        if (!directStreamUrl && playSrc.value.EioDirectStreamUnavailable === true) {
-          throw new Error('上游未提供可安全代理的直连流地址');
+        // The strict negotiation also returns EioFallbackUrl when the upstream
+        // has no DirectStreamUrl: it is already prefixed with the attempt and
+        // carries the capability, so the client never constructs a legacy
+        // /Videos/{id}/stream.ext path itself.
+        const directStreamUrl = playSrc.value.DirectStreamUrl || playSrc.value.EioFallbackUrl;
+        if (!directStreamUrl) {
+          throw identity.createError('playback-url-missing',
+            playSrc.value.EioDirectStreamUnavailable === true
+              ? '上游未提供可安全代理的直连流地址'
+              : '播放服务未返回严格的直连流地址，已拒绝回退旧版路径',
+            false);
         }
-        const streamPath = directStreamUrl
-          || `/Videos/${item.Id}/stream.${container}?Static=true&MediaSourceId=${encodeURIComponent(playSrc.value.Id)}`;
-        streamUrl = apiRaw(streamPath);
-        fallbackUrl = playSrc.value.TranscodingUrl ? apiRaw(playSrc.value.TranscodingUrl) : null;
+        streamUrl = identity.strictResourceUrl(attempt, directStreamUrl);
+        fallbackUrl = playSrc.value.TranscodingUrl
+          ? identity.strictResourceUrl(attempt, playSrc.value.TranscodingUrl)
+          : null;
       }
       // The previous generation's cleanup gets a bounded budget; a cleanup
       // that overruns is surfaced instead of stacking another decoder.
@@ -451,7 +580,7 @@
         refreshPlaybackFeatures(),
         new Promise((resolve) => setTimeout(resolve, 800)),
       ]);
-      const instance = createPlaybackInstance(item, info, generation);
+      const instance = createPlaybackInstance(item, generation, attempt);
       playbackStarted = false;
       await instance.load(streamUrl, playSrc.value, item, {
         fallbackUrl,
@@ -491,9 +620,13 @@
       // Volume is user state: a compatibility retry or version switch must
       // not reset it to the engine default.
       instance.setVolume(playerVolume.value);
-      await api('/Sessions/Playing', { method: 'POST', body: JSON.stringify({ ItemId: item.Id,
-        MediaSourceId: playSrc.value.Id, PlaySessionId: instance.sessionId,
-        PositionTicks: instance.positionTicks, IsPaused: !instance.playing }), signal }).catch(() => {});
+      // A protocol rejection of Playing is observable: it propagates to the
+      // entry point, which reports it through handlePlaybackFailure, so the
+      // session never claims a playback the attempt was not allowed to start.
+      // An ordinary transport failure keeps the previous best-effort
+      // reporting semantics (it does not fail an already loaded stream).
+      await reportPlaybackEvent(instance, 'Playing',
+        { PositionTicks: instance.positionTicks, IsPaused: !instance.playing }, { signal });
       if (player === instance && generation === playbackGeneration) {
         playbackStarted = true;
         playerUI.end();
@@ -523,14 +656,17 @@
       playerAlive.value = false;
       playerUI.closeMenu();
       if (!player) return;
-      api('/Sessions/Playing/Stopped', {
-        method: 'POST',
-        body: JSON.stringify({ ItemId: playerItemId, MediaSourceId: player.mediaSource?.Id,
-          PlaySessionId: player.sessionId, PositionTicks: player.positionTicks }),
-      }).catch(() => {});
+      const instance = player;
+      // A late stop captures this instance's own attempt: a newer negotiation
+      // may already have bound a different attempt, which must never receive
+      // the old stop. Only a protocol rejection is recorded; an ordinary
+      // transport failure during teardown keeps the previous semantics.
+      cleanupEncodings(instance);
+      reportPlaybackEvent(instance, 'Stopped', { PositionTicks: instance.positionTicks })
+        .catch(error => reportStopFailure(error));
       // Destroy is async: track it so the next engine waits within budget for
       // the previous generation instead of overlapping decoders (W13).
-      engineCleanup.track(player.destroy());
+      engineCleanup.track(instance.destroy());
       player = null; playerItemId = null; playSessionId = null;
     }
 

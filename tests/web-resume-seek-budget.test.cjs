@@ -9,6 +9,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { harness, makeStorage, delay } = require('./web-ui-harness.cjs');
+const { playbackInfo: strictPlaybackInfo, isSessionEvent } = require('./web-playback-fixture.cjs');
 
 function makePlayerClass(config = {}) {
   const instances = [];
@@ -71,9 +72,9 @@ function episode(id, extra = {}) {
 function makeReply(options = {}) {
   return url => {
     if (url.pathname.endsWith('/PlaybackInfo')) {
-      return options.playbackInfo || { MediaSources: [mediaSource()], PlaySessionId: 'sess' };
+      return options.playbackInfo || strictPlaybackInfo([mediaSource()], 'sess');
     }
-    if (url.pathname.startsWith('/Sessions/Playing')) return {};
+    if (isSessionEvent(url.pathname)) return {};
     if (url.pathname.startsWith('/Users/')) return { Policy: {} };
     const detail = url.pathname.match(/\/Items\/([^/]+)$/);
     if (detail) return options.itemDetail || episode(decodeURIComponent(detail[1]));

@@ -14,6 +14,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { harness, makeStorage, delay } = require('./web-ui-harness.cjs');
+const { playbackInfo: strictPlaybackInfo, isSessionEvent, isStrictUrl } = require('./web-playback-fixture.cjs');
 
 const plain = value => Array.from(value || []);
 
@@ -80,11 +81,11 @@ function makeReply(options = {}) {
   const reply = (url, opts) => {
     let body = null;
     if (typeof opts?.body === 'string') { try { body = JSON.parse(opts.body); } catch (e) {} }
-    bodies.push({ url, body });
+    bodies.push({ url, body, opts });
     if (url.pathname.endsWith('/PlaybackInfo')) {
       return typeof options.playbackInfo === 'function'
         ? options.playbackInfo(body)
-        : (options.playbackInfo || { MediaSources: [mediaSource()], PlaySessionId: 'sess' });
+        : (options.playbackInfo || strictPlaybackInfo([mediaSource()], 'sess'));
     }
     if (url.pathname.endsWith('/Episodes')) {
       return typeof options.episodes === 'function' ? options.episodes(body) : (options.episodes ?? { Items: [episode('e1'), episode('e2')] });
@@ -98,7 +99,7 @@ function makeReply(options = {}) {
       const id = decodeURIComponent(detail[1]);
       return options.itemDetail ? options.itemDetail(id) : episode(id);
     }
-    if (url.pathname.startsWith('/Sessions/Playing')) return {};
+    if (isSessionEvent(url.pathname)) return options.eventReply?.(url, body) || {};
     if (url.pathname.startsWith('/Users/')) return { Policy: {} };
     return { Items: [] };
   };
@@ -163,7 +164,7 @@ test('A2 a failed attempt consumes the router handoff instead of reusing it', as
   const { app, player, reply, context } = setup({
     playbackInfo: () => {
       if (fail) return { __status: 500, __body: 'upstream down' };
-      return { MediaSources: [mediaSource()], PlaySessionId: 'sess' };
+      return strictPlaybackInfo([mediaSource()], 'sess');
     },
   });
   context.window.location.hash = '#/play/e1';
@@ -182,15 +183,14 @@ test('A2 a failed attempt consumes the router handoff instead of reusing it', as
   assert.equal(retry.EnableDirectStream, undefined);
   assert.equal(retry.EnableTranscoding, undefined);
   assert.equal(player.instances.length, 1);
-  assert.match(player.instances[0].loadCalls[0].url, /stream\.mp4/);
+  assert.ok(isStrictUrl(player.instances[0].loadCalls[0].url, '/Videos/e1/stream.mp4'),
+    'normal playback loads the direct stream scoped to its attempt');
 });
 
 test('A3 compatibility playback uses only the transcode URL', async () => {
   const { app, player, reply, context } = setup({
-    playbackInfo: () => ({
-      MediaSources: [mediaSource({ TranscodingUrl: '/Videos/e1/master.m3u8?MediaSourceId=ms1' })],
-      PlaySessionId: 'sess',
-    }),
+    playbackInfo: () => strictPlaybackInfo(
+      [mediaSource({ TranscodingUrl: '/Videos/e1/master.m3u8?MediaSourceId=ms1' })], 'sess'),
   });
   context.window.location.hash = '#/play/e1';
   await app.playItem(episode('e1'), null, { forceTranscode: true });
@@ -199,13 +199,16 @@ test('A3 compatibility playback uses only the transcode URL', async () => {
   assert.equal(body.EnableDirectStream, false);
   assert.equal(body.EnableTranscoding, true);
   assert.equal(player.instances.length, 1);
-  assert.match(player.instances[0].loadCalls[0].url, /master\.m3u8/);
+  assert.ok(isStrictUrl(player.instances[0].loadCalls[0].url, '/Videos/e1/master.m3u8'),
+    'compatibility playback loads only the scoped transcode URL');
   assert.doesNotMatch(player.instances[0].loadCalls[0].url, /stream\.mp4/);
   assert.equal(player.instances[0].loadCalls[0].opts.fallbackUrl, null);
 
   // Without a transcode URL the forced retry fails visibly; the original
   // stream is never substituted.
-  const second = setup({ playbackInfo: () => ({ MediaSources: [mediaSource()], PlaySessionId: 'sess' }) });
+  const second = setup({
+    playbackInfo: () => strictPlaybackInfo([mediaSource()], 'sess'),
+  });
   second.context.window.location.hash = '#/play/e1';
   await second.app.playItem(episode('e1'), null, { forceTranscode: true });
   assert.equal(second.app.playerUI.status.value, 'error');
@@ -215,21 +218,25 @@ test('A3 compatibility playback uses only the transcode URL', async () => {
 });
 
 test('A4 the "兼容播放" button re-negotiates a transcode stream', async () => {
-  const sources = [
-    { MediaSources: [mediaSource()], PlaySessionId: 'sess' },
-    { MediaSources: [mediaSource({ TranscodingUrl: '/Videos/e1/master.m3u8?MediaSourceId=ms1' })], PlaySessionId: 'sess' },
+  const responses = [
+    [mediaSource()],
+    [mediaSource({ TranscodingUrl: '/Videos/e1/master.m3u8?MediaSourceId=ms1' })],
   ];
   let index = 0;
-  const { app, player, reply, context } = setup({ playbackInfo: () => sources[Math.min(index++, 1)] });
+  const { app, player, reply, context } = setup({
+    playbackInfo: () => strictPlaybackInfo(responses[Math.min(index++, 1)], 'sess'),
+  });
   context.window.location.hash = '#/play/e1';
   await app.playItem(episode('e1'));
-  assert.match(player.instances[0].loadCalls[0].url, /stream\.mp4/);
+  assert.ok(isStrictUrl(player.instances[0].loadCalls[0].url, '/Videos/e1/stream.mp4'),
+    'the direct stream is bound to the first attempt');
   // Simulate the engine failing after direct play.
   app.playerUI.fail('failed', '无法加载播放内容', { item: episode('e1'), mediaSourceId: 'ms1', startSeconds: 42, paused: true });
   app.retryPlayback(true);
   await delay(20);
   assert.equal(player.instances.length, 2);
-  assert.match(player.instances[1].loadCalls[0].url, /master\.m3u8/);
+  assert.ok(isStrictUrl(player.instances[1].loadCalls[0].url, '/Videos/e1/master.m3u8'),
+    'the retry negotiation binds its own scoped transcode URL');
   assert.doesNotMatch(player.instances[1].loadCalls[0].url, /stream\.mp4/);
   const last = playbackInfoBodies(reply).at(-1);
   assert.equal(last.EnableDirectPlay, false);
@@ -468,14 +475,11 @@ test('A13 onState drives background subtitle index and audio errors', async () =
 });
 
 test('A14 a rejected direct stream is terminal while compatibility transcode still works', async () => {
-  const playbackInfo = () => ({
-    MediaSources: [mediaSource({
-      DirectStreamUrl: undefined,
-      EioDirectStreamUnavailable: true,
-      TranscodingUrl: '/Videos/e1/master.m3u8?MediaSourceId=ms1',
-    })],
-    PlaySessionId: 'sess',
-  });
+  const playbackInfo = () => strictPlaybackInfo([mediaSource({
+    DirectStreamUrl: undefined,
+    EioDirectStreamUnavailable: true,
+    TranscodingUrl: '/Videos/e1/master.m3u8?MediaSourceId=ms1',
+  })], 'sess');
   const normal = setup({ playbackInfo });
   normal.context.window.location.hash = '#/play/e1';
   await normal.app.playItem(episode('e1'), 'ms1');
@@ -487,11 +491,62 @@ test('A14 a rejected direct stream is terminal while compatibility transcode sti
   await forced.app.playItem(episode('e1'), 'ms1', { forceTranscode: true });
   assert.equal(forced.player.instances.length, 1);
   const loaded = forced.player.instances[0].loadCalls[0];
-  assert.match(loaded.url, /master\.m3u8/);
+  assert.ok(isStrictUrl(loaded.url, '/Videos/e1/master.m3u8'),
+    'forced compatibility loads only the scoped transcode URL');
   assert.doesNotMatch(loaded.url, /stream\./);
   assert.equal(loaded.opts.fallbackUrl, null);
   const body = playbackInfoBodies(forced.reply)[0];
   assert.equal(body.EnableDirectPlay, false);
   assert.equal(body.EnableDirectStream, false);
   assert.equal(body.EnableTranscoding, true);
+});
+
+
+test('strict pagehide sends one capability-scoped keepalive stop for its own attempt', async () => {
+  const env = setup();
+  env.context.location.hash = '#/play/e1';
+  await env.app.playItem(episode('e1'));
+  const instance = env.player.instances[0];
+  assert.ok(instance.eioAttempt);
+  for (const handler of env.listeners.window.pagehide) { handler(); handler(); }
+  await delay(10);
+  const stops = env.reply.bodies.filter(call => call.url.pathname.endsWith('/Sessions/Playing/Stopped'));
+  assert.equal(stops.length, 1);
+  assert.equal(stops[0].opts.keepalive, true);
+  assert.equal(stops[0].body.EioAttemptId, instance.eioAttempt.attemptId);
+  assert.equal(stops[0].body.PlaySessionId, instance.eioAttempt.playSessionId);
+  assert.equal(stops[0].url.searchParams.get('api_key'), instance.eioAttempt.token);
+  assert.equal(stops[0].opts.headers['X-Emby-Token'], undefined);
+  const cleanups = env.reply.bodies.filter(call => call.url.pathname.endsWith('/Videos/ActiveEncodings'));
+  assert.equal(cleanups.length, 1);
+  assert.equal(cleanups[0].opts.method, 'DELETE');
+  assert.equal(cleanups[0].opts.keepalive, true);
+  assert.equal(cleanups[0].url.searchParams.get('api_key'), instance.eioAttempt.token);
+  assert.equal(cleanups[0].opts.headers, undefined);
+  env.app.exitPlayer();
+});
+
+test('a strict Progress rejection visibly stops the engine instead of swallowing the error', async () => {
+  const env = setup({ eventReply: url => url.pathname.endsWith('/Progress')
+    ? { __status: 409, __body: JSON.stringify({kind:'playback-auth-incompatible',message:'renegotiate'}) } : {} });
+  env.context.location.hash = '#/play/e1';
+  await env.app.playItem(episode('e1'));
+  const instance = env.player.instances[0];
+  instance.onProgress(20000000);
+  await delay(10);
+  assert.equal(env.app.playerUI.status.value, 'error');
+  assert.equal(env.player.destroyed.length, 1);
+  instance.onProgress(30000000);
+  await delay(10);
+  assert.equal(env.reply.bodies.filter(call => call.url.pathname.endsWith('/Progress')).length, 1,
+    'an ended instance must not generate an automatic renegotiation/report loop');
+});
+
+test('a missing strict attempt never falls back to a legacy engine or event', async () => {
+  const env = setup({playbackInfo:{MediaSources:[mediaSource()],PlaySessionId:'legacy'}});
+  env.context.location.hash = '#/play/e1';
+  await env.app.playItem(episode('e1'));
+  assert.equal(env.app.playerUI.status.value, 'error');
+  assert.equal(env.player.instances.length, 0);
+  assert.equal(env.reply.bodies.filter(call => isSessionEvent(call.url.pathname)).length, 0);
 });

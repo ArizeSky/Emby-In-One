@@ -200,6 +200,10 @@ type outboundHop struct {
 	Method    string
 	Headers   http.Header
 	Transport http.Header
+	// Provenance is the explicit authority for a resource URL registered from an
+	// authenticated upstream answer. It is used only when it matches this hop's
+	// exact URL; nil keeps the conservative unregistered policy.
+	Provenance *resourceQueryProvenance
 }
 
 // sendOutboundHop performs exactly one request against rawURL, projecting the
@@ -233,6 +237,13 @@ func (c *UpstreamClient) sendOutboundHop(ctx context.Context, reqCtx *RequestCon
 	if reqCtx == nil {
 		reqCtx = requestContextFrom(ctx)
 	}
+	provenance := hop.Provenance
+	if !provenance.matches(target) {
+		provenance = nil
+	}
+	if reqCtx != nil && provenance == nil && reqCtx.ResourceQueryProvenance.matches(target) {
+		provenance = reqCtx.ResourceQueryProvenance
+	}
 
 	auth := c.authSnapshot()
 	if err := c.validatePlaybackAuth(reqCtx, auth); err != nil {
@@ -252,7 +263,7 @@ func (c *UpstreamClient) sendOutboundHop(ctx context.Context, reqCtx *RequestCon
 	case outboundTargetExternal:
 		headers = projectPublicOutboundHeaders(headers)
 	}
-	if err := prepareHopQuery(target, class == outboundTargetTrusted, auth.AccessToken, auth.AccessToken, hop.Headers.Get("X-Emby-Token")); err != nil {
+	if err := prepareHopQueryWithProvenance(target, class == outboundTargetTrusted, auth.AccessToken, provenance, auth.AccessToken, hop.Headers.Get("X-Emby-Token")); err != nil {
 		return nil, err
 	}
 
@@ -309,7 +320,10 @@ func (c *UpstreamClient) redirectPolicyFor(follow bool, mode outboundAuthMode) f
 			return errUpstreamLoginRedirectUntrusted
 		}
 		token := via[0].Header.Get("X-Emby-Token")
-		if err := prepareHopQuery(req.URL, class == outboundTargetTrusted, token, token); err != nil {
+		reqCtx := requestContextFrom(req.Context())
+		private := resourceQueryPrivateTokens(reqCtx, token)
+		provenance := requestContextResourceQueryProvenance(reqCtx).deriveRedirect(req.URL.String(), private...)
+		if err := prepareHopQueryWithProvenance(req.URL, class == outboundTargetTrusted, token, provenance, private...); err != nil {
 			return err
 		}
 		if class == outboundTargetTrusted {

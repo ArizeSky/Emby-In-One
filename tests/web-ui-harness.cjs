@@ -16,8 +16,9 @@ const vm = require('node:vm');
 // Load order mirrors web.html. library-query.js feeds library-state/page-state,
 // home-library-rows.js must exist before page-state.js creates the controller,
 // home-library-row.js must exist before app.js registers the component, and
-// playback-session.js must exist before app.js creates the playback session.
-const SCRIPTS = ['data.js', 'ui.js', 'library-query.js', 'home-library-rows.js', 'page-state.js', 'player-ui.js', 'library-state.js', 'resume-card.js', 'ui-components.js', 'home-library-row.js', 'playback-orchestrator.js', 'player-progress.js', 'player-buffer.js', 'player-telemetry-ui.js', 'theme-player-controls.js', 'theme.js', 'theme-transport.js', 'appearance.js', 'player-rate-ui.js', 'playback-session.js', 'app.js'];
+// playback-session.js must exist before app.js creates the playback session,
+// and playback-identity.js must exist before playback-session.js reads it.
+const SCRIPTS = ['data.js', 'ui.js', 'library-query.js', 'home-library-rows.js', 'page-state.js', 'player-ui.js', 'library-state.js', 'resume-card.js', 'ui-components.js', 'home-library-row.js', 'playback-orchestrator.js', 'player-progress.js', 'player-buffer.js', 'player-telemetry-ui.js', 'theme-player-controls.js', 'theme.js', 'theme-transport.js', 'appearance.js', 'player-rate-ui.js', 'playback-identity.js', 'playback-session.js', 'app.js'];
 
 function makeStorage(initial = {}) {
   const store = new Map(Object.entries(initial));

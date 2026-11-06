@@ -1,11 +1,12 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { harness, delay } = require('./web-ui-harness.cjs');
+const { playbackInfo } = require('./web-playback-fixture.cjs');
 
 function playbackHarness({ presetContainer = true } = {}) {
-  const source = { Id: 'source', Container: 'mp4', MediaStreams: [] };
+  const source = { Id: 'source', Container: 'mp4', MediaStreams: [], EioFallbackUrl: '/Videos/movie/stream' };
   const item = { Id: 'movie', Type: 'Movie', RunTimeTicks: 20000000000, MediaSources: [source] };
-  const env = harness({ reply: () => ({ MediaSources: [source], PlaySessionId: 'session' }) });
+  const env = harness({ reply: path => path.pathname.endsWith('/PlaybackInfo') ? playbackInfo([source]) : {} });
   const instances = [];
   const { app, context } = env;
   context.addEventListener = context.removeEventListener = () => {};

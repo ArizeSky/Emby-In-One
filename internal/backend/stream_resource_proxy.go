@@ -38,10 +38,16 @@ type resourceRewriteContext struct {
 	ServerID        string
 	OriginalID      string
 	TimelineSession string
+	AttemptID       string
+	Capability      string
 	// ManifestKey identifies the authorized fetch before any redirect. Resource
 	// resolution still uses the final URL; rotating CDN signatures do not move
 	// a stable origin request or resource handle to a different playlist window.
 	ManifestKey string
+	// Provenance is the registered manifest's authority. Resource URIs inherit
+	// its private credential values, so a refreshed token cannot survive in a
+	// newly bound external resource.
+	Provenance *resourceQueryProvenance
 }
 
 // RewriteM3U8ForItemWithResources rewrites fetchable manifest URIs to local
@@ -52,6 +58,17 @@ func (a *App) RewriteM3U8ForItemWithResources(content, upstreamBase, proxyToken 
 		return "", errMissingResourceIdentity
 	}
 	baseURL, baseErr := url.Parse(upstreamBase)
+	authToken := ""
+	if a.Upstream != nil {
+		if client := a.Upstream.ClientByID(ctx.ServerID); client != nil {
+			authToken = client.authSnapshot().AccessToken
+		}
+	}
+	privateTokens := resourceQueryPrivateTokens(nil, authToken)
+	privateTokens = append(privateTokens, proxyToken, ctx.Capability)
+	if ctx.Provenance != nil {
+		privateTokens = append(privateTokens, ctx.Provenance.private...)
+	}
 	lines := strings.Split(content, "\n")
 	type replacement struct{ line, start, end int }
 	var replacements []replacement
@@ -97,9 +114,12 @@ func (a *App) RewriteM3U8ForItemWithResources(content, upstreamBase, proxyToken 
 			if resolved.Host == "" || resolved.User != nil {
 				return errUnsupportedResourceURL
 			}
+			resourceURL := resolved.String()
 			entries = append(entries, streamResourceEntry{
 				UserID: ctx.UserID, VirtualItemID: ctx.VirtualItemID, ServerID: ctx.ServerID,
-				OriginalID: ctx.OriginalID, ResourceURL: resolved.String(), TimelineSession: ctx.TimelineSession,
+				OriginalID: ctx.OriginalID, ResourceURL: resourceURL, TimelineSession: ctx.TimelineSession,
+				AttemptID:  ctx.AttemptID,
+				Provenance: newResourceQueryProvenance(resourceQueryProvenanceManifest, resourceURL, privateTokens...),
 			})
 			replacements = append(replacements, replacement{i, start, end})
 			return nil
@@ -135,6 +155,10 @@ func (a *App) RewriteM3U8ForItemWithResources(content, upstreamBase, proxyToken 
 	for i := len(replacements) - 1; i >= 0; i-- {
 		edit := replacements[i]
 		local := "/Videos/" + ctx.VirtualItemID + "/eio-resource/" + ids[i]
+		if ctx.AttemptID != "" {
+			local = "/eio/playback/v1/" + ctx.AttemptID + local
+			proxyToken = ctx.Capability
+		}
 		if proxyToken != "" {
 			local += "?api_key=" + url.QueryEscape(proxyToken)
 		}
@@ -165,6 +189,10 @@ func (a *App) serveStreamResource(w http.ResponseWriter, r *http.Request, virtua
 		w.WriteHeader(http.StatusGone)
 		return
 	}
+	if entry.AttemptID != playbackAttemptFromContext(reqCtx) {
+		writeJSON(w, http.StatusConflict, map[string]any{"kind": "playback-resource-attempt-mismatch"})
+		return
+	}
 	if streamResourceUserID(reqCtx) == "" || streamResourceUserID(reqCtx) != entry.UserID || entry.VirtualItemID != virtualItemID {
 		w.WriteHeader(http.StatusForbidden)
 		return
@@ -191,6 +219,9 @@ func (a *App) serveStreamResource(w http.ResponseWriter, r *http.Request, virtua
 		w.WriteHeader(http.StatusGone)
 		return
 	}
+	if reqCtx != nil {
+		reqCtx.ResourceQueryProvenance = entry.Provenance.withKnownPrivate(reqCtx.ProxyToken, reqCtx.PlaybackCredential)
+	}
 	resp, err := a.fetchResourceFollowingRedirects(r, client, entry.ResourceURL)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -201,6 +232,11 @@ func (a *App) serveStreamResource(w http.ResponseWriter, r *http.Request, virtua
 		}
 		w.WriteHeader(http.StatusBadGateway)
 		return
+	}
+	if resp.Request != nil {
+		if responseCtx := requestContextFrom(resp.Request.Context()); responseCtx != nil {
+			reqCtx = responseCtx
+		}
 	}
 	defer resp.Body.Close()
 	contentType := resp.Header.Get("Content-Type")
@@ -227,7 +263,10 @@ func (a *App) serveStreamResource(w http.ResponseWriter, r *http.Request, virtua
 			ServerID:        entry.ServerID,
 			OriginalID:      entry.OriginalID,
 			TimelineSession: entry.TimelineSession,
+			AttemptID:       entry.AttemptID,
+			Capability:      playbackCapabilityFromContext(reqCtx),
 			ManifestKey:     "resource:" + opaqueID,
+			Provenance:      entry.Provenance,
 		})
 		if rerr != nil {
 			writeStreamResourceRewriteError(w, rerr)
@@ -285,9 +324,14 @@ func streamResourceHandleID(raw string) string {
 // and a credential already present in the URL is refreshed from the same auth
 // snapshot as the headers, so the two carriers can never disagree.
 func (c *UpstreamClient) fetchResourceRedirectTarget(ctx context.Context, method, rawURL string, headers http.Header) (*http.Response, error) {
+	return c.fetchResourceRedirectTargetWithProvenance(ctx, method, rawURL, headers, nil)
+}
+
+func (c *UpstreamClient) fetchResourceRedirectTargetWithProvenance(ctx context.Context, method, rawURL string, headers http.Header, provenance *resourceQueryProvenance) (*http.Response, error) {
 	return c.sendOutboundHop(ctx, requestContextFrom(ctx), rawURL, outboundHop{
-		Method:  method,
-		Headers: headers,
+		Method:     method,
+		Headers:    headers,
+		Provenance: provenance,
 	})
 }
 
@@ -304,7 +348,9 @@ func (a *App) fetchResourceFollowingRedirects(r *http.Request, client *UpstreamC
 		// HEAD client and closing its body unread wastes the full response.
 		method = http.MethodHead
 	}
-	resp, err := client.fetchResourceRedirectTarget(r.Context(), method, rawURL, headers)
+	reqCtx := requestContextFrom(r.Context())
+	provenance := requestContextResourceQueryProvenance(reqCtx)
+	resp, err := client.fetchResourceRedirectTargetWithProvenance(r.Context(), method, rawURL, headers, provenance)
 	if err != nil {
 		return nil, err
 	}
@@ -321,13 +367,25 @@ func (a *App) fetchResourceFollowingRedirects(r *http.Request, client *UpstreamC
 		if rerr != nil || abs == nil {
 			break
 		}
-		followed, ferr := client.fetchResourceRedirectTarget(r.Context(), method, abs.String(), headers)
+		previousToken := ""
+		if resp.Request != nil {
+			previousToken = resp.Request.Header.Get("X-Emby-Token")
+		}
+		private := resourceQueryPrivateTokens(reqCtx, previousToken)
+		private = append(private, client.authSnapshot().AccessToken)
+		provenance = provenance.deriveRedirect(abs.String(), private...)
+		followed, ferr := client.fetchResourceRedirectTargetWithProvenance(r.Context(), method, abs.String(), headers, provenance)
 		if ferr != nil {
 			resp.Body.Close()
 			return nil, ferr
 		}
 		resp.Body.Close()
 		resp = followed
+	}
+	if resp != nil && resp.Request != nil && reqCtx != nil {
+		copyCtx := *reqCtx
+		copyCtx.ResourceQueryProvenance = provenance.deriveRedirect(resp.Request.URL.String(), resourceQueryPrivateTokens(reqCtx, resp.Request.Header.Get("X-Emby-Token"))...)
+		resp.Request = resp.Request.WithContext(context.WithValue(resp.Request.Context(), requestContextKey{}, &copyCtx))
 	}
 	return resp, nil
 }

@@ -21,6 +21,7 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("POST /Users/{userId}/Policy", a.withContext(a.requireAuth(a.handleUserPolicy)))
 	a.registerMediaRoutes(mux)
 	a.registerLibraryAndImageRoutes(mux)
+	a.registerStrictPlaybackRoutes(mux)
 	a.registerSessionAndUserStateRoutes(mux)
 	a.registerThemeRoutes(mux)
 

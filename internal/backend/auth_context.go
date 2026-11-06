@@ -16,7 +16,10 @@ type RequestContext struct {
 	ProxyUser  *tokenInfo
 	// Set only by the strict playback ingress after local-session ownership
 	// and route association checks. Native/metadata requests leave it nil.
-	Playback *playbackIdentityBinding
+	Playback                *playbackIdentityBinding
+	PlaybackCredential      string
+	ResourceQueryProvenance *resourceQueryProvenance
+	PlaybackNegotiation     *playbackNegotiation
 	// LegacyProxyUserID is the single global virtual user ID that older responses
 	// handed to every client. It is kept only so requests that still carry it are
 	// recognised as the current user; the identity of the request itself always
@@ -31,6 +34,11 @@ type RequestContext struct {
 
 func (a *App) withContext(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		queryCredential, _ := queryTokenLookup(r.URL.Query())
+		if strings.HasPrefix(queryCredential, "eio_play_v1_") || strings.HasPrefix(extractToken(r), "eio_play_v1_") {
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"kind": "playback-strict-route-required", "message": "strict playback credentials cannot be used on legacy routes"})
+			return
+		}
 		token := extractToken(r)
 		var proxyUser *tokenInfo
 		if token != "" {

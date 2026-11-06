@@ -171,6 +171,8 @@ type playbackIdentityBinding struct {
 	Auth     playbackIdentityAuth
 
 	UpstreamPlaySessionID string
+	SlotReservation       playbackSlotReservation
+	CleanupConfirmed      uint8
 
 	State          playbackIdentityState
 	CreatedAt      time.Time
@@ -204,6 +206,8 @@ type playbackIdentityEntry struct {
 	auth     playbackIdentityAuth
 
 	upstreamPlaySessionID string
+	slotReservation       playbackSlotReservation
+	cleanupConfirmed      uint8
 
 	state          playbackIdentityState
 	createdAt      time.Time
@@ -236,6 +240,8 @@ func (e *playbackIdentityEntry) snapshot() playbackIdentityBinding {
 		Identity:              clonePlaybackIdentitySnapshot(e.identity),
 		Auth:                  e.auth,
 		UpstreamPlaySessionID: e.upstreamPlaySessionID,
+		SlotReservation:       e.slotReservation,
+		CleanupConfirmed:      e.cleanupConfirmed,
 		State:                 e.state,
 		CreatedAt:             e.createdAt,
 		LastUsedAt:            e.lastUsedAt,
@@ -398,19 +404,14 @@ func (s *playbackIdentityStore) bindAliasLocked(entry *playbackIdentityEntry, va
 		return fmt.Errorf("%w: attempt already has an alias", ErrPlaybackIdentityAliasConflict)
 	}
 	key := playbackIdentityAliasKey{AttemptID: entry.attemptID, ServerID: entry.serverID, Value: value}
-	if holder, ok := s.aliases[key]; ok && holder != entry.attemptID {
-		if other := s.entries[holder]; other != nil && !other.state.terminal() && !s.expiredLocked(other, now) {
-			return fmt.Errorf("%w: alias held by a live attempt", ErrPlaybackIdentityAliasConflict)
-		}
-	}
 	entry.upstreamPlaySessionID = value
 	s.aliases[key] = entry.attemptID
 	return nil
 }
 
-// resolveAlias finds a binding by a server-scoped session alias. A wrong owner is
-// reported as not found so a client cannot probe another user's attempt, and a
-// stopping/terminal attempt is rejected like any other new operation.
+// resolveAlias verifies an alias inside an already authenticated attempt. Aliases
+// are intentionally not globally unique: upstreams can reuse the same session
+// across candidates, devices and replays. No ingress routes by alias alone.
 func (s *playbackIdentityStore) resolveAlias(attemptID, serverID string, upstreamPlaySessionID string, owner playbackIdentityOwner) (playbackIdentityBinding, error) {
 	if serverID == "" || upstreamPlaySessionID == "" {
 		return playbackIdentityBinding{}, fmt.Errorf("%w: invalid alias lookup", ErrPlaybackIdentityInvalid)

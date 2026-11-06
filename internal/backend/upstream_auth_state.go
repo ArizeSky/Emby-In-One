@@ -5,17 +5,19 @@ package backend
 // them separately can pair the user ID of one login with the token of another.
 // Every outbound request that needs both must take one snapshot instead.
 type upstreamAuthSnapshot struct {
-	UserID        string
-	AccessToken   string
-	Compatibility playbackIdentityAuth
-	Generation    uint64
+	UserID              string
+	AccessToken         string
+	Compatibility       playbackIdentityAuth
+	Generation          uint64
+	ConfigRevision      string
+	ConfiguredPrincipal string
 }
 
 // authSnapshot reads UserID and AccessToken under a single RLock.
 func (c *UpstreamClient) authSnapshot() upstreamAuthSnapshot {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return upstreamAuthSnapshot{UserID: c.UserID, AccessToken: c.AccessToken, Compatibility: c.authCompatibility, Generation: c.authGeneration}
+	return upstreamAuthSnapshot{UserID: c.UserID, AccessToken: c.AccessToken, Compatibility: c.authCompatibility, Generation: c.authGeneration, ConfigRevision: playbackConfigRevisionLocked(c), ConfiguredPrincipal: playbackAuthPrincipal(c.Config, c.UserID)}
 }
 
 // clientUserID returns the upstream's real user ID for single-field reads in

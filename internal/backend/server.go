@@ -36,13 +36,15 @@ type App struct {
 	ThemeStore *ThemeStore
 	// activityTracker owns the bounded in-memory session accumulation, and the
 	// scope/policy/health helpers are safe on their zero value.
-	activityTracker  *upstreamActivityTracker
-	activityScopes   upstreamActivityScopeGuard
-	activityPolicies upstreamActivityPolicyCache
-	activityHealth   upstreamActivityHealth
-	libraryCache     *upstreamLibraryCache
-	PlaybackLimiter  *PlaybackLimiter
-	StreamResources  *streamResourceStore
+	activityTracker      *upstreamActivityTracker
+	activityScopes       upstreamActivityScopeGuard
+	activityPolicies     upstreamActivityPolicyCache
+	activityHealth       upstreamActivityHealth
+	libraryCache         *upstreamLibraryCache
+	PlaybackLimiter      *PlaybackLimiter
+	StreamResources      *streamResourceStore
+	PlaybackIdentities   *playbackIdentityStore
+	PlaybackCapabilities *playbackCapabilityStore
 	// sessionEvents tracks which playback session is live for (user, item), so
 	// a late event from a superseded session cannot overwrite newer watch
 	// state. Nil in minimal test apps: all methods are nil-safe.
@@ -154,27 +156,29 @@ func NewApp() (*App, error) {
 	bgWorkCtx, bgWorkCancel := context.WithCancel(context.Background())
 
 	app := &App{
-		ConfigStore:      configStore,
-		Logger:           logger,
-		IDStore:          idStore,
-		Identity:         identity,
-		UALibrary:        uaLibrary,
-		Auth:             auth,
-		Upstream:         upstream,
-		UserStore:        userStore,
-		WatchStore:       watchStore,
-		HiddenLibraries:  hiddenLibraries,
-		UpstreamActivity: upstreamActivity,
-		ThemeStore:       themeStore,
-		activityTracker:  newUpstreamActivityTracker(),
-		libraryCache:     newUpstreamLibraryCache(),
-		PlaybackLimiter:  NewPlaybackLimiter(),
-		StreamResources:  newStreamResourceStore(),
-		sessionEvents:    newSessionEventTracker(),
-		uaJobsCtx:        uaJobsCtx,
-		uaJobsCancel:     uaJobsCancel,
-		bgWorkCtx:        bgWorkCtx,
-		bgWorkCancel:     bgWorkCancel,
+		ConfigStore:          configStore,
+		Logger:               logger,
+		IDStore:              idStore,
+		Identity:             identity,
+		UALibrary:            uaLibrary,
+		Auth:                 auth,
+		Upstream:             upstream,
+		UserStore:            userStore,
+		WatchStore:           watchStore,
+		HiddenLibraries:      hiddenLibraries,
+		UpstreamActivity:     upstreamActivity,
+		ThemeStore:           themeStore,
+		activityTracker:      newUpstreamActivityTracker(),
+		libraryCache:         newUpstreamLibraryCache(),
+		PlaybackLimiter:      NewPlaybackLimiter(),
+		StreamResources:      newStreamResourceStore(),
+		PlaybackIdentities:   newPlaybackIdentityStore(),
+		PlaybackCapabilities: newPlaybackCapabilityStore(),
+		sessionEvents:        newSessionEventTracker(),
+		uaJobsCtx:            uaJobsCtx,
+		uaJobsCancel:         uaJobsCancel,
+		bgWorkCtx:            bgWorkCtx,
+		bgWorkCancel:         bgWorkCancel,
 	}
 	// Initialize per-server activity scopes from the current configuration. A
 	// failure is logged inside and never blocks startup or playback.
