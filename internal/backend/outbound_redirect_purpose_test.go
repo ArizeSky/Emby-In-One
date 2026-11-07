@@ -121,3 +121,30 @@ func TestPasswordLoginBodylessHopCannotReacquirePassword(t *testing.T) {
 		t.Fatal("bodyless round-trip restored sensitive body")
 	}
 }
+
+// Exercise the older net/http replay behavior even when tests use a newer Go.
+func TestPasswordLoginRedirectPolicyDiscardsResurrectedBody(t *testing.T) {
+	c := hopCustomClient(t, "https://api.example", true)
+	policy := c.redirectPolicyFor(true, authModePasswordLogin)
+	initial, err := http.NewRequest(http.MethodPost, "https://api.example/Users/AuthenticateByName", strings.NewReader("fixture-password"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	converted, err := http.NewRequest(http.MethodGet, "https://cdn.example/convert", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := policy(converted, []*http.Request{initial}); err != nil {
+		t.Fatal(err)
+	}
+	resurrected, err := http.NewRequest(http.MethodGet, "https://other.example/complete", strings.NewReader("fixture-password"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := policy(resurrected, []*http.Request{initial, converted}); err != nil {
+		t.Fatal(err)
+	}
+	if resurrected.Body != nil || resurrected.GetBody != nil || resurrected.ContentLength != 0 {
+		t.Fatal("converted login redirect retained a sensitive body or replay factory")
+	}
+}

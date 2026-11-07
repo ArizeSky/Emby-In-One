@@ -305,6 +305,7 @@ func (c *UpstreamClient) redirectPolicyFor(follow bool, mode outboundAuthMode) f
 }
 
 func (c *UpstreamClient) redirectPolicyForMedia(follow bool, mode outboundAuthMode, media bool) func(*http.Request, []*http.Request) error {
+	loginBodyDropped := false
 	return func(req *http.Request, via []*http.Request) error {
 		if !follow {
 			return errUpstreamRedirectNotFollowed
@@ -314,6 +315,21 @@ func (c *UpstreamClient) redirectPolicyForMedia(follow bool, mode outboundAuthMo
 		}
 		if req == nil || req.URL == nil || len(via) == 0 || via[0] == nil {
 			return errUnsupportedOutboundTarget
+		}
+		if mode == authModePasswordLogin {
+			// Go 1.23 can reconstruct the initial POST body on a later
+			// 307/308 even after a 301/302/303 converted the chain to GET.
+			// Once dropped, the login body must stay absent on every hop.
+			if loginBodyDropped {
+				if req.Body != nil {
+					_ = req.Body.Close()
+				}
+				req.Body = nil
+				req.GetBody = nil
+				req.ContentLength = 0
+			} else if !outboundRedirectCarriesSensitiveBody(mode, req) {
+				loginBodyDropped = true
+			}
 		}
 		class := c.classifyOutboundTarget(req.URL)
 		if class == outboundTargetRejected {
