@@ -91,7 +91,7 @@ Choose one route. For an existing deployment, check its directory and ports firs
 | **Method 3: Docker source build** | Code changes or custom image builds | Yes |
 | **Method 4: Run Go source** | Development and debugging | Yes |
 
-> **Version selection:** Stable: **V1.4.3**; candidate: **V1.4.4-rc4**. The binary installer defaults to the latest stable Release; select prereleases explicitly. See the [changelog](Update.md) for parental-control limitations. rc4 binaries and amd64/arm64 images are both published.
+> **Version selection:** Stable: **V1.4.3**; candidate: **V1.4.4-rc4**. The binary installer defaults to the latest stable Release; select prereleases explicitly. See the [changelog](Update.md) for parental-control limitations.
 
 ### Method 1: Release Binary One-Click Install (Primary Recommendation)
 
