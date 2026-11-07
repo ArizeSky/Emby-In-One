@@ -1,6 +1,6 @@
 # Emby-In-One
 
-> **Current release candidate: V1.4.4-rc3 (Pre-release) · Current stable release: V1.4.3**
+> **Preparing: V1.4.4-rc4 (Pre-release) · Published candidate: V1.4.4-rc3 · Stable: V1.4.3**
 
 [![License: GPL v3](https://img.shields.io/github/license/ArizeSky/Emby-In-One?color=blue)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.23+-00ADD8?logo=go&logoColor=white)](https://go.dev/)
@@ -13,21 +13,16 @@
 
 Based on Go language, it implements a multi-server Emby aggregation proxy — merges media libraries from multiple upstream Emby servers into a single unified endpoint accessible by any standard Emby client. Supports multi-user management, independent watch history, UA spoofing, concurrent playback limits, and role-based access control.
 
-> **Continue Watching note (this round's change):** When a card carries both `Episode` and `SeriesId`, `SeriesName` is preferred as the title with `SxxExx` as the subtitle, and clicking the card opens the series detail page for episode selection; quick play still uses the original episode and original progress. Without `SeriesId`, the original behavior and favorites remain unchanged; API grouping, pagination, and totals are unchanged, with no extra detail requests. Status: local Node 464/464 (454 baseline + 10 new) as of this round; this change was not built or deployed this round, and real playback has not been verified.
+## V1.4.4-rc4 Release Preview
 
-> **Embedded ASS subtitle outline fix (this round's change):** Corrects the outline/shadow CSS selectors for the embedded ASS renderer's child nodes (adding the descendant combinator in four places), restoring subtitles' original outline/shadow declarations; no global forced `text-shadow`, and JASSUB is unchanged. Measured offline in real Chromium compositing a synthetic ASS (Arial 24, Outline 3): the original build's `span::after` had no `content` and a 0px outline; after fixing the four selectors, with no override injected, the real pseudo-element measured black 6px (a 2x stroke centered on the path is expected, not a defect). That measurement is not equivalent to accepting the original media; this round did not build or deploy the change. Status: the full Node suite passes 470/470 (454 baseline + 10 series changes + 6 CSS contract cases), together with the related Go web/player/asset tests and `go vet`. The original media remains unverified.
+This candidate focuses on library queries, Web playback stability, themes and administration. See the [changelog](Update.md) for changes and known limitations.
 
-> **Latest full build and deployment status (2026-11-01, this round, supersedes all earlier "not deployed" notes):** With explicit user authorization, the full build plus replacement and restart of `emby-in-one.service` succeeded once this round. Source `20d9485`, version `v1.4.4-rc4-dev.20d9485`; built with Go 1.27.1 linux/amd64, CGO=1, gcc, static and stripped (`netgo`/`osusergo`, `-trimpath`, `-s -w`), offline, single CPU (nice 15, `GOMAXPROCS=1`, `-p 1`) in 101 seconds; artifact 62,972,336 bytes, SHA-256 `c8c117cc…0c419a`. Deployed to `/opt/emby-in-one/emby-in-one`, started 2026-11-01 19:13:30 CST as PID 571939, active/running, `NRestarts=0`; process and on-disk hashes match, uid/gid/mode were preserved, and the configuration, ports, and service unit are unchanged. The previous `9984016` executable was backed up separately, and config/data/public/log were snapshotted in full while stopped, passing tar comparison and hash verification. Local health checks, the 3-second settle plus follow-up recheck, and byte-for-byte matching of the actual `/admin/` and `/admin/admin.js` responses against this source all passed; no rollback and no retry, and the earlier `9984016` build and deployment record is retained as history. A full build and deployment is not acceptance of real media or visuals: no media playback and no manual upstream login or reconnect were performed this round (beyond the authorized service's ordinary startup), so user verification is required. No tag, Release, or image was created. See [full build verification](docs/full-build-verification.md).
+- **Libraries and home page**: local favorites, played and resumable lists use authorized ID-based queries; aggregate lists support bounded continuation with explicit partial-result notices. The home page adds lazy library rows, and Continue Watching cards can open series episode selection.
+- **Playback and subtitles**: improved resume, seeking, compatibility playback and teardown; fixes for ASS outlines, oversized MKV attachments and subtitle source selection across versions. Adds on-demand playback speeds, buffered progress and playback information.
+- **Experimental dual cache**: administrators can enable strict MSE cache control, stopping production at either 300,000,000 bytes of controlled compressed media or 120 seconds ahead. Disabled by default; this is not a browser-wide memory limit.
+- **Themes and administration**: light/dark/system appearance, restricted theme packages and account preferences; upstream viewing activity and retention reminders; managed Docker updates, backups and recovery.
 
-> **Historical full build and deployment status (2026-11-01, supersedes the two earlier "not deployed" notes):** With the user's explicit authorization, the full build, replacement, and restart of `emby-in-one.service` succeeded that round. Source `9984016`, version `v1.4.4-rc4-dev.9984016`; built with Go 1.27.1 linux/amd64, CGO=1, static (`netgo`/`osusergo`), offline, single CPU (nice 15, `GOMAXPROCS=1`, `-p 1`) in 103 seconds; artifact 62,972,336 bytes, SHA-256 `541f15c1…4c83d0`. Deployed to `/opt/emby-in-one/emby-in-one`, started 2026-11-01 18:00:33 CST as PID 546295, active/running, `NRestarts=0`; process and on-disk hashes match and uid/gid/mode were preserved; the previous executable plus config/data/public/log were snapshotted in full while stopped and verified. Local health checks and byte-for-byte static asset matching passed; no rollback and no retry. A full build and deployment is not acceptance of real media: no playback and no manual upstream login were performed that round, so user verification is required. No tag, Release, or image was created. See [full build verification](docs/full-build-verification.md).
-
-> **Admin panel UI fixes (this round, now deployed):** The upstream risk-filter dropdown label now reads "Filter" instead of "Risk filter"; filtering behavior is unchanged. UA management shows a loading state on first load instead of flashing an empty list, keeps existing rows during later refreshes, offers a retry on failure, and never lets stale, cancelled, or post-logout requests repopulate the UA cache. Theme refresh/upload buttons now use deterministic inline SVGs so icons are no longer missing. Integrated verification: Node 481/481 (470 baseline + 11 new). This round first delivered the code fixes and local verification (nothing was rebuilt or deployed at that point, and production still ran the `9984016` build). Later in the round, with renewed explicit user authorization, the complete build, replacement, and restart succeeded, so production now runs the `20d9485` build that contains these fixes; see the deployment status above and [full build verification](docs/full-build-verification.md). Real media and visual acceptance remain for the user to complete.
-
-> **Web home library horizontal rows (this round, not fully built or deployed):** The home page now renders one horizontal poster row for every library currently visible to the user, **including `playlists`**. Each row requests only the first page of its complete library when it scrolls into view (50 items by default, using the same query builder as the library page), with at most two physical requests in flight across all rows. `partial`/`error` rows offer a retry and keep already-loaded cards; the row title, "View all" and the trailing "Open library" card are real links; styling uses existing theme tokens, and the limited local 1280/390 viewport fixtures showed no page-level horizontal overflow. The hero, Continue Watching and library-entry sections keep their layout: the hero still requests `Items/Latest` (`Limit=12`) only for the first three non-playlist libraries, and rows are a separate `/Users/{uid}/Items` channel, so no "zero Latest requests on the home page" claim is made. The old bottom retry block for hero Latest failures was removed together with the old rows, while the `loadHome()` retry and the `retryLatest` method remain; this is not a claim that users accepted the visible regression. Status: implementation parent-reviewed with an exact `cmp` of the integrated source; final verification on the main directory has passed — all 13 feature/test files match the isolated source byte-for-byte, Node passes 515/515 with 0 skips (exit 0, 19.019s), the related Go tests pass (exit 0, 2.954s), and `go vet -p 1 ./...` exits 0 (all offline, single CPU, nice 15, `GOMAXPROCS=1`, logs under `/var/tmp`). That verification is neither a full race-detector run nor a real-browser whole-application E2E test; the UI contracts in the 34 new cases are fake-DOM method/event calls, not the real Vue DOM, and the real-Chromium evidence covers only the limited fixture scenarios listed in the record. This feature was not fully built or deployed this round, and production still runs `20d9485` — this is later development and does not contradict the earlier deployment. See the [isolation and main-directory verification record](docs/web-home-library-rows-verification.md).
-
-> **Latest authorized deployment (2026-11-01, supersedes the historical "not built/not deployed" notes below and the older `a9cb6ca` state):** With explicit user authorization, this round completed one full build plus replacement and restart of `emby-in-one.service` (performed by the parent agent, succeeded once, no rollback or retry). Source `158daba` (feature `8f2d667` + guard `4cc4ad3`), version `v1.4.4-rc4-dev.158daba`; offline, single CPU (nice 15, `GOMAXPROCS=1`, `-p 1`), Go 1.27.1, CGO=1/gcc, static build with `-trimpath -buildvcs=false`, `netgo osusergo`, `-s -w` in 104 seconds; artifact 63,013,296 bytes, SHA-256 `245135a47aa16c2ce49790031d402164e7c9ea8e1ec2750196d0c16741dbd5ef`. Only `/opt/emby-in-one/emby-in-one` was atomically replaced and that service restarted; started 2026-11-01 22:43:24 CST as PID 18922, active/running, enabled, `NRestarts=0`; process and on-disk hashes match, uid 999/gid 989/mode 0755 and the configuration, ports, unit, and kernel are unchanged. The previous executable was backed up separately (with its original SHA and metadata) before replacement, and config/data/public/log were snapshotted in full while stopped (35,082,240 bytes, including WAL/SHM with no exclusions) with tar comparison and hash verification passing; backups are restricted to 0700/0600. Regression: Node 571/571, 0 skipped, 19.751s; related Go tests 2.568s; full `go vet` and `git diff --check` exit 0. Health checks, the 3-second settle, and a later recheck passed; actual `/web/` responses for player-ui, rate-ui, progress CSS, libmedia, app, home, and others are byte-for-byte identical to the repository, vendor 573 matches its pinned SHA and vendor 630 matches the repository source, and admin HTML/JS match; the startup fatal marker count is 0. No media was played, no manual upstream login or reconnect was performed (beyond the authorized service's ordinary startup behavior, and no claim is made that startup had zero upstream connections), and no tag/Release/image was created. Health and static checks are not original-media acceptance, which remains for the user; Rx and 3× are still out of scope and Firefox was not run. See [full build verification](docs/full-build-verification.md).
-
-> **Web player controls and playback rate (this round, not built or deployed):** The controls now hide after 3 seconds of genuine inactivity: a stationary pointer and `timeupdate` do not extend the timer; keyboard focus, progress dragging, and open menus keep them visible, and Space/Enter retain native button behavior. The progress thumb input is now `block` and aligned to the rail. Playback rate is fixed to five options, `0.5/1/1.25/1.5/2×`, for on-demand playback only, with live explicitly rejected; the UI updates only after a confirmed lower-layer readback and otherwise remains unconfirmed. Version/audio-track fallback is preserved, a new playback session returns to 1×, and media time and subtitles are not modified. Rx and 3× are explicitly out of scope; Rx remains unknown. This round covers code, tests, and documentation fixes only, with no build or deployment; the feature main commit `8f2d667` is already pushed, and the live-guard increment `4cc4ad3` is also pushed. Final verification on the main directory has passed: Node passes 571/571 with 0 skips (515 baseline + 56 new; exit 0, 19.597s; log `/var/tmp/eio-controls-main-final-node.log`), `node --check` on the changed JS/tests and `git diff --check` pass, the related Go tests `go test -p 1 -timeout 120s ./internal/backend -run 'Test.*(Web|Asset|Player|Theme)'` pass (exit 0, 2.548s), and the full `go vet -p 1 ./...` exits 0 (logs `/var/tmp/eio-controls-final-go.FzjfKr/{test,vet}.log`). The initial integration (pre-guard) had verified all 13 feature/test files matching the isolated source via `cmp`, Node 569/569, 19.684s, and related Go 2.663s; that set is retained as history. The two-file difference between the final 571 and the initial 569 is the reviewed guard increment, so it is not claimed that the post-guard source remains exactly the same as the old isolated source. Production remains the authorized `a9cb6ca` deployment (2026-11-01 20:42:34 CST, PID 604117); the `20d9485` production and undeployed-home-row descriptions elsewhere in this README are earlier history, and this production state takes precedence. Real Vue/Chromium evidence is limited to a fake fixture (no EIOPlayer/media/remote) and is not original media, real engine audio/video, or whole-application E2E; Firefox was not run. The `playbackRate` state is a cache of the last confirmed readback and updates only on a successful readback; after a failed rollback the UI may show unconfirmed, which does not represent the live actual speed. See the [verification record](docs/web-player-controls-rate-verification.md).
+> rc4 is a pending release preview, not an announcement of published Release assets or images. Test parental controls, large libraries and browser/codec combinations on a small scale first, and back up configuration and the complete data directory.
 
 ## Table of Contents
 
@@ -64,6 +59,8 @@ Based on Go language, it implements a multi-server Emby aggregation proxy — me
 
 ## Features Overview
 
+> Features below describe the pending rc4 source; consult the corresponding changelog for rc3 functionality.
+
 - **Multi-User Management** — Supports creating regular users, each independently configurable with an accessible set of upstream servers; Admins can manage users via Admin panel, REST API, and SSH menu.
 - **Per-User Home Library Hiding** — Admins can pick, per user (including themselves), which media libraries are hidden from the Emby client home screen (grouped by server, whole-server hiding supported); only the home entries are hidden — search, Latest Additions and Continue Watching stay unaffected, and changes take effect on the next refresh.
 - **Independent User Accounts** — Regular users possess independent watch progress, played status, favorites, and "Continue Watching / Next Up", isolated from other users and upstream shared accounts; Admins retain original upstream behavior. (Queries that **filter** lists by "Favorite / Played / Resumable" are answered from those same local records; a few filters such as "Unplayed" are still decided by the upstream account — see [Independent Watch History](#independent-watch-history))
@@ -74,17 +71,18 @@ Based on Go language, it implements a multi-server Emby aggregation proxy — me
 - **Smart Deduplication & Prioritization** — Identical videos are automatically merged with multiple version sources retained; Supports a 4-level metadata priority logic (Designated Tag > Chinese > Length > Order) to smartly pick the best display information.
  - **Client Identity Passthrough** — The proxy talks to upstreams with the identity captured when the admin logs in with a real client (passthrough), and `custom` mode can independently define all 5 Emby client identity headers per upstream. The proxy itself no longer ships any fabricated client identity.
 - **Network Proxy Pool** — Configure dedicated HTTP/HTTPS proxies separately for each upstream server, complete with a built-in one-click connectivity tester.
-- **Dual Playback Modes** — Proxy mode (traffic relayed, hides upstream, supports HLS/segments) or Redirect mode (302 redirects to upstream, saves proxy machine bandwidth; **it exposes the upstream account credential — see [Playback Mode Explained](#playback-mode-explained)**).
+- **Dual Playback Modes** — Proxy mode (traffic relayed, hides upstream, supports HLS/segments) or Redirect mode (302 redirects to upstream, saves proxy machine bandwidth; **it exposes the upstream account credential to playback users — see [Playback Mode Explained](#playback-mode-explained)**).
 - **Token Management & Session Stability** — Proxy tokens never expire (only removed on logout, password change, or manual revocation), preventing frequent 401 errors on long-idle devices; upstream tokens auto-recover via async re-login with 30-second debounce when expired; admin password changes automatically revoke all issued tokens.
  - **Passthrough Delayed Login** — Upstream servers in passthrough mode (password or API key) never log in or send requests before a real client identity has been captured; they authenticate automatically once the admin logs in once with a real client, avoiding phantom device records on upstream Emby.
 - **Full Control & Operations** — Built-in modern SSH CLI menu and Web admin panel; comes with persistent logs and SQLite ID mapping. SSH menu auto-detects Binary/Docker deployment mode, dispatching all operations to systemd or Docker Compose commands accordingly.
 - **Built-in Web Client** — Browse libraries, search, manage favorites and continue watching in your browser without installing a separate client. Supports seasons, multiple source versions and independent watch progress, following the regular user's permissions.
 - **Browser Playback & Subtitles** — Select versions, audio tracks and subtitles, with seeking, keyboard shortcuts, volume and fullscreen controls. Supports common text subtitles, ASS and PGS, and can attempt upstream HLS when original-media playback fails. Compatibility depends on the browser, device and upstream capabilities.
   - Engine fallback preserves volume and explicit pause intent. Default subtitles load in the background with an independent deadline, so subtitle failure does not block playable video. Text subtitles and fonts are each capped at 16 MiB and PGS at 64 MiB, including unknown response lengths; exceeding a cap only disables that subtitle and does not change video permissions. Failed engine teardown prevents stacking more decoders; reloading the page may be required to release resources.
-  - MKV attachment parsing keeps a 20 MiB per-payload ceiling; this is not a raised memory limit. Attachments at or above the ceiling keep their attachment metadata but do not load the payload, which is skipped safely in bounded chunks by its declared length; a missing payload is no longer allocated or copied per the attachment length. Existing behavior for ordinary attachments is preserved, but an oversized attachment itself may be unavailable, and dependent content such as attached fonts or cover images (and subtitles rendered with those fonts) may fail with it, so not every subtitle is claimed to work. The change does not alter existing Cues selection or MSE/DTS behavior. The fix has completed its code change and local regression: the Node suite passes 454/454 (including 12 new attachment cases), and a real Chrome/worker local-loopback load/destroy of a synthetic 23 MiB complete fixture passed. A build including this fix has been fully built and deployed to one local instance under a one-time authorization (`v1.4.4-rc4-dev.03eb98c`). It has not played real media, and the original sample is missing its tail data, so end-to-end acceptance of the original file is still pending with the user and no production fix is proven. Oversized attachments and the fonts, covers and subtitles that depend on them may still be unavailable.
+  - MKV attachments at or above 20 MiB retain metadata but skip their payload, avoiding oversized parsing and null-payload copies. Fonts, cover art or subtitles that depend on skipped attachments may be unavailable.
   - The playback error screen offers compatibility playback: it requests a new upstream transcode for the current version and preserves progress. Missing transcode URLs fail explicitly rather than replaying the original file. Adjacent episodes load in the background; partial lists never imply the previous, next or first episode. Partial libraries show lower-bound counts and a manual retry action, without automatic retry loops or a “loaded everything” claim. Full-list collection remains bounded by page and result budgets.
   - Upstream-issued direct stream URLs are proxied through opaque local handles bound to the user, item and actual server, preserving the original path and required query parameters rather than rebuilding from an extension. Foreign origins, other items and unsafe paths are rejected explicitly. HEAD and Range/206 semantics are preserved; resource capacity exhaustion returns a retryable 503.
-  - Startup resume uses its own 30-second seek budget; ordinary scrubbing keeps the 10-second adapter default (or the engine's explicit value) and never inherits the startup budget. A resume seek that times out still fails: no retry, no automatic fallback to another engine, and no fabricated landing position — the player is destroyed and the UI enters its error state. The diagnostic records only the budget and target seconds, never a URL, item ID or credential. A build including these changes has been fully built and deployed to one local instance under a one-time authorization. It has not been verified with real media; the cause of the production resume stop remains unproven, and end-to-end acceptance of the original file is still pending with the user.
+  - Startup resume has an independent 30-second seek budget; ordinary scrubbing keeps the 10-second adapter default or the engine's explicit value. Failed seeks report an error and clean up rather than fabricating a successful position.
+  - On-demand playback supports `0.5 / 1 / 1.25 / 1.5 / 2×`, subject to engine confirmation; live speed changes are unsupported. Controls hide after 3 seconds of inactivity and stay visible for menus, focus and dragging. Buffering and source bitrate are shown only when reliable; reception speed currently displays `—`.
 
 ---
 
@@ -99,7 +97,7 @@ Choose one route. For an existing deployment, check its directory and ports firs
 | **Method 3: Docker source build** | Code changes or custom image builds | Yes |
 | **Method 4: Run Go source** | Development and debugging | Yes |
 
-> **Version selection:** The current stable release is **V1.4.3**; the current release candidate is **V1.4.4-rc3**. The binary installer defaults to the latest stable Release; prereleases must be selected explicitly. Parental controls in rc3 need further testing; see the [changelog](Update.md) for limitations. Releases and images are published independently; a Release does not guarantee a matching image.
+> **Version selection:** Stable: **V1.4.3**; published candidate: **V1.4.4-rc3**; **V1.4.4-rc4 is being prepared**. The binary installer defaults to the latest stable Release; select prereleases explicitly. See the [changelog](Update.md) for parental-control limitations. Releases and images are independent; a matching image is not guaranteed.
 
 ### Method 1: Release Binary One-Click Install (Primary Recommendation)
 
@@ -110,7 +108,7 @@ curl -fsSL -o release-install.sh https://raw.githubusercontent.com/ArizeSky/Emby
 sudo bash release-install.sh
 ```
 
-To try the current release candidate:
+To try the published rc3, use the following command. Once the rc4 Release is public, replace the version with `V1.4.4-rc4`:
 
 ```bash
 sudo bash release-install.sh V1.4.4-rc3
@@ -181,8 +179,9 @@ go run ./cmd/emby-in-one
 
 - **Admin panel:** `/admin/`, using an administrator account.
 - **Web client (current release candidate):** `/web/`, using a regular user created by the administrator. Administrator accounts cannot sign in to the Web client.
-- **Web appearance (development branch, single-instance acceptance pending):** choose light, dark or system mode from the login page, desktop sidebar or mobile menu; dark remains the default and player/subtitle styling stays dark. Admins can install, update the same theme ID, enable/disable, set the site default, delete and preview themes in isolation. Packages contain only restricted JSON colors/radius/density and PNG/JPEG assets, never executable code. Regular users can follow the site or select an enabled theme; signed-in preferences are saved to the account and read on login/refresh across devices. Anonymous preferences stay browser-local; there is no live cross-device push, and network/storage failures have a visible fallback. See the [bilingual package guide and minimal example](docs/web-theme-format.md) and [verification progress](docs/web-theme-implementation-progress.md). A complete Linux amd64 static development binary including themes has been built; see the [build record](docs/full-build-verification.md). Following one-time authorization, one instance is deployed with matching embedded admin assets; local health and static-resource checks passed. User visual/media acceptance is pending; this is not a public rc4 release.
-- **Player progress theme v2 (frontend supported, unreleased):** optionally configure played, buffered, track and thumb colors; the player itself stays dark. Version 1 packages remain compatible with unchanged content hashes and CSS. The v2 theme and player progress/HUD are wired: reliable buffered ranges and selected-source bitrate are displayed when available. Reception speed is not connected yet and currently displays `—`. Browser/media acceptance is pending; the running instance has not been upgraded or deployed with these changes. See the [v2 format and compatibility guide](docs/web-theme-format-v2.md) and [complete example](docs/theme-example-v2/).
+- **Web appearance:** light/dark/system modes, dark by default; the player stays dark. Administrators can install, update, enable/disable, set defaults and preview theme packages. Packages allow only restricted colors, radius, density and PNG/JPEG assets, never executable code. Signed-in preferences are saved to the account and read on login/refresh across devices; anonymous preferences stay browser-local. See the [theme package guide](docs/web-theme-format.md).
+- **Player theme v2:** configure played, buffered, track and thumb colors while retaining v1 compatibility. See the [v2 format guide](docs/web-theme-format-v2.md) and [complete example](docs/theme-example-v2/).
+- **Experimental large cache:** enable `playback.dualCache` in the admin global settings; disabled by default and limited to eligible MSE on-demand playback. HLS, non-MSE paths and audio-only containers are outside full admission coverage. The 300MB budget excludes internal browser SourceBuffer memory; 120 seconds is a ceiling, not a guarantee.
 - **Emby clients:** use the address through which you actually expose the service.
 
 Managed Docker installs listen only on localhost by default. For initial remote access, create an SSH tunnel from your own computer:
@@ -924,127 +923,20 @@ If all users receive `429 Too Many Requests` after 5 failed login attempts, `tru
 ## Project Architecture (Developer Reference)
 
 ```text
-Emby-In-One/
-├── cmd/emby-in-one/
-│   └── main.go                     # Application entrypoint
-├── internal/backend/
-│   ├── config.go                   # YAML config load/save/validate/atomic write
-│   ├── server.go                   # HTTP server startup & graceful shutdown
-│   ├── routes.go                   # Route registry (URL → Handler mapping)
-│   ├── middleware.go               # HTTP middleware (CORS, logging, status capture, CSP)
-│   ├── ssrf.go                     # SSRF policy and safe dialers (proxy probe / upstreams)
-│   ├── auth.go                     # Proxy token issuance & validation
-│   ├── auth_context.go             # Per-request auth context injection & extraction
-│   ├── auth_manager.go             # Upstream auth management (login/session/API Key)
-│   ├── identity.go                 # Client identity capture & Passthrough 4-level resolution
-│   ├── identity_persistence.go     # Per-upstream client identity persistence
-│   ├── ua_library.go               # UA library core (recent capture / resident UA, fingerprint & validation)
-│   ├── ua_library_persistence.go   # UA library persistence (atomic JSON read/write)
-│   ├── user_store.go               # Multi-user storage (CRUD, password hashing, memory index + SQLite)
-│   ├── handlers_admin.go           # Admin API handlers (upstream server CRUD)
-│   ├── handlers_admin_home_libraries.go  # Per-user home-library hiding admin endpoint & library cache
-│   ├── handlers_admin_ua.go        # UA library admin API (recent capture / resident UA / assignments)
-│   ├── handlers_admin_aggregation.go  # Aggregation switch admin API (PATCH /admin/api/upstream/:id/aggregation)
-│   ├── admin_ua_assignments.go     # Resident UA to server binding & targeted upstream client rebuilds
-│   ├── handlers_system.go          # System info endpoints (/System/Info)
-│   ├── handlers_user.go            # User login rate limiting & user-related handlers
-│   ├── handlers_web.go             # /web/ static assets (disk-first, embedded fallback, COOP/COEP)
-│   ├── root_page.go                # Root landing page (/ dual-entry card: web client + admin panel)
-│   ├── admin_validation.go         # Admin input validation & helper utilities
-│   ├── idstore.go                  # SQLite bidirectional ID mapping (virtual ↔ original)
-│   ├── id_rewriter.go              # Recursive ID virtualization/devirtualization rewriting
-│   ├── query_ids.go                # Batch query ID resolution
-│   ├── identifier_lookup.go        # Multi-source identifier lookup (each store under its lock)
-│   ├── media.go                    # Media aggregation, dedup, metadata priority selection
-│   ├── aggregation.go              # Common aggregation framework (grace period + background backfill)
-│   ├── aggregation_policy.go       # Upstream aggregation switch policy (config-only, immediate effect)
-│   ├── media_items.go              # Media item queries (multi-upstream fan-out merge)
-│   ├── media_resume.go             # Resume Items proxy & multi-upstream merge
-│   ├── media_nextup.go             # Next Up proxy & multi-upstream merge
-│   ├── media_playback.go           # PlaybackInfo query & concurrent playback limit check
-│   ├── media_source.go             # MediaSource selection & playback session ownership
-│   ├── media_stream.go             # Video/audio stream proxy (virtual ID route resolution)
-│   ├── item_detail.go              # Merged item detail (multi-instance MediaSource aggregation)
-│   ├── item_instances.go           # OtherInstances discovery
-│   ├── show_items.go               # Episode list merging for shows (merge before paging)
-│   ├── library_image.go            # Image proxy (cache headers)
-│   ├── library_filter.go           # Per-request hidden-library resolution (home hiding)
-│   ├── library_visibility.go       # Per-user home-library visibility storage (admin included)
-│   ├── user_filter.go              # Local user-state filters (IsFavorite/IsPlayed/IsResumable)
-│   ├── series_userdata.go          # Series-level watch history isolation (Resume/NextUp)
-│   ├── session_userdata.go         # Sessions/Playing progress reporting
-│   ├── session_cleanup.go          # PlayingItems session-slot release (bypasses aggregation filter)
-│   ├── watch_store.go              # Per-user watch progress storage & persistence
-│   ├── playback_limiter.go         # Concurrent playback limiter (heartbeat timeout auto-release)
-│   ├── login_limiter.go            # Per-IP login failure limiter (evicts instead of blocking)
-│   ├── streamproxy.go              # HTTP stream proxy (backpressure, HLS relative path rewriting)
-│   ├── stream_probe.go             # Streaming-line liveness probes (redirect-mode line choice)
-│   ├── hls_segment_proxy.go        # VOD segment timeline rewriting & oversized-segment streaming fallback
-│   ├── hls_segment_time.go         # fMP4 timeline parse/rewrite (tfdt/sidx, seek timeline restore)
-│   ├── fallback_proxy.go           # Fallback route: scan URL/Query for virtual IDs
-│   ├── healthcheck.go              # Parallel health checks
-│   ├── logger.go                   # Leveled logging (Console + File dual output + rotation)
-│   ├── logfile.go                  # Rotating log file (0600 mode, backup shifting & tightening)
-│   ├── privatefile.go              # Private file mode (0600) & tightening of legacy files
-│   ├── atomicfile.go               # Atomic file writes (temp file + rename)
-│   ├── atomicfile_owner_unix.go    # Owner preservation on atomic replace (Unix)
-│   ├── atomicfile_owner_windows.go # Owner-preservation no-op for Windows
-│   ├── db_migration.go             # SQLite schema migration (table/column probing & backfill)
-│   ├── scrypt_local.go             # Admin password scrypt hashing
-│   ├── sqlite_cgo.go               # CGO embedded SQLite compilation & low-level bindings
-│   ├── upstream.go                 # Upstream connection pool & concurrent request orchestration
-│   ├── upstream_outbound.go        # Outbound request-header building (identity injection, timeouts, redirect policy)
-│   ├── upstream_resident_identity.go  # Apply resident identity snapshot to outbound requests (spoofClient: resident)
-│   ├── upstream_ua_updates.go      # Targeted reconnect jobs for UA changes (prepare/publish/reconnect)
-│   ├── upstream_auth_state.go      # Consistent snapshot of an upstream's auth state
-│   ├── outbound_identity.go        # Outbound identity carrier rewriting & naming
-│   ├── outbound_identity_policy.go # Outbound auth modes & identity rules
-│   ├── outbound_errors.go          # Outbound error normalization (preparation vs transport)
-│   ├── outbound_log.go             # Outbound request logs (sensitive parameter redaction)
-│   └── outbound_diagnostics.go     # Outbound diagnostics scanning (bounded input)
-├── third_party/sqlite/             # SQLite CGO source dependency
-├── public/
-│   ├── embed.go                    # go:embed directive (compiles admin.html, admin.js, admin-activity.js, vendor/ and web/ into the binary)
-│   ├── admin.html                  # Vue 3 + Tailwind CSS admin panel template
-│   ├── admin.js                    # Vue 3 application logic (extracted from admin.html)
-│   ├── admin-activity.js           # Viewing activity / retention-reminder UI (badges, derived filter/sort, settings dialog)
-│   ├── web/                        # Built-in Web client (/web/, Vue 3 global build, no bundler)
-│   │   ├── web.html                #   Single-page application shell
-│   │   ├── app.js                  #   App entry (routing, page assembly, player wiring)
-│   │   ├── data.js                 #   Shared data operations (API wrappers)
-│   │   ├── ui.js                   #   Shared UI state factories (toast, recent searches)
-│   │   ├── page-state.js           #   Page request controllers (AbortController + generations)
-│   │   ├── library-state.js        #   Library page controller (grid/list, bounded paging)
-│   │   ├── ui-components.js        #   Reusable Vue components
-│   │   ├── player-ui.js            #   Player control-layer state (state machine, menus, shortcuts)
-│   │   ├── player-libmedia.js      #   Player engine (native MP4, libmedia streaming, HLS fallback)
-│   │   ├── subtitle-controller.js  #   Track selection & subtitle clocks
-│   │   ├── subtitles.js            #   Subtitle overlays (SRT/VTT/PGS, ASS rendering)
-│   │   └── ui.css                  #   Web client styles
-│   └── vendor/                     # Self-hosted frontend dependencies: Vue, lucide, Tailwind output, Inter font;
-│                                   # web/ holds the libmedia player, the JASSUB subtitle engine and Noto Sans SC
-├── tests/                          # Node front-end behavior tests (node --test)
-│   ├── web-ui-harness.cjs          #   Shared VM harness (Vue stubs, scripts loaded in web.html order)
-│   ├── make-web-fixtures.py        #   ffmpeg synthetic sample generation (samples stay out of releases)
-│   └── *.test.cjs                  #   data / ui / player / player-ui / subtitles / mse-seek /
-│                                   #   mse-duration / seek-queue / session / admin-panel / admin-activity
-├── assets/panel.css                # Tailwind input (holds the panel styles moved out of admin.html)
-├── tailwind.config.js              # Tailwind content config (run npm run build:panel after editing admin.html/admin.js)
-├── package.json                    # Root package.json provides build:panel / test scripts (Node deps moved to legacy/)
-├── Dockerfile                      # Go runtime container build
-├── docker-compose.yml              # Local source build
-├── docker-compose.image.yml        # Published-image deployment (explicit image/digest)
-├── DOCKER.md / DOCKER_EN.md         # Docker deployment, upgrades, backups and rollback
-├── RELEASING.md                    # Public release policy and workflow limitations
-├── install.sh                      # Source repo one-click deploy script (Docker)
-├── release-install.sh              # Release binary one-click deploy script (systemd)
-├── emby-in-one-cli.sh              # SSH terminal management menu script
-└── legacy/                         # V1.2.1 Node.js implementation: reference only, built into nothing
-    ├── README.md                   #   Why it is kept, and why it takes part in no build
-    ├── src/                        #   Old Express implementation (the reference for the Go ID virtualization)
-    ├── tests/                      #   Old Node tests (most no longer pass)
-    └── package.json                #   Node dependencies (only used by npm --prefix legacy install)
+cmd/emby-in-one/   Application entry point
+internal/backend/ Aggregation, authorization, virtual IDs, playback proxy, user data and admin APIs
+public/           Embedded admin panel, Web client and self-hosted dependencies
+web-src/          Maintained player shared-module sources, synchronized with vendor integration
+tests/            Frontend behavior tests and synthetic-media tooling
+third_party/      Build dependencies including SQLite
+scripts/          Build, validation and release helpers
+docs/             Theme formats, design, verification and engineering handovers
+legacy/           V1.2.1 Node.js reference implementation; excluded from current builds
 ```
+
+- See [AGENTS.md](AGENTS.md) for development entry points and constraints.
+- See [DOCKER_EN.md](DOCKER_EN.md) for containers and [RELEASING.md](RELEASING.md) for release procedures.
+- Engineering verification and deployment history remain in `docs/`; they do not guarantee public release availability or compatibility with every browser and media combination.
 
 ---
 

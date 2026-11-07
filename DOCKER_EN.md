@@ -2,7 +2,7 @@
 
 [README](README_EN.md) · [中文](DOCKER.md) · [Maintainer release policy (Chinese)](RELEASING.md)
 
-This guide separates current behavior from operating conventions. A GitHub Release does **not** mean a matching GHCR image exists. Verify availability, platforms and digest separately. Parental controls in rc3 still need testing and adjustment, particularly for large libraries, upstream rate limits and client compatibility; see [the changelog](Update.md).
+This guide distinguishes source features, Releases and images. **V1.4.4-rc4 is being prepared; image commands below still pin published rc3 and do not install rc4 features.** A GitHub Release does not guarantee a matching GHCR image; verify the intended version, platforms and digest before upgrading. Parental controls still require large-library, upstream-rate-limit and client-compatibility testing; see the [changelog](Update.md).
 
 ## Managed installation and current release protection
 

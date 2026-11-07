@@ -1,6 +1,6 @@
 # Emby-In-One
 
-> **当前候选版：V1.4.4-rc3（Pre-release） · 当前稳定版：V1.4.3**
+> **准备发布：V1.4.4-rc4（Pre-release） · 已发布候选版：V1.4.4-rc3 · 当前稳定版：V1.4.3**
 
 [![License: GPL v3](https://img.shields.io/github/license/ArizeSky/Emby-In-One?color=blue)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.23+-00ADD8?logo=go&logoColor=white)](https://go.dev/)
@@ -13,21 +13,16 @@
 
 基于Go语言实现的多台 Emby 服务器聚合代理，将多个上游 Emby 服务器的媒体库合并为一个统一入口，支持任何标准 Emby 客户端访问。支持多用户管理、独立观看历史、UA伪装、并发播放数限制和角色权限隔离。
 
-> **继续观看说明（本轮变更）：** 卡片同时带 `Episode` 与 `SeriesId` 时，优先以 `SeriesName` 为标题、`SxxExx` 为副标题，点击卡片进入系列详情选集；快捷播放仍使用原集与原进度。缺少 `SeriesId` 时保持原行为，收藏不变；不改接口分组、分页或总数，无额外详情请求。状态：截至本轮本地 Node 464/464（454 基线 + 10 项新增）；本轮未构建、未部署该变更，原片未验收。
+## V1.4.4-rc4 发布预览
 
-> **内嵌 ASS 字幕描边修复（本轮变更）：** 修正内嵌 ASS renderer 子节点的描边/阴影 CSS 选择器（补上后代组合符，共 4 处），恢复字幕原有的描边/阴影声明；不全局强制 `text-shadow`，不改 JASSUB。离线真实 Chromium 合成 ASS（Arial 24、Outline 3）实测：原构建 `span::after` 无 `content`、描边 0px；修复 4 个选择器后、未注入任何 override 时真实 pseudo-element 为黑色 6px（2 倍 stroke 居中属预期，非缺陷）。该测量不等同原片验收；本轮未构建、未部署此变更。状态：全套 Node 470/470（454 基线 + 10 项系列变更 + 6 项 CSS 契约用例）、相关 Go web/player/asset 测试及 `go vet` 通过；原片仍未验收。
+本次候选版聚焦媒体库查询、Web 播放稳定性、主题与管理体验。完整变更及已知限制见[更新日志](Update.md)。
 
-> **最新完整构建与部署状态（2026-11-01 本轮，覆盖此前各条“未部署”）：** 用户明确授权编译并替换、重启 `emby-in-one.service`，本轮已成功执行一次。源码 `20d9485`，版本 `v1.4.4-rc4-dev.20d9485`；Go 1.27.1 linux/amd64、CGO=1、gcc，静态 stripped（`netgo`/`osusergo`、`-trimpath`、`-s -w`），离线、单 CPU（nice 15、`GOMAXPROCS=1`、`-p 1`）构建 101 秒；产物 62,972,336 字节，SHA-256 `c8c117cc…0c419a`。已部署至 `/opt/emby-in-one/emby-in-one`，2026-11-01 19:13:30 CST 启动，PID 571939，active/running，`NRestarts=0`；进程与磁盘哈希一致，uid/gid/mode 保留，配置、端口与 service 未变；旧 `9984016` 可执行文件独立备份，停服状态 config/data/public/log 完整快照并通过 tar 比对与哈希校验。本地健康检查、3 秒 settle 及后续复检、实际 `/admin/` 与 `/admin/admin.js` 逐字匹配本次源码均通过，未回滚、未重试；此前 `9984016` 的构建与部署记录仍作为历史保留。完整构建与部署不等于原片或视觉验收：本轮未播放媒体、未手动登录或重连上游（授权服务的普通启动除外），需用户自行验收；未创建 tag、Release 或镜像。详见[完整程序构建验证](docs/full-build-verification.md)。
+- **媒体库与首页**：本地收藏、已看和继续观看按授权 ID 查询；聚合列表支持有界续扫，部分结果明确提示。首页新增按需加载的媒体库横向行，继续观看卡片可进入系列选集。
+- **播放器与字幕**：改进续播、跳转、兼容播放和退出清理，修复 ASS 描边、超大 MKV 附件处理及多片源字幕选源；新增点播倍速、缓冲进度与播放信息。
+- **实验性双缓存**：管理员可开启严格 MSE 缓存控制，受控压缩媒体预算为 300,000,000 字节或向前 120 秒，先到者停止生产；默认关闭，不是浏览器总内存上限。
+- **主题与管理**：支持明亮/暗色/跟随系统、受限主题包与账号外观偏好；新增上游观看活动统计和保活提醒，完善 Docker 托管更新、备份和恢复。
 
-> **历史完整构建与部署状态（2026-11-01，覆盖更早两条“未部署”）：** 用户明确授权构建并替换、重启 `emby-in-one.service`，该轮已成功。源码 `9984016`，版本 `v1.4.4-rc4-dev.9984016`；Go 1.27.1 linux/amd64、CGO=1 静态（`netgo`/`osusergo`）、离线、单 CPU（nice 15、`GOMAXPROCS=1`、`-p 1`）构建 103 秒；产物 62,972,336 字节，SHA-256 `541f15c1…4c83d0`。已部署至 `/opt/emby-in-one/emby-in-one`，2026-11-01 18:00:33 CST 启动，PID 546295，active/running，`NRestarts=0`；进程与磁盘哈希一致，uid/gid/mode 保留；旧版本可执行文件及 config/data/public/log 已在停服状态完整快照备份并通过校验。本地健康检查与静态资源逐字匹配通过，未回滚、未重试。完整构建与部署不等于原片验收：该轮未播放媒体、未手动执行上游登录，需用户自行验收；未创建 tag、Release 或镜像。详见[完整程序构建验证](docs/full-build-verification.md)。
-
-> **管理面板 UI 修复（本轮变更，已部署）：** 上游「风险筛选」下拉的标签改为「筛选」，筛选行为不变；UA 管理首次加载显示 loading，避免空列表闪烁，后续刷新保留已有行，失败时提供重试，旧、已取消或登出后的请求不会回填 UA 缓存；主题刷新/上传按钮改用确定的 inline SVG，避免图标缺失。整合验证 Node 481/481（470 基线 + 11 项新增）。本轮先完成代码修复与本地验证（当时未编译、未部署，生产仍运行 `9984016` 构建）；随后经用户再次明确授权完整编译并部署，生产现已运行包含这些修复的 `20d9485` 构建，详见上条部署状态与[完整程序构建验证](docs/full-build-verification.md)。原片与视觉验收仍待用户完成。
-
-> **Web 首页媒体库横向行（本轮开发，未完成完整构建/部署）：** 首页为当前用户全部可见媒体库各渲染一行横向海报，**包括 `playlists`**；每行仅在滚动进入视口时请求一次完整库查询第一页（默认 50 项，与媒体库页共用同一 query builder），全局最多 2 个物理在飞请求。`partial`/`error` 可重试并保留旧卡片；行标题、“查看全部”与行尾“进入媒体库”均为真实链接；样式使用现有主题 token，本机 1280/390 视口的合成样例未见页面横向溢出。顶部 hero、继续观看与媒体库入口布局未改动：hero 仍只对前三个非 playlists 库请求 `Items/Latest`（`Limit=12`），库行是独立的 `/Users/{uid}/Items` 通道，因此不承诺“首页 0 个 Latest 请求”。旧版 hero Latest 失败时底部的 retry 区块已随旧库行移除，`loadHome()` 重试与 `retryLatest` 方法仍保留；这不构成用户已接受该可见回退。状态：实现已父 review 且整合源已精确 `cmp`；主目录最终验证已通过——13 个功能/测试文件与隔离源 `cmp` 全部一致，Node 515/515、0 skip、exit 0、19.019s，相关 Go 测试 exit 0、2.954s，`go vet -p 1 ./...` exit 0（均离线、单 CPU、nice 15、`GOMAXPROCS=1`，日志在 `/var/tmp`）。该验证不构成完整 race 检测，也不是真实浏览器全应用 E2E；34 个新增用例中的 UI 合约是 fake DOM 方法/事件调用，不等于 Vue 真实 DOM，真实 Chromium 仅在本机 loopback fake fixture 覆盖限定项。本功能本轮未完整构建、未部署，生产仍运行 `20d9485`——这是后续开发，与此前部署不矛盾。详见[隔离与主目录验证记录](docs/web-home-library-rows-verification.md)。
-
-> **最新已授权部署（2026-11-01，覆盖下方历史“未构建/未部署”与旧 `a9cb6ca` 状态）：** 用户明确授权，本轮已完成一次完整构建与 `emby-in-one.service` 替换重启（父 agent 执行，成功一次，无回滚/重试）。源码 `158daba`（feature `8f2d667` + guard `4cc4ad3`），版本 `v1.4.4-rc4-dev.158daba`；离线、单 CPU（nice 15、`GOMAXPROCS=1`、`-p 1`）、Go 1.27.1、CGO=1/gcc，`-trimpath -buildvcs=false`、`netgo osusergo`、`-s -w` 静态构建 104 秒；产物 63,013,296 字节，SHA-256 `245135a47aa16c2ce49790031d402164e7c9ea8e1ec2750196d0c16741dbd5ef`。仅原子替换 `/opt/emby-in-one/emby-in-one` 并重启该服务，2026-11-01 22:43:24 CST 启动，PID 18922，active/running、enabled、`NRestarts=0`，进程与磁盘哈希一致，uid 999/gid 989/mode 0755 及配置、端口、unit、内核未变；替换前已独立备份旧二进制（含原 SHA 与元数据），停服后 config/data/public/log 完整快照（35,082,240 字节，含 WAL/SHM 且未排除）通过 tar 比对与哈希校验，备份权限 0700/0600。回归：Node 571/571、0 skip、19.751s，相关 Go 2.568s，全量 `go vet` 与 `git diff --check` exit 0。健康检查、3 秒 settle 与后续复检通过；`/web/` 的 player-ui/rate-ui/progress CSS、libmedia、app、home 等实际响应与仓库逐字节一致，vendor 573 钉 SHA 与 630 匹配，admin HTML/JS 一致；启动 fatal marker 为 0。未播放媒体、未手动登录或重连上游（授权服务的普通启动行为除外，不声称启动期绝无上游连接），未创建 tag/Release/镜像。健康与静态检查不等于原片验收，原片仍待用户验收；Rx 与 3× 仍未做，Firefox 未跑。详见[完整构建验证](docs/full-build-verification.md)。
-
-> **Web 播放器控制层与倍速（本轮开发，未构建/部署）：** 控制层改为 3 秒真实无操作才隐藏：pointer 静止与 `timeupdate` 不续 timer；键盘 focus、拖动进度、菜单打开保持可见，Space/Enter 保留原生 button 行为。进度圆点 input 改 `block` 并与 rail 对齐。倍速固定 5 档 `0.5/1/1.25/1.5/2×`，仅点播可用，live 明确拒绝；只有底层回读确认后才更新 UI，失败保持未确认；切版本/音轨 fallback 保留，新播放会话回到 1×，不修改媒体时间或字幕。Rx 与 3× 明确暂不做，Rx 仍为 unknown。本轮仅代码、测试与文档修整，未构建/部署；feature 主提交 `8f2d667` 已推送，live 守卫小增量 `4cc4ad3` 也已推送。最终主目录验证已通过：Node 571/571、0 skip（515 基线 + 56 新增）、exit 0、19.597s（日志 `/var/tmp/eio-controls-main-final-node.log`），改动 JS/tests 的 `node --check` 与 `git diff --check` 通过，相关 Go 测试 `go test -p 1 -timeout 120s ./internal/backend -run 'Test.*(Web|Asset|Player|Theme)'` exit 0、2.548s，全量 `go vet -p 1 ./...` exit 0（日志 `/var/tmp/eio-controls-final-go.FzjfKr/{test,vet}.log`）。初次整合（加 guard 前）曾验证 13 个功能/测试文件与隔离源 `cmp` 全部一致、Node 569/569、19.684s、相关 Go 2.663s；该组为保留历史，最终 571 相对 569 的差异为 2 个文件的受审 guard 小增量，不能宣称加 guard 后仍与旧隔离源完全 same。线上仍为已授权部署的 `a9cb6ca`（2026-11-01 20:42:34 CST，PID 604117）；README 中 `20d9485` 生产及首页未部署描述属更早历史，以此生产状态为准。真实 Vue/Chromium 仅覆盖限定 fake fixture（无 EIOPlayer/媒体/remote），非原片、非真实音画、非全应用 E2E，Firefox 未跑。`playbackRate` state 为最后一次回读确认值缓存，只有成功回读才更新；失败回退后 UI 可能显示未确认，不表示实时实际速度。详见[验证记录](docs/web-player-controls-rate-verification.md)。
+> rc4 仍为待发布预览，不代表 Release 或镜像已上线。年龄分级、大型媒体库及不同浏览器/编解码组合仍需小范围验证；请先备份配置和完整数据目录。
 
 ## 目录
 
@@ -64,6 +59,8 @@
 
 ## 功能概览
 
+> 以下功能说明对应当前 rc4 待发布源码；rc3 的功能范围以对应版本更新日志为准。
+
 - **多用户管理** — 支持创建多个普通用户，每个用户可独立配置可访问的上游服务器；管理员可通过管理面板、REST API 和 SSH 菜单管理用户。
 - **每用户首页库隐藏** — 管理员可为每个用户（含自己）单独勾选哪些媒体库不在 Emby 客户端首页显示（按服务器分组、支持整服务器隐藏）；仅隐藏首页库入口，搜索、最新添加、继续观看不受影响，保存后实时生效。
 - **独立用户账户** — 普通用户拥有独立的观看进度、已播放状态、收藏和"继续观看 / 接下来观看"，与其他用户及上游共享账户隔离；管理员保持原有上游行为。（按「收藏 / 已播放 / 继续观看中」**筛选**列表的查询同样以本地记录为准；「未观看」等少数筛选仍由上游账户决定，详见[独立观看历史](#独立观看历史)）
@@ -74,17 +71,18 @@
 - **智能去重与优先级** — 相同影片自动合并，保留多版本片源；支持 4 级元数据优先级逻辑（指定标记 > 中文 > 长度 > 顺序）智能选择最佳展示信息。
  - **客户端身份透传** — 代理以管理员用真实客户端登录时捕获的身份与上游通信（passthrough），也可用 `custom` 模式为每台上游独立定义全部 5 个 Emby 客户端身份头。代理自身不再内置任何伪造客户端身份。
 - **网络代理池** — 可为每台上游服务器单独配置 HTTP/HTTPS 代理，内置一键连通性测试。
-- **双播放模式** — 代理模式（流量转发、隐藏上游、支持 HLS/分片）或直连模式（302 重定向至上游，节省代理带宽；**会向上游暴露账号凭据，详见[播放模式详解](#播放模式详解)**）。
+- **双播放模式** — 代理模式（流量转发、隐藏上游、支持 HLS/分片）或直连模式（302 重定向至上游，节省代理带宽；**会向播放用户暴露上游账号凭据，详见[播放模式详解](#播放模式详解)**）。
 - **Token 管理与会话稳定** — 代理 Token 永不过期（仅在登出、改密或手动撤销时移除），防止长时间空闲设备频繁 401；上游 Token 过期时通过 30 秒防抖的异步重登录自动恢复；管理员改密后自动撤销所有已签发 Token。
  - **Passthrough 延迟登录** — passthrough 模式的上游（无论密码还是 API Key）在没有已捕获的真实客户端身份前一律不登录、不发请求；等待管理员用真实客户端登录一次后自动完成认证，避免在上游 Emby 产生虚假设备记录。
 - **全面管控与运维** — 内置现代化 SSH CLI 菜单和 Web 管理面板；配备持久化日志和 SQLite ID 映射。SSH 菜单自动检测 Binary/Docker 部署模式，所有操作自动分发到 systemd 或 Docker Compose 对应命令。
 - **内置 Web 客户端** — 无需另装客户端，即可在浏览器中浏览媒体库、搜索、收藏和继续观看；支持剧集分季、多版本片源及独立观看进度，按普通用户的权限访问内容。
 - **浏览器播放与字幕** — 支持版本、音轨和字幕选择，提供进度拖动、键盘快捷键、音量与全屏控制；支持常见文本字幕、ASS 和 PGS，并可在原始媒体播放失败时尝试上游 HLS。实际兼容性取决于浏览器、设备及上游能力。
   - 播放引擎切换保留音量和用户暂停意图；默认字幕后台加载、独立超时，字幕失败不阻塞可播放画面。文本字幕和字体各限 16 MiB、PGS 限 64 MiB（含未知响应长度）；超限只禁用该字幕，不改变视频播放权限。旧引擎清理失败会阻止继续叠加解码器，可能需要刷新页面释放资源。
-  - MKV 附件解析保留每个 payload 的 20 MiB 上限，不是提高内存限额：达到或超过上限的附件仍保留附件元数据，但不加载 payload，改为按声明长度安全分块跳过；无 payload（null）时不再分配、也不再按附件长度拷贝。普通附件的既有功能保留，但超大附件本身可能不可用，依赖它的字体、封面等内容（以及使用这些字体的字幕）也可能一并失效，因此不宣称所有字幕都可用。该改动不改变既有 Cues 选择与 MSE/DTS 行为。修复已完成代码修改与本地回归：Node 454/454 通过（含新增附件 12 个用例），真实 Chrome/worker 本地 loopback 合成 23 MiB 完整 fixture 的 load/destroy 通过。含该修复的版本已完成完整构建，并经本机单次授权部署（`v1.4.4-rc4-dev.03eb98c`）；尚未用真实媒体播放，原始样本缺尾部数据，因此原片端到端验收待用户完成，不能据此宣称生产修复已被证明。超大附件本身及其依赖的字体、封面和字幕仍可能不可用。
+  - MKV 附件达到或超过 20 MiB 时保留元数据并跳过 payload，避免超大附件解析与空引用拷贝错误；被跳过附件所提供的字体、封面或字幕依赖可能不可用。
   - 播放错误页提供“兼容播放”：绑定当前版本重新请求上游转码流，保留进度；上游未返回转码地址时明确失败，不重播原文件。相邻剧集列表后台加载，列表不完整时不自动猜测上一集、下一集或首集。媒体库部分结果显示下界数量与“继续尝试”，不会自动循环请求或显示“已加载全部”；完整列表收集仍受页数和条数预算限制。
   - 上游提供的直连流地址以用户、条目及实际服务器绑定的不透明本地句柄代理，保留原始路径和必要查询参数；不再仅凭扩展名重建路径。非授权主机、其他条目或不安全路径会明确拒绝；保留 HEAD 与 Range/206，句柄容量不足返回可重试的 503。
-  - 启动续播使用独立的 30 秒 seek 预算，普通拖动仍为 10 秒适配层默认值（或引擎显式值），不继承启动预算；续播 seek 超时仍按播放失败处理：不重试、不自动降级到其它引擎、不伪造落点，直接清理播放器并进入错误状态；诊断只记录预算与目标秒数，不含 URL、条目 ID 或凭据。含上述改动的版本已完成完整构建，并经本机单次授权部署；仍未用真实媒体验证，生产环境那次续播停止的因果仍未证实，原片端到端验收待用户完成。
+  - 启动续播使用独立的 30 秒定位预算；普通拖动沿用 10 秒适配层默认值或引擎显式值。定位失败会明确报错并清理，不伪造成功位置。
+  - 点播支持 `0.5 / 1 / 1.25 / 1.5 / 2×`，以引擎确认值为准，不支持直播倍速；控制栏在无操作 3 秒后隐藏，菜单、焦点与拖动期间保持可见。缓冲与源码率只显示可确认数据，接收速率暂显示 `—`。
 
 ---
 
@@ -99,7 +97,7 @@
 | **方式三：Docker 源码构建** | 修改源码或自行构建镜像 | 是 |
 | **方式四：Go 源码运行** | 开发与调试 | 是 |
 
-> **版本选择：**当前稳定版为 **V1.4.3**，当前候选版为 **V1.4.4-rc3**。二进制安装默认选择最新稳定 Release；候选版需要显式指定。rc3 的年龄分级功能仍需更多测试，相关限制见[更新日志](Update.md)。Release 与镜像独立发布，不保证每个 Release 都有同名镜像。
+> **版本选择：**稳定版为 **V1.4.3**，已发布候选版为 **V1.4.4-rc3**；**V1.4.4-rc4 正在准备发布**。二进制安装默认选择最新稳定 Release，候选版需显式指定。年龄分级限制见[更新日志](Update.md)。Release 与镜像独立发布，不保证同名镜像存在。
 
 ### 方式一：Release 二进制一键安装（首推）
 
@@ -110,7 +108,7 @@ curl -fsSL -o release-install.sh https://raw.githubusercontent.com/ArizeSky/Emby
 sudo bash release-install.sh
 ```
 
-如需体验当前候选版：
+体验已发布的 rc3 可使用下列命令；rc4 Release 正式公开后，将版本号替换为 `V1.4.4-rc4`：
 
 ```bash
 sudo bash release-install.sh V1.4.4-rc3
@@ -181,8 +179,9 @@ go run ./cmd/emby-in-one
 
 - **管理面板：**`/admin/`，使用管理员账号。
 - **Web 客户端（当前候选版）：**`/web/`，使用管理员创建的普通用户；管理员账号不能登录 Web 客户端。
-- **Web 外观（开发分支，单实例待验收）：**登录页、桌面侧栏和移动菜单支持明亮/暗色/跟随系统，默认暗色，播放器/字幕固定深色。管理员可上传、同ID更新、启停、设置站点默认、删除和隔离预览主题；只接收受限JSON配色/圆角/密度与PNG/JPEG，不执行包内代码。普通用户可跟随站点或选已启用主题，登录偏好保存账号并在登录/刷新时跨设备读取；匿名偏好仅本机缓存，无实时跨设备推送，网络/存储失败有回退提示。主题包格式和最小示例见[双语指南](docs/web-theme-format.md)，验证范围见[实施进度](docs/web-theme-implementation-progress.md)。已完成含完整主题的 Linux amd64 静态开发构建，见[构建记录](docs/full-build-verification.md)；已按单次授权部署至一个实例并切换配套内嵌后台，本地健康与静态资源检查通过，用户视觉/媒体验收待完成，不代表 rc4 公开发布。
-- **播放器进度主题 v2（前端已支持，未发布）：**可选配置已播、缓冲、底轨和滑块四种颜色，播放器本体仍固定深色。v1 包继续兼容，不改变其内容哈希和 CSS；主题 v2 与播放器进度/HUD 已接线：可靠时显示真实缓冲及选中源码率；接收速度尚未接通，当前显示 `—`。浏览器/媒体验收待完成，不代表运行实例已升级或已部署。[v2 格式与兼容说明](docs/web-theme-format-v2.md)，[完整示例](docs/theme-example-v2/)。
+- **Web 外观：**支持明亮/暗色/跟随系统，默认暗色；播放器保持深色。管理员可安装、更新、启停、设置默认及预览主题包；包内只允许受限配色、圆角、密度及 PNG/JPEG，不执行代码。登录用户的偏好保存在账号中，登录/刷新时跨设备读取；匿名偏好仅本机缓存。见[主题包指南](docs/web-theme-format.md)。
+- **播放器主题 v2：**支持已播、缓冲、底轨和滑块配色，兼容 v1 包。见[v2 格式说明](docs/web-theme-format-v2.md)和[完整示例](docs/theme-example-v2/)。
+- **实验性大缓存：**在管理面板全局设置开启 `playback.dualCache`，默认关闭，仅适用于符合条件的 MSE 点播；HLS、非 MSE 与纯音频容器不在完整准入覆盖范围内。300MB 预算不含浏览器内部 SourceBuffer 内存，120 秒是上限而非保证。
 - **Emby 客户端：**填写实际对外提供服务的地址。
 
 Docker 托管安装默认仅监听本机。远程初次访问可建立 SSH 隧道，在自己的电脑执行：
@@ -924,127 +923,20 @@ emby-in-one
 ## 项目架构 (供开发者查阅)
 
 ```text
-Emby-In-One/
-├── cmd/emby-in-one/
-│   └── main.go                     # 程序入口
-├── internal/backend/
-│   ├── config.go                   # YAML 配置加载/保存/校验/原子写入
-│   ├── server.go                   # HTTP 服务器启动与优雅关机
-│   ├── routes.go                   # 路由注册总表（URL → Handler 映射）
-│   ├── middleware.go               # HTTP 中间件（CORS、日志、状态码捕获、CSP）
-│   ├── ssrf.go                     # SSRF 防护策略与安全拨号器（代理测试 / 上游连接）
-│   ├── auth.go                     # 代理 Token 签发与校验
-│   ├── auth_context.go             # 请求级认证上下文注入与提取
-│   ├── auth_manager.go             # 上游认证管理（登录/Session/API Key）
-│   ├── identity.go                 # 客户端身份捕获与 Passthrough 四级解析
-│   ├── identity_persistence.go     # 客户端身份按服务器维度持久化
-│   ├── ua_library.go               # UA 库核心（最近采集 / 常驻 UA、身份指纹与校验）
-│   ├── ua_library_persistence.go   # UA 库持久化（JSON 原子读写）
-│   ├── user_store.go               # 多用户存储（CRUD、密码哈希、内存索引 + SQLite）
-│   ├── handlers_admin.go           # 管理后台 API 处理器（上游服务器增删改查）
-│   ├── handlers_admin_home_libraries.go  # 每用户首页库隐藏的管理端接口与库列表缓存
-│   ├── handlers_admin_ua.go        # UA 库管理 API（最近采集 / 常驻 UA / 分配）
-│   ├── handlers_admin_aggregation.go  # 聚合开关管理 API（PATCH /admin/api/upstream/:id/aggregation）
-│   ├── admin_ua_assignments.go     # 常驻 UA 与服务器绑定、定向重建上游客户端
-│   ├── handlers_system.go          # 系统信息接口（/System/Info）
-│   ├── handlers_user.go            # 用户登录限速与用户相关接口处理器
-│   ├── handlers_web.go             # /web/ 静态资源服务（磁盘优先、内嵌回退、COOP/COEP）
-│   ├── root_page.go                # 根页面（/ 双入口卡片：Web 客户端 + 管理面板）
-│   ├── admin_validation.go         # 管理后台输入校验与辅助工具
-│   ├── idstore.go                  # SQLite 双向 ID 映射（虚拟 ID ↔ 原始 ID）
-│   ├── id_rewriter.go              # 递归 ID 虚拟化/反虚拟化重写
-│   ├── query_ids.go                # 批量查询 ID 解析
-│   ├── identifier_lookup.go        # 多来源标识符查询（各 store 锁内执行）
-│   ├── media.go                    # 媒体聚合、去重、元数据优先级选择
-│   ├── aggregation.go              # 通用聚合框架（宽恕期 + 后台静默补全）
-│   ├── aggregation_policy.go       # 上游聚合开关策略（只读配置、即时生效）
-│   ├── media_items.go              # 媒体条目查询（多上游扇出合并）
-│   ├── media_resume.go             # "继续观看"接口代理与多上游合并
-│   ├── media_nextup.go             # "接下来观看"接口代理与多上游合并
-│   ├── media_playback.go           # PlaybackInfo 查询与并发播放限制检查
-│   ├── media_source.go             # MediaSource 选择与播放会话归属
-│   ├── media_stream.go             # 视频/音频流代理（虚拟 ID 路由解析）
-│   ├── item_detail.go              # 合并条目详情（多实例 MediaSource 聚合）
-│   ├── item_instances.go           # 附加实例（OtherInstances）发现
-│   ├── show_items.go               # 剧集/季集列表合并（先合并再分页）
-│   ├── library_image.go            # 图片代理（缓存头）
-│   ├── library_filter.go           # 请求级隐藏库解析（首页库隐藏）
-│   ├── library_visibility.go       # 每用户首页库可见性存储（含管理员自身）
-│   ├── user_filter.go              # 本地用户态筛选（IsFavorite/IsPlayed/IsResumable）
-│   ├── series_userdata.go          # 系列级观看历史隔离（Resume/NextUp）
-│   ├── session_userdata.go         # Sessions/Playing 进度上报
-│   ├── session_cleanup.go          # PlayingItems 会话槽释放（不经过聚合过滤）
-│   ├── watch_store.go              # 每用户观看进度存储与持久化
-│   ├── playback_limiter.go         # 并发播放数限制（心跳超时自动释放）
-│   ├── login_limiter.go            # 登录失败限流（按 IP；容量满时逐出最旧记录）
-│   ├── streamproxy.go              # HTTP 流代理（背压、HLS 相对路径重写）
-│   ├── stream_probe.go             # 推流线路连接级存活探测（直连模式选线）
-│   ├── hls_segment_proxy.go        # VOD 分片时间轴重写与超大分片流式回退
-│   ├── hls_segment_time.go         # fMP4 时间轴解析与重写（tfdt/sidx，seek 时间线恢复）
-│   ├── fallback_proxy.go           # 兜底路由：扫描 URL/Query 中的虚拟 ID
-│   ├── healthcheck.go              # 并行健康检查
-│   ├── logger.go                   # 分级日志（Console + File 双输出 + 轮转）
-│   ├── logfile.go                  # 轮转日志文件（0600 权限、备份移位与收紧）
-│   ├── privatefile.go              # 私有文件权限（0600）与旧文件自动收紧
-│   ├── atomicfile.go               # 原子写文件（临时文件 + 重命名）
-│   ├── atomicfile_owner_unix.go    # 原子替换时保留文件属主（Unix）
-│   ├── atomicfile_owner_windows.go # 属主保持的 Windows 空实现
-│   ├── db_migration.go             # SQLite 表结构迁移（表/列探测与补建）
-│   ├── scrypt_local.go             # 管理员密码 scrypt 加密
-│   ├── sqlite_cgo.go               # CGO 嵌入式 SQLite 编译与底层绑定
-│   ├── upstream.go                 # 上游连接池 & 并发请求编排
-│   ├── upstream_outbound.go        # 出站请求头构造（身份注入、超时、重定向策略）
-│   ├── upstream_resident_identity.go  # 常驻身份快照应用到出站请求（spoofClient: resident）
-│   ├── upstream_ua_updates.go      # UA 变更的定向重连作业（prepare/publish/reconnect）
-│   ├── upstream_auth_state.go      # 上游认证状态一致性快照
-│   ├── outbound_identity.go        # 出站身份载体改写与命名
-│   ├── outbound_identity_policy.go # 出站认证模式与身份规则
-│   ├── outbound_errors.go          # 出站错误归一化（准备错误/传输错误分类）
-│   ├── outbound_log.go             # 出站请求日志（敏感参数脱敏）
-│   └── outbound_diagnostics.go     # 出站诊断扫描（有界输入）
-├── third_party/sqlite/             # SQLite CGO 源码依赖
-├── public/
-│   ├── embed.go                    # go:embed 指令（将 admin.html、admin.js、admin-activity.js、vendor/ 与 web/ 编译进二进制）
-│   ├── admin.html                  # Vue 3 + Tailwind CSS 管理面板模板
-│   ├── admin.js                    # Vue 3 应用逻辑（从 admin.html 拆分）
-│   ├── admin-activity.js           # 观看活动/保活提醒 UI 模块（状态徽章、派生筛选排序、设置弹窗）
-│   ├── web/                        # 内置 Web 客户端（/web/，Vue 3 全局构建，无打包步骤）
-│   │   ├── web.html                #   单页应用外壳
-│   │   ├── app.js                  #   应用入口（路由、页面装配、播放器接线）
-│   │   ├── data.js                 #   共享数据操作（API 封装）
-│   │   ├── ui.js                   #   共享 UI 状态工厂（Toast、最近搜索等）
-│   │   ├── page-state.js           #   页面请求控制器（AbortController + 代次）
-│   │   ├── library-state.js        #   媒体库页控制器（网格/列表、有界分页）
-│   │   ├── ui-components.js        #   可复用 Vue 组件
-│   │   ├── player-ui.js            #   播放器控制层状态（状态机、菜单、快捷键）
-│   │   ├── player-libmedia.js      #   播放引擎（原生 MP4、libmedia 流式、HLS 兜底）
-│   │   ├── subtitle-controller.js  #   轨道选择与字幕时钟
-│   │   ├── subtitles.js            #   字幕覆盖层（SRT/VTT/PGS、ASS 渲染）
-│   │   └── ui.css                  #   Web 客户端样式
-│   └── vendor/                     # 自托管前端依赖：Vue、lucide、Tailwind 产物、Inter 字体；
-│                                   # web/ 下为 libmedia 播放器、JASSUB 字幕引擎与 Noto Sans SC 字体
-├── tests/                          # Node 前端行为测试（node --test）
-│   ├── web-ui-harness.cjs          #   共享 VM harness（Vue 桩，按 web.html 顺序加载脚本）
-│   ├── make-web-fixtures.py        #   ffmpeg 合成样本生成（样本不入发行资源）
-│   └── *.test.cjs                  #   data / ui / player / player-ui / subtitles / mse-seek /
-│                                   #   mse-duration / seek-queue / session / admin-panel / admin-activity
-├── assets/panel.css                # Tailwind 输入文件（含从 admin.html 迁出的面板自定义样式）
-├── tailwind.config.js              # Tailwind 扫描配置（改动 admin.html/admin.js 后跑 npm run build:panel）
-├── package.json                    # 根 package.json 提供 build:panel / test 脚本（Node 依赖已移至 legacy/）
-├── Dockerfile                      # Go 环境容器构建
-├── docker-compose.yml              # 本地源码构建
-├── docker-compose.image.yml        # 预构建镜像部署（显式 image/digest）
-├── DOCKER.md / DOCKER_EN.md         # Docker 部署、升级、备份与回滚
-├── RELEASING.md                    # 公开发布规范与当前流水线边界
-├── install.sh                      # 源码仓库一键部署脚本（Docker）
-├── release-install.sh              # Release 二进制一键部署脚本（systemd）
-├── emby-in-one-cli.sh              # SSH 终端管理面板脚本
-└── legacy/                         # V1.2.1 Node.js 遗留实现：仅供对照参考，不参与构建 / 镜像 / 安装
-    ├── README.md                   #   保留原因与「不参与任何构建」的说明
-    ├── src/                        #   旧 Express 实现（Go 版 ID 虚拟化的对照参考）
-    ├── tests/                      #   旧 Node 测试（多数已失效）
-    └── package.json                #   Node 依赖（只有 npm --prefix legacy install 才会用到）
+cmd/emby-in-one/   程序入口
+internal/backend/  聚合、授权、虚拟 ID、播放代理、用户数据与管理 API
+public/            内置管理面板、Web 客户端及自托管依赖
+web-src/           播放器共享模块的维护源，与 vendor 接线同步
+tests/             前端行为测试与合成媒体测试工具
+third_party/       SQLite 等构建依赖
+scripts/           构建、校验与发布辅助脚本
+docs/              主题格式、设计、验证与工程交接记录
+legacy/            V1.2.1 Node.js 实现，仅供参考，不参与当前构建
 ```
+
+- 开发入口与约束见 [AGENTS.md](AGENTS.md)。
+- 容器部署见 [DOCKER.md](DOCKER.md)，发行流程见 [RELEASING.md](RELEASING.md)。
+- 工程验证和部署历史保留在 `docs/`，不作为公开发行或全部浏览器/媒体兼容性的保证。
 
 ---
 

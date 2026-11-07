@@ -4,6 +4,13 @@
 
 本文说明维护者如何校验发行身份、发布镜像与提升稳定标签。源码合并、工作流验证、镜像发布和实例部署是不同操作；只有实际发布并核验的镜像引用才能提供给用户。
 
+## V1.4.4-rc4 文档准备状态
+
+- rc4 仍为待发布；发布日期、附件及摘要以实际公开产物为准。源码同步到 Gitea 不会自动完成 GitHub Release 或 GHCR 镜像发布。
+- 正式发布时核对 rc3 到目标提交的差异，完成下方门禁；Release 公开后再更新 README 的已发布候选版和二进制安装命令。
+- Docker 独立验收发布后，更新中英 README、`DOCKER.md`、`DOCKER_EN.md` 中的镜像版本、平台及实测 digest。不要把 rc3 的摘要直接复用于 rc4，也不要仅替换示例标签后宣称镜像已发布。
+- 历史工程测试、合成媒体验证和单实例部署记录不能拼接成最终发行树全量通过；待执行项目保持未完成，不将本次文档核对描述为程序回归或发布验收。
+
 ## 1. 流水线边界
 
 | 流程 | 触发 / 产物 | 检查与限制 |
@@ -18,8 +25,8 @@ Release tag 含 `-` 被视为预发布。重跑现有 Release 可能覆盖资产
 
 | 身份 | 示例 |
 | --- | --- |
-| Git tag | `V1.4.4`、`V1.4.4-rc3`；工作流也接受合规小写 v |
-| 程序 / 镜像版本标签 | `v1.4.4`、`v1.4.4-rc3` |
+| Git tag | `V1.4.4`、`V1.4.4-rc4`；工作流也接受合规小写 v |
+| 程序 / 镜像版本标签 | `v1.4.4`、`v1.4.4-rc4` |
 | 源码提交 | 完整 40 位 commit SHA；annotated tag 必须解析到 commit |
 | 构建配方 | 工作流所在受审提交；旧 tag 的应用源码可用新版受审 Dockerfile 构建，二者须分别记录 |
 | 镜像 | 多架构 index digest、各平台 manifest digest、本地 image ID 是不同身份 |
@@ -51,7 +58,7 @@ Release tag 含 `-` 被视为预发布。重跑现有 Release 可能覆盖资产
 ```bash
 # 工作流定义来自受审默认分支，应用源码来自 release_tag 指定的准确 tag。
 gh workflow run docker.yml --repo ArizeSky/Emby-In-One --ref main \
-  -f mode=validate -f release_tag=V1.4.4-rc3 \
+  -f mode=validate -f release_tag=V1.4.4-rc4 \
   -f expected_sha=REPLACE_WITH_VERIFIED_FULL_COMMIT_SHA
 ```
 
