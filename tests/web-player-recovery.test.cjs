@@ -39,6 +39,22 @@ function harness(options = {}) {
   const states = [];
   const subtitleCalls = [];
   let subtitleSelect = options.subtitleSelect || (() => true);
+  // Browsers expose numeric handles, not Node Timeout.unref(). Keeping that
+  // distinction also lets deadline assertions settle on Node 22's test runner.
+  const timeouts = new Map();
+  let nextTimeout = 0;
+  function browserSetTimeout(callback, milliseconds, ...args) {
+    const id = ++nextTimeout;
+    timeouts.set(id, setTimeout(() => {
+      timeouts.delete(id);
+      callback(...args);
+    }, milliseconds));
+    return id;
+  }
+  function browserClearTimeout(id) {
+    clearTimeout(timeouts.get(id));
+    timeouts.delete(id);
+  }
   class Core {
     constructor(config) {
       this.options = config;
@@ -103,7 +119,7 @@ function harness(options = {}) {
     EIOSubtitles: Subtitles,
     ResizeObserver: class { observe() {} disconnect() {} },
     URL, AbortController, DOMException,
-    setInterval, clearInterval, setTimeout, clearTimeout, console,
+    setInterval, clearInterval, setTimeout: browserSetTimeout, clearTimeout: browserClearTimeout, console,
   };
   context.window = context;
   vm.createContext(context);
