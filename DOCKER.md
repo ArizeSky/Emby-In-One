@@ -2,7 +2,7 @@
 
 [返回 README](README.md) · [English](DOCKER_EN.md) · [维护者发布规范](RELEASING.md)
 
-本文区分源码功能、Release 与镜像。**V1.4.4-rc4 正在准备发布，本文镜像命令仍固定为已发布的 rc3，不用于安装 rc4 新功能。**有 GitHub Release 不代表同版本 GHCR 镜像已发布；升级前需另行核对目标版本、平台和 digest。年龄分级仍需大库性能、上游限频与客户端兼容验证，详见[更新日志](Update.md)。
+本文区分源码功能、Release 与镜像。**V1.4.4-rc4 预发布镜像已发布，本文示例固定到该版本的多架构摘要。**有 GitHub Release 不代表同版本 GHCR 镜像已发布；升级前需另行核对目标版本、平台和 digest。年龄分级仍需大库性能、上游限频与客户端兼容验证，详见[更新日志](Update.md)。
 
 ## 1. 先选一条路线，不要混用
 
@@ -19,21 +19,21 @@
 
 ## 2. 镜像、标签与版本
 
-- 官方镜像地址：`ghcr.io/arizesky/emby-in-one`。当前已公开发布 `v1.4.4-rc3`，可匿名拉取，支持 `linux/amd64` 和 `linux/arm64`，Docker 自动选择架构；这不等于 Release 二进制的六架构支持。ARMv7/MIPS/RISC-V 请使用对应二进制或自行构建验证。
+- 官方镜像地址：`ghcr.io/arizesky/emby-in-one`。当前已公开发布 `v1.4.4-rc4`，可匿名拉取，支持 `linux/amd64` 和 `linux/arm64`，Docker 自动选择架构；这不等于 Release 二进制的六架构支持。ARMv7/MIPS/RISC-V 请使用对应二进制或自行构建验证。
 - Docker 工作流仅手动触发，默认 **validate**；正式发布必须指定准确 tag 和完整预期 SHA。程序版本由 tag 推导，不能任意覆盖。
 - 构建与验收无包写权限；独立发布任务接收已验收附件，构建候选多架构 digest 后提升版本标签。已存在版本标签不能被不同 digest 覆盖。
 - 不再因为默认分支构建自动写 `latest`。只有明确确认且对应当前已公开正式稳定 Release 才允许提升；候选版永不提升 latest。
-- 当前未提供 `latest` 标签。安装时使用 `v1.4.4-rc3` 或下方固定摘要；其他版本须单独确认是否已发布，不因 Release 或构建成功而假定镜像存在。
+- 当前未提供 `latest` 标签。安装时使用 `v1.4.4-rc4` 或下方固定摘要；其他版本须单独确认是否已发布，不因 Release 或构建成功而假定镜像存在。
 - digest、镜像 ID、源码提交 SHA、Release 附件 SHA-256 不是同一个值。短 SHA 标签可定位源码，digest 才固定镜像字节；CPU 架构选择由多架构索引处理。
 
-当前 rc3 的多架构索引 digest 为 `sha256:2e9a60aea67a4716b1ec4ba10a2eaf3978acab9b66a038c8aa7b46343e047f0c`。在已安装 Docker/Buildx 的机器上检查：
+当前 rc4 的多架构索引 digest 为 `sha256:9ec1107f451a226cb0b5f6b46771765b9e7b7637f8a989ac69e79ab0c3e13b0c`。在已安装 Docker/Buildx 的机器上检查：
 
 ```bash
-IMAGE_REFERENCE='ghcr.io/arizesky/emby-in-one@sha256:2e9a60aea67a4716b1ec4ba10a2eaf3978acab9b66a038c8aa7b46343e047f0c'
+IMAGE_REFERENCE='ghcr.io/arizesky/emby-in-one@sha256:9ec1107f451a226cb0b5f6b46771765b9e7b7637f8a989ac69e79ab0c3e13b0c'
 docker buildx imagetools inspect "$IMAGE_REFERENCE"
 ```
 
-本文镜像示例固定为这个已发布的 rc3 索引，不是平台专属 manifest；更换版本时需核对目标版本的摘要。rc3 无需登录 GHCR；403/denied 可能是包权限问题，不一定是网络问题。若使用其他私有包，应以最小 `read:packages` 权限通过 `docker login ghcr.io --password-stdin` 登录，勿将令牌写进 Compose、镜像或 Git。
+本文镜像示例固定为这个已发布的 rc4 索引，不是平台专属 manifest；更换版本时需核对目标版本的摘要。rc4 无需登录 GHCR；403/denied 可能是包权限问题，不一定是网络问题。若使用其他私有包，应以最小 `read:packages` 权限通过 `docker login ghcr.io --password-stdin` 登录，勿将令牌写进 Compose、镜像或 Git。
 
 ## 3. 首次使用预构建镜像
 
@@ -46,14 +46,14 @@ docker buildx imagetools inspect "$IMAGE_REFERENCE"
 ```bash
 git clone https://github.com/ArizeSky/Emby-In-One.git
 cd Emby-In-One
-sudo bash install.sh --mode image --image ghcr.io/arizesky/emby-in-one@sha256:2e9a60aea67a4716b1ec4ba10a2eaf3978acab9b66a038c8aa7b46343e047f0c
+sudo bash install.sh --mode image --image ghcr.io/arizesky/emby-in-one@sha256:9ec1107f451a226cb0b5f6b46771765b9e7b7637f8a989ac69e79ab0c3e13b0c
 ```
 
 没有 `--mode` 时保留 source 默认路线。镜像拉取失败绝不转为源码构建。首次随机密码只保存在部署目录的 root-only `.eio-initial-password`，不输出到日志。默认监听 `127.0.0.1:8096`；可显式指定 `--port` / `--bind`，不要意外公开管理入口。新状态必须与实际 Compose/容器交叉匹配。
 
 ```bash
 sudo bash /opt/emby-in-one/eio-docker.sh status
-sudo bash /opt/emby-in-one/eio-docker.sh update --image ghcr.io/arizesky/emby-in-one@sha256:2e9a60aea67a4716b1ec4ba10a2eaf3978acab9b66a038c8aa7b46343e047f0c
+sudo bash /opt/emby-in-one/eio-docker.sh update --image ghcr.io/arizesky/emby-in-one@sha256:9ec1107f451a226cb0b5f6b46771765b9e7b7637f8a989ac69e79ab0c3e13b0c
 sudo env EIO_PROJECT_DIR=/opt/emby-in-one emby-in-one
 # 自定义目录也可显式传给 manager：--project-dir /opt/eio-test
 ```
@@ -101,10 +101,10 @@ sudo chmod 600 config/config.yaml
 
 ### 3.2 固定镜像引用并启动
 
-创建 `.env.image`（以下固定到当前已发布的 rc3），再运行：
+创建 `.env.image`（以下固定到当前已发布的 rc4），再运行：
 
 ```dotenv
-EIO_IMAGE=ghcr.io/arizesky/emby-in-one@sha256:2e9a60aea67a4716b1ec4ba10a2eaf3978acab9b66a038c8aa7b46343e047f0c
+EIO_IMAGE=ghcr.io/arizesky/emby-in-one@sha256:9ec1107f451a226cb0b5f6b46771765b9e7b7637f8a989ac69e79ab0c3e13b0c
 EIO_BIND_ADDRESS=127.0.0.1
 EIO_HTTP_PORT=8096
 ```

@@ -2,18 +2,18 @@
 
 [README](README_EN.md) · [中文](DOCKER.md) · [Maintainer release policy (Chinese)](RELEASING.md)
 
-This guide distinguishes source features, Releases and images. **V1.4.4-rc4 is being prepared; image commands below still pin published rc3 and do not install rc4 features.** A GitHub Release does not guarantee a matching GHCR image; verify the intended version, platforms and digest before upgrading. Parental controls still require large-library, upstream-rate-limit and client-compatibility testing; see the [changelog](Update.md).
+This guide distinguishes source features, Releases and images. **The V1.4.4-rc4 prerelease image is published; examples below pin its multi-platform index digest.** A GitHub Release does not guarantee a matching GHCR image; verify the intended version, platforms and digest before upgrading. Parental controls still require large-library, upstream-rate-limit and client-compatibility testing; see the [changelog](Update.md).
 
 ## Managed installation and current release protection
 
-The current main branch supports `install.sh --mode source|image`; existing rc3 Release source assets do not contain the new manager. No mode still means source. Image mode requires `--image <published-tag-or-digest>`, pins the resolved digest, and never falls back to a source build. Source builds default to `dev` unless an exact trusted Git release identity is verified. For the published rc3 image, obtain the current tools and select image mode:
+The current main branch supports `install.sh --mode source|image`; existing rc3 Release source assets do not contain the new manager. No mode still means source. Image mode requires `--image <published-tag-or-digest>`, pins the resolved digest, and never falls back to a source build. Source builds default to `dev` unless an exact trusted Git release identity is verified. For the published rc4 image, obtain the current tools and select image mode:
 
 ```bash
 git clone https://github.com/ArizeSky/Emby-In-One.git
 cd Emby-In-One
-sudo bash install.sh --mode image --image ghcr.io/arizesky/emby-in-one@sha256:2e9a60aea67a4716b1ec4ba10a2eaf3978acab9b66a038c8aa7b46343e047f0c
+sudo bash install.sh --mode image --image ghcr.io/arizesky/emby-in-one@sha256:9ec1107f451a226cb0b5f6b46771765b9e7b7637f8a989ac69e79ab0c3e13b0c
 sudo bash /opt/emby-in-one/eio-docker.sh status
-sudo bash /opt/emby-in-one/eio-docker.sh update --image ghcr.io/arizesky/emby-in-one@sha256:2e9a60aea67a4716b1ec4ba10a2eaf3978acab9b66a038c8aa7b46343e047f0c
+sudo bash /opt/emby-in-one/eio-docker.sh update --image ghcr.io/arizesky/emby-in-one@sha256:9ec1107f451a226cb0b5f6b46771765b9e7b7637f8a989ac69e79ab0c3e13b0c
 ```
 
 Requires Linux root, Docker/Compose, Python 3, curl, flock and tar. New installs bind loopback by default and use UID 1000. The random initial password is written only to root-only `.eio-initial-password`. State is non-executable JSON, cross-checked with Compose and the actual container; all lifecycle commands use a project/file/service context, not a fixed container name. `--project-dir` supports isolated deployments. The binary/systemd CLI remains independent.
@@ -38,19 +38,19 @@ The Docker workflow is manual-only and defaults to validation. Publication requi
 
 ## 2. Image names, versions and platforms
 
-- Official image: `ghcr.io/arizesky/emby-in-one`. The published public `v1.4.4-rc3` image supports anonymous pulls for `linux/amd64` and `linux/arm64`; Docker selects the matching architecture. This is not the six-architecture Release binary matrix. ARMv7/MIPS/RISC-V users need a matching binary or a separately verified local build.
+- Official image: `ghcr.io/arizesky/emby-in-one`. The published public `v1.4.4-rc4` image supports anonymous pulls for `linux/amd64` and `linux/arm64`; Docker selects the matching architecture. This is not the six-architecture Release binary matrix. ARMv7/MIPS/RISC-V users need a matching binary or a separately verified local build.
 - Version is derived from the exact release tag and verified full SHA; arbitrary version overrides are not supported. Validation does not publish.
-- No `latest` tag is currently provided. Use `v1.4.4-rc3` or its fixed multi-platform index digest below. Other versions must be checked independently; a Release or successful build does not guarantee a published image. Although the workflow refuses conflicting version-tag overwrites, a digest pins the exact manifest bytes.
+- No `latest` tag is currently provided. Use `v1.4.4-rc4` or its fixed multi-platform index digest below. Other versions must be checked independently; a Release or successful build does not guarantee a published image. Although the workflow refuses conflicting version-tag overwrites, a digest pins the exact manifest bytes.
 - An image ID, index digest, source commit SHA and Release asset checksum are different identifiers. Record them separately. Base images/packages/toolchains are not fully pinned, so rebuilding the same source does not promise byte-for-byte reproduction.
 
-The current rc3 multi-platform index digest is `sha256:2e9a60aea67a4716b1ec4ba10a2eaf3978acab9b66a038c8aa7b46343e047f0c`. Inspect it on a machine with Docker/Buildx:
+The current rc4 multi-platform index digest is `sha256:9ec1107f451a226cb0b5f6b46771765b9e7b7637f8a989ac69e79ab0c3e13b0c`. Inspect it on a machine with Docker/Buildx:
 
 ```bash
-IMAGE_REFERENCE='ghcr.io/arizesky/emby-in-one@sha256:2e9a60aea67a4716b1ec4ba10a2eaf3978acab9b66a038c8aa7b46343e047f0c'
+IMAGE_REFERENCE='ghcr.io/arizesky/emby-in-one@sha256:9ec1107f451a226cb0b5f6b46771765b9e7b7637f8a989ac69e79ab0c3e13b0c'
 docker buildx imagetools inspect "$IMAGE_REFERENCE"
 ```
 
-Image examples in this guide pin that published rc3 index, not a single-platform manifest. Verify the intended version's digest when changing releases. No GHCR login is needed for rc3. For other private packages, use appropriate `read:packages` access with `docker login ghcr.io --password-stdin`; never put registry tokens in Compose, build arguments or Git. A 403/denied response may indicate package permissions rather than a network problem.
+Image examples in this guide pin that published rc4 index, not a single-platform manifest. Verify the intended version's digest when changing releases. No GHCR login is needed for rc4. For other private packages, use appropriate `read:packages` access with `docker login ghcr.io --password-stdin`; never put registry tokens in Compose, build arguments or Git. A 403/denied response may indicate package permissions rather than a network problem.
 
 ## 3. First installation using a published image
 
@@ -87,10 +87,10 @@ sudo chmod 600 config/config.yaml
 
 Mount the **whole writable config directory**, not just a read-only config file: atomic config updates, server ID creation and password hashing require it. Mount data at `/app/data`; a custom `dataDir` must use a container path with its own persistent mount, not an unmounted host path. Do not work around permission problems using root, privileged mode, a Docker socket mount or chmod 777. Docker-group access is effectively host-root access.
 
-Create `.env.image` (the example pins the published rc3 image):
+Create `.env.image` (the example pins the published rc4 image):
 
 ```dotenv
-EIO_IMAGE=ghcr.io/arizesky/emby-in-one@sha256:2e9a60aea67a4716b1ec4ba10a2eaf3978acab9b66a038c8aa7b46343e047f0c
+EIO_IMAGE=ghcr.io/arizesky/emby-in-one@sha256:9ec1107f451a226cb0b5f6b46771765b9e7b7637f8a989ac69e79ab0c3e13b0c
 EIO_BIND_ADDRESS=127.0.0.1
 EIO_HTTP_PORT=8096
 ```

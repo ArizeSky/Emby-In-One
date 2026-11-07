@@ -91,7 +91,7 @@ Choose one route. For an existing deployment, check its directory and ports firs
 | **Method 3: Docker source build** | Code changes or custom image builds | Yes |
 | **Method 4: Run Go source** | Development and debugging | Yes |
 
-> **Version selection:** Stable: **V1.4.3**; candidate: **V1.4.4-rc4**. The binary installer defaults to the latest stable Release; select prereleases explicitly. See the [changelog](Update.md) for parental-control limitations. Releases and images are independent; a matching image is not guaranteed.
+> **Version selection:** Stable: **V1.4.3**; candidate: **V1.4.4-rc4**. The binary installer defaults to the latest stable Release; select prereleases explicitly. See the [changelog](Update.md) for parental-control limitations. rc4 binaries and amd64/arm64 images are both published.
 
 ### Method 1: Release Binary One-Click Install (Primary Recommendation)
 
@@ -114,7 +114,7 @@ The script initializes `/opt/emby-in-one/{config,data,log}`, generates a random 
 
 ### Method 2: Prebuilt Docker Image (No Local Compilation)
 
-**`ghcr.io/arizesky/emby-in-one:v1.4.4-rc3`** is published for **linux/amd64 and linux/arm64**. Docker selects the matching architecture automatically.
+**`ghcr.io/arizesky/emby-in-one:v1.4.4-rc4`** is published for **linux/amd64 and linux/arm64**. Docker selects the matching architecture automatically.
 
 Get the current repository's installation tools and explicitly select image mode:
 
@@ -124,7 +124,7 @@ cd Emby-In-One
 
 sudo bash install.sh \
   --mode image \
-  --image ghcr.io/arizesky/emby-in-one:v1.4.4-rc3
+  --image ghcr.io/arizesky/emby-in-one:v1.4.4-rc4
 ```
 
 This route only pulls the prebuilt image and **does not compile the project source**. The installer resolves and pins the image digest; subsequent updates stay on the image route.
@@ -955,7 +955,6 @@ Emby-In-One/
 ```
 
 - See [DOCKER_EN.md](DOCKER_EN.md) for containers and [RELEASING.md](RELEASING.md) for release procedures.
-- Theme package formats and examples are in `docs/`; internal designs, diagnostics and handovers are excluded from the public source.
 
 ---
 

@@ -91,7 +91,7 @@
 | **方式三：Docker 源码构建** | 修改源码或自行构建镜像 | 是 |
 | **方式四：Go 源码运行** | 开发与调试 | 是 |
 
-> **版本选择：**稳定版为 **V1.4.3**，候选版为 **V1.4.4-rc4**。二进制安装默认选择最新稳定 Release，候选版需显式指定。年龄分级限制见[更新日志](Update.md)。Release 与镜像独立发布，不保证同名镜像存在。
+> **版本选择：**稳定版为 **V1.4.3**，候选版为 **V1.4.4-rc4**。二进制安装默认选择最新稳定 Release，候选版需显式指定。年龄分级限制见[更新日志](Update.md)。rc4 二进制与 amd64/arm64 镜像均已发布。
 
 ### 方式一：Release 二进制一键安装（首推）
 
@@ -114,7 +114,7 @@ sudo bash release-install.sh V1.4.4-rc4
 
 ### 方式二：Docker 预构建镜像（无需本机编译）
 
-当前已发布 **`ghcr.io/arizesky/emby-in-one:v1.4.4-rc3`**，支持 **linux/amd64、linux/arm64**，Docker 会自动选择对应架构。
+当前已发布 **`ghcr.io/arizesky/emby-in-one:v1.4.4-rc4`**，支持 **linux/amd64、linux/arm64**，Docker 会自动选择对应架构。
 
 获取当前仓库中的安装工具，然后明确选择镜像安装模式：
 
@@ -124,7 +124,7 @@ cd Emby-In-One
 
 sudo bash install.sh \
   --mode image \
-  --image ghcr.io/arizesky/emby-in-one:v1.4.4-rc3
+  --image ghcr.io/arizesky/emby-in-one:v1.4.4-rc4
 ```
 
 此方式只拉取预构建镜像，**不会编译项目源码**；安装器会将所选镜像解析并锁定为 digest，后续更新也保持镜像部署路线。
@@ -955,7 +955,6 @@ Emby-In-One/
 ```
 
 - 容器部署见 [DOCKER.md](DOCKER.md)，发行流程见 [RELEASING.md](RELEASING.md)。
-- 主题包格式与示例见 `docs/`；内部设计、排障与交接文档不随公开源码发布。
 
 ---
 

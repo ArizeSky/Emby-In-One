@@ -62,6 +62,7 @@
 
 ### Docker 安装与管理
 
+- 已发布 `ghcr.io/arizesky/emby-in-one:v1.4.4-rc4`，支持 `linux/amd64` 和 `linux/arm64`；多架构 digest：`sha256:9ec1107f451a226cb0b5f6b46771765b9e7b7637f8a989ac69e79ab0c3e13b0c`。rc4 不创建或更新 `latest`。
 - 安装脚本支持选择源码构建或预构建镜像，新增镜像专用 Compose 和 `eio-docker.sh` 管理工具，SSH 菜单可管理两种部署方式。
 - 镜像部署按 digest 固定版本；更新时备份配置和完整数据，启动检查失败后恢复旧镜像及配套数据。
 

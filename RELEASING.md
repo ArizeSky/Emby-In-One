@@ -6,6 +6,8 @@
 
 ## V1.4.4-rc4 发布约定
 
+- rc4 准确源码提交为 `59677bb884855e57f0edd0adde1ce7600f6ce07f`。
+- 镜像 `ghcr.io/arizesky/emby-in-one:v1.4.4-rc4` 的多架构 digest 为 `sha256:9ec1107f451a226cb0b5f6b46771765b9e7b7637f8a989ac69e79ab0c3e13b0c`；已核验 amd64/arm64 与匿名访问，rc3 镜像和 `latest` 保持原状。
 - 发布 tag 为 `V1.4.4-rc4`，程序和镜像版本为 `v1.4.4-rc4`；标记为 Pre-release，稳定 Latest 保持 V1.4.3，Docker 不提升 `latest`。
 - 发布任务核验同一提交的公开 CI 成功后才公开 Release。Go 普通回归与 6 组后端 race 独立运行，汇总核对完整清单，不删除竞态门禁。
 - Docker 采用准确 tag/SHA、原生 amd64/arm64 验收和独立 publish job；发布后记录实际多架构 digest，再更新中英文镜像示例。
