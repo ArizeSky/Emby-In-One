@@ -830,10 +830,13 @@ Runtime directories:
 
 - `config/` — Stores config file `config.yaml`
 - `data/` — Stores runtime data:
-  - `mappings.db` — Virtual ID mappings, additional instances interactions, user data (UserStore), and watch history (WatchStore)
+  - `mappings.db` — Virtual IDs and additional instances, users and watch history, theme settings, and upstream viewing-activity summaries
+  - `mappings.db-wal` / `mappings.db-shm` — Companion files SQLite may create while running
   - `tokens.json` — Proxy layer token storage
   - `captured-headers.json` — Passthrough client headers persistence
-  - `emby-in-one.log` — Log file
+  - `ua-library.json` — Recently captured and resident client identity library
+  - `themes/` — Installed theme resources and quarantine/staging content
+  - `emby-in-one.log` — Log file and its rotated backups
 
 The actual location of `data/` can be changed with the top-level [`dataDir`](#data-directory-datadir) key in the config file.
 
@@ -922,16 +925,39 @@ If all users receive `429 Too Many Requests` after 5 failed login attempts, `tru
 
 ## Project Architecture (Developer Reference)
 
+The main source and engineering entry points are shown below; individual files are not exhaustively listed. `config/` and `data/` are created or mounted at runtime; see [Data Directory Description](#data-directory-description).
+
 ```text
-cmd/emby-in-one/   Application entry point
-internal/backend/ Aggregation, authorization, virtual IDs, playback proxy, user data and admin APIs
-public/           Embedded admin panel, Web client and self-hosted dependencies
-web-src/          Maintained player shared-module sources, synchronized with vendor integration
-tests/            Frontend behavior tests and synthetic-media tooling
-third_party/      Build dependencies including SQLite
-scripts/          Build, validation and release helpers
-docs/             Theme formats, design, verification and engineering handovers
-legacy/           V1.2.1 Node.js reference implementation; excluded from current builds
+Emby-In-One/
+├── cmd/emby-in-one/         Go entry point and entry-point tests
+├── internal/backend/       Aggregation, authorization, virtual IDs, playback, user data, admin APIs and Go tests
+├── public/
+│   ├── embed.go            Embeds the admin panel, Web client and dependencies into the Go binary
+│   ├── admin.html          Admin panel page
+│   ├── admin.js            Main admin module
+│   ├── admin-activity.js   Upstream viewing-activity management
+│   ├── admin-theme.js      Theme management
+│   ├── web/               Web client, playback sessions, subtitles and appearance modules
+│   └── vendor/            Local static assets, including the maintained web/libmedia/ player and Worker/WASM files
+├── web-src/                Maintained player shared-module sources, synchronized with vendor; not served directly
+├── assets/                 Shared admin/Web Tailwind CSS build inputs
+├── tests/                  Frontend behavior tests, browser fixtures and synthetic-test tooling
+├── tools/                  Dual-cache browser acceptance fixture
+├── third_party/sqlite/     SQLite amalgamation used by the CGO build
+├── scripts/                Docker deployment, image verification and release-policy helpers
+├── .github/workflows/      Go/frontend CI, Release and Docker workflows
+├── docs/                   Theme formats, design, verification and engineering handovers
+├── legacy/                 V1.2.1 Node.js reference; excluded from the current Go build
+├── go.mod                  Go module and required Go version
+├── package.json            Panel CSS build and frontend test commands
+├── tailwind.config.js      Tailwind scanning and stylesheet build configuration
+├── Dockerfile              Container build for Go and embedded static assets
+├── docker-compose.yml      Docker deployment built from source
+├── docker-compose.image.yml Docker deployment using a prebuilt image
+├── eio-docker.sh           Managed Docker deployment and lifecycle operations
+├── emby-in-one-cli.sh      SSH operations menu
+├── install.sh              Docker installer supporting source/image modes
+└── release-install.sh      Release binary installer
 ```
 
 - See [AGENTS.md](AGENTS.md) for development entry points and constraints.

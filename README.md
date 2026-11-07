@@ -830,10 +830,13 @@ emby-in-one
 
 - `config/` — 保存配置文件 `config.yaml`
 - `data/` — 保存以下运行时数据：
-  - `mappings.db` — 虚拟 ID 与附加实例映射 + 用户数据（UserStore）+ 观看历史数据（WatchStore）
+  - `mappings.db` — 虚拟 ID 与附加实例映射、用户及观看记录、主题设置与上游观看活动汇总
+  - `mappings.db-wal` / `mappings.db-shm` — SQLite 运行中可能生成的配套文件
   - `tokens.json` — 代理层 token 存储
   - `captured-headers.json` — passthrough 客户端头持久化
-  - `emby-in-one.log` — 日志文件
+  - `ua-library.json` — 最近采集及常驻客户端身份库
+  - `themes/` — 已安装主题的资源与隔离/暂存内容
+  - `emby-in-one.log` — 日志文件及其轮转备份
 
 `data/` 的实际位置可以通过配置文件顶层的 [`dataDir`](#数据目录-datadir) 键改写。
 
@@ -922,16 +925,39 @@ emby-in-one
 
 ## 项目架构 (供开发者查阅)
 
+以下为主要源码与工程入口，不展开全部文件；`config/`、`data/` 是运行时创建或挂载的目录，见[数据目录说明](#数据目录说明)。
+
 ```text
-cmd/emby-in-one/   程序入口
-internal/backend/  聚合、授权、虚拟 ID、播放代理、用户数据与管理 API
-public/            内置管理面板、Web 客户端及自托管依赖
-web-src/           播放器共享模块的维护源，与 vendor 接线同步
-tests/             前端行为测试与合成媒体测试工具
-third_party/       SQLite 等构建依赖
-scripts/           构建、校验与发布辅助脚本
-docs/              主题格式、设计、验证与工程交接记录
-legacy/            V1.2.1 Node.js 实现，仅供参考，不参与当前构建
+Emby-In-One/
+├── cmd/emby-in-one/         Go 程序入口与入口测试
+├── internal/backend/       聚合、授权、虚拟 ID、播放代理、用户数据、管理 API 及 Go 测试
+├── public/
+│   ├── embed.go            将管理面板、Web 客户端与依赖嵌入 Go 二进制
+│   ├── admin.html          管理面板页面
+│   ├── admin.js            管理面板主模块
+│   ├── admin-activity.js   上游观看活动管理
+│   ├── admin-theme.js      主题管理
+│   ├── web/               Web 客户端、播放会话、字幕及外观模块
+│   └── vendor/            本地静态资源，含 web/libmedia/ 播放器及其 Worker/WASM
+├── web-src/                播放器共享模块维护源，与 vendor 接线同步；不直接发布为静态目录
+├── assets/                 管理面板与 Web 共用的 Tailwind CSS 构建输入
+├── tests/                  前端行为测试、浏览器 fixture 与合成测试工具
+├── tools/                  双缓存浏览器验收 fixture
+├── third_party/sqlite/     SQLite amalgamation，供 CGO 构建使用
+├── scripts/                Docker 部署、镜像验证与发布策略辅助工具
+├── .github/workflows/      Go/前端 CI、Release 与 Docker 工作流
+├── docs/                   主题格式、设计、验证与工程交接记录
+├── legacy/                 V1.2.1 Node.js 参考实现，不参与当前 Go 构建
+├── go.mod                  Go 模块与 Go 版本要求
+├── package.json            面板 CSS 构建与前端测试命令
+├── tailwind.config.js      Tailwind 扫描与样式构建配置
+├── Dockerfile              Go 程序及内置静态资源的容器构建
+├── docker-compose.yml      Docker 源码构建部署
+├── docker-compose.image.yml Docker 预构建镜像部署
+├── eio-docker.sh           Docker 托管部署与生命周期操作
+├── emby-in-one-cli.sh      SSH 运维菜单
+├── install.sh              Docker 安装入口，支持 source/image 模式
+└── release-install.sh      Release 二进制安装入口
 ```
 
 - 开发入口与约束见 [AGENTS.md](AGENTS.md)。
