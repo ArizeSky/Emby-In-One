@@ -1,115 +1,132 @@
 name: Release
 
-# 推送大写 V 开头的版本 tag（如 V1.4.4）即触发完整发布：
-#   1. 六架构静态链接的 Linux 二进制（release-install.sh 的 detect_arch 全集）
-#   2. 面板与脚本资产（admin.html / admin.js / emby-in-one-cli.sh / release-install.sh）
-#   3. Docker 模式在线更新用的源码包 Emby-In-One-docker-<v版本>.tar.gz
-#   4. 以上每个资产的 .sha256（V1.4.4 起安装/更新脚本强制走校验，缺文件则告警放行）
-#   5. 从 Update.md 提取对应版本的更新日志，创建 GitHub Release 并上传全部资产
-#
-# 命名约定（release-install.sh / emby-in-one-cli.sh 按此拼 URL，错了会 404）：
-#   tag 与 Release 标题用大写 V（V1.4.4），资产文件名内的版本用小写 v（v1.4.4）。
-#
-# 预发布：tag 带后缀（V1.4.5-rc1 / V1.4.5-beta.1）自动发布为 Pre-release，
-#   releases/latest 仍指向上一个正式版，不带参数的安装/在线更新不会拿到预发布；
-#   更新日志没有专属章节时回退到基础版本章节（V1.4.5-rc1 → V1.4.5）。
+# Uppercase V tags publish six static binaries, panel/scripts and a Docker
+# source archive with checksums. Suffix tags are Pre-releases, never Latest.
 on:
   push:
     tags: ['V[0-9]*']
-
 permissions:
   contents: write
-
+  actions: read
 concurrency:
   group: release-${{ github.ref_name }}
   cancel-in-progress: false
-
-# 仅指定的 GitHub 发布仓库执行这些 job，避免镜像仓库或 fork
-# 在同步版本 tag 时重复发布；实际执行范围由各 job 的 if 守卫决定。
+env:
+  GOMAXPROCS: '1'
+  GOFLAGS: '-p=1'
 jobs:
-  build:
-    name: Build release assets
+  checks:
+    name: Release Go build, vet and regression
     if: github.repository == 'ArizeSky/Emby-In-One'
-    runs-on: ubuntu-latest
-    # 与 Dockerfile 的 builder 阶段同一基础镜像：发布二进制与 Docker 自建产物
-    # 出自同一套 Go / 工具链。SQLite 是 vendored cgo，交叉编译依赖各目标的
-    # C 交叉编译器（Debian bookworm 全部提供）。
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
     container: golang:1.23-bookworm
-    # 容器 job 的默认 shell 是 sh（dash），不支持 set -o pipefail 与 [[ ]]；
-    # 下面的构建脚本全部按 bash 编写，必须显式指定 bash。
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build, vet and full ordinary regression
+        run: |
+          set -eu
+          nice -n 19 go build -buildvcs=false ./...
+          nice -n 19 go vet ./...
+          nice -n 19 go test -parallel 1 -timeout 15m ./...
+
+  build:
+    name: Static Linux ${{ matrix.arch }}
+    if: github.repository == 'ArizeSky/Emby-In-One'
+    needs: checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    container: golang:1.23-bookworm
     defaults:
       run:
         shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            cc: gcc
+            packages: build-essential
+          - arch: arm64
+            cc: aarch64-linux-gnu-gcc
+            packages: gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+          - arch: arm
+            cc: arm-linux-gnueabihf-gcc
+            packages: gcc-arm-linux-gnueabihf libc6-dev-armhf-cross
+            goarm: '7'
+          - arch: mips
+            cc: mips-linux-gnu-gcc
+            packages: gcc-mips-linux-gnu libc6-dev-mips-cross
+          - arch: mipsle
+            cc: mipsel-linux-gnu-gcc
+            packages: gcc-mipsel-linux-gnu libc6-dev-mipsel-cross
+          - arch: riscv64
+            cc: riscv64-linux-gnu-gcc
+            packages: gcc-riscv64-linux-gnu libc6-dev-riscv64-cross
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install cross toolchains
+        with:
+          persist-credentials: false
+      - name: Install target C toolchain
+        env:
+          CROSS_PACKAGES: ${{ matrix.packages }}
         run: |
+          set -euo pipefail
           apt-get update
-          # libc6-dev-*-cross 必须显式列出：交叉 gcc 元包对它们只是 Recommends，
-          # --no-install-recommends 会跳过。缺了它们，交叉编译回退读到宿主机的
-          # /usr/include/stdlib.h，随后 bits/ 多架构头找不到，runtime/cgo 编译失败。
-          apt-get install -y --no-install-recommends \
-            build-essential \
-            file \
-            gcc-aarch64-linux-gnu libc6-dev-arm64-cross \
-            gcc-arm-linux-gnueabihf libc6-dev-armhf-cross \
-            gcc-mips-linux-gnu libc6-dev-mips-cross \
-            gcc-mipsel-linux-gnu libc6-dev-mipsel-cross \
-            gcc-riscv64-linux-gnu libc6-dev-riscv64-cross
-
-      - name: Vet
-        run: go vet ./...
-
-      # -race 的完整门禁在 ci.yml（push 到 main 时跑）；发布构建只做无插桩的
-      # 快速回归，避免每次发布都多等一遍竞态检测的时间。
-      - name: Test
-        run: go test -timeout 15m ./...
-
-      - name: Build static binaries for all supported architectures
+          apt-get install -y --no-install-recommends file $CROSS_PACKAGES
+      - name: Build and verify static binary
         env:
           TAG: ${{ github.ref_name }}
+          ARCH: ${{ matrix.arch }}
+          CC: ${{ matrix.cc }}
+          GOARM: ${{ matrix.goarm }}
         run: |
           set -euo pipefail
           VERSION="v${TAG#V}"
           mkdir -p dist
-          # arm 为 armv7 硬浮点（Debian armhf 基线，覆盖树莓派 2 及以上）；
-          # armv6（树莓派一代 / Zero）不在预编译范围内。
-          # netgo + osusergo + -extldflags -static：纯静态、自带 DNS/用户解析，
-          # 不依赖目标机器的 glibc 版本与 NSS 动态库。
-          build() {
-            local goarch="$1" cc="$2" goarm="${3:-}"
-            echo "==> Building linux/${goarch} (GOARM=${goarm:-none}) with CC=${cc}..."
-            # -buildvcs=false: 容器 job 的工作区属主与运行用户不一致，go 的
-            # VCS 戳记调 git 会以 128 拒绝；版本号已由 -X 注入，无需戳记。
-            CGO_ENABLED=1 CC="$cc" GOARM="$goarm" GOOS=linux GOARCH="$goarch" \
-              go build -trimpath -buildvcs=false -tags "netgo osusergo" \
-              -ldflags "-s -w -X main.Version=${VERSION} -extldflags -static" \
-              -o "dist/Emby-In-One-linux-${goarch}-${VERSION}" ./cmd/emby-in-one
-          }
-          build amd64   gcc
-          build arm64   aarch64-linux-gnu-gcc
-          build arm     arm-linux-gnueabihf-gcc 7
-          build mips    mips-linux-gnu-gcc
-          build mipsle  mipsel-linux-gnu-gcc
-          build riscv64 riscv64-linux-gnu-gcc
+          binary="dist/Emby-In-One-linux-${ARCH}-${VERSION}"
+          CGO_ENABLED=1 GOOS=linux GOARCH="$ARCH" nice -n 19 \
+            go build -trimpath -buildvcs=false -tags "netgo osusergo" \
+            -ldflags "-s -w -X main.Version=${VERSION} -extldflags -static" \
+            -o "$binary" ./cmd/emby-in-one
+          file "$binary"
+          file "$binary" | grep -q 'statically linked'
+          if [ "$ARCH" = amd64 ]; then test "$("$binary" --version)" = "$VERSION"; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.arch }}
+          path: dist/
+          retention-days: 5
+          if-no-files-found: error
 
-      - name: Smoke test and verify static linking
+  package:
+    name: Package release assets
+    if: github.repository == 'ArizeSky/Emby-In-One'
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: binary-*
+          path: dist
+          merge-multiple: true
+      - name: Require every binary and verify version
         env:
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           VERSION="v${TAG#V}"
-          # 容器本身是 linux/amd64，可以直接执行一次 --version 验证产物
-          "./dist/Emby-In-One-linux-amd64-${VERSION}" --version
-          for f in dist/Emby-In-One-linux-*; do
-            if ! file "$f" | grep -q "statically linked"; then
-              echo "::error::${f} 不是静态链接" >&2
-              file "$f" >&2
-              exit 1
-            fi
+          for arch in amd64 arm64 arm mips mipsle riscv64; do
+            test -s "dist/Emby-In-One-linux-${arch}-${VERSION}"
           done
-
+          chmod +x "dist/Emby-In-One-linux-amd64-${VERSION}"
+          test "$("dist/Emby-In-One-linux-amd64-${VERSION}" --version)" = "$VERSION"
       - name: Stage panel and script assets
         run: |
           cp public/admin.html public/admin.js dist/
@@ -226,9 +243,17 @@ jobs:
   publish:
     name: Create GitHub release
     if: github.repository == 'ArizeSky/Emby-In-One'
-    needs: build
-    runs-on: ubuntu-latest
+    needs: package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
     steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Require exact-source CI before publishing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/wait-release-ci.py
       - uses: actions/download-artifact@v4
         with:
           name: release-assets
@@ -243,7 +268,7 @@ jobs:
           # 上一个正式版，不带参数的安装/在线更新不会拿到预发布。
           PRERELEASE_ARGS=()
           if [[ "$TAG" == *-* ]]; then
-            PRERELEASE_ARGS+=(--prerelease)
+            PRERELEASE_ARGS+=(--prerelease --latest=false)
           fi
           # 幂等：重跑失败的发布时 Release 可能已创建，改为补传/覆盖资产。
           # release-notes.md 只作为正文，不作为资产上传。

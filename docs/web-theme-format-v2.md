@@ -142,5 +142,5 @@ block above.
 
 - 本文不宣称任何性能改进、扫描优化或上线状态。
   This document claims no performance improvement, scan optimisation, or deployment status.
-- 本阶段只验收格式、传输与安全预览；播放器页面接线及浏览器/媒体验收见[实施进度](web-player-progress-theme-implementation-progress.md)。
-  This phase verifies format, transport and sandboxed previews only. See [implementation progress](web-player-progress-theme-implementation-progress.md) for player-page wiring and browser/media acceptance.
+- 实际播放器使用已播、缓冲、底轨和滑块配色；视觉效果仍取决于浏览器、设备与素材。
+  The player applies played, buffered, track and thumb colors; visual results still depend on the browser, device and media.

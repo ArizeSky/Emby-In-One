@@ -1,6 +1,6 @@
 # Emby-In-One
 
-> **准备发布：V1.4.4-rc4（Pre-release） · 已发布候选版：V1.4.4-rc3 · 当前稳定版：V1.4.3**
+> **当前候选版：[V1.4.4-rc4（Pre-release）](https://github.com/ArizeSky/Emby-In-One/releases/tag/V1.4.4-rc4) · 当前稳定版：V1.4.3**
 
 [![License: GPL v3](https://img.shields.io/github/license/ArizeSky/Emby-In-One?color=blue)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.23+-00ADD8?logo=go&logoColor=white)](https://go.dev/)
@@ -13,7 +13,7 @@
 
 基于Go语言实现的多台 Emby 服务器聚合代理，将多个上游 Emby 服务器的媒体库合并为一个统一入口，支持任何标准 Emby 客户端访问。支持多用户管理、独立观看历史、UA伪装、并发播放数限制和角色权限隔离。
 
-## V1.4.4-rc4 发布预览
+## V1.4.4-rc4
 
 本次候选版聚焦媒体库查询、Web 播放稳定性、主题与管理体验。完整变更及已知限制见[更新日志](Update.md)。
 
@@ -22,7 +22,7 @@
 - **实验性双缓存**：管理员可开启严格 MSE 缓存控制，受控压缩媒体预算为 300,000,000 字节或向前 120 秒，先到者停止生产；默认关闭，不是浏览器总内存上限。
 - **主题与管理**：支持明亮/暗色/跟随系统、受限主题包与账号外观偏好；新增上游观看活动统计和保活提醒，完善 Docker 托管更新、备份和恢复。
 
-> rc4 仍为待发布预览，不代表 Release 或镜像已上线。年龄分级、大型媒体库及不同浏览器/编解码组合仍需小范围验证；请先备份配置和完整数据目录。
+> rc4 为预发布候选版。年龄分级、大型媒体库及不同浏览器/编解码组合仍需小范围验证；请先备份配置和完整数据目录。
 
 ## 目录
 
@@ -59,7 +59,7 @@
 
 ## 功能概览
 
-> 以下功能说明对应当前 rc4 待发布源码；rc3 的功能范围以对应版本更新日志为准。
+> 以下功能说明对应 rc4；历史版本的功能范围以对应版本更新日志为准。
 
 - **多用户管理** — 支持创建多个普通用户，每个用户可独立配置可访问的上游服务器；管理员可通过管理面板、REST API 和 SSH 菜单管理用户。
 - **每用户首页库隐藏** — 管理员可为每个用户（含自己）单独勾选哪些媒体库不在 Emby 客户端首页显示（按服务器分组、支持整服务器隐藏）；仅隐藏首页库入口，搜索、最新添加、继续观看不受影响，保存后实时生效。
@@ -97,7 +97,7 @@
 | **方式三：Docker 源码构建** | 修改源码或自行构建镜像 | 是 |
 | **方式四：Go 源码运行** | 开发与调试 | 是 |
 
-> **版本选择：**稳定版为 **V1.4.3**，已发布候选版为 **V1.4.4-rc3**；**V1.4.4-rc4 正在准备发布**。二进制安装默认选择最新稳定 Release，候选版需显式指定。年龄分级限制见[更新日志](Update.md)。Release 与镜像独立发布，不保证同名镜像存在。
+> **版本选择：**稳定版为 **V1.4.3**，候选版为 **V1.4.4-rc4**。二进制安装默认选择最新稳定 Release，候选版需显式指定。年龄分级限制见[更新日志](Update.md)。Release 与镜像独立发布，不保证同名镜像存在。
 
 ### 方式一：Release 二进制一键安装（首推）
 
@@ -108,10 +108,10 @@ curl -fsSL -o release-install.sh https://raw.githubusercontent.com/ArizeSky/Emby
 sudo bash release-install.sh
 ```
 
-体验已发布的 rc3 可使用下列命令；rc4 Release 正式公开后，将版本号替换为 `V1.4.4-rc4`：
+安装或升级到 rc4，请显式指定候选版：
 
 ```bash
-sudo bash release-install.sh V1.4.4-rc3
+sudo bash release-install.sh V1.4.4-rc4
 ```
 
 安装脚本会初始化 `/opt/emby-in-one/{config,data,log}`、生成随机管理员密码，并安装 systemd 服务。安装完成后，按终端提示保存初始密码并访问管理面板；后续可运行 `emby-in-one` 打开 SSH 管理菜单。
@@ -393,7 +393,7 @@ upstream:
 
 在管理面板修改的设置会热生效，无需重启服务。唯一例外是顶部的「默认播放模式」——它只是**新增上游时的初始值**，不影响已存在的上游，详见「播放模式详解」。
 
-「Web 大缓存（测试中）」开关同样在管理面板的全局设置中，保存后立即对新的播放会话生效（正在播放的会话保持原路径直到结束）。关闭时为默认行为，较成熟，但缓存仅有 2 秒，对网络环境要求较高；开启后启用大缓存（300MB / 120 秒），对用户侧设备性能要求较高。该功能处于测试中，遇到问题请回退关闭；计账覆盖尚未全部闭合（详见 `docs/web-payload-transfer-work-in-progress.md`）。
+「Web 大缓存（测试中）」开关同样在管理面板的全局设置中，保存后立即对新的播放会话生效（正在播放的会话保持原路径直到结束）。关闭时为默认行为，较成熟，但缓存仅有 2 秒，对网络环境要求较高；开启后启用大缓存（300MB / 120 秒），对用户侧设备性能要求较高。该功能处于测试中，遇到问题请回退关闭；计账覆盖尚未全部闭合。
 
 严格路径现在会把 MSE 初始化／重播失败传回播放调用；启动等待超过 30 秒时报告失败，而不是假定成功。暂停不再取消在途 seek 的准入等待。MP4 HEVC／AV1／Opus／VVC／VP9／FLAC／ESDS native extradata、Matroska track CodecPrivate 及非图片附件已接入槽位准入与最终释放计账（FLAC 在 native 分配前选定最终 payload）。Matroska 图片附件采用分配前准入与真实 AVBuffer 最后引用释放，不走 extradata 槽位。这不代表每种 codec 均支持严格 MSE 播放，也不代表 header／side-data 已全部覆盖；AV1／Opus 合成素材仍会因 mux planner 能力不足明确失败。
 
@@ -560,15 +560,15 @@ V1.4 新增多用户支持，允许管理员创建多个普通用户，每个用
 - 留空时与 `url`（前端地址）一致，行为与单条 `streamingUrl` 相同。
 
 ### 客户端身份详解 (`spoofClient`)
- 
+
  控制代理以什么客户端身份与上游服务器通信。影响登录、API 请求、健康检查和流媒体代理。
- 
+
  | 值 | User-Agent | X-Emby-Client | 使用场景 |
  |----|-----------|----------------|---------|
  | `passthrough`（默认） | 管理员登录时捕获的真实客户端 UA | 真实客户端值 | 有客户端白名单的服务器；所有用户共用该捕获身份 |
  | `custom` | 自定义值（必填） | 自定义值 | 需要完全控制客户端标识的服务器 |
 | `resident` | 固定的常驻身份 | 常驻身份值 | 需要多台服务器共用一条稳定、可控身份的服务器 |
- 
+
  > **注**：V1.2 中的 `official` 模式已在 V1.3 中自动迁移为 `custom`，使用原 Emby Web 官方客户端的默认值。V1.4.4 起内置的 `none`（Emby Aggregator）与 `infuse`（Infuse 伪造）模式已移除，存量配置自动迁移为 `passthrough`。
  >
  > **当前行为**：`custom` 模式下配置的 `User-Agent`、`X-Emby-Client`、`X-Emby-Client-Version`、`X-Emby-Device-Name`、`X-Emby-Device-Id` 会同时应用于上游登录认证、常规 API 请求、健康检查、图片代理和流媒体代理；管理面板保存后会持久化到配置文件，并在再次编辑时正确回填。`customUserAgent` 为必填项——没有 User-Agent 的自定义身份会退化成无 UA 出站请求，这正是被移除的行为。
@@ -577,23 +577,23 @@ V1.4 新增多用户支持，允许管理员创建多个普通用户，每个用
 
 > **Web 严格播放身份**：`/web` 为每次协商的每个候选创建独立 attempt 和播放 capability；媒体、HLS 派生资源、字幕及会话事件共用该候选的冻结身份。相容的上游 token 刷新不会冻结旧凭据，但账号/身份/配置不相容、撤权、绑定过期或进程重启会明确拒绝旧请求；界面停止旧尝试，重试必须重新协商，不会退回普通 token 播放。播放 capability 不能用于元数据/legacy API，绑定创建它的本地登录会话，父 token 被撤销后失效。
 >
-> Web 同样遵循每台上游的 `spoofClient`：透传使用既有捕获解析，自定义使用配置值，常驻使用绑定身份；不会固定成某个 Hills 版本。DeviceProfile 独立声明保守的 Web 播放能力，转码宽高限制放在 TranscodingProfile。Playing/Progress 上报实际播放状态，暂停、继续、倍速、音量和轨道变化及时发送 Progress；未知轨道索引省略，Stopped 使用独立的停止 DTO。规范来源和验证边界见 [Web 上报协议记录](docs/web-playback-reporting.md)。
+> Web 同样遵循每台上游的 `spoofClient`：透传使用既有捕获解析，自定义使用配置值，常驻使用绑定身份；不会固定成某个 Hills 版本。DeviceProfile 独立声明保守的 Web 播放能力，转码宽高限制放在 TranscodingProfile。Playing/Progress 上报实际播放状态，暂停、继续、倍速、音量和轨道变化及时发送 Progress；未知轨道索引省略，Stopped 使用独立的停止 DTO。
 >
-> 严格 Web 播放始终由代理获取（即使 native 配置为 `redirect`），以保留上游身份与授权边界；native/legacy 路径仍保持原模式。已注册资源使用不透明 URL，原始签名查询不改写；无法证明归属或必须破坏签名才能去除私有凭据时明确失败。停止与转码清理各自等待上游确认；开始清理即停止接纳新播放操作，失败后只允许有界清理重试。关闭聚合不阻止仍有实例授权的清理；页面卸载仅尽力发送，不保证送达，服务端以容量/TTL 回收兜底。实现边界、错误码和隔离验证见[实施记录](docs/web-playback-identity-repair-progress.md)。
- 
-> **Emby 客户端字幕选源**：PlaybackInfo 返回的字幕地址按路径段改写，并携带该字幕所属的虚拟 MediaSourceId，避免 `mediasource_<条目ID>` 被整体替换后丢失来源。客户端自行构造地址时可使用媒体源或播放会话选源；有多个可用副本却没有可识别来源时返回明确错误，不再猜测主上游。更新后应重新打开播放以刷新缓存地址，详见[字幕来源修复记录](docs/native-subtitle-source-fix.md)。
+> 严格 Web 播放始终由代理获取（即使 native 配置为 `redirect`），以保留上游身份与授权边界；native/legacy 路径仍保持原模式。已注册资源使用不透明 URL，原始签名查询不改写；无法证明归属或必须破坏签名才能去除私有凭据时明确失败。停止与转码清理各自等待上游确认；开始清理即停止接纳新播放操作，失败后只允许有界清理重试。关闭聚合不阻止仍有实例授权的清理；页面卸载仅尽力发送，不保证送达，服务端以容量/TTL 回收兜底。
+
+> **Emby 客户端字幕选源**：PlaybackInfo 返回的字幕地址按路径段改写，并携带该字幕所属的虚拟 MediaSourceId，避免 `mediasource_<条目ID>` 被整体替换后丢失来源。客户端自行构造地址时可使用媒体源或播放会话选源；有多个可用副本却没有可识别来源时返回明确错误，不再猜测主上游。更新后应重新打开播放以刷新缓存地址。
 
 #### Passthrough 模式工作原理
- 
+
  Passthrough 使用四级 header 解析，向上游呈现真实客户端身份；任何一级都取不到时**不伪造、不裸发**，而是延迟登录等待真实客户端：
- 
+
  1. **实时请求头** — 如果当前请求携带 `X-Emby-Client` 头（真正的 Emby 客户端），直接使用这些头。
  2. **当前 Token 的已捕获头** — 当真实客户端（Infuse、Emby iOS 等）登录 Emby-in-One 时，代理会按当前代理 Token 捕获并存储客户端的 `User-Agent`、`X-Emby-Client`、`X-Emby-Device-Name` 等头信息；后续仅由同一 Token 的请求复用。
  3. **该服务器上次成功的登录头** — 每台 passthrough 服务器成功登录时，使用的完整 headers 会被记住并持久化。重启后直接使用，无需等待用户重新登录。
  4. **最近捕获头** — 如果当前请求无 Token 且该服务器无历史成功记录，使用最近一次任意 Token 的已捕获头。
- 
+
  客户端没发送的 Emby 头字段会保持为空——代理只呈现客户端真实发出的内容，不再叠加任何内置基础身份。
- 
+
  当客户端登录时，所有离线的 passthrough 服务器会自动使用新捕获的头重新尝试登录（API Key 上游同样适用：验证 `/Users/Me` 时携带捕获身份，成功后同样落盘）。成功登录的 headers 按服务器维度持久化存储，重启后健康检查和重连均使用该服务器上次成功的 headers。Token 撤销或过期时，其对应捕获头也会一并清理。
 
 #### Resident 模式 (`spoofClient: resident`)
@@ -717,7 +717,7 @@ emby-in-one --reset-password <new-password|-> [--force]
 
 HTTP 响应通过 `X-Eio-Trace-Id` 返回服务端生成的排障关联号；入口日志、出站逐跳日志和查询凭据处理日志使用同一关联号。默认 INFO 文件保留出站重定向和凭据处理动作，WARN 保留上游拒绝及传输错误。记录目标类别、origin 摘要、状态码、耗时及认证/身份载体是否存在，不记录凭据值、完整设备身份或签名 URL。正常成功请求的详细记录仍为 DEBUG，管理员内存日志保留各级别的有界缓冲。
 
-剧集聚合中一个实例失败时，仍返回其他实例已确认的季/集并标记 `X-EIO-Results-Incomplete: true` / `EioIncompleteResults`；总数是已确认结果的下界。全部实例都失败时明确返回 502。详见 [播放排障与剧集可用性记录](docs/playback-diagnostics-and-show-availability.md)。
+剧集聚合中一个实例失败时，仍返回其他实例已确认的季/集并标记 `X-EIO-Results-Incomplete: true` / `EioIncompleteResults`；总数是已确认结果的下界。全部实例都失败时明确返回 502。
 
 默认日志级别为 `info`。排查故障时通过环境变量开启完整调试日志：
 
@@ -946,7 +946,7 @@ Emby-In-One/
 ├── third_party/sqlite/     SQLite amalgamation，供 CGO 构建使用
 ├── scripts/                Docker 部署、镜像验证与发布策略辅助工具
 ├── .github/workflows/      Go/前端 CI、Release 与 Docker 工作流
-├── docs/                   主题格式、设计、验证与工程交接记录
+├── docs/                   主题格式与主题包示例
 ├── legacy/                 V1.2.1 Node.js 参考实现，不参与当前 Go 构建
 ├── go.mod                  Go 模块与 Go 版本要求
 ├── package.json            面板 CSS 构建与前端测试命令
@@ -960,9 +960,8 @@ Emby-In-One/
 └── release-install.sh      Release 二进制安装入口
 ```
 
-- 开发入口与约束见 [AGENTS.md](AGENTS.md)。
 - 容器部署见 [DOCKER.md](DOCKER.md)，发行流程见 [RELEASING.md](RELEASING.md)。
-- 工程验证和部署历史保留在 `docs/`，不作为公开发行或全部浏览器/媒体兼容性的保证。
+- 主题包格式与示例见 `docs/`；内部设计、排障与交接文档不随公开源码发布。
 
 ---
 

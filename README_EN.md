@@ -1,6 +1,6 @@
 # Emby-In-One
 
-> **Preparing: V1.4.4-rc4 (Pre-release) · Published candidate: V1.4.4-rc3 · Stable: V1.4.3**
+> **Current candidate: [V1.4.4-rc4 (Pre-release)](https://github.com/ArizeSky/Emby-In-One/releases/tag/V1.4.4-rc4) · Stable: V1.4.3**
 
 [![License: GPL v3](https://img.shields.io/github/license/ArizeSky/Emby-In-One?color=blue)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.23+-00ADD8?logo=go&logoColor=white)](https://go.dev/)
@@ -13,7 +13,7 @@
 
 Based on Go language, it implements a multi-server Emby aggregation proxy — merges media libraries from multiple upstream Emby servers into a single unified endpoint accessible by any standard Emby client. Supports multi-user management, independent watch history, UA spoofing, concurrent playback limits, and role-based access control.
 
-## V1.4.4-rc4 Release Preview
+## V1.4.4-rc4
 
 This candidate focuses on library queries, Web playback stability, themes and administration. See the [changelog](Update.md) for changes and known limitations.
 
@@ -22,7 +22,7 @@ This candidate focuses on library queries, Web playback stability, themes and ad
 - **Experimental dual cache**: administrators can enable strict MSE cache control, stopping production at either 300,000,000 bytes of controlled compressed media or 120 seconds ahead. Disabled by default; this is not a browser-wide memory limit.
 - **Themes and administration**: light/dark/system appearance, restricted theme packages and account preferences; upstream viewing activity and retention reminders; managed Docker updates, backups and recovery.
 
-> rc4 is a pending release preview, not an announcement of published Release assets or images. Test parental controls, large libraries and browser/codec combinations on a small scale first, and back up configuration and the complete data directory.
+> rc4 is a prerelease candidate. Test parental controls, large libraries and browser/codec combinations on a small scale first, and back up configuration and the complete data directory.
 
 ## Table of Contents
 
@@ -59,7 +59,7 @@ This candidate focuses on library queries, Web playback stability, themes and ad
 
 ## Features Overview
 
-> Features below describe the pending rc4 source; consult the corresponding changelog for rc3 functionality.
+> Features below describe rc4; consult the corresponding changelog for older versions.
 
 - **Multi-User Management** — Supports creating regular users, each independently configurable with an accessible set of upstream servers; Admins can manage users via Admin panel, REST API, and SSH menu.
 - **Per-User Home Library Hiding** — Admins can pick, per user (including themselves), which media libraries are hidden from the Emby client home screen (grouped by server, whole-server hiding supported); only the home entries are hidden — search, Latest Additions and Continue Watching stay unaffected, and changes take effect on the next refresh.
@@ -97,7 +97,7 @@ Choose one route. For an existing deployment, check its directory and ports firs
 | **Method 3: Docker source build** | Code changes or custom image builds | Yes |
 | **Method 4: Run Go source** | Development and debugging | Yes |
 
-> **Version selection:** Stable: **V1.4.3**; published candidate: **V1.4.4-rc3**; **V1.4.4-rc4 is being prepared**. The binary installer defaults to the latest stable Release; select prereleases explicitly. See the [changelog](Update.md) for parental-control limitations. Releases and images are independent; a matching image is not guaranteed.
+> **Version selection:** Stable: **V1.4.3**; candidate: **V1.4.4-rc4**. The binary installer defaults to the latest stable Release; select prereleases explicitly. See the [changelog](Update.md) for parental-control limitations. Releases and images are independent; a matching image is not guaranteed.
 
 ### Method 1: Release Binary One-Click Install (Primary Recommendation)
 
@@ -108,10 +108,10 @@ curl -fsSL -o release-install.sh https://raw.githubusercontent.com/ArizeSky/Emby
 sudo bash release-install.sh
 ```
 
-To try the published rc3, use the following command. Once the rc4 Release is public, replace the version with `V1.4.4-rc4`:
+To install or upgrade to rc4, select the candidate explicitly:
 
 ```bash
-sudo bash release-install.sh V1.4.4-rc3
+sudo bash release-install.sh V1.4.4-rc4
 ```
 
 The script initializes `/opt/emby-in-one/{config,data,log}`, generates a random administrator password, and installs a systemd service. Save the initial password shown in the terminal and follow the installation output to access the admin panel. Run `emby-in-one` to open the SSH management menu later.
@@ -393,7 +393,7 @@ upstream:
 
 Settings modified in the admin panel take effect hotly, no service restart required. The one exception is the global default playback mode, which is only the initial value for a new upstream — see Playback Modes.
 
-The "Web large cache (in testing)" switch also lives in the admin panel's global settings; saving applies it to new playback sessions immediately (a session already playing keeps its original path until it ends). When off, the default behaviour is more mature but buffers only about 2 seconds, which demands a stronger network; when on, the large cache (300MB / 120 seconds) raises requirements on client-side device performance. The feature is under testing — if you hit problems, turn it back off. Accounting coverage is not fully closed yet (see `docs/web-payload-transfer-work-in-progress.md`).
+The "Web large cache (in testing)" switch also lives in the admin panel's global settings; saving applies it to new playback sessions immediately (a session already playing keeps its original path until it ends). When off, the default behaviour is more mature but buffers only about 2 seconds, which demands a stronger network; when on, the large cache (300MB / 120 seconds) raises requirements on client-side device performance. The feature is under testing — if you hit problems, turn it back off. Accounting coverage is not fully closed yet.
 
 The strict path now propagates MSE startup/replay failures to the playback call; a startup wait exceeding 30 seconds reports failure, never assumed success. Pausing no longer cancels in-flight seek admission. MP4 HEVC/AV1/Opus/VVC/VP9/FLAC/ESDS native extradata, Matroska track CodecPrivate and non-image attachments now use slot admission/final-release accounting (FLAC selects its final payload before native allocation). Matroska image attachments use pre-allocation admission and real AVBuffer last-reference release, not an extradata slot. This does not establish strict MSE playback support for every codec, nor complete header/side-data coverage; synthetic AV1/Opus samples still fail explicitly on unsupported mux-planner capabilities.
 
@@ -560,15 +560,15 @@ An upstream can configure **multiple streaming lines** (`streamingUrls`, an orde
 - When left empty the stream base equals `url` (the front-end address), same as a single `streamingUrl`.
 
 ### Client Identity Explained (`spoofClient`)
- 
+
  Controls what client identity the proxy communicates with the upstream server. Affects login, API requests, health checks, and stream proxying.
- 
+
  | Value | User-Agent | X-Emby-Client | Usage Scenario |
  |-------|------------|---------------|----------------|
  | `passthrough` (default) | Real client UA captured at admin login | Real client value | Servers with client whitelists; all users share the captured identity |
  | `custom` | Custom value (required) | Custom value | Servers needing complete control over client markings |
 | `resident` | Fixed resident identity | Resident identity value | Servers that need multiple servers to share one stable, controllable identity |
- 
+
  > **Note**: The `official` mode from V1.2 has been automatically migrated to `custom` in V1.3, using the original Emby Web official client's default values. As of V1.4.4 the built-in `none` (Emby Aggregator) and `infuse` (fabricated Infuse) modes are removed, and existing configurations migrate to `passthrough` automatically.
  >
  > **Current behavior**: In `custom` mode, the configured `User-Agent`, `X-Emby-Client`, `X-Emby-Client-Version`, `X-Emby-Device-Name`, and `X-Emby-Device-Id` are applied to upstream login, normal API requests, health checks, image proxying, and stream proxying. After saving in the admin panel, these values are persisted to the config file and correctly restored when editing the upstream again. `customUserAgent` is required — a custom identity without a User-Agent would degrade into a UA-less outbound request, which is exactly the behaviour that was removed.
@@ -577,23 +577,23 @@ An upstream can configure **multiple streaming lines** (`streamingUrls`, an orde
 
 > **Strict Web playback identity**: `/web` creates a distinct attempt and playback capability for each candidate in every negotiation. Media, derived HLS resources, subtitles and session events share that candidate's immutable identity. Compatible upstream token refresh remains supported; account/identity/configuration incompatibility, revoked access, expiry or a process restart explicitly rejects old requests. The UI stops the old attempt and retries must negotiate again, never downgrade to ordinary-token playback. A playback capability cannot authenticate metadata/legacy APIs. It is bound to its originating local login session and becomes invalid when that session's parent token is revoked.
 >
-> Web follows each upstream's `spoofClient`: passthrough uses the existing capture resolution, custom uses configured values, and resident uses its assigned identity; no Hills version is hardcoded. DeviceProfile independently declares conservative Web playback capabilities, with transcoding dimensions in TranscodingProfile. Playing/Progress report actual playback state, and pause, resume, rate, volume, and track changes send prompt Progress updates. Unknown track indexes are omitted; Stopped uses its separate stop DTO. See the [Web reporting contract](docs/web-playback-reporting.md) for official references and verification limits.
+> Web follows each upstream's `spoofClient`: passthrough uses the existing capture resolution, custom uses configured values, and resident uses its assigned identity; no Hills version is hardcoded. DeviceProfile independently declares conservative Web playback capabilities, with transcoding dimensions in TranscodingProfile. Playing/Progress report actual playback state, and pause, resume, rate, volume, and track changes send prompt Progress updates. Unknown track indexes are omitted; Stopped uses its separate stop DTO.
 >
-> Strict Web playback always remains proxied, even when native playback is configured as `redirect`, to preserve upstream identity and authorization boundaries; native/legacy modes are unchanged. Registered resources use opaque URLs and retain original signed query bytes. Unknown ownership, or private credentials that cannot be removed without breaking a signature, fails explicitly. Stop and encoding cleanup each require their own upstream confirmation. Beginning cleanup closes admission to new playback operations; failures allow only bounded cleanup retries. Disabling aggregation still permits cleanup with a live server grant. Page unload is best-effort, not guaranteed delivery; bounded server capacity and TTL provide reclamation. See the [implementation and isolated verification record](docs/web-playback-identity-repair-progress.md) for boundaries and error codes.
- 
-> **Emby client subtitle routing**: PlaybackInfo rewrites subtitle paths by segment and includes the owning virtual MediaSourceId, preventing `mediasource_<item ID>` from losing its source during replacement. Client-constructed URLs can select a source through MediaSourceId or PlaySessionId. Requests with multiple usable replicas and no identifiable source return an explicit error instead of guessing the primary upstream. Reopen playback after updating to refresh cached URLs; see the [subtitle source fix](docs/native-subtitle-source-fix.md).
+> Strict Web playback always remains proxied, even when native playback is configured as `redirect`, to preserve upstream identity and authorization boundaries; native/legacy modes are unchanged. Registered resources use opaque URLs and retain original signed query bytes. Unknown ownership, or private credentials that cannot be removed without breaking a signature, fails explicitly. Stop and encoding cleanup each require their own upstream confirmation. Beginning cleanup closes admission to new playback operations; failures allow only bounded cleanup retries. Disabling aggregation still permits cleanup with a live server grant. Page unload is best-effort, not guaranteed delivery; bounded server capacity and TTL provide reclamation.
+
+> **Emby client subtitle routing**: PlaybackInfo rewrites subtitle paths by segment and includes the owning virtual MediaSourceId, preventing `mediasource_<item ID>` from losing its source during replacement. Client-constructed URLs can select a source through MediaSourceId or PlaySessionId. Requests with multiple usable replicas and no identifiable source return an explicit error instead of guessing the primary upstream. Reopen playback after updating to refresh cached URLs.
 
 #### Passthrough Mode Principles
- 
+
  Passthrough uses a four-level header resolution to present the real client identity to the upstream; when no level yields anything it **fabricates nothing and sends nothing** — login is deferred until a real client connects:
- 
+
  1. **Live Request Header** — If the current request carries the `X-Emby-Client` header (a genuine Emby client), direct usage.
  2. **Current Token Captured Header** — When a real client (Infuse, Emby iOS, etc.) logs in to Emby-in-One, the proxy captures and stores the client's `User-Agent`, `X-Emby-Client`, `X-Emby-Device-Name`, etc. based on the proxy Token; future requests heavily tied to the same Token will reuse these.
  3. **Server's Last Successful Login Header** — Every time a passthrough server successfully logs in, the complete headers used are remembered and persisted. Will be used straight after reboot, without waiting for users to re-login.
  4. **Most Recent Captured Header** — If the current request lacks a Token and the server has no historical successful records, it uses the lastly captured header from any Token.
- 
+
  Emby header fields the client did not send stay empty — the proxy presents exactly what the client actually sent, with no built-in base identity layered on top.
- 
+
  When a client logs in, all offline passthrough servers automatically use the newly captured headers to attempt re-login (API-key upstreams included: the `/Users/Me` validation carries the captured identity and records it on success). The successfully logged-in headers are persistently stored per-server; both health checks and reconnections post-reboot will use that server's last successful headers. Upon token revocation or expiration, its respective captured headers are cleaned as well.
 
 #### Resident Mode (`spoofClient: resident`)
@@ -717,7 +717,7 @@ emby-in-one --reset-password <new-password|-> [--force]
 
 HTTP responses return a server-generated `X-Eio-Trace-Id`; ingress, outbound-hop and query-credential policy logs share this correlation ID. Default INFO files retain outbound redirects and credential-policy actions, while WARN retains upstream denials and transport errors. Diagnostics report target class, an origin digest, status, timing and the presence of authentication/identity carriers, without credential values, complete device identities or signed URLs. Successful request details remain DEBUG; the administrator's bounded in-memory log retains all levels.
 
-When one show instance fails, aggregation retains confirmed seasons/episodes from other instances and marks `X-EIO-Results-Incomplete: true` / `EioIncompleteResults`; its total is a lower bound. If every instance fails, the response is explicitly 502. See the [playback diagnostics and show availability record](docs/playback-diagnostics-and-show-availability.md).
+When one show instance fails, aggregation retains confirmed seasons/episodes from other instances and marks `X-EIO-Results-Incomplete: true` / `EioIncompleteResults`; its total is a lower bound. If every instance fails, the response is explicitly 502.
 
 Default log level is `info`. Enable full debug logging via environment variables when troubleshooting:
 
@@ -894,7 +894,7 @@ Possible causes:
 After first boot, the Admin password automatically hashes (scrypt). Recovery methods:
 
 **Method 1: File Modifications**
-1. Edit `config/config.yaml`, swapping the hash after `password:` directly to an explicit plaintext entry 
+1. Edit `config/config.yaml`, swapping the hash after `password:` directly to an explicit plaintext entry
 2. Execute an application restart—the system natively identifies and hashes the plaintext properly.
 
 **Method 2: Command Line Menu**
@@ -946,7 +946,7 @@ Emby-In-One/
 ├── third_party/sqlite/     SQLite amalgamation used by the CGO build
 ├── scripts/                Docker deployment, image verification and release-policy helpers
 ├── .github/workflows/      Go/frontend CI, Release and Docker workflows
-├── docs/                   Theme formats, design, verification and engineering handovers
+├── docs/                   Theme formats and example packages
 ├── legacy/                 V1.2.1 Node.js reference; excluded from the current Go build
 ├── go.mod                  Go module and required Go version
 ├── package.json            Panel CSS build and frontend test commands
@@ -960,9 +960,8 @@ Emby-In-One/
 └── release-install.sh      Release binary installer
 ```
 
-- See [AGENTS.md](AGENTS.md) for development entry points and constraints.
 - See [DOCKER_EN.md](DOCKER_EN.md) for containers and [RELEASING.md](RELEASING.md) for release procedures.
-- Engineering verification and deployment history remain in `docs/`; they do not guarantee public release availability or compatibility with every browser and media combination.
+- Theme package formats and examples are in `docs/`; internal designs, diagnostics and handovers are excluded from the public source.
 
 ---
 

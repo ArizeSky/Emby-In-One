@@ -6,23 +6,11 @@ For the optional v2 player palette and complete example, see the [bilingual supp
 This document defines the `/web` custom theme package format (`themeApiVersion 1`) and its
 limits; the Chinese and English halves carry the same content.
 
-> **状态 / Status**
->
-> 当前已完成并经过验收的是**包格式解析与校验**（JSON/ZIP/图片/路径/预算/内容 hash）。
-> 主题管理 API、上传/更新/启停/删除、个人偏好与服务端同步仍以
-> `docs/web-theme-implementation-progress.md` 的主进度与验收结果为准。
-> 本指南和 `docs/theme-example/` 只描述格式与最小示例，**不代表完整主题功能已经上线**，
-> 也不代表管理页或偏好同步已经交付。
->
-> What is implemented and verified today is **package parsing and validation**
-> (JSON/ZIP/image/path budgets/content hash). Theme management APIs, upload/update/enable/
-> delete, per-user preferences and server-side synchronization remain gated on the main
-> progress and acceptance record in `docs/web-theme-implementation-progress.md`. This guide
-> and `docs/theme-example/` describe the format and a minimal example only; they **do not
-> claim that the complete theme feature is live**, nor that the admin page or preference
-> sync has been delivered.
-
----
+主题包可在管理面板安装、更新、启停和设为站点默认；登录用户可保存账号外观偏好。
+本指南定义包格式、校验预算和安全边界，不保证所有浏览器与媒体组合的视觉效果一致。
+Theme packages can be installed, updated, enabled and selected as the site default in the admin panel.
+Signed-in users can save account appearance preferences. This guide defines the format, validation
+budgets and security boundaries; visual results can differ across browsers and media.
 
 ## 1. 中文
 
@@ -183,10 +171,10 @@ python3 -c "import zipfile;print([i.filename for i in zipfile.ZipFile('/tmp/eio-
 在内存中组包并执行 `ParseThemePackage`，断言 id、双变体、无图片与稳定 hash，
 用于防止示例腐坏。
 
-### 1.8 尚未完成
+### 1.8 使用范围
 
-主题管理 HTTP 流程、上传/更新/启停/默认/删除、公开目录、个人偏好与服务端 revision
-同步、浏览器端真实视觉与媒体验证等，仍以主进度文档与后续验收为准。本文只冻结包格式。
+通过管理面板安装主题包，用户可跟随站点主题或选择已启用的主题。播放器保持深色，
+主题不能改变播放权限、可播放格式或字幕/媒体内容；网络失败时界面可回退到内置外观。
 
 ---
 
@@ -365,9 +353,8 @@ do not overwrite the source JSON in `docs/theme-example/`. The regression test
 builds an archive in memory, and runs `ParseThemePackage`, asserting the id, both variants,
 the absence of images and a stable hash so the example cannot rot.
 
-### 2.8 Not delivered yet
+### 2.8 Scope
 
-The theme management HTTP flow, upload/update/enable/default/delete, the public catalog, per-user
-preferences and server-side revision sync, and real browser visual/media verification remain
-subject to the main progress document and later acceptance. This document only freezes the
-package format.
+Install packages through the admin panel. Users can follow the site theme or choose an enabled theme.
+The player stays dark. Themes cannot alter playback permissions, supported formats or subtitle/media
+content; the interface can fall back to the built-in appearance when a network request fails.

@@ -8,10 +8,15 @@ on:
 permissions:
   contents: read
 
+env:
+  GOMAXPROCS: '1'
+  GOFLAGS: '-p=1'
+
 jobs:
   go:
     name: Go build, vet and test
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -21,9 +26,9 @@ jobs:
       # The SQLite driver is cgo over a vendored amalgamation, so the package only builds
       # with a working C toolchain (gcc is preinstalled on the runner).
       - name: Build
-        run: go build ./...
+        run: nice -n 19 go build ./...
       - name: Vet
-        run: go vet ./...
+        run: nice -n 19 go vet ./...
       # gofmt is a gate, not a suggestion: this tree once shipped 900+ lines of
       # stray leading whitespace because nothing checked it.
       - name: gofmt
@@ -34,11 +39,55 @@ jobs:
             echo "$unformatted" >&2
             exit 1
           fi
-      # -race is not optional here: the ID store, the watch store and the playback limiter
-      # are all shared across request goroutines, and several fixes in this tree are about
-      # that sharing.
-      - name: Test
-        run: go test -race -timeout 20m ./...
+      - name: Full ordinary regression
+        run: nice -n 19 go test -parallel 1 -timeout 15m ./...
+      - name: Entrypoint race regression
+        run: nice -n 19 go test -race -parallel 1 -timeout 10m ./cmd/emby-in-one ./public
+
+  race:
+    name: Backend race (${{ matrix.shard }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      # Every top-level test and its subtests run with -race. Partitioning avoids
+      # the cumulative timeout of one large single-CPU backend invocation.
+      - name: Run complete race partition
+        run: nice -n 19 python3 scripts/go-race-shard.py --shard ${{ matrix.shard }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: race-shard-${{ matrix.shard }}
+          path: race-report/
+          retention-days: 7
+          if-no-files-found: error
+
+  race-coverage:
+    name: Complete backend race coverage
+    if: always()
+    needs: race
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require every partition to pass
+        env:
+          RESULT: ${{ needs.race.result }}
+        run: test "$RESULT" = success
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: race-shard-*
+          path: race-reports
+      - name: Verify inventory has no omissions or duplicates
+        run: python3 scripts/verify-go-race-shards.py
 
   panel:
     name: Admin panel assets are current
@@ -47,7 +96,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
       # public/vendor/tailwind.css is committed so a source install needs no Node at all.
       # That only works while it matches the markup it was generated from, so regenerate it
       # and fail when the committed copy is stale.
@@ -68,7 +117,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Syntax check
         run: |
-          for script in install.sh release-install.sh emby-in-one-cli.sh; do
+          for script in install.sh release-install.sh emby-in-one-cli.sh eio-docker.sh scripts/*.sh; do
             bash -n "$script"
           done
       # Advisory for now: the install scripts have not been made shellcheck-clean yet, and a
@@ -86,9 +135,6 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
-      # The 55 cases under tests/ cover the seek queue, subtitles, the player UI
-      # and the admin panel. They ran only by hand before, so a front-end
-      # regression could reach main unnoticed.
+          node-version: '22'
       - name: Run the browser-logic tests
-        run: npm test
+        run: nice -n 19 node --test --test-concurrency=1 tests/*.test.cjs
