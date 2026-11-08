@@ -20,7 +20,7 @@ func (a *App) proxyStrictPlaybackStream(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	client := a.Upstream.ClientByID(binding.ServerID)
-	original, ok := translateVirtualIDForServer(item, binding.ServerID, a.IDStore)
+	original, ok := a.originalItemForBinding(*binding)
 	if !ok || client == nil || !client.IsOnline() {
 		writeJSON(w, 409, map[string]any{"kind": "playback-source-unavailable"})
 		return

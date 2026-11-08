@@ -19,7 +19,7 @@ func (a *App) handleUserPlayingItemCleanup(w http.ResponseWriter, r *http.Reques
 	query := cloneValues(r.URL.Query())
 	if ms := queryValue(query, "MediaSourceId"); ms != "" {
 		if source := a.IDStore.ResolveVirtualID(ms); source != nil {
-			mapped, ok := translateVirtualIDForServer(itemID, source.ServerID, a.IDStore)
+			mapped, ok := a.IDStore.ResourceItem(itemID, source, "source")
 			if !ok {
 				// A stop event must not interpret an unrelated item across servers.
 				writeJSON(w, http.StatusBadRequest, map[string]any{"message": "Selected version does not belong to this item"})
@@ -27,8 +27,24 @@ func (a *App) handleUserPlayingItemCleanup(w http.ResponseWriter, r *http.Reques
 			}
 			targetServer = source.ServerID
 			originalItemID = mapped
+			if session := queryValue(query, "PlaySessionId"); session != "" {
+				translated, matches := a.IDStore.sessionForSource(session, itemID, mapped, source)
+				if !matches {
+					writeJSON(w, http.StatusBadRequest, map[string]any{"message": "Play session and selected version disagree"})
+					return
+				}
+				setQueryValue(query, "PlaySessionId", translated)
+			}
 			setQueryValue(query, "MediaSourceId", source.OriginalID)
 		}
+	} else if session := a.IDStore.ResolveVirtualID(queryValue(query, "PlaySessionId")); session != nil {
+		mapped, ok := a.IDStore.ResourceItem(itemID, session, "session")
+		if !ok {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"message": "Play session does not belong to this item"})
+			return
+		}
+		targetServer, originalItemID = session.ServerID, mapped
+		setQueryValue(query, "PlaySessionId", session.OriginalID)
 	}
 	// Pure authorization: aggregation is deliberately not checked here.
 	if !a.isServerAllowed(requestContextFrom(r.Context()), targetServer) {

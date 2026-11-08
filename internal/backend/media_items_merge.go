@@ -360,6 +360,7 @@ func (a *App) mergeRoundRobinItems(results []upstreamItemsResult, clientUserID s
 			}
 
 			if entry != nil {
+				registerResponseRelations(item, result.ServerID, a.IDStore)
 				// Duplicate: associate as an additional instance of the same item.
 				a.IDStore.AssociateAdditionalInstance(entry.virtualID, originalID, result.ServerID)
 				base := merged[entry.mergedIndex]
@@ -394,6 +395,7 @@ func (a *App) mergeRoundRobinItems(results []upstreamItemsResult, clientUserID s
 			}
 
 			// First occurrence: keep the virtual ID, rewrite everything else.
+			registerResponseRelations(item, result.ServerID, a.IDStore)
 			virtualID := a.IDStore.GetOrCreateVirtualID(originalID, result.ServerID)
 			entry = &dedupSeenEntry{virtualID: virtualID, mergedIndex: len(merged), serverID: result.ServerID, originalID: originalID, facts: facts}
 			entries = append(entries, entry)

@@ -67,7 +67,7 @@ func (a *App) handleStrictUserPlayingItem(w http.ResponseWriter, r *http.Request
 		writeStrictPlaybackError(w, strictPlaybackEventFailure(strictPlaybackKindItemMismatch, "the playback item does not belong to this attempt", false))
 		return
 	}
-	originalItem, ok := translateVirtualIDForServer(binding.VirtualItemID, binding.ServerID, a.IDStore)
+	originalItem, ok := a.originalItemForBinding(binding)
 	if !ok {
 		writeStrictPlaybackError(w, strictPlaybackEventFailure(strictPlaybackKindItemMismatch, "the playback item has no source on the bound server", false))
 		return

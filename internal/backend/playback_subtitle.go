@@ -6,6 +6,37 @@ import (
 	"strings"
 )
 
+func (a *App) prepareDetailSubtitleURLs(r *http.Request, payload any, server, original string) {
+	item, ok := payload.(map[string]any)
+	if !ok {
+		return
+	}
+	token := ""
+	if rc := requestContextFrom(r.Context()); rc != nil {
+		token = rc.ProxyToken
+	}
+	for _, source := range asItems(map[string]any{"Items": item["MediaSources"]}) {
+		id, _ := source["Id"].(string)
+		if id != "" {
+			rewriteMediaSourceSubtitles(source, original, r.PathValue("itemId"), id, a.IDStore.GetOrCreateVirtualID(id, server), token)
+		}
+	}
+}
+
+// Detail and PlaybackInfo expose the same per-version track ownership.
+func rewriteMediaSourceSubtitles(source map[string]any, originalItem, virtualItem, originalSource, virtualSource, token string) {
+	for _, stream := range asItems(map[string]any{"Items": source["MediaStreams"]}) {
+		if raw, _ := stream["DeliveryUrl"].(string); raw != "" {
+			local := rewriteSubtitleDeliveryURL(raw, originalItem, virtualItem, originalSource, virtualSource, token)
+			if local == "" {
+				delete(stream, "DeliveryUrl")
+			} else {
+				stream["DeliveryUrl"] = local
+			}
+		}
+	}
+}
+
 // Rewrite path segments independently: an Emby source such as mediasource_123
 // contains the item ID, but is a different identifier. Replacing substrings in
 // the whole URL first destroys that source ID (and can change query values).
@@ -74,4 +105,50 @@ func (a *App) requireSubtitleSource(w http.ResponseWriter, r *http.Request, reso
 	}
 	writeJSON(w, http.StatusBadRequest, map[string]any{"kind": "subtitle-source-required", "message": "Subtitle source is ambiguous; refresh playback info and keep MediaSourceId or PlaySessionId"})
 	return false
+}
+
+// The path's source and its query/session selector must describe the same
+// concrete version. Constructed mediasource_<item> aliases are only item hints.
+func (a *App) selectedSubtitlePath(w http.ResponseWriter, rest, virtualItem, serverID, originalItem string, query url.Values) (string, bool) {
+	parts := strings.SplitN(rest, "/", 2)
+	if len(parts) != 2 || !strings.HasPrefix(strings.ToLower(parts[1]), "subtitles/") {
+		return resolveMediaSourceInPathForServer(rest, a.IDStore, serverID, originalItem), true
+	}
+	selected := queryValue(query, "MediaSourceId") // already translated by resolveStreamTarget
+	pathSource := parts[0]
+	if pathSource == "mediasource_"+virtualItem {
+		if selected != "" {
+			if owns, _ := a.IDStore.resourceParentMatches("source", serverID, selected, originalItem); owns {
+				return selected + "/" + parts[1], true
+			}
+			// Old single-copy clients may carry a source mapping with no
+			// response-derived ownership. Keep their upstream item alias;
+			// the selected query is still bound to this exact physical item.
+			return "mediasource_" + originalItem + "/" + parts[1], true
+		}
+		if session := queryValue(query, "PlaySessionId"); session != "" {
+			ids := a.IDStore.resourceParentIDs("session-source", serverID, session)
+			if len(ids) == 1 {
+				setQueryValue(query, "MediaSourceId", ids[0])
+				return ids[0] + "/" + parts[1], true
+			}
+			if len(ids) > 1 {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"kind": "subtitle-source-required", "message": "Playback session has multiple media sources; retain MediaSourceId"})
+				return "", false
+			}
+		}
+		return "mediasource_" + originalItem + "/" + parts[1], true
+	}
+	if source := a.IDStore.ResolveVirtualID(pathSource); source != nil {
+		if source.ServerID != serverID || selected != "" && selected != source.OriginalID {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"kind": "subtitle-source-conflict", "message": "Subtitle path and selected version disagree; refresh playback info"})
+			return "", false
+		}
+		pathSource = source.OriginalID
+	}
+	if selected != "" && pathSource != selected {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"kind": "subtitle-source-conflict", "message": "Subtitle path and selected version disagree; refresh playback info"})
+		return "", false
+	}
+	return pathSource + "/" + parts[1], true
 }

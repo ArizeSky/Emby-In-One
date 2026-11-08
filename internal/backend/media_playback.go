@@ -69,6 +69,7 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 	var base map[string]any
 	baseServerID := resolved.ServerID
 	allMediaSources := []map[string]any{}
+	var sourceSessions []nativeSourceSession
 	// Direct stream URLs are rewritten once the whole candidate set is known, so
 	// the resource registration is atomic and a full store fails the request
 	// instead of silently handing the client an unbound URL.
@@ -139,6 +140,9 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 			base = deepCloneMap(data)
 			baseServerID = inst.ServerID
 		}
+		if session, _ := data["PlaySessionId"].(string); session != "" {
+			a.IDStore.RegisterResourceParent("session", inst.ServerID, session, inst.OriginalID)
+		}
 		for _, raw := range asItems(map[string]any{"Items": data["MediaSources"]}) {
 			mediaSource := deepCloneMap(raw)
 			annotateMediaSource(mediaSource, inst.Client)
@@ -148,6 +152,11 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			originalMSID, _ := mediaSource["Id"].(string)
+			a.IDStore.RegisterResourceParent("source", inst.ServerID, originalMSID, inst.OriginalID)
+			if session, _ := data["PlaySessionId"].(string); session != "" && originalMSID != "" {
+				sourceSessions = append(sourceSessions, nativeSourceSession{inst.ServerID, originalMSID, session})
+				a.IDStore.RegisterResourceParent("session-source", inst.ServerID, session, originalMSID)
+			}
 			virtualMSID := originalMSID
 			if originalMSID != "" {
 				virtualMSID = a.IDStore.GetOrCreateVirtualID(originalMSID, inst.ServerID)
@@ -195,24 +204,11 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 					mediaSource["Path"] = msPath
 				}
 			}
-			if rawStreams, ok := mediaSource["MediaStreams"].([]any); ok {
-				for _, rawStream := range rawStreams {
-					if stream, ok := rawStream.(map[string]any); ok {
-						if deliveryURL, ok := stream["DeliveryUrl"].(string); ok && deliveryURL != "" {
-							token := ""
-							if reqCtx != nil {
-								token = reqCtx.ProxyToken
-							}
-							local := rewriteSubtitleDeliveryURL(deliveryURL, inst.OriginalID, r.PathValue("itemId"), originalMSID, virtualMSID, token)
-							if local == "" {
-								delete(stream, "DeliveryUrl")
-							} else {
-								stream["DeliveryUrl"] = local
-							}
-						}
-					}
-				}
+			token := ""
+			if reqCtx != nil {
+				token = reqCtx.ProxyToken
 			}
+			rewriteMediaSourceSubtitles(mediaSource, inst.OriginalID, r.PathValue("itemId"), originalMSID, virtualMSID, token)
 			allMediaSources = append(allMediaSources, mediaSource)
 		}
 	}
@@ -266,6 +262,11 @@ func (a *App) handlePlaybackInfo(w http.ResponseWriter, r *http.Request) {
 	// Rewrite top-level fields (excluding MediaSources which were already virtualised per-server above)
 	delete(base, "MediaSources")
 	rewriteResponseIDs(base, baseServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
+	if session, _ := base["PlaySessionId"].(string); session != "" {
+		for _, source := range sourceSessions {
+			a.IDStore.RegisterResourceParent("source-session", source.serverID, session+"|"+source.sourceID, source.sessionID)
+		}
+	}
 	// Bind the unit to the PlaySessionId this response hands to the client, so
 	// only that playback attempt can claim it. Late Started/segment events of the
 	// attempt this reservation replaced still carry the previous PlaySessionId.

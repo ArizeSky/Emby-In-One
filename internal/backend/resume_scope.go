@@ -60,7 +60,7 @@ func (a *App) resumeItemInScope(r *http.Request, reqCtx *RequestContext, scope *
 	if !ok {
 		return false, false
 	}
-	if scope.kind == "Series" && a.originalIDForServer(scope.virtualID, serverID) == targetOriginalID && progress.SeriesVirtualID == scope.virtualID {
+	if scope.kind == "Series" && a.IDStore.aliasGroupID(progress.SeriesVirtualID) == a.IDStore.aliasGroupID(scope.virtualID) {
 		return true, false
 	}
 

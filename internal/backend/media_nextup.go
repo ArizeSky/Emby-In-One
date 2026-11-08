@@ -1,10 +1,11 @@
 package backend
 
 import (
+	"context"
 	"net/http"
-	"net/url"
 	"strconv"
 	"sync"
+	"time"
 )
 
 // localNextUpSeriesLimit bounds per-series upstream work; it is not a catalog
@@ -71,6 +72,13 @@ func (a *App) handleShowsNextUp(w http.ResponseWriter, r *http.Request) {
 // handleLocalNextUp computes NextUp from local WatchStore for non-admin users.
 // The WatchStore order is retained unless the client requests an explicit catalog sort.
 func (a *App) handleLocalNextUp(w http.ResponseWriter, r *http.Request, reqCtx *RequestContext) {
+	timeout := time.Duration(a.ConfigStore.Snapshot().Timeouts.Global) * time.Millisecond
+	if timeout <= 0 {
+		timeout = 15 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), timeout)
+	defer cancel()
+	r = r.WithContext(ctx)
 	query := cloneValues(r.URL.Query())
 	if err := validateCatalogSort(query); err != nil {
 		writeCatalogSortError(w, err)
@@ -88,7 +96,7 @@ func (a *App) handleLocalNextUp(w http.ResponseWriter, r *http.Request, reqCtx *
 		if !a.requireServerAccess(w, r, resolved) {
 			return
 		}
-		seriesProgress, err := a.WatchStore.GetNextUpForSeries(reqCtx.ProxyUser.UserID, seriesID)
+		seriesProgress, err := a.nextUpProgress(reqCtx.ProxyUser.UserID, seriesID)
 		if err != nil {
 			if a.Logger != nil {
 				a.Logger.Warnf("WatchStore next-up read error: %s", redactURLInError(err))
@@ -100,16 +108,16 @@ func (a *App) handleLocalNextUp(w http.ResponseWriter, r *http.Request, reqCtx *
 			a.writeLocalNextUpPage(w, r, empty, false)
 			return
 		}
-		nextEp := a.fetchNextEpisode(r, reqCtx, resolved.Client, resolved.OriginalID, resolved.ServerID, seriesProgress)
+		nextEp, serverID, incomplete := a.fetchNextEpisodeAcrossCopies(r, reqCtx, seriesProgress)
 		if nextEp == nil {
-			a.writeLocalNextUpPage(w, r, empty, false)
+			a.writeLocalNextUpPage(w, r, empty, incomplete)
 			return
 		}
-		rewriteResponseIDs(nextEp, resolved.ServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
+		rewriteResponseIDs(nextEp, serverID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 		if !a.strictSanitizedUserDataItems(w, r, []map[string]any{nextEp}) {
 			return
 		}
-		a.writeLocalNextUpPage(w, r, []map[string]any{nextEp}, false)
+		a.writeLocalNextUpPage(w, r, []map[string]any{nextEp}, incomplete)
 		return
 	}
 
@@ -118,6 +126,7 @@ func (a *App) handleLocalNextUp(w http.ResponseWriter, r *http.Request, reqCtx *
 		a.writeLocalNextUpPage(w, r, empty, false)
 		return
 	}
+	seriesList = a.foldNextUpSeries(seriesList)
 	incomplete := false
 	if len(seriesList) > localNextUpSeriesLimit {
 		seriesList = seriesList[:localNextUpSeriesLimit]
@@ -153,24 +162,18 @@ func (a *App) handleLocalNextUp(w http.ResponseWriter, r *http.Request, reqCtx *
 		batch := seriesList[start:end]
 		episodes := make([]map[string]any, len(batch))
 		serverIDs := make([]string, len(batch))
+		partial := make([]bool, len(batch))
 		var wg sync.WaitGroup
 		for i := range batch {
-			if batch[i].SeriesOriginalID == "" {
-				continue
-			}
-			serverID, seriesOrigID, client := a.resolveSeriesServer(reqCtx, &batch[i])
-			if client == nil {
-				continue
-			}
-			serverIDs[i] = serverID
 			wg.Add(1)
-			go func(i int, client *UpstreamClient, seriesOrigID, serverID string, progress WatchProgress) {
+			go func(i int, progress WatchProgress) {
 				defer wg.Done()
-				episodes[i] = a.fetchNextEpisode(r, reqCtx, client, seriesOrigID, serverID, &progress)
-			}(i, client, seriesOrigID, serverID, batch[i])
+				episodes[i], serverIDs[i], partial[i] = a.fetchNextEpisodeAcrossCopies(r, reqCtx, &progress)
+			}(i, batch[i])
 		}
 		wg.Wait()
 		for i, nextEp := range episodes {
+			incomplete = incomplete || partial[i]
 			if nextEp == nil {
 				continue
 			}
@@ -208,60 +211,8 @@ func (a *App) writeLocalNextUpPage(w http.ResponseWriter, r *http.Request, items
 // server/client for a series watch entry. If the recorded server is offline or
 // paused, it tries the IDStore primary and OtherInstances.
 func (a *App) resolveSeriesServer(reqCtx *RequestContext, sp *WatchProgress) (serverID string, seriesOriginalID string, client *UpstreamClient) {
-	c := a.Upstream.ClientByID(sp.ServerID)
-	if c != nil && c.IsOnline() && a.canUseAggregatedServer(reqCtx, sp.ServerID) {
-		return sp.ServerID, sp.SeriesOriginalID, c
-	}
-	if sp.SeriesVirtualID == "" {
-		return "", "", nil
-	}
-	resolved := a.IDStore.ResolveVirtualID(sp.SeriesVirtualID)
-	if resolved == nil {
-		return "", "", nil
-	}
-	if resolved.ServerID != sp.ServerID {
-		alt := a.Upstream.ClientByID(resolved.ServerID)
-		if alt != nil && alt.IsOnline() && a.canUseAggregatedServer(reqCtx, resolved.ServerID) {
-			return resolved.ServerID, resolved.OriginalID, alt
-		}
-	}
-	for _, other := range resolved.OtherInstances {
-		alt := a.Upstream.ClientByID(other.ServerID)
-		if alt != nil && alt.IsOnline() && a.canUseAggregatedServer(reqCtx, other.ServerID) {
-			return other.ServerID, other.OriginalID, alt
-		}
+	if instances := a.watchSeriesInstances(reqCtx, sp); len(instances) > 0 {
+		return instances[0].ServerID, instances[0].OriginalID, instances[0].Client
 	}
 	return "", "", nil
-}
-
-// fetchNextEpisode queries the upstream for the next unwatched episode after
-// the user's last played episode in a series.
-func (a *App) fetchNextEpisode(r *http.Request, reqCtx *RequestContext, client *UpstreamClient, seriesOriginalID string, serverID string, lastPlayed *WatchProgress) map[string]any {
-	q := url.Values{}
-	q.Set("Fields", "BasicSyncInfo,CanDelete,PrimaryImageAspectRatio,Overview,DateCreated,MediaSources,Path,SortName,Studios,Taglines,Genres,CommunityRating,OfficialRating,CustomRating,Type,SeriesId,SeasonId,ParentId,CumulativeRunTimeTicks,Chapters,ProviderIds")
-	q.Set("UserId", client.clientUserID())
-	q.Set("Season", strconv.Itoa(lastPlayed.ParentIndexNumber))
-	q.Set("SortBy", "SortName")
-	q.Set("SortOrder", "Ascending")
-
-	items := a.fetchNextUpSeason(r, reqCtx, client, seriesOriginalID, serverID, q)
-	if next := a.firstAllowedNextEpisode(r, client, nextEpisodeCandidates(items, lastPlayed)); next != nil {
-		return next
-	}
-
-	// If we didn't find a next episode in this season and the current one was played,
-	// try the next season
-	if lastPlayed.Played {
-		q2 := url.Values{}
-		q2.Set("Fields", q.Get("Fields"))
-		q2.Set("UserId", client.clientUserID())
-		q2.Set("Season", strconv.Itoa(lastPlayed.ParentIndexNumber+1))
-		q2.Set("SortBy", "SortName")
-		q2.Set("SortOrder", "Ascending")
-		if !a.parentalSessionFor(r).restricted() {
-			q2.Set("Limit", "1")
-		}
-		return a.firstAllowedNextEpisode(r, client, a.fetchNextUpSeason(r, reqCtx, client, seriesOriginalID, serverID, q2))
-	}
-	return nil
 }

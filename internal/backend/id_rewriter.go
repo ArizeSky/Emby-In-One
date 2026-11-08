@@ -42,6 +42,7 @@ func rewriteResponseIDs(value any, serverID string, idStore *IDStore, proxyServe
 		}
 		return typed
 	case map[string]any:
+		registerResponseRelations(typed, serverID, idStore)
 		for key, raw := range typed {
 			switch key {
 			case "ServerId":

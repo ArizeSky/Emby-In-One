@@ -108,7 +108,9 @@ func (ws *WatchStore) RecordProgress(p *WatchProgress) error {
 			original_item_id = CASE WHEN excluded.original_item_id != '' THEN excluded.original_item_id ELSE original_item_id END,
 			item_type = CASE WHEN excluded.item_type != '' THEN excluded.item_type ELSE item_type END,
 			series_virtual_id = CASE WHEN excluded.series_virtual_id != '' THEN excluded.series_virtual_id ELSE series_virtual_id END,
-			series_original_id = CASE WHEN excluded.series_original_id != '' THEN excluded.series_original_id ELSE series_original_id END,
+			series_original_id = CASE WHEN excluded.series_original_id != '' THEN excluded.series_original_id
+				WHEN server_id != excluded.server_id OR (excluded.original_item_id != '' AND original_item_id != excluded.original_item_id) THEN ''
+				ELSE series_original_id END,
 			series_name = CASE WHEN excluded.series_name != '' THEN excluded.series_name ELSE series_name END,
 			parent_index_number = CASE WHEN excluded.parent_index_number > 0 THEN excluded.parent_index_number ELSE parent_index_number END,
 			index_number = CASE WHEN excluded.index_number > 0 THEN excluded.index_number ELSE index_number END,
@@ -281,7 +283,7 @@ func (ws *WatchStore) GetProgress(proxyUserID, virtualItemID string) (*WatchProg
 }
 
 // GetNextUpSeries returns one row per series the user has played episodes of,
-// with the most-recently-played episode per series.
+// with the highest-numbered watched episode per series.
 func (ws *WatchStore) GetNextUpSeries(proxyUserID string) ([]WatchProgress, error) {
 	all, err := ws.queryProgress(proxyUserID, `
  		SELECT virtual_item_id, server_id, original_item_id, item_type,
@@ -299,17 +301,20 @@ func (ws *WatchStore) GetNextUpSeries(proxyUserID string) ([]WatchProgress, erro
 	// Deduplicate: keep only the highest-numbered episode per series. The series identity
 	// is the virtual ID, not the display name — two different series can share a name, and
 	// folding them together would hide one of them from Continue Watching.
-	seen := map[string]bool{}
+	indices := map[string]int{}
 	result := make([]WatchProgress, 0)
 	for _, row := range all {
-		key := row.SeriesVirtualID
-		if key == "" {
-			key = row.SeriesName
+		key := "series:" + row.SeriesVirtualID
+		if row.SeriesVirtualID == "" {
+			key = "item:" + row.VirtualItemID
 		}
-		if seen[key] {
+		if index, exists := indices[key]; exists {
+			if laterEpisode(row, result[index]) {
+				result[index] = row
+			}
 			continue
 		}
-		seen[key] = true
+		indices[key] = len(result)
 		result = append(result, row)
 	}
 	return result, nil

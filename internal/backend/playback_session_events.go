@@ -130,7 +130,7 @@ func (a *App) strictPlaybackEventFor(binding playbackIdentityBinding, body map[s
 	if failure != nil {
 		return nil, failure
 	}
-	originalItem, ok := translateVirtualIDForServer(binding.VirtualItemID, binding.ServerID, a.IDStore)
+	originalItem, ok := a.originalItemForBinding(binding)
 	if !ok {
 		return nil, strictPlaybackEventFailure(strictPlaybackKindItemMismatch, "the playback item has no source on the bound server", false)
 	}
@@ -219,7 +219,7 @@ func (a *App) strictPlaybackSourceForBinding(binding playbackIdentityBinding, me
 	if resolved == nil || resolved.ServerID != binding.ServerID {
 		return "", false
 	}
-	if _, ok := translateVirtualIDForServer(binding.VirtualItemID, binding.ServerID, a.IDStore); !ok {
+	if _, ok := a.originalItemForBinding(binding); !ok {
 		// The item has no copy on the source's server, so the source cannot be one
 		// of this item's candidates there.
 		return "", false

@@ -59,6 +59,7 @@ type IDStore struct {
 	activeStreamServer  map[string]activeStreamEntry // virtualItemID → last-chosen server
 	imageSources        map[string]imageSourceEntry  // virtualID|type|tag → real image source
 	displaySources      map[string]imageSourceEntry  // virtualID → display winner's real instance
+	resourceParents     map[resourceRelationKey]map[string]bool
 }
 
 func NewIDStore(dataDir string, logger *Logger, upstreamIDs ...string) (*IDStore, error) {
@@ -119,6 +120,10 @@ func NewIDStore(dataDir string, logger *Logger, upstreamIDs ...string) (*IDStore
 	// creates its files with the process umask. WAL mode adds -wal/-shm siblings.
 	chmodPrivate(dbPath, dbPath+"-wal", dbPath+"-shm")
 	if err := store.load(); err != nil {
+		_ = closeSQLite(db)
+		return nil, err
+	}
+	if err := store.loadResourceRelations(); err != nil {
 		_ = closeSQLite(db)
 		return nil, err
 	}
@@ -545,6 +550,9 @@ func (s *IDStore) RemoveByServerID(serverID string) error {
 			if err := s.db.execParams(`DELETE FROM id_additional_instances WHERE server_id = ?`, serverID); err != nil {
 				return err
 			}
+			if err := s.db.execParams(`DELETE FROM id_resource_parents WHERE server_id = ?`, serverID); err != nil {
+				return err
+			}
 			return s.db.execParams(`DELETE FROM id_mappings WHERE server_id = ?`, serverID)
 		}); err != nil {
 			return err
@@ -552,6 +560,11 @@ func (s *IDStore) RemoveByServerID(serverID string) error {
 	}
 
 	s.virtualToOriginal = nextEntries
+	for key := range s.resourceParents {
+		if key.serverID == serverID {
+			delete(s.resourceParents, key)
+		}
+	}
 	s.rebuildIndexesLocked()
 	for virtualID, stream := range s.activeStreamServer {
 		if stream.ServerID == serverID || removedVirtualIDs[virtualID] {

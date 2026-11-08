@@ -456,6 +456,7 @@ func (a *App) handleUserItemByID(w http.ResponseWriter, r *http.Request) {
 		}
 		cfg := a.ConfigStore.Snapshot()
 		annotateItemSources(payload, resolved.Client)
+		a.prepareDetailSubtitleURLs(r, payload, resolved.ServerID, resolved.OriginalID)
 		rewriteResponseIDs(payload, resolved.ServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 		if !a.strictSanitizedUserData(w, r, r.PathValue("itemId"), payload) {
 			return
@@ -488,6 +489,7 @@ func (a *App) handleItemByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg := a.ConfigStore.Snapshot()
+	a.prepareDetailSubtitleURLs(r, payload, resolved.ServerID, resolved.OriginalID)
 	rewriteResponseIDs(payload, resolved.ServerID, a.IDStore, cfg.Server.ID, a.clientFacingUserIDFor(r))
 	if !a.strictSanitizedUserData(w, r, r.PathValue("itemId"), payload) {
 		return

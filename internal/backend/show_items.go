@@ -8,9 +8,7 @@ import (
 	"strconv"
 )
 
-// Show pages must be merged before applying the client's offset. Otherwise a
-// short copy on one server hides later episodes available on another server.
-func (a *App) fetchShowItems(ctx context.Context, reqCtx *RequestContext, inst seriesInstance, path string, query url.Values) ([]map[string]any, error) {
+func (a *App) fetchShowPages(ctx context.Context, reqCtx *RequestContext, inst seriesInstance, path string, query url.Values, budget *catalogRequestBudget, page func([]map[string]any)) ([]map[string]any, error) {
 	query = cloneValues(query)
 	setQueryValue(query, "Limit", "200")
 	setQueryValue(query, "EnableTotalRecordCount", "true")
@@ -18,8 +16,11 @@ func (a *App) fetchShowItems(ctx context.Context, reqCtx *RequestContext, inst s
 	items := []map[string]any{}
 	seen := map[string]bool{}
 	for offset := 0; ; {
+		if err := ctx.Err(); err != nil {
+			return items, err
+		}
 		setQueryValue(query, "StartIndex", strconv.Itoa(offset))
-		if reqCtx != nil && reqCtx.Parental != nil && reqCtx.Parental.restricted() && !reqCtx.Parental.catalog.tryAcquire() {
+		if !budget.tryAcquire() {
 			return items, errParentalBudgetExhausted
 		}
 		payload, err := inst.Client.RequestJSON(ctx, reqCtx, a.Identity, http.MethodGet, path, query, nil)
@@ -36,6 +37,7 @@ func (a *App) fetchShowItems(ctx context.Context, reqCtx *RequestContext, inst s
 			return items, nil
 		}
 		added := 0
+		accepted := []map[string]any{}
 		for _, item := range batch {
 			id, _ := item["Id"].(string)
 			if id == "" {
@@ -46,7 +48,11 @@ func (a *App) fetchShowItems(ctx context.Context, reqCtx *RequestContext, inst s
 			}
 			seen[id] = true
 			items = append(items, item)
+			accepted = append(accepted, item)
 			added++
+		}
+		if page != nil && len(accepted) > 0 {
+			page(accepted)
 		}
 		offset += len(batch)
 		if block, ok := payload.(map[string]any); ok {
@@ -68,28 +74,6 @@ func (a *App) fetchShowItems(ctx context.Context, reqCtx *RequestContext, inst s
 type showListAvailability struct {
 	confirmed  bool
 	incomplete bool
-}
-
-// A stale/deleted copy on one instance cannot erase another instance's known
-// seasons or episodes. The merged total remains a lower bound on any failure.
-func (a *App) fetchAvailableShowItems(r *http.Request, inst seriesInstance, path string, query url.Values, state *showListAvailability) []map[string]any {
-	rows, err := a.fetchShowItems(r.Context(), requestContextFrom(r.Context()), inst, path, query)
-	state.confirmed = state.confirmed || err == nil || len(rows) > 0
-	if err != nil {
-		state.incomplete = true
-		if a.Logger != nil {
-			status := 0
-			if response, ok := asUpstreamResponseError(err); ok {
-				status = response.StatusCode
-			}
-			trace := "none"
-			if requestTrace, _ := r.Context().Value(outboundTraceKey{}).(*outboundTrace); requestTrace != nil {
-				trace = requestTrace.id
-			}
-			a.Logger.Warnf("show_list trace=%s server=%s route=%s status=%d retained=%d incomplete=true", trace, inst.ServerID, diagnosticRoute(path), status, len(rows))
-		}
-	}
-	return rows
 }
 
 func (a *App) writeAvailableShowItems(w http.ResponseWriter, r *http.Request, items []map[string]any, state showListAvailability) {

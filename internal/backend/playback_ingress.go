@@ -568,7 +568,7 @@ func (a *App) claimStrictPlaybackSlotForRequest(w http.ResponseWriter, r *http.R
 		writeStrictPlaybackError(w, errStrictSourceUnavailable)
 		return false
 	}
-	originalID, ok := translateVirtualIDForServer(binding.VirtualItemID, binding.ServerID, a.IDStore)
+	originalID, ok := a.originalItemForBinding(binding)
 	if !ok || originalID == "" {
 		writeStrictPlaybackError(w, errStrictSourceUnavailable)
 		return false

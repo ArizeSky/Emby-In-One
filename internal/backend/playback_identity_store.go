@@ -126,6 +126,7 @@ type playbackAttemptRequest struct {
 	Owner          playbackIdentityOwner
 	ServerID       string
 	VirtualItemID  string
+	OriginalItemID string
 	SourceID       string
 	Identity       identitySnapshot
 	Principal      string
@@ -163,9 +164,10 @@ type playbackIdentityBinding struct {
 	AttemptID string
 	Owner     playbackIdentityOwner
 
-	ServerID      string
-	VirtualItemID string
-	SourceID      string
+	ServerID       string
+	VirtualItemID  string
+	OriginalItemID string
+	SourceID       string
 
 	Identity identitySnapshot
 	Auth     playbackIdentityAuth
@@ -198,9 +200,10 @@ type playbackIdentityEntry struct {
 	attemptID string
 	owner     playbackIdentityOwner
 
-	serverID      string
-	virtualItemID string
-	sourceID      string
+	serverID       string
+	virtualItemID  string
+	originalItemID string
+	sourceID       string
 
 	identity identitySnapshot
 	auth     playbackIdentityAuth
@@ -238,6 +241,7 @@ func (e *playbackIdentityEntry) snapshot() playbackIdentityBinding {
 		Owner:                 e.owner,
 		ServerID:              e.serverID,
 		VirtualItemID:         e.virtualItemID,
+		OriginalItemID:        e.originalItemID,
 		SourceID:              e.sourceID,
 		Identity:              clonePlaybackIdentitySnapshot(e.identity),
 		Auth:                  e.auth,
@@ -324,11 +328,12 @@ func (s *playbackIdentityStore) reserve(req playbackAttemptRequest) (playbackIde
 		return playbackIdentityBinding{}, err
 	}
 	entry := &playbackIdentityEntry{
-		attemptID:     attemptID,
-		owner:         req.Owner,
-		serverID:      req.ServerID,
-		virtualItemID: req.VirtualItemID,
-		sourceID:      req.SourceID,
+		attemptID:      attemptID,
+		owner:          req.Owner,
+		serverID:       req.ServerID,
+		virtualItemID:  req.VirtualItemID,
+		originalItemID: req.OriginalItemID,
+		sourceID:       req.SourceID,
 		// Only managed identity headers are stored; compound/auth/token headers
 		// are projected away even if a caller handed in raw captured headers.
 		identity: normalizePlaybackIdentitySnapshot(req.Identity),

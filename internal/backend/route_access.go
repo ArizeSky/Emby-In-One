@@ -13,15 +13,7 @@ func (a *App) resolveRouteForRequest(reqCtx *RequestContext, id string) (*routeR
 		return nil, http.StatusNotFound
 	}
 
-	type candidate struct {
-		OriginalID string
-		ServerID   string
-	}
-	candidates := make([]candidate, 0, len(resolved.OtherInstances)+1)
-	candidates = append(candidates, candidate{OriginalID: resolved.OriginalID, ServerID: resolved.ServerID})
-	for _, other := range resolved.OtherInstances {
-		candidates = append(candidates, candidate{OriginalID: other.OriginalID, ServerID: other.ServerID})
-	}
+	candidates := a.IDStore.PhysicalInstances(id)
 
 	hasAuthorizedReplica := false
 	for index, current := range candidates {
@@ -34,14 +26,9 @@ func (a *App) resolveRouteForRequest(reqCtx *RequestContext, id string) (*routeR
 			continue
 		}
 
-		others := append([]AdditionalInstance(nil), resolved.OtherInstances...)
-		if index > 0 {
-			others = make([]AdditionalInstance, 0, len(resolved.OtherInstances))
-			others = append(others, AdditionalInstance{OriginalID: resolved.OriginalID, ServerID: resolved.ServerID})
-			for _, other := range resolved.OtherInstances {
-				if other.OriginalID == current.OriginalID && other.ServerID == current.ServerID {
-					continue
-				}
+		others := make([]AdditionalInstance, 0, len(candidates)-1)
+		for i, other := range candidates {
+			if i != index {
 				others = append(others, other)
 			}
 		}

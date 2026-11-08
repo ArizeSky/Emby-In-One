@@ -18,6 +18,9 @@ type streamResourceEntry struct {
 	VirtualItemID string
 	ServerID      string
 	OriginalID    string
+	SourceID      string
+	PlaybackMedia bool
+	observed      bool
 	ResourceURL   string
 	// Provenance is the immutable registration authority for ResourceURL. It is
 	// copied by pointer with the entry and never edited; request-scoped additions
@@ -30,6 +33,17 @@ type streamResourceEntry struct {
 	ExpiresAt time.Time
 	pinned    bool
 	retireAt  time.Time
+}
+
+func (s *streamResourceStore) observePlayback(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entry := s.entries[id]
+	if entry == nil || !entry.PlaybackMedia || entry.observed {
+		return false
+	}
+	entry.observed = true
+	return true
 }
 
 type resourceSessionKey struct{ user, item, server, original, timeline, attempt string }

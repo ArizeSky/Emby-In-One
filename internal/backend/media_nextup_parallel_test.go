@@ -57,13 +57,17 @@ func TestLocalNextUpFetchesSeriesConcurrently(t *testing.T) {
 		// Four in-progress series, each with S1E1 played.
 		for i := 1; i <= 4; i++ {
 			series := fmt.Sprintf("series-%d", i)
+			virtual := app.IDStore.GetOrCreateVirtualID(series, serverID)
+			for copy := 2; copy <= 3; copy++ {
+				app.IDStore.AssociateAdditionalInstance(virtual, fmt.Sprintf("%s-copy%d", series, copy), serverID)
+			}
 			err := app.WatchStore.RecordProgress(&WatchProgress{
 				ProxyUserID:       userID,
 				VirtualItemID:     fmt.Sprintf("ep-1-%d", i),
 				ServerID:          serverID,
 				OriginalItemID:    fmt.Sprintf("orig-ep-1-%d", i),
 				ItemType:          "Episode",
-				SeriesVirtualID:   series,
+				SeriesVirtualID:   virtual,
 				SeriesOriginalID:  series,
 				SeriesName:        fmt.Sprintf("Series %d", i),
 				ParentIndexNumber: 1,
@@ -88,6 +92,9 @@ func TestLocalNextUpFetchesSeriesConcurrently(t *testing.T) {
 			t.Fatalf("nextup items len = %d, want 4 (payload=%#v)", len(items), payload)
 		}
 
+		if got := maxInFlight.Load(); got > showConcurrentRequests {
+			t.Fatalf("per-series fan-out multiplied the request limit: concurrency=%d", got)
+		}
 		if got := maxInFlight.Load(); got < 2 {
 			t.Fatalf("series were fetched serially: max concurrent episode requests = %d, want >= 2", got)
 		}

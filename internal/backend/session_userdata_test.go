@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 )
@@ -117,11 +118,9 @@ func TestSessionRoutesTranslateIDsAndBroadcastCapabilities(t *testing.T) {
 	})
 }
 
-// TestCrossServerSessionRoutesToItemIdServer verifies that when ItemId
-// belongs to server A and MediaSourceId belongs to server B, session events
-// are forwarded to server A (ItemId's server) with each ID independently
-// resolved to its own server's original value.
-func TestCrossServerSessionRoutesToItemIdServer(t *testing.T) {
+// Incompatible item/source IDs must never emit a hybrid playback event.
+
+func TestCrossServerSessionRejectsUnrelatedSource(t *testing.T) {
 	var playingBodyA atomic.Value
 	var progressBodyA atomic.Value
 	var stoppedBodyA atomic.Value
@@ -192,39 +191,17 @@ func TestCrossServerSessionRoutesToItemIdServer(t *testing.T) {
 
 		for _, route := range []string{"/Sessions/Playing", "/Sessions/Playing/Progress", "/Sessions/Playing/Stopped"} {
 			rr := doJSONRequest(t, handler, http.MethodPost, route, body, token)
-			if rr.Code != http.StatusNoContent {
-				t.Fatalf("%s status = %d, body=%s", route, rr.Code, rr.Body.String())
+			want := http.StatusBadRequest
+			if strings.HasSuffix(route, "/Stopped") || strings.HasSuffix(route, "/Progress") {
+				want = http.StatusNoContent // Legacy fire-and-forget, without forwarding.
+			}
+			if rr.Code != want {
+				t.Fatalf("%s status = %d, want %d", route, rr.Code, want)
 			}
 		}
-
-		// All three events must reach server A (ItemId's server)
-		for _, tc := range []struct {
-			name string
-			val  atomic.Value
-		}{
-			{"playing", playingBodyA},
-			{"progress", progressBodyA},
-			{"stopped", stoppedBodyA},
-		} {
-			raw := tc.val.Load()
-			payload, ok := raw.(map[string]any)
-			if !ok {
-				t.Fatalf("%s payload not received on server A: %#v", tc.name, raw)
-			}
-			// ItemId independently resolved to server A's original
-			if payload["ItemId"] != "item-on-a" {
-				t.Fatalf("%s ItemId = %v, want item-on-a", tc.name, payload["ItemId"])
-			}
-			// MediaSourceId independently resolved to server B's original
-			if payload["MediaSourceId"] != "ms-on-b" {
-				t.Fatalf("%s MediaSourceId = %v, want ms-on-b", tc.name, payload["MediaSourceId"])
-			}
-			// PlaySessionId independently resolved to server B's original
-			if payload["PlaySessionId"] != "play-on-b" {
-				t.Fatalf("%s PlaySessionId = %v, want play-on-b", tc.name, payload["PlaySessionId"])
-			}
+		if playingBodyA.Load() != nil || progressBodyA.Load() != nil || stoppedBodyA.Load() != nil {
+			t.Fatal("unrelated source emitted a hybrid event on server A")
 		}
-
 		// Server B must NOT receive any session events
 		if hitB.Load() != 0 {
 			t.Fatalf("server B received %d session events, want 0", hitB.Load())

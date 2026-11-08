@@ -152,11 +152,9 @@ func (a *App) handleShowsSeasons(w http.ResponseWriter, r *http.Request) {
 	merged := map[int]*indexedItem{}
 	unknown := []indexedItem{}
 	identities := map[string]string{}
-	availability := showListAvailability{}
-	for _, inst := range instances {
-		query := cloneValues(r.URL.Query())
-		query.Set("UserId", inst.Client.clientUserID())
-		rows := a.fetchAvailableShowItems(r, inst, "/Shows/"+inst.OriginalID+"/Seasons", query, &availability)
+	pages, availability := a.collectShowPages(r, instances, "Seasons", r.URL.Query())
+	for _, page := range pages {
+		inst, rows := page.instance, page.rows
 		a.registerShowIdentities(rows, inst.ServerID, false, identities)
 		rows = a.parentalFilterServerItems(r, inst.Client, rows)
 		for _, item := range rows {
@@ -238,31 +236,9 @@ func (a *App) handleShowsEpisodes(w http.ResponseWriter, r *http.Request) {
 	merged := map[string]*indexedItem{}
 	var unkeyed []indexedItem
 	identities := map[string]string{}
-	availability := showListAvailability{}
-	for _, inst := range instances {
-		query := cloneValues(r.URL.Query())
-		query.Set("UserId", inst.Client.clientUserID())
-		if seasonID := query.Get("SeasonId"); seasonID != "" {
-			if resolvedSeason := a.IDStore.ResolveVirtualID(seasonID); resolvedSeason != nil {
-				mapped := ""
-				if resolvedSeason.ServerID == inst.ServerID {
-					mapped = resolvedSeason.OriginalID
-				} else {
-					for _, other := range resolvedSeason.OtherInstances {
-						if other.ServerID == inst.ServerID {
-							mapped = other.OriginalID
-							break
-						}
-					}
-				}
-				if mapped != "" {
-					query.Set("SeasonId", mapped)
-				} else {
-					continue
-				}
-			}
-		}
-		rows := a.fetchAvailableShowItems(r, inst, "/Shows/"+inst.OriginalID+"/Episodes", query, &availability)
+	pages, availability := a.collectShowPages(r, instances, "Episodes", r.URL.Query())
+	for _, page := range pages {
+		inst, rows := page.instance, page.rows
 		a.registerShowIdentities(rows, inst.ServerID, true, identities)
 		rows = a.parentalFilterServerItems(r, inst.Client, rows)
 		for _, item := range rows {

@@ -45,16 +45,12 @@ func decodeOptionalJSON(r *http.Request) (any, error) {
 }
 
 func (a *App) translateSessionBodyIDs(body map[string]any) (string, bool) {
-	// Selected media sources route a merged item's session to that server's
-	// copy. Keep the legacy primary route when no corresponding copy exists.
+	// Selected sources own an exact physical item. Contradictory selections
+	// fail rather than reporting playback against the primary copy.
 	virtualItemID, _ := body["ItemId"].(string)
+	publicSession, _ := body["PlaySessionId"].(string)
 
-	type resolvedID struct {
-		OriginalID string
-		ServerID   string
-	}
-
-	resolutions := map[string]*resolvedID{} // key → resolved
+	resolutions := map[string]*ResolvedID{} // key → resolved
 	for _, key := range []string{"ItemId", "MediaSourceId", "PlaySessionId"} {
 		text, _ := body[key].(string)
 		if text == "" {
@@ -65,10 +61,7 @@ func (a *App) translateSessionBodyIDs(body map[string]any) (string, bool) {
 			resolved = a.IDStore.ResolveByOriginalID(text)
 		}
 		if resolved != nil {
-			resolutions[key] = &resolvedID{
-				OriginalID: resolved.OriginalID,
-				ServerID:   resolved.ServerID,
-			}
+			resolutions[key] = resolved
 			body[key] = resolved.OriginalID
 		}
 	}
@@ -82,11 +75,23 @@ func (a *App) translateSessionBodyIDs(body map[string]any) (string, bool) {
 	}
 	for _, key := range []string{"MediaSourceId", "PlaySessionId"} {
 		if target := resolutions[key]; target != nil && a.IDStore.ResolveVirtualID(virtualItemID) != nil {
-			if itemID, ok := translateVirtualIDForServer(virtualItemID, target.ServerID, a.IDStore); ok {
+			kind := "source"
+			if key == "PlaySessionId" {
+				kind = "session"
+			}
+			if itemID, ok := a.IDStore.ResourceItem(virtualItemID, target, kind); ok {
 				body["ItemId"] = itemID
 				serverID = target.ServerID
+				if key == "MediaSourceId" && publicSession != "" {
+					session, matches := a.IDStore.sessionForSource(publicSession, virtualItemID, itemID, target)
+					if !matches {
+						return "", false
+					}
+					body["PlaySessionId"] = session
+				}
 				break
 			}
+			return "", false
 		}
 	}
 
@@ -185,7 +190,7 @@ func (a *App) recordSessionToWatchStore(r *http.Request, virtualItemID string, b
 	}
 
 	// Enrich with item metadata if not already stored.
-	if existing == nil || existing.ItemType == "" {
+	if a.watchMetadataNeedsRefresh(existing, serverID, originalItemID) {
 		a.enrichWatchProgressMetadata(r, reqCtx, p, originalItemID, serverID)
 	}
 
@@ -232,6 +237,7 @@ func (a *App) enrichWatchProgressMetadata(r *http.Request, reqCtx *RequestContex
 	if !ok {
 		return
 	}
+	registerResponseRelations(item, serverID, a.IDStore)
 	p.ItemType, _ = item["Type"].(string)
 	p.Name, _ = item["Name"].(string)
 	if year, ok := numericInt(item["ProductionYear"]); ok {
@@ -272,14 +278,6 @@ func numericInt64(v any) (int64, bool) {
 		return int64(n), true
 	}
 	return 0, false
-}
-
-func (a *App) translateMediaSourceQuery(values url.Values) {
-	if mediaSourceID := queryValue(values, "MediaSourceId"); mediaSourceID != "" {
-		if resolved := a.IDStore.ResolveVirtualID(mediaSourceID); resolved != nil {
-			setQueryValue(values, "MediaSourceId", resolved.OriginalID)
-		}
-	}
 }
 
 func (a *App) performUpstream(ctx *http.Request, client *UpstreamClient, method, path string, query url.Values, body any) (*http.Response, error) {
@@ -464,6 +462,7 @@ func (a *App) handleSessionPlaying(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusForbidden, map[string]any{"message": "Access denied"})
 		return
 	}
+	a.logPlaybackSelection(r, "start", virtualItemID, serverID, playbackStringField(body, "ItemId"), playbackStringField(body, "MediaSourceId"), body)
 	client := a.Upstream.ClientByID(serverID)
 	if client == nil || !client.IsOnline() {
 		writeJSON(w, http.StatusNotFound, map[string]any{"message": "Server not found"})
@@ -712,14 +711,12 @@ func (a *App) handleUserPlayingItem(w http.ResponseWriter, r *http.Request, meth
 		return
 	}
 	query := cloneValues(r.URL.Query())
-	var selected bool
-	resolved, selected = a.selectedPlaybackSource(w, r, resolved, map[string]any{}, query)
+	client, originalItem, selected := a.resolveStreamTarget(w, r, resolved, r.PathValue("itemId"), query)
 	if !selected {
 		return
 	}
-	a.translateMediaSourceQuery(query)
-	path := "/Users/" + resolved.Client.clientUserID() + "/PlayingItems/" + resolved.OriginalID
-	_ = a.forwardNoContent(r, resolved.Client, method, path, query, nil)
+	path := "/Users/" + client.clientUserID() + "/PlayingItems/" + originalItem
+	_ = a.forwardNoContent(r, client, method, path, query, nil)
 	w.WriteHeader(http.StatusNoContent)
 }
 

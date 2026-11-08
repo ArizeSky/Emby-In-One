@@ -30,6 +30,7 @@ type parentalReadSession struct {
 	metadata     map[parentalMetadataKey]parentalMetadataRecord
 	loading      map[parentalMetadataKey]chan struct{}
 	slots        chan struct{}
+	showSlots    chan struct{}
 	allowed      int
 	unconfirmed  int
 }
@@ -40,6 +41,7 @@ func newParentalReadSession(maxRating int, blockUnrated bool) *parentalReadSessi
 		budget: parentalConfirmRequestBudget, catalog: newCatalogRequestBudget(),
 		metadata: map[parentalMetadataKey]parentalMetadataRecord{},
 		loading:  map[parentalMetadataKey]chan struct{}{}, slots: make(chan struct{}, 4),
+		showSlots: make(chan struct{}, showConcurrentRequests),
 	}
 }
 

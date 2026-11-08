@@ -80,6 +80,7 @@ func (a *App) recordShowDisplaySource(item map[string]any, virtualID, serverID s
 // This preserves the original virtual ID when the first copy is restricted.
 func (a *App) registerShowIdentities(rows []map[string]any, serverID string, episodes bool, identities map[string]string) {
 	for _, item := range rows {
+		registerResponseRelations(item, serverID, a.IDStore)
 		index, ok := numericInt(item["IndexNumber"])
 		id, _ := item["Id"].(string)
 		if !ok || id == "" {

@@ -390,6 +390,8 @@ func (a *App) applyPlaybackDirectStreams(w http.ResponseWriter, virtualItemID, p
 			VirtualItemID:   virtualItemID,
 			ServerID:        plan.serverID,
 			OriginalID:      plan.originalID,
+			SourceID:        playbackStringField(plan.mediaSource, "Id"),
+			PlaybackMedia:   true,
 			ResourceURL:     plan.resourceURL,
 			Provenance:      plan.provenance.withKnownPrivate(proxyToken),
 			AttemptID:       playbackStringField(plan.mediaSource, "EioAttemptId"),

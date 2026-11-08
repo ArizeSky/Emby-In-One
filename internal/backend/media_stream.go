@@ -118,7 +118,10 @@ func (a *App) proxyStream(w http.ResponseWriter, r *http.Request, route streamRo
 			return
 		}
 	}
-	rest = resolveMediaSourceInPathForServer(rest, a.IDStore, client.ID, originalID)
+	rest, ok = a.selectedSubtitlePath(w, rest, virtualItemID, client.ID, originalID, query)
+	if !ok {
+		return
+	}
 	a.resolvePlaySessionID(query)
 
 	upstreamPath := route.pathPrefix + "/" + originalID + "/" + rest
@@ -126,6 +129,9 @@ func (a *App) proxyStream(w http.ResponseWriter, r *http.Request, route streamRo
 	if a.Logger != nil {
 		a.Logger.Infof("%s: %s/%s/%s -> [%s] %s",
 			route.label, route.pathPrefix, virtualItemID, rest, client.Name, upstreamPath)
+		if strings.Contains(strings.ToLower(rest), "/subtitles/") {
+			a.Logger.Infof("playback_subtitle trace=%s item=%s server=%s original=%s source=%s track=%s", playbackTraceID(r), virtualItemID, client.ID, originalID, queryValue(query, "MediaSourceId"), rest)
+		}
 	}
 
 	// Redirect mode: hand the client a direct upstream stream URL. A restricted
@@ -431,11 +437,12 @@ func (a *App) resolveStreamTarget(w http.ResponseWriter, r *http.Request, resolv
 					a.writeRouteAccessError(w, http.StatusServiceUnavailable)
 					return nil, "", false
 				}
-				originalID, ok := translateVirtualIDForServer(virtualItemID, playSession.ServerID, a.IDStore)
+				originalID, ok := a.IDStore.ResourceItem(virtualItemID, playSession, "session")
 				if !ok {
 					writeJSON(w, http.StatusBadRequest, map[string]any{"message": "Play session does not belong to this item"})
 					return nil, "", false
 				}
+				setQueryValue(query, "PlaySessionId", playSession.OriginalID)
 				return target, originalID, true
 			}
 		}
@@ -460,26 +467,23 @@ func (a *App) resolveStreamTarget(w http.ResponseWriter, r *http.Request, resolv
 		return nil, "", false
 	}
 	setQueryValue(query, "MediaSourceId", mediaSource.OriginalID)
-	if mediaSource.ServerID == resolved.ServerID {
-		return target, resolved.OriginalID, true
-	}
-	// A source on another server only proves it belongs to this item when the
-	// item has a known copy there.
-	originalID := ""
-	for _, other := range resolved.OtherInstances {
-		if other.ServerID == mediaSource.ServerID {
-			originalID = other.OriginalID
-			break
-		}
-	}
-	if originalID == "" {
+	originalID, owns := a.IDStore.ResourceItem(virtualItemID, mediaSource, "source")
+	if !owns {
 		if a.Logger != nil {
 			a.Logger.Warnf("Stream: MediaSourceId %s is on server [%s] with no matching copy of the item", virtualMediaSourceID, target.Name)
 		}
 		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "MediaSource does not belong to this item"})
 		return nil, "", false
 	}
-	if a.Logger != nil {
+	if publicSession := queryValue(query, "PlaySessionId"); publicSession != "" {
+		session, matches := a.IDStore.sessionForSource(publicSession, virtualItemID, originalID, mediaSource)
+		if !matches {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"message": "Play session and selected version disagree; refresh playback info"})
+			return nil, "", false
+		}
+		setQueryValue(query, "PlaySessionId", session)
+	}
+	if a.Logger != nil && mediaSource.ServerID != resolved.ServerID {
 		a.Logger.Infof("Stream: switching to server [%s] for MediaSourceId %s", target.Name, virtualMediaSourceID)
 	}
 	return target, originalID, true

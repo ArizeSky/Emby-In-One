@@ -3,6 +3,7 @@ package backend
 import (
 	"context"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -20,6 +21,7 @@ func (a *App) handleMergedItemDetail(w http.ResponseWriter, r *http.Request, ins
 	defer bgCancel()
 
 	type instanceResult struct {
+		index        int
 		serverID     string
 		data         map[string]any
 		mediaSources []map[string]any
@@ -27,14 +29,19 @@ func (a *App) handleMergedItemDetail(w http.ResponseWriter, r *http.Request, ins
 		confirmed    bool
 	}
 	resultCh := make(chan *instanceResult, len(instances))
+	ordered := make([]*instanceResult, len(instances))
+	var workers sync.WaitGroup
+	defer func() { bgCancel(); workers.Wait() }()
 
-	for _, inst := range instances {
-		go func(si seriesInstance) {
+	for index, inst := range instances {
+		workers.Add(1)
+		go func(index int, si seriesInstance) {
+			defer workers.Done()
 			// Per-instance parental gate BEFORE this copy contributes anything
 			// to the response (plan §8.5): a denied instance's metadata and
 			// MediaSources must not leak through an allowed sibling, and an
 			// unconfirmable rating must not be released as unrated.
-			allowed, confirmed := a.checkInstanceParentalAccess(r, si.Client, si.OriginalID)
+			allowed, confirmed := a.checkInstanceParentalAccess(r.WithContext(bgCtx), si.Client, si.OriginalID)
 			if !allowed {
 				resultCh <- &instanceResult{serverID: si.ServerID, allowed: false, confirmed: confirmed}
 				return
@@ -51,19 +58,26 @@ func (a *App) handleMergedItemDetail(w http.ResponseWriter, r *http.Request, ins
 				resultCh <- nil
 				return
 			}
+			registerResponseRelations(data, si.ServerID, a.IDStore)
 			var mediaSources []map[string]any
 			for _, raw := range asItems(map[string]any{"Items": data["MediaSources"]}) {
 				ms := deepCloneMap(raw)
 				if originalID, _ := ms["Id"].(string); originalID != "" {
-					ms["Id"] = a.IDStore.GetOrCreateVirtualID(originalID, si.ServerID)
+					virtualSource := a.IDStore.GetOrCreateVirtualID(originalID, si.ServerID)
+					ms["Id"] = virtualSource
+					token := ""
+					if rc := requestContextFrom(r.Context()); rc != nil {
+						token = rc.ProxyToken
+					}
+					rewriteMediaSourceSubtitles(ms, si.OriginalID, r.PathValue("itemId"), originalID, virtualSource, token)
 				}
 				if client := a.Upstream.ClientByID(si.ServerID); client != nil {
 					annotateMediaSource(ms, client)
 				}
 				mediaSources = append(mediaSources, ms)
 			}
-			resultCh <- &instanceResult{serverID: si.ServerID, data: data, mediaSources: mediaSources, allowed: true, confirmed: true}
-		}(inst)
+			resultCh <- &instanceResult{index: index, serverID: si.ServerID, data: data, mediaSources: mediaSources, allowed: true, confirmed: true}
+		}(index, inst)
 	}
 
 	received := 0
@@ -87,26 +101,24 @@ func (a *App) handleMergedItemDetail(w http.ResponseWriter, r *http.Request, ins
 				}
 				continue
 			}
-			// Base selection follows the four-level metadata rule
-			// (priorityMetadata → Chinese Overview → longer Overview →
-			// configured order), not network completion order, so the same
-			// group shows the same metadata in list and detail views
-			// (plan §6.4/§8.5).
-			if base == nil || isBetterMetadata(base, baseServerID, res.data, res.serverID, cfg) {
-				if base == nil {
-					base = deepCloneMap(res.data)
-				} else {
-					base = deepCloneMap(res.data)
-				}
-				baseServerID = res.serverID
-			}
-			allMediaSources = append(allMediaSources, res.mediaSources...)
+			ordered[res.index] = res
 		case <-bgCtx.Done():
 			goto metadataDone
 		}
 	}
 metadataDone:
 	bgCancel()
+	// Keep version order stable across varying response times, including two
+	// copies on the same server. Track indices always belong to their version.
+	for _, res := range ordered {
+		if res == nil {
+			continue
+		}
+		if base == nil || isBetterMetadata(base, baseServerID, res.data, res.serverID, cfg) {
+			base, baseServerID = deepCloneMap(res.data), res.serverID
+		}
+		allMediaSources = append(allMediaSources, res.mediaSources...)
+	}
 	if base == nil {
 		// Every instance was either denied by policy or could not be checked.
 		// A definite deny is a 403; only unconfirmable/unreachable metadata is

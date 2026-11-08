@@ -63,7 +63,7 @@ func (a *App) requestPlaybackCandidate(r *http.Request, client *UpstreamClient, 
 	n := req.PlaybackNegotiation
 	selected := client.resolveIdentitySnapshot(req, a.Identity, nil)
 	auth := client.authSnapshot()
-	binding, err := a.PlaybackIdentities.reserve(playbackAttemptRequest{Owner: n.owner, ServerID: client.ID, VirtualItemID: r.PathValue("itemId"), Identity: selected, Principal: auth.Compatibility.Principal, ConfigRevision: auth.Compatibility.ConfigRevision})
+	binding, err := a.PlaybackIdentities.reserve(playbackAttemptRequest{Owner: n.owner, ServerID: client.ID, VirtualItemID: r.PathValue("itemId"), OriginalItemID: originalID, Identity: selected, Principal: auth.Compatibility.Principal, ConfigRevision: auth.Compatibility.ConfigRevision})
 	if err != nil {
 		return nil, strictPlaybackPreparationError(err)
 	}
@@ -83,7 +83,7 @@ func (a *App) requestPlaybackCandidate(r *http.Request, client *UpstreamClient, 
 		candidate := binding
 		sourceID := playbackStringField(source, "Id")
 		if index > 0 {
-			candidate, err = a.PlaybackIdentities.reserve(playbackAttemptRequest{Owner: n.owner, ServerID: client.ID, VirtualItemID: r.PathValue("itemId"), SourceID: sourceID, Identity: binding.Identity, Principal: binding.Auth.Principal, ConfigRevision: binding.Auth.ConfigRevision})
+			candidate, err = a.PlaybackIdentities.reserve(playbackAttemptRequest{Owner: n.owner, ServerID: client.ID, VirtualItemID: r.PathValue("itemId"), OriginalItemID: originalID, SourceID: sourceID, Identity: binding.Identity, Principal: binding.Auth.Principal, ConfigRevision: binding.Auth.ConfigRevision})
 			if err != nil {
 				return nil, strictPlaybackPreparationError(err)
 			}

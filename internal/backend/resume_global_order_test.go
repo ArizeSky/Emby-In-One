@@ -49,7 +49,9 @@ func TestLocalResumeExplicitOrderBeforePagination(t *testing.T) {
 			{"SortBy=SortName&SortOrder=Ascending&Limit=1", "Alpha", 2},
 			{"SortBy=SortName&SortOrder=Descending&Limit=1", "Zulu", 2},
 			{"SortBy=SortName&StartIndex=1&Limit=1", "Zulu", 2},
-			{"Limit=1", "Zulu", 1},
+			// Both candidates in this complete page were confirmed; pagination
+			// must not turn the known total into the requested window size.
+			{"Limit=1", "Zulu", 2},
 		} {
 			rr := doJSONRequest(t, h, http.MethodGet, "/Users/"+app.Auth.ProxyUserID()+"/Items/Resume?"+tc.query, nil, token)
 			if rr.Code != http.StatusOK {

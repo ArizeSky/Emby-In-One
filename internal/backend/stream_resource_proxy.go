@@ -219,6 +219,13 @@ func (a *App) serveStreamResource(w http.ResponseWriter, r *http.Request, virtua
 		w.WriteHeader(http.StatusGone)
 		return
 	}
+	if r.Method == http.MethodGet && a.StreamResources.observePlayback(opaqueID) {
+		sourceID := entry.SourceID
+		if source := a.IDStore.ResolveVirtualID(sourceID); source != nil && source.ServerID == entry.ServerID {
+			sourceID = source.OriginalID
+		}
+		a.logPlaybackSelection(r, "media", virtualItemID, entry.ServerID, entry.OriginalID, sourceID, nil)
+	}
 	if reqCtx != nil {
 		reqCtx.ResourceQueryProvenance = entry.Provenance.withKnownPrivate(reqCtx.ProxyToken, reqCtx.PlaybackCredential)
 	}

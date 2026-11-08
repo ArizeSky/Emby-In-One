@@ -5,6 +5,18 @@ import (
 	"net/http"
 )
 
+func (a *App) originalItemForBinding(binding playbackIdentityBinding) (string, bool) {
+	if binding.OriginalItemID != "" {
+		for _, inst := range a.IDStore.PhysicalInstances(binding.VirtualItemID) {
+			if inst.ServerID == binding.ServerID && inst.OriginalID == binding.OriginalItemID {
+				return binding.OriginalItemID, true
+			}
+		}
+		return "", false
+	}
+	return a.IDStore.ResourceItem(binding.VirtualItemID, &ResolvedID{ServerID: binding.ServerID, OriginalID: binding.SourceID}, "source")
+}
+
 // A response may contain multiple media sources. Freeze each source into its own
 // candidate while still pending; the credential-free identity/auth snapshot is
 // identical to the one used before that upstream PlaybackInfo call.

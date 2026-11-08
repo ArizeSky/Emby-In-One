@@ -5,6 +5,10 @@ import (
 	"net/url"
 )
 
+type nativeSourceSession struct {
+	serverID, sourceID, sessionID string
+}
+
 func annotateMediaSource(source map[string]any, client *UpstreamClient) {
 	name, _ := source["Name"].(string)
 	if name == "" {
@@ -43,10 +47,27 @@ func (a *App) selectedPlaybackSource(w http.ResponseWriter, r *http.Request, res
 		a.writeRouteAccessError(w, http.StatusServiceUnavailable)
 		return nil, false
 	}
-	itemID, ok := translateVirtualIDForServer(r.PathValue("itemId"), source.ServerID, a.IDStore)
+	itemID, ok := a.IDStore.ResourceItem(r.PathValue("itemId"), source, "source")
 	if !ok {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "Selected version does not belong to this item"})
 		return nil, false
+	}
+	publicSession, _ := body["PlaySessionId"].(string)
+	if publicSession == "" {
+		publicSession = queryValue(query, "PlaySessionId")
+	}
+	if publicSession != "" {
+		session, matches := a.IDStore.sessionForSource(publicSession, r.PathValue("itemId"), itemID, source)
+		if !matches {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"message": "Play session and selected version disagree; refresh playback info"})
+			return nil, false
+		}
+		if _, exists := body["PlaySessionId"]; exists {
+			body["PlaySessionId"] = session
+		}
+		if queryValue(query, "PlaySessionId") != "" {
+			setQueryValue(query, "PlaySessionId", session)
+		}
 	}
 	if _, exists := body["MediaSourceId"]; exists {
 		body["MediaSourceId"] = source.OriginalID
@@ -54,5 +75,6 @@ func (a *App) selectedPlaybackSource(w http.ResponseWriter, r *http.Request, res
 	if queryValue(query, "MediaSourceId") != "" {
 		setQueryValue(query, "MediaSourceId", source.OriginalID)
 	}
+	a.logPlaybackSelection(r, "negotiate", r.PathValue("itemId"), source.ServerID, itemID, source.OriginalID, body)
 	return &routeResolution{OriginalID: itemID, ServerID: source.ServerID, Client: client}, true
 }

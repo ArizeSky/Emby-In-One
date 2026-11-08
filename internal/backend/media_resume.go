@@ -116,12 +116,14 @@ func (a *App) handleLocalResume(w http.ResponseWriter, r *http.Request, reqCtx *
 	const batchSize = 100
 	var enriched []map[string]any
 	incomplete := false
+	groups := watchIdentityGroups{store: a.IDStore}
+	seenItems, seenSeries := map[string]bool{}, map[string]bool{}
 	for offset := 0; offset < localResumeRecordScanLimit; offset += batchSize {
 		if r.Context().Err() != nil {
 			incomplete = true
 			break
 		}
-		page, err := a.WatchStore.GetResumeItemsPage(reqCtx.ProxyUser.UserID, batchSize, offset)
+		page, err := a.WatchStore.GetResumeCandidatePage(reqCtx.ProxyUser.UserID, batchSize, offset)
 		if err != nil {
 			if a.Logger != nil {
 				a.Logger.Warnf("WatchStore resume page read error: %s", redactURLInError(err))
@@ -134,13 +136,26 @@ func (a *App) handleLocalResume(w http.ResponseWriter, r *http.Request, reqCtx *
 		}
 		var candidates []WatchProgress
 		for i := range page {
-			if scope != nil && scope.kind == "Series" && page[i].SeriesVirtualID != parentID {
+			if scope != nil && scope.kind == "Series" && groups.key(page[i].SeriesVirtualID) != groups.key(parentID) {
+				continue
+			}
+			key := groups.key(page[i].VirtualItemID)
+			if seenItems[key] || seenSeries[groups.seriesKey(page[i])] {
+				continue
+			}
+			state, err := a.localUserState(reqCtx.ProxyUser.UserID, privacyItem{virtualID: page[i].VirtualItemID, aliases: a.privacyAliases(page[i].VirtualItemID)})
+			if err != nil {
+				writeJSON(w, http.StatusBadGateway, map[string]any{"message": "Failed to read resume history"})
+				return
+			}
+			if state != nil && state.Played {
 				continue
 			}
 			if _, _, ok := a.resolveWatchItemServer(reqCtx, &page[i]); !ok {
 				continue
 			}
 			candidates = append(candidates, page[i])
+			seenItems[key] = true
 		}
 		batchItems := a.enrichWatchItems(r, reqCtx, candidates)
 		progressByID := make(map[string]WatchProgress, len(candidates))
@@ -148,11 +163,20 @@ func (a *App) handleLocalResume(w http.ResponseWriter, r *http.Request, reqCtx *
 			progressByID[candidate.VirtualItemID] = candidate
 		}
 		for _, item := range batchItems {
-			if scope != nil {
-				progress, ok := progressByID[itemID(item)]
-				if !ok {
-					continue
+			progress, exists := progressByID[itemID(item)]
+			if !exists {
+				// ID rewriting may select a previously published alias.
+				for _, candidate := range candidates {
+					if groups.key(candidate.VirtualItemID) == groups.key(itemID(item)) {
+						progress, exists = candidate, true
+						break
+					}
 				}
+			}
+			if !exists || seenSeries[groups.seriesKey(progress)] {
+				continue
+			}
+			if scope != nil {
 				matched, uncertain := a.resumeItemInScope(r, reqCtx, scope, progress, item)
 				if uncertain {
 					incomplete = true
@@ -161,10 +185,10 @@ func (a *App) handleLocalResume(w http.ResponseWriter, r *http.Request, reqCtx *
 					continue
 				}
 			}
+			seenSeries[groups.seriesKey(progress)] = true
 			enriched = append(enriched, item)
 		}
 		if !fullOrder && desiredEnd > 0 && len(enriched) >= desiredEnd {
-			enriched = enriched[:desiredEnd]
 			if len(page) == batchSize {
 				// A full WatchStore page can have a tail that was not scanned;
 				// report only the confirmed count as a lower bound.

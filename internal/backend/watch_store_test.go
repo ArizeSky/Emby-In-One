@@ -293,7 +293,7 @@ func TestWatchStoreNextUpDeduplication(t *testing.T) {
 	// S01E01 played
 	ws.RecordProgress(&WatchProgress{
 		ProxyUserID: "user1", VirtualItemID: "ep1",
-		ItemType: "Episode", SeriesName: "Show A",
+		ItemType: "Episode", SeriesName: "A previous title",
 		SeriesVirtualID:   "series1",
 		ParentIndexNumber: 1, IndexNumber: 1,
 		Played: true,
@@ -324,7 +324,7 @@ func TestWatchStoreNextUpDeduplication(t *testing.T) {
 	}
 	// Show A: highest episode is ep2 (S01E02)
 	for _, r := range results {
-		if r.SeriesName == "Show A" && r.IndexNumber != 2 {
+		if r.SeriesVirtualID == "series1" && r.IndexNumber != 2 {
 			t.Fatalf("Show A: IndexNumber = %d, want 2", r.IndexNumber)
 		}
 		if r.SeriesName == "Show B" && r.IndexNumber != 1 {
