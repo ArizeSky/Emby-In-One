@@ -1,6 +1,6 @@
 # Emby-In-One
 
-> **Current candidate: [V1.4.4-rc4 (Pre-release)](https://github.com/ArizeSky/Emby-In-One/releases/tag/V1.4.4-rc4) · Stable: V1.4.3**
+> **Current candidate: [V1.4.4-rc5 (Pre-release)](https://github.com/ArizeSky/Emby-In-One/releases/tag/V1.4.4-rc5) · Stable: V1.4.3**
 
 [![License: GPL v3](https://img.shields.io/github/license/ArizeSky/Emby-In-One?color=blue)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.23+-00ADD8?logo=go&logoColor=white)](https://go.dev/)
@@ -12,17 +12,6 @@
 [Docker operations](DOCKER_EN.md) | [Release policy](RELEASING.md) | [Changelog](Update.md) | [中文文档](README.md) | [Security Policy](SECURITY.md) | [V1.2.1 Legacy Docs](README_V1.2.1.md) | [GitHub](https://github.com/ArizeSky/Emby-In-One)
 
 Based on Go language, it implements a multi-server Emby aggregation proxy — merges media libraries from multiple upstream Emby servers into a single unified endpoint accessible by any standard Emby client. Supports multi-user management, independent watch history, UA spoofing, concurrent playback limits, and role-based access control.
-
-## V1.4.4-rc4
-
-This candidate focuses on library queries, Web playback stability, themes and administration. See the [changelog](Update.md) for changes and known limitations.
-
-- **Libraries and home page**: local favorites, played and resumable lists use authorized ID-based queries; aggregate lists support bounded continuation with explicit partial-result notices. The home page adds lazy library rows, and Continue Watching cards can open series episode selection.
-- **Playback and subtitles**: improved resume, seeking, compatibility playback and teardown; fixes for ASS outlines, oversized MKV attachments and subtitle source selection across versions. Adds on-demand playback speeds, buffered progress and playback information.
-- **Experimental dual cache**: administrators can enable strict MSE cache control, stopping production at either 300,000,000 bytes of controlled compressed media or 120 seconds ahead. Disabled by default; this is not a browser-wide memory limit.
-- **Themes and administration**: light/dark/system appearance, restricted theme packages and account preferences; upstream viewing activity and retention reminders; managed Docker updates, backups and recovery.
-
-> rc4 is a prerelease candidate. Test parental controls, large libraries and browser/codec combinations on a small scale first, and back up configuration and the complete data directory.
 
 ## Table of Contents
 
@@ -59,8 +48,6 @@ This candidate focuses on library queries, Web playback stability, themes and ad
 
 ## Features Overview
 
-> Features below describe rc4; consult the corresponding changelog for older versions.
-
 - **Multi-User Management** — Supports creating regular users, each independently configurable with an accessible set of upstream servers; Admins can manage users via Admin panel, REST API, and SSH menu.
 - **Per-User Home Library Hiding** — Admins can pick, per user (including themselves), which media libraries are hidden from the Emby client home screen (grouped by server, whole-server hiding supported); only the home entries are hidden — search, Latest Additions and Continue Watching stay unaffected, and changes take effect on the next refresh.
 - **Independent User Accounts** — Regular users possess independent watch progress, played status, favorites, and "Continue Watching / Next Up", isolated from other users and upstream shared accounts; Admins retain original upstream behavior. (Queries that **filter** lists by "Favorite / Played / Resumable" are answered from those same local records; a few filters such as "Unplayed" are still decided by the upstream account — see [Independent Watch History](#independent-watch-history))
@@ -91,7 +78,7 @@ Choose one route. For an existing deployment, check its directory and ports firs
 | **Method 3: Docker source build** | Code changes or custom image builds | Yes |
 | **Method 4: Run Go source** | Development and debugging | Yes |
 
-> **Version selection:** Stable: **V1.4.3**; candidate: **V1.4.4-rc4**. The binary installer defaults to the latest stable Release; select prereleases explicitly. See the [changelog](Update.md) for parental-control limitations.
+> **Version selection:** Stable: **V1.4.3**; candidate: **V1.4.4-rc5**. The binary installer defaults to the latest stable Release; select prereleases explicitly. See the [changelog](Update.md) for parental-control limitations.
 
 ### Method 1: Release Binary One-Click Install (Primary Recommendation)
 
@@ -102,10 +89,10 @@ curl -fsSL -o release-install.sh https://raw.githubusercontent.com/ArizeSky/Emby
 sudo bash release-install.sh
 ```
 
-To install or upgrade to rc4, select the candidate explicitly:
+To install or upgrade to rc5, select the candidate explicitly:
 
 ```bash
-sudo bash release-install.sh V1.4.4-rc4
+sudo bash release-install.sh V1.4.4-rc5
 ```
 
 The script initializes `/opt/emby-in-one/{config,data,log}`, generates a random administrator password, and installs a systemd service. Save the initial password shown in the terminal and follow the installation output to access the admin panel. Run `emby-in-one` to open the SSH management menu later.
@@ -114,7 +101,7 @@ The script initializes `/opt/emby-in-one/{config,data,log}`, generates a random 
 
 ### Method 2: Prebuilt Docker Image (No Local Compilation)
 
-**`ghcr.io/arizesky/emby-in-one:v1.4.4-rc4`** is published for **linux/amd64 and linux/arm64**. Docker selects the matching architecture automatically.
+**`ghcr.io/arizesky/emby-in-one:v1.4.4-rc5`** is published for **linux/amd64 and linux/arm64**. Docker selects the matching architecture automatically.
 
 Get the current repository's installation tools and explicitly select image mode:
 
@@ -124,7 +111,7 @@ cd Emby-In-One
 
 sudo bash install.sh \
   --mode image \
-  --image ghcr.io/arizesky/emby-in-one:v1.4.4-rc4
+  --image ghcr.io/arizesky/emby-in-one:v1.4.4-rc5
 ```
 
 This route only pulls the prebuilt image and **does not compile the project source**. The installer resolves and pins the image digest; subsequent updates stay on the image route.

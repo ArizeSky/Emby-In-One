@@ -1,6 +1,6 @@
 # Emby-In-One
 
-> **当前候选版：[V1.4.4-rc4（Pre-release）](https://github.com/ArizeSky/Emby-In-One/releases/tag/V1.4.4-rc4) · 当前稳定版：V1.4.3**
+> **当前候选版：[V1.4.4-rc5（Pre-release）](https://github.com/ArizeSky/Emby-In-One/releases/tag/V1.4.4-rc5) · 当前稳定版：V1.4.3**
 
 [![License: GPL v3](https://img.shields.io/github/license/ArizeSky/Emby-In-One?color=blue)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.23+-00ADD8?logo=go&logoColor=white)](https://go.dev/)
@@ -12,17 +12,6 @@
 [Docker 部署与运维](DOCKER.md) | [发布规范](RELEASING.md) | [更新日志](Update.md) | [English README](README_EN.md) | [安全策略](SECURITY.md) | [V1.2.1 旧版文档](README_V1.2.1.md) | [GitHub](https://github.com/ArizeSky/Emby-In-One)
 
 基于Go语言实现的多台 Emby 服务器聚合代理，将多个上游 Emby 服务器的媒体库合并为一个统一入口，支持任何标准 Emby 客户端访问。支持多用户管理、独立观看历史、UA伪装、并发播放数限制和角色权限隔离。
-
-## V1.4.4-rc4
-
-本次候选版聚焦媒体库查询、Web 播放稳定性、主题与管理体验。完整变更及已知限制见[更新日志](Update.md)。
-
-- **媒体库与首页**：本地收藏、已看和继续观看按授权 ID 查询；聚合列表支持有界续扫，部分结果明确提示。首页新增按需加载的媒体库横向行，继续观看卡片可进入系列选集。
-- **播放器与字幕**：改进续播、跳转、兼容播放和退出清理，修复 ASS 描边、超大 MKV 附件处理及多片源字幕选源；新增点播倍速、缓冲进度与播放信息。
-- **实验性双缓存**：管理员可开启严格 MSE 缓存控制，受控压缩媒体预算为 300,000,000 字节或向前 120 秒，先到者停止生产；默认关闭，不是浏览器总内存上限。
-- **主题与管理**：支持明亮/暗色/跟随系统、受限主题包与账号外观偏好；新增上游观看活动统计和保活提醒，完善 Docker 托管更新、备份和恢复。
-
-> rc4 为预发布候选版。年龄分级、大型媒体库及不同浏览器/编解码组合仍需小范围验证；请先备份配置和完整数据目录。
 
 ## 目录
 
@@ -59,8 +48,6 @@
 
 ## 功能概览
 
-> 以下功能说明对应 rc4；历史版本的功能范围以对应版本更新日志为准。
-
 - **多用户管理** — 支持创建多个普通用户，每个用户可独立配置可访问的上游服务器；管理员可通过管理面板、REST API 和 SSH 菜单管理用户。
 - **每用户首页库隐藏** — 管理员可为每个用户（含自己）单独勾选哪些媒体库不在 Emby 客户端首页显示（按服务器分组、支持整服务器隐藏）；仅隐藏首页库入口，搜索、最新添加、继续观看不受影响，保存后实时生效。
 - **独立用户账户** — 普通用户拥有独立的观看进度、已播放状态、收藏和"继续观看 / 接下来观看"，与其他用户及上游共享账户隔离；管理员保持原有上游行为。（按「收藏 / 已播放 / 继续观看中」**筛选**列表的查询同样以本地记录为准；「未观看」等少数筛选仍由上游账户决定，详见[独立观看历史](#独立观看历史)）
@@ -91,7 +78,7 @@
 | **方式三：Docker 源码构建** | 修改源码或自行构建镜像 | 是 |
 | **方式四：Go 源码运行** | 开发与调试 | 是 |
 
-> **版本选择：**稳定版为 **V1.4.3**，候选版为 **V1.4.4-rc4**。二进制安装默认选择最新稳定 Release，候选版需显式指定。年龄分级限制见[更新日志](Update.md)。
+> **版本选择：**稳定版为 **V1.4.3**，候选版为 **V1.4.4-rc5**。二进制安装默认选择最新稳定 Release，候选版需显式指定。年龄分级限制见[更新日志](Update.md)。
 
 ### 方式一：Release 二进制一键安装（首推）
 
@@ -102,10 +89,10 @@ curl -fsSL -o release-install.sh https://raw.githubusercontent.com/ArizeSky/Emby
 sudo bash release-install.sh
 ```
 
-安装或升级到 rc4，请显式指定候选版：
+安装或升级到 rc5，请显式指定候选版：
 
 ```bash
-sudo bash release-install.sh V1.4.4-rc4
+sudo bash release-install.sh V1.4.4-rc5
 ```
 
 安装脚本会初始化 `/opt/emby-in-one/{config,data,log}`、生成随机管理员密码，并安装 systemd 服务。安装完成后，按终端提示保存初始密码并访问管理面板；后续可运行 `emby-in-one` 打开 SSH 管理菜单。
@@ -114,7 +101,7 @@ sudo bash release-install.sh V1.4.4-rc4
 
 ### 方式二：Docker 预构建镜像（无需本机编译）
 
-当前已发布 **`ghcr.io/arizesky/emby-in-one:v1.4.4-rc4`**，支持 **linux/amd64、linux/arm64**，Docker 会自动选择对应架构。
+当前已发布 **`ghcr.io/arizesky/emby-in-one:v1.4.4-rc5`**，支持 **linux/amd64、linux/arm64**，Docker 会自动选择对应架构。
 
 获取当前仓库中的安装工具，然后明确选择镜像安装模式：
 
@@ -124,7 +111,7 @@ cd Emby-In-One
 
 sudo bash install.sh \
   --mode image \
-  --image ghcr.io/arizesky/emby-in-one:v1.4.4-rc4
+  --image ghcr.io/arizesky/emby-in-one:v1.4.4-rc5
 ```
 
 此方式只拉取预构建镜像，**不会编译项目源码**；安装器会将所选镜像解析并锁定为 digest，后续更新也保持镜像部署路线。
